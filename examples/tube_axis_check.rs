@@ -69,6 +69,10 @@ const LATERAL_KEYS: [&str; 7] = [
 /// 算「位置对上了」的那几箱：1 mm 以内。E3D 的位置属性本身就只存到 0.01 mm。
 const LATERAL_OK: [&str; 4] = ["< 1µm", "< 0.01mm", "< 0.1mm", "< 1mm"];
 
+/// 槽长分箱上界（mm），只给 `--noun` 那一族用。
+const LENGTH_BUCKETS: [f64; 5] = [1.0, 10.0, 100.0, 1000.0, 10000.0];
+const LENGTH_KEYS: [&str; 6] = ["< 1mm", "< 10mm", "< 100mm", "< 1m", "< 10m", "≥ 10m"];
+
 #[derive(Default)]
 struct Tally {
     slots: usize,
@@ -132,6 +136,32 @@ struct Tally {
     round_offsets: BTreeMap<i64, usize>,
     /// (离开端构件的 noun, 槽位结局) → 条数。见 [`note_leave_noun`]。
     leave_outcome: BTreeMap<(String, &'static str), usize>,
+    /// (离开端构件的 noun, 横向偏移分箱) → 条数。
+    ///
+    /// 与 [`Tally::lateral`] 是同一批数据换一刀切法，而这一刀切在**元件族**上。
+    /// 端型那一刀分得出「错在容器端还是构件端」，分不出「哪一族元件的目录链解
+    /// 得不对」，可后者才是能落到具体一本目录、一条 `PDIS` 表达式上的维度。
+    ///
+    /// 更要紧的是：只有这一栏能判「零长率低」到底是不是病。零长率低单看是**没有
+    /// 结论**的——`ATTA` 这种附着点本来就常跟下一站隔着一整根管，间隙是它应有的
+    /// 样子；`FTUB` 自己就是那根管，间隙才反常。分不出「该有的间隙」与「解错位
+    /// 置解出来的间隙」，就只能拿零长率当质量指标读，而那是错的。
+    leave_noun_lateral: BTreeMap<(String, &'static str), usize>,
+    /// (离开端构件的 noun, 两端轴夹角分箱) → 条数。同上，只看朝向不看位置。
+    leave_noun_axis: BTreeMap<(String, &'static str), usize>,
+    /// `--noun` 指定要盯的那一族。为空则下面两栏不记。
+    focus_noun: Option<String>,
+    /// 盯住那一族的槽长分布。
+    ///
+    /// 汇总表答得了「这一族准不准」，答不了「它的间隙是个什么东西」——而这两件
+    /// 事导向完全不同的结论：紧贴着下一件却差了几十毫米，是解错了；隔着一整根
+    /// 管，那间隙本来就该在那儿。差别全写在槽长上。
+    focus_lengths: BTreeMap<&'static str, usize>,
+    /// 盯住那一族的逐条明细，按横向偏移排序留证。
+    ///
+    /// 排序键取横向偏移而非槽长：一族元件里真正需要看脸的是**歪着的那几条**，
+    /// 按出现次序留前几条只会留到一堆一模一样的正常样本。
+    focus_detail: Vec<(f64, String)>,
     /// 夹角超过 30° 的样本，留证。**按端型各留几条**——只留全局前几条的话，
     /// 条数最多的那一类会把别的类挤没，而恰恰是别的类才分得出错在哪一侧。
     outliers: BTreeMap<&'static str, Vec<String>>,
@@ -146,6 +176,7 @@ fn main() -> anyhow::Result<()> {
     let mut sesno: Option<u32> = None;
     let mut sample = 8usize;
     let mut dump: Option<RefNo> = None;
+    let mut focus_noun: Option<String> = None;
 
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
@@ -158,6 +189,7 @@ fn main() -> anyhow::Result<()> {
             "--db-type" => db_type = value()?,
             "--sesno" => sesno = Some(value()?.parse().context("--sesno 要无符号整数")?),
             "--sample" => sample = value()?.parse().context("--sample 要无符号整数")?,
+            "--noun" => focus_noun = Some(value()?.to_uppercase()),
             "--dump" => dump = Some(parse_refno(&value()?)?),
             other => bail!("不认识的参数 {other}"),
         }
@@ -188,7 +220,10 @@ fn main() -> anyhow::Result<()> {
         return dump_container(&set.element(refno));
     }
 
-    let mut tally = Tally::default();
+    let mut tally = Tally {
+        focus_noun,
+        ..Tally::default()
+    };
     for root in roots_of(&db_file, sesno)? {
         let mut stack = vec![set.element(root)];
         while let Some(el) = stack.pop() {
@@ -383,6 +418,68 @@ fn note_leave_noun(tally: &mut Tally, end: &RouteEnd, outcome: &'static str) {
     *tally.leave_outcome.entry((noun, outcome)).or_insert(0) += 1;
 }
 
+/// 按「离开端是哪种构件」记这条间隙的质量。只有有间隙的槽位走这里。
+fn note_leave_noun_quality(
+    tally: &mut Tally,
+    end: &RouteEnd,
+    lateral: &'static str,
+    axis: &'static str,
+) {
+    let RouteEnd::MemberLeave { member, .. } = end else {
+        return;
+    };
+    let Ok(noun) = member.element_type() else {
+        return;
+    };
+    *tally
+        .leave_noun_lateral
+        .entry((noun.clone(), lateral))
+        .or_insert(0) += 1;
+    *tally.leave_noun_axis.entry((noun, axis)).or_insert(0) += 1;
+}
+
+/// 盯住 `--noun` 那一族有间隙的槽位：记槽长分布 + 逐条留证。
+///
+/// 质量表答得了「这一族的间隙歪不歪」，答不了「这些间隙是个什么东西」，而后者
+/// 才是「该不该在这条链上出隐式管身」的判据。两种间隙在质量表上长得一模一样：
+/// 相邻两件本该贴着装、却差了几毫米，是解错了位置，那几毫米不能出管；隔着一整
+/// 根管的几百上千毫米，是这条链本来就该长出来的一根真管。差别只写在槽长上。
+fn note_focus(
+    tally: &mut Tally,
+    end: &RouteEnd,
+    container: &DbElement,
+    length: f64,
+    lateral: f64,
+    pair_deg: f64,
+    across: glam::DVec3,
+) {
+    let RouteEnd::MemberLeave { member, .. } = end else {
+        return;
+    };
+    let Ok(noun) = member.element_type() else {
+        return;
+    };
+    if tally.focus_noun.as_deref() != Some(noun.as_str()) {
+        return;
+    }
+    *tally
+        .focus_lengths
+        .entry(length_bucket(length))
+        .or_insert(0) += 1;
+    let flat = (across.x * across.x + across.y * across.y).sqrt();
+    tally.focus_detail.push((
+        lateral,
+        format!(
+            "槽长 {length:>9.2}mm  横向 {lateral:>8.2}mm（水平 {flat:>7.2} 铅垂 {:>7.2}）\
+             两端轴 {pair_deg:>6.2}°  离开件 {}  容器 {} {}",
+            across.z,
+            member.refno(),
+            container.refno(),
+            container.stored_name().ok().flatten().unwrap_or_default(),
+        ),
+    ));
+}
+
 fn check_container(container: &DbElement, tally: &mut Tally, sample: usize) -> anyhow::Result<()> {
     tally.containers.insert(container.refno());
     let route = walk_route(container)?;
@@ -448,20 +545,23 @@ fn check_container(container: &DbElement, tally: &mut Tally, sample: usize) -> a
         // 横向偏移：to.pos 离「过 from.pos 沿 from.dir 的直线」有多远（mm）。
         // 与夹角是同一件事的两种量法，但这一种不随槽位长短放大。
         let lateral = lateral_mm(from.pos, from.dir, to.pos);
-        *tally
-            .lateral
-            .entry((ends, lateral_bucket(lateral)))
-            .or_insert(0) += 1;
+        let lateral_key = lateral_bucket(lateral);
+        *tally.lateral.entry((ends, lateral_key)).or_insert(0) += 1;
         // 两端轴自己对不对得上，与位置无关。
-        *tally
-            .axis_pair
-            .entry((ends, bucket(axis_deg(from.dir, to.dir))))
-            .or_insert(0) += 1;
+        let pair_deg = axis_deg(from.dir, to.dir);
+        let axis_key = bucket(pair_deg);
+        *tally.axis_pair.entry((ends, axis_key)).or_insert(0) += 1;
+        note_leave_noun_quality(tally, &slot.from, lateral_key, axis_key);
+        // 横向那一段本身也要拆开。设计师手填的错开是按平面与标高分别取整的
+        // （抬高 500 + 平移 200），合成之后是 538.52 这种看不出名堂的杂数；
+        // 拆回水平与铅垂两截，「这是人填的」与「这是我们算歪的」才分得开。
+        let across = (to.pos - from.pos)
+            - from.dir.normalize_or_zero() * (to.pos - from.pos).dot(from.dir.normalize_or_zero());
+        note_focus(
+            tally, &slot.from, container, length, lateral, pair_deg, across,
+        );
         if lateral.is_finite() && lateral > 1.0 {
             tally.offending_containers.insert(container.refno());
-            let across = (to.pos - from.pos)
-                - from.dir.normalize_or_zero()
-                    * (to.pos - from.pos).dot(from.dir.normalize_or_zero());
             let flat = (across.x * across.x + across.y * across.y).sqrt();
             let shape = match (flat > 1.0, across.z.abs() > 1.0) {
                 (false, true) => "纯铅垂（XY 对齐，只差 Z）",
@@ -541,6 +641,13 @@ fn lateral_bucket(mm: f64) -> &'static str {
     }
 }
 
+fn length_bucket(mm: f64) -> &'static str {
+    match LENGTH_BUCKETS.iter().position(|limit| mm < *limit) {
+        Some(i) => LENGTH_KEYS[i],
+        None => "≥ 10m",
+    }
+}
+
 fn bucket(deg: f64) -> &'static str {
     if deg.is_nan() {
         return "方向缺失";
@@ -566,6 +673,17 @@ fn end_pair(from: &RouteEnd, to: &RouteEnd) -> &'static str {
 
 fn round3(v: [f64; 3]) -> [f64; 3] {
     v.map(|x| (x * 1000.0).round() / 1000.0)
+}
+
+/// 某个 noun 落在 `keys` 那几个分箱里的条数。
+fn noun_ok(
+    hist: &BTreeMap<(String, &'static str), usize>,
+    noun: &str,
+    keys: &[&'static str],
+) -> usize {
+    keys.iter()
+        .map(|key| hist.get(&(noun.to_string(), *key)).copied().unwrap_or(0))
+        .sum()
 }
 
 fn report(tally: &mut Tally) {
@@ -742,6 +860,57 @@ fn report(tally: &mut Tally) {
             "  {noun:<8} 零长 {zero:>5} / 共 {total:>5}（{:.1}%），有间隙 {gap}",
             100.0 * *zero as f64 / total.max(1) as f64
         );
+    }
+
+    // 上面那张表**不能**当质量表读。零长率低只说明「这一族元件常跟下一站隔着
+    // 距离」，而附着点本来就该那样——间隙不是错，歪掉才是。所以同一批间隙再按
+    // 元件族量一次轴与位置：解错了 P 点，歪的比例会在这张表上单独凸出来；本来
+    // 就该有间隙的，这张表跟别人一样漂亮。
+    println!("\n有间隙的那些，质量如何（这张才是质量表；上面那张是形态表）：");
+    for (noun, (_, gap)) in rows.iter().take(12) {
+        if *gap == 0 {
+            continue;
+        }
+        let axis = noun_ok(&tally.leave_noun_axis, noun, &ALIGNED_KEYS);
+        let pos = noun_ok(&tally.leave_noun_lateral, noun, &LATERAL_OK);
+        println!(
+            "  {noun:<8} n={gap:<5} 两端轴反平行 {axis:>4}（{:>5.1}%）   横向偏移 < 1mm {pos:>4}（{:>5.1}%）",
+            100.0 * axis as f64 / (*gap).max(1) as f64,
+            100.0 * pos as f64 / (*gap).max(1) as f64,
+        );
+    }
+
+    if let Some(noun) = tally.focus_noun.clone() {
+        let total: usize = tally.focus_lengths.values().sum();
+        println!(
+            "\n【--noun {noun}】它有间隙的 {total} 条，间隙有多长：\n\
+             \x20 几毫米 = 两件本该贴着装却差开了，是解错位置；几百毫米往上 = 中间\n\
+             \x20 本来就有一根真管。这两种在上面那张质量表上分不出来。"
+        );
+        for key in LENGTH_KEYS {
+            let count = tally.focus_lengths.get(key).copied().unwrap_or(0);
+            println!(
+                "  {key:<8} {count:>5}（{:>5.1}%）",
+                100.0 * count as f64 / total.max(1) as f64
+            );
+        }
+        tally
+            .focus_detail
+            .sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        // 只列歪着的那些，不列全部：这一族正常的样本彼此长得一模一样，列出来
+        // 只会把要看的那几条挤下去。上限 30 条，够看清是集中在一族容器上还是摊开的。
+        let skewed = tally
+            .focus_detail
+            .iter()
+            .filter(|(mm, _)| *mm > 1.0)
+            .count();
+        println!(
+            "  横向偏移 > 1mm 的 {skewed}/{total} 条，列前 {}：",
+            skewed.min(30)
+        );
+        for (_, line) in tally.focus_detail.iter().take(skewed.min(30)) {
+            println!("    {line}");
+        }
     }
 
     let shaped: usize = tally.lateral_shape.values().sum();
