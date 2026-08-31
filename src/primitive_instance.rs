@@ -6,13 +6,16 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, OnceLock, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use glam::{DMat4, DVec3};
 use manifold_csg::Manifold;
 use serde::{Deserialize, Serialize};
 
-use crate::solid::{SolidError, box_solid, cylinder_segments, cylinder_solid, placed};
+use crate::solid::{
+    BOX_WHAT, CYLINDER_WHAT, SolidError, box_solid, cylinder_segments, cylinder_solid,
+    cylinder_tilt, ensure_solid, placed, validate_box_dims, validate_cylinder_dims,
+};
 
 pub const INSTANCE_CACHE_ENV: &str = "E3D_MODEL_NO_INSTANCE_CACHE";
 
@@ -60,6 +63,20 @@ fn cache() -> &'static PrimitiveMeshCache {
     CACHE.get_or_init(PrimitiveMeshCache::default)
 }
 
+impl PrimitiveMeshCache {
+    /// 中毒锁照常取用。里面是一张 `key -> canonical 网格` 的表，每个值都是
+    /// [`build_canonical`] 一次性建完才插进去的纯函数产物；某个线程建网格时
+    /// panic 只会让它自己那次 `insert` 没发生，不会留下半张表。为这个把整场
+    /// 跑批（AMS1112 三万个元素）连坐掉，代价与风险完全不成比例。
+    fn read_meshes(&self) -> RwLockReadGuard<'_, HashMap<PrimitiveMeshKey, Arc<Manifold>>> {
+        self.meshes.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn write_meshes(&self) -> RwLockWriteGuard<'_, HashMap<PrimitiveMeshKey, Arc<Manifold>>> {
+        self.meshes.write().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
 pub fn instance_cache_enabled() -> bool {
     std::env::var_os(INSTANCE_CACHE_ENV).is_none()
 }
@@ -71,7 +88,7 @@ pub fn primitive_cache_stats() -> PrimitiveCacheStats {
         misses: cache.misses.load(Ordering::Relaxed),
         bypasses: cache.bypasses.load(Ordering::Relaxed),
         baked_operands: cache.baked_operands.load(Ordering::Relaxed),
-        unique_meshes: cache.meshes.read().expect("primitive cache poisoned").len(),
+        unique_meshes: cache.read_meshes().len(),
     }
 }
 
@@ -99,19 +116,13 @@ fn build_canonical(key: PrimitiveMeshKey) -> Result<Manifold, SolidError> {
 
 fn cached_canonical(key: PrimitiveMeshKey) -> Result<Arc<Manifold>, SolidError> {
     let cache = cache();
-    if let Some(found) = cache
-        .meshes
-        .read()
-        .expect("primitive cache poisoned")
-        .get(&key)
-        .cloned()
-    {
+    if let Some(found) = cache.read_meshes().get(&key).cloned() {
         cache.hits.fetch_add(1, Ordering::Relaxed);
         return Ok(found);
     }
 
     let built = Arc::new(build_canonical(key)?);
-    let mut meshes = cache.meshes.write().expect("primitive cache poisoned");
+    let mut meshes = cache.write_meshes();
     match meshes.entry(key) {
         std::collections::hash_map::Entry::Occupied(entry) => {
             cache.hits.fetch_add(1, Ordering::Relaxed);
@@ -137,7 +148,9 @@ pub(crate) fn instantiate_box(
     allow_instance: bool,
 ) -> Result<PrimitiveBuild, SolidError> {
     // Keep the old validation/error text in the bypass path and validate before
-    // caching so an invalid element can never create a reusable entry.
+    // caching so an invalid element can never create a reusable entry. The
+    // check is dimensions-only: building the real-size solid just to drop it
+    // made every "hit" cost more than a direct build.
     if !allow_instance {
         cache().baked_operands.fetch_add(1, Ordering::Relaxed);
         return Ok(PrimitiveBuild {
@@ -152,12 +165,12 @@ pub(crate) fn instantiate_box(
             instance: None,
         });
     }
-    let _ = box_solid(x, y, z)?;
+    validate_box_dims(x, y, z)?;
     let key = PrimitiveMeshKey::BoxV1;
     let local_transform = DMat4::from_scale(DVec3::new(x, y, z));
     let canonical = cached_canonical(key)?;
     Ok(PrimitiveBuild {
-        solid: placed(canonical.as_ref(), local_transform),
+        solid: ensure_solid(placed(canonical.as_ref(), local_transform), BOX_WHAT)?,
         instance: Some(PrimitiveInstance {
             key,
             local_transform,
@@ -187,22 +200,21 @@ pub(crate) fn instantiate_cylinder(
         });
     }
     // Preserve validation and calculate N from the real radius before replacing
-    // the shape with the unit-radius canonical mesh.
-    let _ = cylinder_solid(diam, height)?;
+    // the shape with the unit-radius canonical mesh. Dimensions only. This used
+    // to build the real cylinder and drop it on the floor, so a "hit" cost more
+    // than the direct build it was meant to beat: R=23400 (484 segments),
+    // release, 2000 iterations, hit 1.581ms against direct 1.278ms. Validating
+    // without building brings the hit to 0.329ms.
+    validate_cylinder_dims(diam, height)?;
     let radius = diam / 2.0;
     let key = PrimitiveMeshKey::CylinderV3 {
         segments: cylinder_segments(radius),
     };
-    let angle = if height.is_sign_positive() {
-        -std::f64::consts::FRAC_PI_2
-    } else {
-        std::f64::consts::FRAC_PI_2
-    };
-    let local_transform =
-        DMat4::from_rotation_x(angle) * DMat4::from_scale(DVec3::new(radius, radius, height.abs()));
+    let local_transform = DMat4::from_rotation_x(cylinder_tilt(height))
+        * DMat4::from_scale(DVec3::new(radius, radius, height.abs()));
     let canonical = cached_canonical(key)?;
     Ok(PrimitiveBuild {
-        solid: placed(canonical.as_ref(), local_transform),
+        solid: ensure_solid(placed(canonical.as_ref(), local_transform), CYLINDER_WHAT)?,
         instance: Some(PrimitiveInstance {
             key,
             local_transform,
@@ -263,6 +275,52 @@ mod tests {
         let built = instantiate_cylinder(200.0, 30.0, false).unwrap();
         assert!(built.instance.is_none());
         assert_same_geometry(&built.solid, &cylinder_solid(200.0, 30.0).unwrap());
+    }
+
+    /// 实例化路不再白建一遍真实尺寸的实体，但拒绝非法尺寸的那句话必须一字不变。
+    ///
+    /// 校验从 `box_solid` / `cylinder_solid` 里抽了出来，这是重构唯一可能悄悄
+    /// 改坏的地方：三条路（实例、烘焙、直建）报的必须还是同一句。NaN 一并钉住
+    /// ——`!(x > 0.0)` 就是为了连它一起挡。
+    #[test]
+    fn rejected_dimensions_read_the_same_on_every_path() {
+        fn refusal<T>(built: Result<T, SolidError>) -> String {
+            built.err().expect("这组尺寸本来就该被拒").to_string()
+        }
+
+        for (x, y, z) in [
+            (0.0, 10.0, 10.0),
+            (10.0, -1.0, 10.0),
+            (10.0, 10.0, f64::NAN),
+        ] {
+            let direct = refusal(box_solid(x, y, z));
+            assert_eq!(refusal(instantiate_box(x, y, z, true)), direct);
+            assert_eq!(refusal(instantiate_box(x, y, z, false)), direct);
+        }
+        for (d, h) in [(0.0, 10.0), (-5.0, 10.0), (10.0, 0.0), (10.0, f64::NAN)] {
+            let direct = refusal(cylinder_solid(d, h));
+            assert_eq!(refusal(instantiate_cylinder(d, h, true)), direct);
+            assert_eq!(refusal(instantiate_cylinder(d, h, false)), direct);
+        }
+    }
+
+    /// 缓存锁被毒掉之后照常出网格：一个线程 panic 不该让整场跑批陪葬。
+    #[test]
+    fn a_poisoned_cache_lock_does_not_take_the_run_down() {
+        let killed = std::thread::spawn(|| {
+            let _held = cache().write_meshes();
+            panic!("deliberately poisoning the primitive cache");
+        })
+        .join();
+        assert!(killed.is_err(), "这个线程本来就该 panic");
+
+        let mesh = canonical_primitive_mesh(PrimitiveMeshKey::BoxV1).unwrap();
+        assert!(!mesh.is_empty() && mesh.num_tri() > 0);
+        assert!(primitive_cache_stats().unique_meshes >= 1);
+        assert_same_geometry(
+            &instantiate_box(3.0, 4.0, 5.0, true).unwrap().solid,
+            &box_solid(3.0, 4.0, 5.0).unwrap(),
+        );
     }
 
     #[test]

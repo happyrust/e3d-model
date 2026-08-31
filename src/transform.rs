@@ -10,6 +10,7 @@
 //! SPINE/ZDIR 样条路径特判——1112 首里程碑的结构件不吃这两条。
 
 use e3d_io::db_element::{DbElement, DbElementError};
+use e3d_io::refno::RefNo;
 use glam::{DMat3, DMat4, DVec3};
 
 /// 上溯 owner 链的硬上限。dabacon 树深实测个位数，128 只可能是环。
@@ -72,20 +73,33 @@ pub fn world_matrix(el: &DbElement) -> Result<DMat4, DbElementError> {
     Ok(world)
 }
 
+/// [`matrix_relative_to`] 的失败面。
+///
+/// 单开一个类型，是因为「上溯到根都没遇到 ancestor」根本不是一种
+/// [`DbElementError`]：两个元素都读得好好的，错的是它们的**关系**。原先这里
+/// 借 `DbElementError::NotFound` 报，还得凭空编一个 `sesno: 0`，报告里读出来
+/// 是「db N 会话 0 的索引里没有 refno」——查的人会去翻索引，而索引没有任何问题。
+#[derive(Debug, thiserror::Error)]
+pub enum RelativeMatrixError {
+    #[error("{descendant} 不在 {ancestor} 的 owner 子树里，求不出相对矩阵")]
+    NotADescendant { descendant: RefNo, ancestor: RefNo },
+    #[error(transparent)]
+    Db(#[from] DbElementError),
+}
+
 /// `descendant` 相对 `ancestor` 局部系的矩阵：沿 owner 链从 ancestor 的下一级
 /// 折叠到 descendant。descendant 不在 ancestor 子树里 = 数据错，响亮报。
 pub fn matrix_relative_to(
     descendant: &DbElement,
     ancestor: &DbElement,
-) -> Result<DMat4, DbElementError> {
+) -> Result<DMat4, RelativeMatrixError> {
     let mut chain = vec![local_matrix(descendant)?];
     let mut cursor = descendant.owner()?;
     loop {
         let Some(current) = cursor else {
-            return Err(DbElementError::NotFound {
-                refno: descendant.refno(),
-                dbno: ancestor.db_no(),
-                sesno: 0,
+            return Err(RelativeMatrixError::NotADescendant {
+                descendant: descendant.refno(),
+                ancestor: ancestor.refno(),
             });
         };
         if current.refno() == ancestor.refno() {
@@ -95,7 +109,8 @@ pub fn matrix_relative_to(
             return Err(DbElementError::OwnerCycle {
                 start: descendant.refno(),
                 at: current.refno(),
-            });
+            }
+            .into());
         }
         chain.push(local_matrix(&current)?);
         cursor = current.owner()?;
@@ -171,5 +186,21 @@ mod tests {
                 "ORI {angles:?}: Z 轴 {z:?} != 权威 {z_axis:?}"
             );
         }
+    }
+
+    /// 「不在子树里」报出来要指向关系，不能把人引到索引上去。
+    ///
+    /// 旧写法借 `DbElementError::NotFound` 并编了个 `sesno: 0`，读报告的人看到
+    /// 「db N 会话 0 的索引里没有 X」会去翻索引——而索引没有任何问题。
+    #[test]
+    fn not_a_descendant_names_the_relationship_not_the_index() {
+        let text = RelativeMatrixError::NotADescendant {
+            descendant: RefNo::new(9, 1234),
+            ancestor: RefNo::new(9, 7),
+        }
+        .to_string();
+        assert!(text.contains("9/1234") && text.contains("9/7"), "{text}");
+        assert!(text.contains("子树"), "{text}");
+        assert!(!text.contains("会话") && !text.contains("索引"), "{text}");
     }
 }

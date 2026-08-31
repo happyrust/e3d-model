@@ -142,37 +142,65 @@ fn extrude_rings_grown(
     ensure_solid(solid, WHAT)
 }
 
-/// `gm_CreateBox`：XLEN/YLEN/ZLEN，原点居中。
-pub fn box_solid(xlen: f64, ylen: f64, zlen: f64) -> Result<Manifold, SolidError> {
-    const WHAT: &str = "box";
+pub(crate) const BOX_WHAT: &str = "box";
+pub(crate) const CYLINDER_WHAT: &str = "cylinder";
+
+/// [`box_solid`] 的尺寸校验，单独一份、**不构造几何**。
+///
+/// 给 [`crate::primitive_instance`] 用：实例化路径要在取 canonical 单位网格之前
+/// 把非法尺寸挡掉，否则一个坏元素会留下一条可复用的缓存条目。文案与
+/// [`box_solid`] 共用同一个 `what`，两条路报出来的必须逐字同一句。
+pub fn validate_box_dims(xlen: f64, ylen: f64, zlen: f64) -> Result<(), SolidError> {
     if !(xlen > 0.0 && ylen > 0.0 && zlen > 0.0) {
         return Err(SolidError::Degenerate {
-            what: WHAT,
+            what: BOX_WHAT,
             detail: format!("XLEN/YLEN/ZLEN = {xlen}/{ylen}/{zlen}"),
         });
     }
-    ensure_solid(Manifold::cube(xlen, ylen, zlen, true), WHAT)
+    Ok(())
+}
+
+/// [`cylinder_solid`] 的尺寸校验，单独一份、**不构造几何**。见
+/// [`validate_box_dims`] 的说明。
+pub fn validate_cylinder_dims(diam: f64, heig: f64) -> Result<(), SolidError> {
+    if !(diam > 0.0 && heig.abs() > f64::EPSILON) {
+        return Err(SolidError::Degenerate {
+            what: CYLINDER_WHAT,
+            detail: format!("DIAM/HEIG = {diam}/{heig}"),
+        });
+    }
+    Ok(())
+}
+
+/// `gm_CreateBox`：XLEN/YLEN/ZLEN，原点居中。
+pub fn box_solid(xlen: f64, ylen: f64, zlen: f64) -> Result<Manifold, SolidError> {
+    validate_box_dims(xlen, ylen, zlen)?;
+    ensure_solid(Manifold::cube(xlen, ylen, zlen, true), BOX_WHAT)
 }
 
 /// `gm_CreateCylinder`：DIAM/HEIG，轴向为局部 Y，原点在底面中心。
 /// 正 HEIG 占 `[0, H]`，负 HEIG 占 `[-|H|, 0]`。该约定由 AMS7997
 /// `/Copy-of-R43-R740-002` 的 E3D RVM 面片逐件坐实，不是从旧实现推断。
 pub fn cylinder_solid(diam: f64, heig: f64) -> Result<Manifold, SolidError> {
-    const WHAT: &str = "cylinder";
-    if !(diam > 0.0 && heig.abs() > f64::EPSILON) {
-        return Err(SolidError::Degenerate {
-            what: WHAT,
-            detail: format!("DIAM/HEIG = {diam}/{heig}"),
-        });
-    }
+    validate_cylinder_dims(diam, heig)?;
     let radius = diam / 2.0;
     let solid = Manifold::cylinder(heig.abs(), radius, radius, cylinder_segments(radius), false);
-    let angle = if heig.is_sign_positive() {
+    ensure_solid(
+        placed(&solid, DMat4::from_rotation_x(cylinder_tilt(heig))),
+        CYLINDER_WHAT,
+    )
+}
+
+/// CYLI 把 canonical 的 +Z 体摆到局部 Y 的那一转，正负 HEIG 各一个方向。
+///
+/// 直建路（[`cylinder_solid`]）和实例化路（[`crate::primitive_instance`]）必须
+/// 转同一个角，否则同一个元素两条路出来的朝向相反。
+pub fn cylinder_tilt(heig: f64) -> f64 {
+    if heig.is_sign_positive() {
         -std::f64::consts::FRAC_PI_2
     } else {
         std::f64::consts::FRAC_PI_2
-    };
-    ensure_solid(placed(&solid, DMat4::from_rotation_x(angle)), WHAT)
+    }
 }
 
 /// E3D `LNEGIT` 组合路径里的圆柱约定：轴向局部 Z、原点居中。
@@ -601,7 +629,7 @@ pub fn cleanup_floor_boolean_components(solid: Manifold, negative_count: usize) 
     Manifold::compose(&kept)
 }
 
-fn ensure_solid(solid: Manifold, what: &'static str) -> Result<Manifold, SolidError> {
+pub(crate) fn ensure_solid(solid: Manifold, what: &'static str) -> Result<Manifold, SolidError> {
     if solid.is_empty() || solid.num_tri() == 0 {
         return Err(SolidError::EmptyManifold { what });
     }

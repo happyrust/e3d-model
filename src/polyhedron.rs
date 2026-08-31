@@ -321,7 +321,22 @@ pub fn polyhedron_solid(
     Ok(solid)
 }
 
+/// 位模式去重的前置归一：`-0.0` 收成 `+0.0`。
+///
+/// `(-0.0f64).to_bits()` 与 `0.0f64.to_bits()` 不等，而两者在数值上是同一个点。
+/// 不归一的话，一个坐落在坐标面上的共享顶点会因为两张面各自存了不同符号的零
+/// 而落成两个索引，共享边随之退化成两条单用边，`from_mesh_f64` 直接判非流形。
+/// NaN 不在这里管——它 `== 0.0` 为假，原样按位去重，交给下游报。
+fn normalise_signed_zero(v: f64) -> f64 {
+    if v == 0.0 { 0.0 } else { v }
+}
+
 fn intern(p: DVec3, verts: &mut Vec<DVec3>, index_of: &mut HashMap<[u64; 3], u32>) -> u32 {
+    let p = DVec3::new(
+        normalise_signed_zero(p.x),
+        normalise_signed_zero(p.y),
+        normalise_signed_zero(p.z),
+    );
     *index_of
         .entry([p.x.to_bits(), p.y.to_bits(), p.z.to_bits()])
         .or_insert_with(|| {
@@ -550,6 +565,44 @@ mod tests {
             matches!(result, Err(PolyhedronError::NotManifold { .. })),
             "开壳必须报 NotManifold"
         );
+    }
+
+    /// 顶点按位去重，`-0.0` 必须先收成 `0.0`。
+    #[test]
+    fn intern_folds_negative_zero_onto_positive_zero() {
+        let mut verts = Vec::new();
+        let mut index_of = HashMap::new();
+        let a = intern(DVec3::new(0.0, 1.0, 0.0), &mut verts, &mut index_of);
+        let b = intern(DVec3::new(-0.0, 1.0, -0.0), &mut verts, &mut index_of);
+        assert_eq!(a, b, "−0.0 与 0.0 是同一个点，不能占两个索引");
+        assert_eq!(verts.len(), 1);
+        assert!(verts[0].x.is_sign_positive() && verts[0].z.is_sign_positive());
+    }
+
+    /// 同一个共享顶点在不同面上写成 `-0.0` / `0.0`，壳照样闭合。
+    ///
+    /// 落在坐标面上的 POIN 分量带负号并不稀奇（一次取反或乘 −1 就有了）。按位
+    /// 去重不归一时，只有 z=0 那张面的四个角会另开索引，与四张侧壁不再共享，
+    /// 每条底边退化成两条单用边——壳看着闭合，`from_mesh_f64` 判非流形。
+    #[test]
+    fn negative_zero_on_one_face_still_shares_vertices_with_the_rest() {
+        let mut faces = cube(2.0);
+        for p in &mut faces[0].loops[0] {
+            if p.x == 0.0 {
+                p.x = -0.0;
+            }
+            if p.y == 0.0 {
+                p.y = -0.0;
+            }
+            if p.z == 0.0 {
+                p.z = -0.0;
+            }
+        }
+        let mut notes = Vec::new();
+        let solid = polyhedron_solid(&faces, &mut notes).unwrap();
+        assert!(notes.is_empty(), "{notes:?}");
+        assert!((solid.volume() - 8.0).abs() < 1e-9, "{}", solid.volume());
+        assert_eq!(solid.genus(), 0);
     }
 
     /// 全是退化面（共线环）→ NoTriangles，退化明细进 notes。
