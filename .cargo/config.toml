@@ -1,0 +1,19 @@
+# 与 gen-model/.cargo/config.toml 同一套口径：同 target 目录 + 同 rustflags，
+# 让 manifold-csg（同 rev）的 C++ 编译产物直接命中共享缓存，而不是重编 20 分钟。
+
+[net]
+git-fetch-with-cli = true
+
+# manifold-sys 的 bindgen 需要 libclang，缺失时 build script 直接 panic
+[env]
+LIBCLANG_PATH = { value = "D:\\LLVM\\bin", force = false }
+
+[build]
+# vendor/e3d-model → ../../target = d:\work\plant-code\old\target（gen-model 同款共享池）
+target-dir = "../../target"
+rustflags = ["-Z", "threads=8"]
+jobs = 8
+
+# target.<triple>.rustflags 会整体顶掉 build.rustflags，所以 -Z threads=8 必须重复。
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-Z", "threads=8", "-C", "link-arg=/DEBUG:NONE"]

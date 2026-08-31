@@ -1,0 +1,20 @@
+# 构建产物。.cargo/config.toml 把 target-dir 指到 ../../target 的共享池，
+# 这两条只是防止有人在本目录直接 cargo build 时漏网。
+/target
+/target-*
+**/*.rs.bk
+Cargo.lock.bak
+.idea/
+.vscode/
+
+# 排查取证，不是源码：evidence/ 是 246 MB 的 RVM 对拍 JSON、跑批日志、
+# 中途 .patch 与 .backup 副本，全部能靠 examples/ 里的探针与 scripts/ 重跑重造，
+# 一旦进历史就永久占着（同 e3d-io 的 /evidence 口径）。
+/evidence
+
+# 生成产物落脚处：model.obj / elements.json / report.json 都是
+# `cargo run --bin gen_ams` 的输出，随每次跑批重写，不反映代码状态。
+/out
+
+__pycache__/
+*.pyc
