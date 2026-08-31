@@ -77,6 +77,20 @@ struct Tally {
     zero_length: usize,
     unresolved: usize,
     db_not_open: usize,
+    /// 没开的库号 → 被它挡住的槽位条数。
+    ///
+    /// `db_not_open` 只说「有多少条卡在配置上」，说不出**该去开哪个库**，而这
+    /// 两件事的差别就是「知道有盲区」与「能把盲区消掉」。`DbNotRegistered` 本来
+    /// 就带着 dbno，把它扔掉纯属浪费。
+    db_not_open_by_dbno: BTreeMap<u32, usize>,
+    /// 库开了、但索引里没有那个 refno。库号 → 条数。
+    ///
+    /// 与 [`Tally::db_not_open`] 是**两件事**，混成一栏会让「开错文件」伪装成
+    /// 「还没配」：前者是没注册过这个库号，后者是注册了一个自报同号的文件而它
+    /// 里面根本没这件元素——跨工程的库号会撞车（`aps7600_0001` 与本工程的 db
+    /// 7600 就是两个不同的库），撞上了照样开得起来、照样自报 7600，只有下降到
+    /// 索引这一步才露馅。分开记，才看得出该去补配置还是该换文件。
+    not_in_index_by_dbno: BTreeMap<u32, usize>,
     /// 端型组合（如 `构件离开 → 构件到达`）→ 条数。
     by_ends: BTreeMap<&'static str, usize>,
     /// 量出来的按端型组合分：容器端与构件端要分开看，混在一起
@@ -385,8 +399,14 @@ fn check_container(container: &DbElement, tally: &mut Tally, sample: usize) -> a
                 tally.unresolved += 1;
                 continue;
             }
-            Err(DbElementError::DbNotRegistered { .. }) => {
+            Err(DbElementError::DbNotRegistered { dbno }) => {
                 tally.db_not_open += 1;
+                *tally.db_not_open_by_dbno.entry(dbno).or_insert(0) += 1;
+                continue;
+            }
+            Err(DbElementError::NotFound { dbno, .. }) => {
+                tally.db_not_open += 1;
+                *tally.not_in_index_by_dbno.entry(dbno).or_insert(0) += 1;
                 continue;
             }
             Err(error) => return Err(error.into()),
@@ -558,6 +578,12 @@ fn report(tally: &mut Tally) {
     println!("  零长             {:>6}", tally.zero_length);
     println!("  解不出 P 点      {:>6}", tally.unresolved);
     println!("  P 点所在库没开   {:>6}", tally.db_not_open);
+    for (dbno, count) in &tally.db_not_open_by_dbno {
+        println!("      db {dbno:<6} {count:>6}  没注册    ← 用 --catalogue 把它开上");
+    }
+    for (dbno, count) in &tally.not_in_index_by_dbno {
+        println!("      db {dbno:<6} {count:>6}  开错文件  ← 自报同号，但索引里没有那些 refno");
+    }
 
     println!("\n端型组合（槽位 / 其中量出）：");
     for (kind, count) in &tally.by_ends {

@@ -1062,12 +1062,24 @@ fn report(tally: &Tally) {
         .map(|(_, count)| *count)
         .sum();
     let ptcd_total: usize = tally.ptcd_outcome.values().sum();
+    // 「没有 PTCD 属性」不是解码失败，不能进解码分母。把两者混成一个百分比，
+    // 读出来就是「解码器有 0.4% 会栽」，而实测至今没有任何一个 PTCD 字解不开——
+    // 与判据三当初把模型脏数据读成求解错误率是同一种误导。
+    let absent: usize = tally
+        .ptcd_outcome
+        .iter()
+        .filter(|(shape, _)| shape.as_str() == "无值" || shape.as_str() == "模板无此名")
+        .map(|(_, count)| *count)
+        .sum();
+    let decodable = ptcd_total - absent;
     for (shape, count) in rows {
         println!("  {count:>6}x  {shape}");
     }
     println!(
-        "  —— 解出 {decoded}/{ptcd_total}（{:.1}%）",
-        percent(decoded, ptcd_total)
+        "  —— 带 PTCD 字的 {decodable} 条里解出 {decoded} 条（{:.1}%）；\
+         另有 {absent} 条 PTCA 根本没有 PTCD 属性，不入解码分母\n\
+         \x20    （共 {ptcd_total} 个 PTCA 实例）",
+        percent(decoded, decodable)
     );
 
     println!("\nPTCD 非正交转角（解码器算式在这些链上不成立）：");
