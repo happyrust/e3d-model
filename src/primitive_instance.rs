@@ -22,7 +22,7 @@ pub const INSTANCE_CACHE_ENV: &str = "E3D_MODEL_NO_INSTANCE_CACHE";
 #[serde(tag = "family", rename_all = "snake_case")]
 pub enum PrimitiveMeshKey {
     BoxV1,
-    CylinderV2 { segments: i32 },
+    CylinderV3 { segments: i32 },
 }
 
 /// Canonical mesh placement in an element's local coordinate system.
@@ -82,10 +82,10 @@ pub fn canonical_primitive_mesh(key: PrimitiveMeshKey) -> Result<Arc<Manifold>, 
 fn build_canonical(key: PrimitiveMeshKey) -> Result<Manifold, SolidError> {
     match key {
         PrimitiveMeshKey::BoxV1 => box_solid(1.0, 1.0, 1.0),
-        PrimitiveMeshKey::CylinderV2 { segments } => {
+        PrimitiveMeshKey::CylinderV3 { segments } => {
             // Unit radius and unit height. `segments` was calculated from the
             // real radius before normalisation and is therefore part of key.
-            let solid = Manifold::cylinder(1.0, 1.0, 1.0, segments, true);
+            let solid = Manifold::cylinder(1.0, 1.0, 1.0, segments, false);
             if solid.is_empty() || solid.num_tri() == 0 {
                 Err(SolidError::EmptyManifold {
                     what: "canonical cylinder",
@@ -170,10 +170,8 @@ pub(crate) fn instantiate_cylinder(
     height: f64,
     allow_instance: bool,
 ) -> Result<PrimitiveBuild, SolidError> {
-    // Keep the shared-instance path identical to the baked Core3D semantics.
-    // A negative Z scale would add a reflection which the centred baked body
-    // does not have; only the magnitude participates in the local geometry.
-    let height = height.abs();
+    // E3D CYLI is based at the origin and runs along signed local Y. Preserve
+    // that sign in the instance transform; the canonical body runs +Z [0, 1].
     if !allow_instance {
         cache().baked_operands.fetch_add(1, Ordering::Relaxed);
         return Ok(PrimitiveBuild {
@@ -192,10 +190,16 @@ pub(crate) fn instantiate_cylinder(
     // the shape with the unit-radius canonical mesh.
     let _ = cylinder_solid(diam, height)?;
     let radius = diam / 2.0;
-    let key = PrimitiveMeshKey::CylinderV2 {
+    let key = PrimitiveMeshKey::CylinderV3 {
         segments: cylinder_segments(radius),
     };
-    let local_transform = DMat4::from_scale(DVec3::new(radius, radius, height));
+    let angle = if height.is_sign_positive() {
+        -std::f64::consts::FRAC_PI_2
+    } else {
+        std::f64::consts::FRAC_PI_2
+    };
+    let local_transform =
+        DMat4::from_rotation_x(angle) * DMat4::from_scale(DVec3::new(radius, radius, height.abs()));
     let canonical = cached_canonical(key)?;
     Ok(PrimitiveBuild {
         solid: placed(canonical.as_ref(), local_transform),
@@ -247,10 +251,10 @@ mod tests {
 
     #[test]
     fn key_json_is_stable_and_contains_segment_count() {
-        let key = PrimitiveMeshKey::CylinderV2 { segments: 32 };
+        let key = PrimitiveMeshKey::CylinderV3 { segments: 32 };
         assert_eq!(
             serde_json::to_string(&key).unwrap(),
-            r#"{"family":"cylinder_v2","segments":32}"#
+            r#"{"family":"cylinder_v3","segments":32}"#
         );
     }
 
@@ -267,8 +271,17 @@ mod tests {
         let baked = instantiate_cylinder(51.67, -183.15, false).unwrap();
         assert_eq!(
             instanced.instance.as_ref().unwrap().local_transform,
-            DMat4::from_scale(DVec3::new(25.835, 25.835, 183.15))
+            DMat4::from_rotation_x(std::f64::consts::FRAC_PI_2)
+                * DMat4::from_scale(DVec3::new(25.835, 25.835, 183.15))
         );
         assert_same_geometry(&instanced.solid, &baked.solid);
+        let bounds = baked.solid.bounding_box().unwrap();
+        assert!(
+            (bounds.min()[1] + 183.15).abs() < 1e-9,
+            "{:?} {:?}",
+            bounds.min(),
+            bounds.max()
+        );
+        assert!(bounds.max()[1].abs() < 1e-9);
     }
 }

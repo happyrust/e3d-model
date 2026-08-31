@@ -1,5 +1,7 @@
-# 与 gen-model/.cargo/config.toml 同一套口径：同 target 目录 + 同 rustflags，
-# 让 manifold-csg（同 rev）的 C++ 编译产物直接命中共享缓存，而不是重编 20 分钟。
+# rustflags 与 gen-model/.cargo/config.toml 保持同一套口径，但 target 目录独占：
+# 共享池同时被多个会话写，manifold-csg 的产物会被别的会话换掉，出现同一份源码
+# 前后两次测试结论相反（先 55 全绿、几分钟后 4 个几何用例失败）。实测本 crate
+# 从零建满隔离目录到跑完测试 2 分 11 秒，换稳定验证很划算。
 
 [net]
 git-fetch-with-cli = true
@@ -9,8 +11,10 @@ git-fetch-with-cli = true
 LIBCLANG_PATH = { value = "D:\\LLVM\\bin", force = false }
 
 [build]
-# vendor/e3d-model → ../../target = d:\work\plant-code\old\target（gen-model 同款共享池）
-target-dir = "../../target"
+# vendor/e3d-model → ../../target-e3d-model，本 crate 独占，且落在仓库外不进版本库。
+# 注意 CARGO_TARGET_DIR 环境变量优先级高于这里：本机就设着它（指向共享池），
+# 这份配置因此不生效，要拿到隔离效果得在跑 cargo 前显式覆盖那个环境变量。
+target-dir = "../../target-e3d-model"
 rustflags = ["-Z", "threads=8"]
 jobs = 8
 

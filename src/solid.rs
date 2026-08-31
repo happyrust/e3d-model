@@ -154,23 +154,46 @@ pub fn box_solid(xlen: f64, ylen: f64, zlen: f64) -> Result<Manifold, SolidError
     ensure_solid(Manifold::cube(xlen, ylen, zlen, true), WHAT)
 }
 
-/// `gm_CreateCylinder`：DIAM/HEIG，轴向 +Z，原点居中（z ∈ [−H/2, +H/2]，
-/// 与 aios-core `SCylinder::get_trans` 的 `center_in_mid` 同款）。
+/// `gm_CreateCylinder`：DIAM/HEIG，轴向为局部 Y，原点在底面中心。
+/// 正 HEIG 占 `[0, H]`，负 HEIG 占 `[-|H|, 0]`。该约定由 AMS7997
+/// `/Copy-of-R43-R740-002` 的 E3D RVM 面片逐件坐实，不是从旧实现推断。
 pub fn cylinder_solid(diam: f64, heig: f64) -> Result<Manifold, SolidError> {
     const WHAT: &str = "cylinder";
-    // PDMS preserves the sign of HEIG, while Core3D/aios-core constructs this
-    // centred body from its magnitude. A negative value reverses the authored
-    // axis direction; it does not suppress the cylinder.
-    let heig = heig.abs();
-    if !(diam > 0.0 && heig > f64::EPSILON) {
+    if !(diam > 0.0 && heig.abs() > f64::EPSILON) {
         return Err(SolidError::Degenerate {
             what: WHAT,
             detail: format!("DIAM/HEIG = {diam}/{heig}"),
         });
     }
     let radius = diam / 2.0;
-    let solid = Manifold::cylinder(heig, radius, radius, cylinder_segments(radius), true);
-    ensure_solid(solid, WHAT)
+    let solid = Manifold::cylinder(heig.abs(), radius, radius, cylinder_segments(radius), false);
+    let angle = if heig.is_sign_positive() {
+        -std::f64::consts::FRAC_PI_2
+    } else {
+        std::f64::consts::FRAC_PI_2
+    };
+    ensure_solid(placed(&solid, DMat4::from_rotation_x(angle)), WHAT)
+}
+
+/// E3D `LNEGIT` 组合路径里的圆柱约定：轴向局部 Z、原点居中。
+///
+/// 普通 CYLI 的导出约定见 [`cylinder_solid`]；但 AMS7997 的三件带负体 CYLI
+/// `24381/130755,130757,130767` 的 RVM 面片明确显示，进入组合体后正体和 NCYL
+/// 刀具都按这一套居中 Z 约定构造。两条路径不能再共用一个隐含约定。
+pub fn csg_cylinder_solid(diam: f64, heig: f64) -> Result<Manifold, SolidError> {
+    const WHAT: &str = "CSG cylinder";
+    let height = heig.abs();
+    if !(diam > 0.0 && height > f64::EPSILON) {
+        return Err(SolidError::Degenerate {
+            what: WHAT,
+            detail: format!("DIAM/HEIG = {diam}/{heig}"),
+        });
+    }
+    let radius = diam / 2.0;
+    ensure_solid(
+        Manifold::cylinder(height, radius, radius, cylinder_segments(radius), true),
+        WHAT,
+    )
 }
 
 /// `gm_CreatePyramid`：底面 XBOT×YBOT 在 z = −H/2，顶面 XTOP×YTOP 在 z = +H/2，
@@ -233,8 +256,8 @@ pub fn pyramid_solid(
     ensure_solid(Manifold::hull_pts(&corners), WHAT)
 }
 
-/// `GM_RectTorus`：矩形截面（径向 RINS→ROUT，轴向 ±HEIG/2）绕局部 **Z** 轴，
-/// 从 +X 扫向 +Y，扫角 ANGL 度。ANGL 为负时反向扫（等价于正扫后回转 −|ANGL|）。
+/// `GM_RectTorus`：矩形截面（径向 RINS→ROUT，轴向 ±HEIG/2）绕局部 **Y** 轴，
+/// 从 +X 扫向 +Z，扫角 ANGL 度。ANGL 为负时反向扫。
 pub fn rect_torus_solid(
     rins: f64,
     rout: f64,
@@ -256,10 +279,14 @@ pub fn rect_torus_solid(
     }
     let h2 = height / 2.0;
     let section = vec![vec![[rins, -h2], [rout, -h2], [rout, h2], [rins, h2]]];
-    swept_solid(section, rout, angle_deg, WHAT)
+    let solid = swept_solid(section, rout, angle_deg, WHAT)?;
+    Ok(placed(
+        &solid,
+        DMat4::from_rotation_x(std::f64::consts::FRAC_PI_2),
+    ))
 }
 
-/// `GM_CircTorus`：圆管截面绕局部 **Z** 轴，从 +X 扫向 +Y，扫角 ANGL 度。
+/// `GM_CircTorus`：圆管截面绕局部 **Y** 轴，从 +X 扫向 +Z，扫角 ANGL 度。
 /// 管半径 (ROUT−RINS)/2，中心线半径 (ROUT+RINS)/2。
 ///
 /// 两个方向喂**两个不同的半径**（libgm §7.9.1 点名最容易照抄错的一条）：
@@ -284,7 +311,11 @@ pub fn circ_torus_solid(rins: f64, rout: f64, angle_deg: f64) -> Result<Manifold
             [(center_r + tube_r * a.cos()).max(0.0), tube_r * a.sin()]
         })
         .collect();
-    swept_solid(vec![tube], rout, angle_deg, WHAT)
+    let solid = swept_solid(vec![tube], rout, angle_deg, WHAT)?;
+    Ok(placed(
+        &solid,
+        DMat4::from_rotation_x(std::f64::consts::FRAC_PI_2),
+    ))
 }
 
 /// `gm_CreateRevolution`：环剖面绕**局部 X 轴**（过原点）回转 ANGL 度
@@ -627,23 +658,40 @@ mod tests {
     }
 
     #[test]
-    fn cylinder_is_centered_on_origin() {
+    fn cylinder_starts_at_origin_along_local_y() {
         let solid = cylinder_solid(200.0, 80.0).unwrap();
         let bb = solid.bounding_box().unwrap();
-        assert!((bb.min()[2] + 40.0).abs() < 1e-9);
-        assert!((bb.max()[2] - 40.0).abs() < 1e-9);
+        assert!(bb.min()[1].abs() < 1e-9, "{:?} {:?}", bb.min(), bb.max());
+        assert!((bb.max()[1] - 80.0).abs() < 1e-9);
+        assert!((bb.min()[2] + 100.0).abs() < 1e-9);
+        assert!((bb.max()[2] - 100.0).abs() < 1e-9);
     }
 
     #[test]
-    fn negative_cylinder_height_uses_core3d_magnitude_semantics() {
+    fn negative_cylinder_height_reverses_the_local_y_direction() {
         let positive = cylinder_solid(51.67, 183.15).unwrap();
         let negative = cylinder_solid(51.67, -183.15).unwrap();
         assert_eq!(positive.num_tri(), negative.num_tri());
         let positive_bounds = positive.bounding_box().unwrap();
         let negative_bounds = negative.bounding_box().unwrap();
-        assert_eq!(positive_bounds.min(), negative_bounds.min());
-        assert_eq!(positive_bounds.max(), negative_bounds.max());
+        assert!(
+            positive_bounds.min()[1].abs() < 1e-9,
+            "{:?} {:?}",
+            positive_bounds.min(),
+            positive_bounds.max()
+        );
+        assert!((positive_bounds.max()[1] - 183.15).abs() < 1e-9);
+        assert!((negative_bounds.min()[1] + 183.15).abs() < 1e-9);
+        assert!(negative_bounds.max()[1].abs() < 1e-9);
         assert_eq!(positive.volume().to_bits(), negative.volume().to_bits());
+    }
+
+    #[test]
+    fn csg_cylinder_is_centered_on_local_z() {
+        let solid = csg_cylinder_solid(32.0, -30.0).unwrap();
+        let bounds = solid.bounding_box().unwrap();
+        assert_eq!(bounds.min(), [-16.0, -16.0, -15.0]);
+        assert_eq!(bounds.max(), [16.0, 16.0, 15.0]);
     }
 
     /// 圆柱体积是**内接正多边形**棱柱的体积，不是 πr²h：R=100 按 0.5mm 弦高容差
@@ -751,20 +799,19 @@ mod tests {
         assert!(solid.volume() < exact, "内接体必须小于真环面");
     }
 
-    /// 环面扫掠从 +X 起、朝 +Y 转；ANGL 为负就是朝 −Y 转。
-    /// 两者是同一块几何差一个绕 Z 的回转，体积必须逐位相等，象限必须相反。
+    /// 环面扫掠从 +X 起、朝 +Z 转；ANGL 为负就是朝 −Z 转。
     #[test]
     fn a_negative_sweep_mirrors_the_quadrant_but_not_the_volume() {
         let ccw = rect_torus_solid(300.0, 500.0, 200.0, 90.0).unwrap();
         let cw = rect_torus_solid(300.0, 500.0, 200.0, -90.0).unwrap();
         assert!((ccw.volume() - cw.volume()).abs() / ccw.volume() < 1e-12);
         assert!(
-            ccw.bounding_box().unwrap().min()[1] > -1e-9,
-            "正扫应落在 y ≥ 0"
+            ccw.bounding_box().unwrap().min()[2] > -1e-9,
+            "正扫应落在 z ≥ 0"
         );
         assert!(
-            cw.bounding_box().unwrap().max()[1] < 1e-9,
-            "负扫应落在 y ≤ 0"
+            cw.bounding_box().unwrap().max()[2] < 1e-9,
+            "负扫应落在 z ≤ 0"
         );
     }
 
@@ -785,7 +832,7 @@ mod tests {
     }
 
     /// 圆管环面的包围盒是精确量：段数取到 4 的倍数 ⇒ 管截面在 θ=0/±90° 上有顶点，
-    /// 环向在 φ=0 上有顶点，于是 x 的最大值恰是 ROUT、z 的幅值恰是管半径。
+    /// 环向在 φ=0 上有顶点，于是 x 的最大值恰是 ROUT、y 的幅值恰是管半径。
     /// 体积则是内接的（两个方向都是内接多边形），只断言它落在真环面之下。
     #[test]
     fn circ_torus_touches_rout_and_stays_inside_the_true_torus() {
@@ -794,8 +841,8 @@ mod tests {
         let tube_r = (rout - rins) / 2.0;
         let bb = solid.bounding_box().unwrap();
         assert!((bb.max()[0] - rout).abs() < 1e-9, "{:?}", bb.max());
-        assert!((bb.max()[2] - tube_r).abs() < 1e-9, "{:?}", bb.max());
-        assert!((bb.min()[2] + tube_r).abs() < 1e-9, "{:?}", bb.min());
+        assert!((bb.max()[1] - tube_r).abs() < 1e-9, "{:?}", bb.max());
+        assert!((bb.min()[1] + tube_r).abs() < 1e-9, "{:?}", bb.min());
         assert_eq!(solid.genus(), 1, "整圈圆管环面是亏格 1");
 
         // 帕普斯：V = 2π·R中心 · πr²。两个方向都内接 ⇒ 必小于它，且缺口在 1% 内。

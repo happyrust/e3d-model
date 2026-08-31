@@ -251,7 +251,7 @@ pub fn polyhedron_solid(
         }
 
         let mut tris = Vec::with_capacity(tri_ids.len() / 3);
-        for t in tri_ids.chunks_exact(3) {
+        for t in tri_ids.as_chunks::<3>().0 {
             let (ga, gb, gc) = (
                 local_to_global[t[0]],
                 local_to_global[t[1]],
@@ -365,12 +365,12 @@ fn propagate_orientation(faces: &[FaceMesh], verts: &[DVec3]) -> Vec<bool> {
     }
     let mut adjacency: Vec<Vec<(usize, bool)>> = vec![Vec::new(); faces.len()];
     for uses in edge_uses.values() {
-        if let [(f1, d1), (f2, d2)] = uses[..] {
-            if f1 != f2 {
-                let same_dir = d1 == d2;
-                adjacency[f1].push((f2, same_dir));
-                adjacency[f2].push((f1, same_dir));
-            }
+        if let [(f1, d1), (f2, d2)] = uses[..]
+            && f1 != f2
+        {
+            let same_dir = d1 == d2;
+            adjacency[f1].push((f2, same_dir));
+            adjacency[f2].push((f1, same_dir));
         }
     }
 

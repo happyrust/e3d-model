@@ -1,4 +1,4 @@
-# 构建产物。.cargo/config.toml 把 target-dir 指到 ../../target 的共享池，
+# 构建产物。.cargo/config.toml 把 target-dir 指到仓库外的 ../../target-e3d-model，
 # 这两条只是防止有人在本目录直接 cargo build 时漏网。
 /target
 /target-*

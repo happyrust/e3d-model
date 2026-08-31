@@ -59,7 +59,7 @@ impl TriMesh {
         for v in &self.vertices {
             writeln!(w, "v {} {} {}", v[0], v[1], v[2])?;
         }
-        for face in self.indices.chunks_exact(3) {
+        for face in self.indices.as_chunks::<3>().0 {
             writeln!(
                 w,
                 "f {} {} {}",

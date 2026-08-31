@@ -159,19 +159,69 @@ struct ComponentInvariants {
 /// 一次走完每个属主的成员表就把整组序号发完；逐元素回头数在 PANE 密集的 CWALL 上
 /// 是几百万步的重复遍历。
 ///
-/// 属主无名时给 `None` 而不是拼一个凑合的名字：对拍工具据此把它报成「配不上」，
-/// 而不是拿一个对不上的键去误配——错配比缺配难查得多。
+/// 属主无名时必须递归复现 E3D 的默认显示名。例如 7997 的设备基本体位于无名
+/// SUBE 下，RVM 键是 `CYLINDER 18 of SUBEQUIPMENT 20 of EQUIPMENT /X`；只看
+/// 最近的命名祖先会把 20 个 SUBE 的同序号基本体错配在一起。
+fn owner_display_desc(
+    set: &std::sync::Arc<DbSet>,
+    refno: RefNo,
+    cache: &mut std::collections::HashMap<RefNo, Option<String>>,
+    visiting: &mut std::collections::HashSet<RefNo>,
+) -> anyhow::Result<Option<String>> {
+    if let Some(desc) = cache.get(&refno) {
+        return Ok(desc.clone());
+    }
+    if !visiting.insert(refno) {
+        bail!("owner 显示名链成环: {refno}");
+    }
+
+    let element = set.element(refno);
+    let noun = element.element_type()?;
+    let desc = match element.stored_name()? {
+        Some(name) => Some(format!("{noun} {name}")),
+        None => match element.owner()? {
+            None => None,
+            Some(parent) => match owner_display_desc(set, parent.refno(), cache, visiting)? {
+                None => None,
+                Some(parent_desc) => {
+                    let mut ordinal = 0usize;
+                    let mut found = false;
+                    for sibling in parent.members()? {
+                        if sibling.element_type()? == noun {
+                            ordinal += 1;
+                        }
+                        if sibling.refno() == refno {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found {
+                        bail!("{refno} 不在属主 {} 的成员表里", parent.refno());
+                    }
+                    Some(format!("{noun} {ordinal} of {parent_desc}"))
+                }
+            },
+        },
+    };
+    visiting.remove(&refno);
+    cache.insert(refno, desc.clone());
+    Ok(desc)
+}
+
 fn owner_keys(
     set: &std::sync::Arc<DbSet>,
     owners: &std::collections::HashSet<RefNo>,
 ) -> anyhow::Result<std::collections::HashMap<RefNo, (Option<String>, usize)>> {
     let mut keys = std::collections::HashMap::new();
+    let mut desc_cache = std::collections::HashMap::new();
     for owner_ref in owners {
         let owner = set.element(*owner_ref);
-        let desc = match owner.stored_name()? {
-            Some(name) => Some(format!("{} {name}", owner.element_type()?)),
-            None => None,
-        };
+        let desc = owner_display_desc(
+            set,
+            *owner_ref,
+            &mut desc_cache,
+            &mut std::collections::HashSet::new(),
+        )?;
         let mut seen: BTreeMap<String, usize> = BTreeMap::new();
         for member in owner.members()? {
             let noun = member.element_type()?;
@@ -186,7 +236,8 @@ fn owner_keys(
 fn main() -> anyhow::Result<()> {
     let args = parse_args()?;
     if args.no_instance_cache {
-        std::env::set_var(e3d_model::primitive_instance::INSTANCE_CACHE_ENV, "1");
+        // SAFETY: 参数刚解析完、任何工作线程都还没起，此刻进程里只有主线程能碰环境块。
+        unsafe { std::env::set_var(e3d_model::primitive_instance::INSTANCE_CACHE_ENV, "1") };
     }
     let t0 = std::time::Instant::now();
 

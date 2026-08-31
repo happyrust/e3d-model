@@ -126,7 +126,8 @@ struct UpsertInvariants {
 fn main() -> anyhow::Result<()> {
     let args = parse_args()?;
     if args.no_instance_cache {
-        std::env::set_var(e3d_model::primitive_instance::INSTANCE_CACHE_ENV, "1");
+        // SAFETY: 参数刚解析完、任何工作线程都还没起，此刻进程里只有主线程能碰环境块。
+        unsafe { std::env::set_var(e3d_model::primitive_instance::INSTANCE_CACHE_ENV, "1") };
     }
     let t0 = std::time::Instant::now();
 

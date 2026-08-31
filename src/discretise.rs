@@ -172,10 +172,11 @@ pub fn flatten_ring(ring: &[FilletVertex]) -> Option<(Vec<[f64; 2]>, FlattenNote
     // 相邻重复点焊掉（倒角吃光整条边时切点会与邻角切点重合）。
     let mut welded: Vec<[f64; 2]> = Vec::with_capacity(out.len());
     for p in out {
-        if let Some(last) = welded.last() {
-            if (last[0] - p[0]).abs() <= 1e-6 && (last[1] - p[1]).abs() <= 1e-6 {
-                continue;
-            }
+        if let Some(last) = welded.last()
+            && (last[0] - p[0]).abs() <= 1e-6
+            && (last[1] - p[1]).abs() <= 1e-6
+        {
+            continue;
         }
         welded.push(p);
     }

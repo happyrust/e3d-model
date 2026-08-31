@@ -1,7 +1,7 @@
 [package]
 name = "e3d-model"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 description = "Model generation mirroring the core.dll/Core3D pipeline (ADDDES -> MODCMP -> ELMODL -> libgm), reading data through e3d-io"
 
 [dependencies]

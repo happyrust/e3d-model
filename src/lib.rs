@@ -21,6 +21,11 @@
 //! `gm_CreateCombination`；负体扣减前沿轴让 `restol = 0.051mm`，同 libgm
 //! `GM_User::restol_` 口径（共壁负体不让开会碎成薄片，见 [`elmodl`]）。
 
+// 几何入参校验一律写成 `!(x > 0.0)` 而不是 `x <= 0.0`：属性读出来的尺寸可能是 NaN，
+// 而 NaN 参与的比较一律为 false，`x <= 0.0` 会把 NaN 当合法值放行，一路带进 CSG 内核
+// 变成整块吞掉的坏网格。取反式让 NaN 落进拒绝分支，是刻意的，不是笔误。
+#![allow(clippy::neg_cmp_op_on_partial_ord)]
+
 pub mod category;
 pub mod discretise;
 pub mod elmodl;

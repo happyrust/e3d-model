@@ -1,4 +1,0 @@
-# crate 是 edition 2021（与 e3d-io / e3d-attlib 一致），但 import 排序沿用 2024 风格
-# ——三个 crate 的源码本来就是那么写的（`{DbFilePin, DbSet, template_file_for}`）。
-# 不声明的话 rustfmt 按 2015 序重排，每次 fmt 都在跟源码互相推翻。
-style_edition = "2024"

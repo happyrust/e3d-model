@@ -171,11 +171,21 @@ impl Key {
     }
 }
 
-/// 属主显示名 → `/名`。「CWALL /1RS-WF03-W-C-RR001」→「/1RS-WF03-W-C-RR001」。
-/// 属主自己也无名（「WALL 1 of CWALL /X」）时返回整串，仍是可比的稳定键。
+/// 属主显示名归一化为稳定键。
+///
+/// 命名属主只保留 `/名`；无名属主必须保留每一层 noun + ordinal，否则
+/// `SUBEQUIPMENT 1..20 of EQUIPMENT /X` 会全部塌成 `/X`。全名词与短名词统一
+/// 取前四字，使 RVM 的 `SUBEQUIPMENT` 与 e3d-io 的 `SUBE` 可以相配。
 fn owner_key(desc: &str) -> String {
-    match desc.rsplit(' ').next() {
-        Some(last) if last.starts_with('/') => last.to_string(),
+    let desc = desc.trim();
+    if let Some((left, parent)) = desc.split_once(" of ")
+        && let Some((noun, ordinal)) = left.rsplit_once(' ')
+        && ordinal.parse::<usize>().is_ok()
+    {
+        return format!("{} {ordinal} of {}", noun4(noun), owner_key(parent));
+    }
+    match desc.rsplit_once(' ') {
+        Some((noun, name)) if !noun.contains(' ') && name.starts_with('/') => name.to_string(),
         _ => desc.to_string(),
     }
 }
@@ -246,6 +256,14 @@ struct CompareReport {
     only_baseline: Vec<String>,
     only_generated: Vec<String>,
 }
+
+/// 基准侧一条待配记录：成员本身、面片（缺面片的走 snapshot AABB）、世界 AABB、AABB 来源标记。
+type BaseEntry<'a> = (
+    &'a SnapshotMember,
+    Option<FacetData>,
+    [f64; 6],
+    &'static str,
+);
 
 fn main() -> anyhow::Result<()> {
     let (baseline_path, elements_path, facets_path, out_path, noun_filter) = parse_args()?;
@@ -331,8 +349,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     // ---- 基准侧：只要带几何且有世界 AABB 的成员 ----
-    let mut base: BTreeMap<Key, (&SnapshotMember, Option<FacetData>, [f64; 6], &'static str)> =
-        BTreeMap::new();
+    let mut base: BTreeMap<Key, BaseEntry<'_>> = BTreeMap::new();
     let mut unkeyable_baseline = Vec::new();
     let (mut aabb_from_facets, mut aabb_from_snapshot) = (0usize, 0usize);
     for member in &snapshot.members {
@@ -782,6 +799,41 @@ fn significant_components_aabb(
     Some((combined, components.len() - kept.len()))
 }
 
+type Args = (
+    PathBuf,
+    PathBuf,
+    Option<PathBuf>,
+    Option<PathBuf>,
+    Option<String>,
+);
+
+fn parse_args() -> anyhow::Result<Args> {
+    let mut baseline = None;
+    let mut elements = None;
+    let mut facets = None;
+    let mut out = None;
+    let mut noun = None;
+    let mut it = std::env::args().skip(1);
+    while let Some(flag) = it.next() {
+        let mut value = || it.next().with_context(|| format!("参数 {flag} 缺值"));
+        match flag.as_str() {
+            "--baseline" => baseline = Some(PathBuf::from(value()?)),
+            "--elements" => elements = Some(PathBuf::from(value()?)),
+            "--facets" => facets = Some(PathBuf::from(value()?)),
+            "--out" => out = Some(PathBuf::from(value()?)),
+            "--noun" => noun = Some(value()?),
+            other => bail!("不认识的参数 {other}"),
+        }
+    }
+    Ok((
+        baseline.context("缺 --baseline")?,
+        elements.context("缺 --elements")?,
+        facets,
+        out,
+        noun,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -833,6 +885,22 @@ mod tests {
     }
 
     #[test]
+    fn nested_unnamed_owner_key_keeps_each_ordinal_layer() {
+        assert_eq!(
+            owner_key("SUBEQUIPMENT 20 of EQUIPMENT /Copy-of-R43-R740-002"),
+            "SUBE 20 of /Copy-of-R43-R740-002"
+        );
+        assert_ne!(
+            owner_key("SUBEQUIPMENT 1 of EQUIPMENT /Copy-of-R43-R740-002"),
+            owner_key("SUBEQUIPMENT 2 of EQUIPMENT /Copy-of-R43-R740-002")
+        );
+        assert_eq!(
+            owner_key("CWALL /1RS-WF03-W-C-RR001"),
+            "/1RS-WF03-W-C-RR001"
+        );
+    }
+
+    #[test]
     fn extrusion_nouns_use_profile_chord_tolerance() {
         assert_eq!(chord_tolerance_mm("PANE"), 10.0);
         assert_eq!(chord_tolerance_mm("FLOOR"), 10.0);
@@ -862,39 +930,4 @@ mod tests {
         assert_eq!(filtered, 1);
         assert_eq!(aabb, components[0]);
     }
-}
-
-type Args = (
-    PathBuf,
-    PathBuf,
-    Option<PathBuf>,
-    Option<PathBuf>,
-    Option<String>,
-);
-
-fn parse_args() -> anyhow::Result<Args> {
-    let mut baseline = None;
-    let mut elements = None;
-    let mut facets = None;
-    let mut out = None;
-    let mut noun = None;
-    let mut it = std::env::args().skip(1);
-    while let Some(flag) = it.next() {
-        let mut value = || it.next().with_context(|| format!("参数 {flag} 缺值"));
-        match flag.as_str() {
-            "--baseline" => baseline = Some(PathBuf::from(value()?)),
-            "--elements" => elements = Some(PathBuf::from(value()?)),
-            "--facets" => facets = Some(PathBuf::from(value()?)),
-            "--out" => out = Some(PathBuf::from(value()?)),
-            "--noun" => noun = Some(value()?),
-            other => bail!("不认识的参数 {other}"),
-        }
-    }
-    Ok((
-        baseline.context("缺 --baseline")?,
-        elements.context("缺 --elements")?,
-        facets,
-        out,
-        noun,
-    ))
 }

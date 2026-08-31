@@ -28,8 +28,9 @@ use crate::primitive_instance::{
 use crate::profile::{LoopProfile, ProfileError, loop_profile};
 use crate::solid::{
     MANIFOLD_NUDGE_MM, SolidError, circ_torus_solid, cleanup_floor_boolean_components,
-    extrude_rings_inflated, extrude_rings_largest_component, inflate_about_center, placed,
-    pyramid_solid, rect_torus_solid, revolve_rings_inflated, subtract_negatives,
+    csg_cylinder_solid, extrude_rings_inflated, extrude_rings_largest_component,
+    inflate_about_center, placed, pyramid_solid, rect_torus_solid, revolve_rings_inflated,
+    subtract_negatives,
 };
 use crate::transform::world_matrix;
 
@@ -340,7 +341,14 @@ fn primitive_local_solid(
         Prim::Cylinder => {
             let d = require_double(el, noun, "DIAM", "cylinder")?;
             let h = require_double(el, noun, "HEIG", "cylinder")?;
-            Ok(instantiate_cylinder(d, h, allow_instance)?)
+            if allow_instance {
+                Ok(instantiate_cylinder(d, h, true)?)
+            } else {
+                Ok(PrimitiveBuild {
+                    solid: csg_cylinder_solid(d, h)?,
+                    instance: None,
+                })
+            }
         }
         Prim::Pyramid => {
             let xbot = require_double(el, noun, "XBOT", "pyramid")?;

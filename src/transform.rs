@@ -25,14 +25,15 @@ fn triple_or_none(el: &DbElement, name: &str) -> Result<Option<[f64; 3]>, DbElem
     }
 }
 
+/// `(POS, ORI)` 原样三元组对，任一缺省时该项为 `None`。
+pub type LocalPlacement = (Option<[f64; 3]>, Option<[f64; 3]>);
+
 /// 一个元素进 [`local_matrix`] 的全部输入：`(POS, ORI)` 原样三元组。
 ///
 /// 增量更新用它判「变换漂移」——两个会话读出的这一对不相等，子树里全部
 /// 已建模元素的世界矩阵就都变了。判据必须与矩阵折叠读同一条路（同名、
 /// 同缺省语义），否则会出现「矩阵变了但漂移检测说没变」的静默缺件。
-pub fn local_placement(
-    el: &DbElement,
-) -> Result<(Option<[f64; 3]>, Option<[f64; 3]>), DbElementError> {
+pub fn local_placement(el: &DbElement) -> Result<LocalPlacement, DbElementError> {
     Ok((triple_or_none(el, "POS")?, triple_or_none(el, "ORI")?))
 }
 

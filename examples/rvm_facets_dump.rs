@@ -37,7 +37,9 @@ fn triangulation_world_polygons(
         ]
     };
     tri.indices
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|face| vec![vec![world(face[0]), world(face[1]), world(face[2])]])
         .collect()
 }
@@ -140,7 +142,7 @@ fn main() -> anyhow::Result<()> {
                         other => {
                             // PRIM 记录自带 bbox 已被实测证明不可信；非 FacetGroup 也必须
                             // 从实际图元三角化顶点重算 AABB，不能让对拍退回该字段。
-                            let scale = get_scale(&geometry.transform.matrix3.into());
+                            let scale = get_scale(&geometry.transform.matrix3);
                             let tol = 1.0e-3_f32; // RVM 单位 m，即 1mm 弦高容差。
                             let tri = match other {
                                 GeometryKind::Cylinder(g) => g.tessellate(tol, scale),
