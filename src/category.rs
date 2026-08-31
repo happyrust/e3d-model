@@ -6,6 +6,15 @@
 //! 静默缺件是最高级别缺陷（gen-model 宪法同款）。
 //!
 //! 分类表来源：aios-core `pdms_types.rs` 的 noun 家族清单 + ams1112 实测 noun 分布。
+//!
+//! 路由族（管路与吊架）不写在上面那张手抄表里，而是从 `data/route-nouns.json`
+//! 解析出来：那份清单是从活体 E3D 3.1 导出的 `noun_layout.json` 按**属性结构**
+//! 筛出来的（容器 = 同时带 `HPOS`+`TPOS`，成员 = 同时带 `ARRI`+`LEAV`），
+//! 有 104 个成员 noun。手抄 104 个短名进 Rust 迟早会跟 E3D 版本对不上，
+//! 而对不上的表现是「某一族元素整族落 Unknown」——正是这张表最该防的事。
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::OnceLock;
 
 /// 一个 noun 的建模路径。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,7 +29,7 @@ pub enum Category {
     Revolution,
     /// 负回转体（NREV）。
     NegRevolution,
-    /// 多面体（POHE/POLYHE）：显式 B-rep——POLPTL 顶点表 + 面(POGON)/POLOOP 环/
+    /// 多面体（POHE/POLYHE）：显式 B-rep——POLPTL 顶点表 + 面(POLFAC/POGO)/POLOOP 环/
     /// LOOPTS.VXREF 顶点引用（旧式 POHE 则面下直存顶点）。三种非标量图元里唯一
     /// 不过 D2_Profile 的（Core3D `sub_1071DCF0`，7UW4 §3.7.4）。
     Polyhedron,
@@ -37,10 +46,46 @@ pub enum Category {
     /// FLOOR 少挖了刀；留在这里，属主的 `negatives_skipped` 会点名到 refno，
     /// RVM 对拍看到体积偏大时能直接对上号。
     NegUnimplemented(&'static str),
+    /// 几何集正体（`IGMCOM` 21 + `IG2COM` 5）：`SBOX`/`SCYL`/`TUBE`/`GMSE`…
+    ///
+    /// 几何集不是设计图元，是**另一条建模路**：core.dll 里由 `CGTCT2` + `sub_10714FC0`
+    /// 处理，一个集合元素下挂一批子形状，整体作为一件几何交付。设计图元那条路
+    /// （`GTGEOM` 的 `IECOMP`/`INCOMP` 分支）读的是元素自己的 XLEN/DIAM 之类标量。
+    ///
+    /// 单独立一格而不是塞进 [`Category::Unsupported`]：那 42 个 noun 落 Unknown
+    /// 不是「实现没跟上」而是**建模概念缺失**——枚举里从来没有任何一项对应它们，
+    /// 混进 unsupported 会让「本期不做的已知项」和「压根没想过的东西」同账。
+    ///
+    /// 本期记账不建（计划 N1 只关记账，几何留给后续阶段）。
+    GeometrySet,
+    /// 几何集负体（`INGCOM` 16）：`NSBO`/`NSCY`/`NLCY`/`NTUB`…挂属主做 CSG 扣减。
+    ///
+    /// 与 [`Category::NegUnimplemented`] 一样留在负几何家族里——它的账要记在**属主**
+    /// 头上，落进别处就只剩一行「NSBO: 12」，看不出是哪些属主少挖了刀。
+    NegGeometrySet,
     /// 目录件（SPRE/CATR 驱动，走目录库求值）：FITT/PFIT/SBFI/FIXING/CMFI/WALL 族，
     /// 名单以 aios-core `USE_CATE_NOUN_NAMES` 为准。
     /// 本期记账不建模（压 G4 目录表达式求值，二期）。
     Catalog,
+    /// 路由容器：`BRAN` / `HANG` / `LUG` / `SUPC` / `TRUNNI`。自己不出几何，
+    /// 成员串成一条有序路由，相邻两件之间由运行时派生出隐式管身。
+    ///
+    /// core.dll 判的是 noun 字典里的 `HNGT` 位（`HTCOMP` 谓词读它）。字典读不到，
+    /// 改用等价的结构判据「同时拥有 `HPOS` 与 `TPOS`」——`cachelib/GTTUBE` 里
+    /// 硬编码的三个 noun 码（`BRAN`=808220、`TRUNNI`=137403155、`LUG`=537123）
+    /// 全部落在这 5 个里，两条独立证据对得上。
+    ///
+    /// **容器不止 BRAN 和 HANG。** 只认前两个会把 LUG/SUPC/TRUNNI 那一支支撑件
+    /// 整片漏掉，而漏掉的表现只是报告里少几行，不报错。
+    RouteContainer,
+    /// 路由成员：管件与吊架构件，104 个 noun。目录驱动，几何走 P1 的目录求值。
+    ///
+    /// 判据同样是结构式的「同时拥有 `ARRI` 与 `LEAV`」——能进能出即在路由链上。
+    /// 本期记账不建模，与 [`Category::Catalog`] 分开记：目录件是型材/墙族那一路，
+    /// 路由成员另有隐式管身要配对，两本账混在一起就看不出管路缺了多少。
+    RouteMember,
+    /// Core 的复合构件路径：元素本身是一个 builder 容器，成员分别建模后再聚合。
+    Composite(CompositeFamily),
     /// 属主几何的**数据**而非独立实体：PLOO/PAVE/LOOP/VERT/SPINE/CURVE。
     /// 由属主的建模路径消费，遍历时不下钻。
     ProfileData,
@@ -50,6 +95,39 @@ pub enum Category {
     Unsupported(&'static str),
     /// 分类表没认领的 noun——必须记账，宁可显式未知也不静默放行。
     Unknown,
+}
+
+/// 复合构件的业务家族。类别只表达走哪条 builder 路，不代表该路径已经实现。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompositeFamily {
+    /// `sub_107189A0` 返回 28：NOZZ / ELCONN / EQUCOM。
+    CoreClass28,
+    Equipment,
+    Structural,
+    BuildingAssembly,
+    CableTray,
+    Catalogue,
+    PipeComponent,
+    HangerComponent,
+}
+
+/// 分类之外的独立完成状态；防止“有类别”被统计成“已有模型”。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BuildDisposition {
+    Built,
+    EvidencePending,
+    ProvenNonGraphic,
+    OutOfCorpus,
+}
+
+/// 一个 NOUN 的可审计判定。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NounDecision {
+    pub category: Category,
+    pub disposition: BuildDisposition,
+    pub evidence: &'static str,
 }
 
 impl Category {
@@ -62,6 +140,7 @@ impl Category {
                 | Category::NegPolyhedron
                 | Category::NegPrimitive(_)
                 | Category::NegUnimplemented(_)
+                | Category::NegGeometrySet
         )
     }
 
@@ -76,11 +155,49 @@ impl Category {
         )
     }
 
+    /// 本期是否真的会产出几何（正实体，或能扣得出来的负体）。
+    ///
+    /// 覆盖率的「会建 / 记账不建」就按这个切。写成显式白名单而不是
+    /// `is_positive_solid() || is_negative()` 再逐个减去建不出的负体：那种减法
+    /// 每加一个「是负体但本期不建」的类别就要在每个调用点各改一次，漏改的表现是
+    /// 覆盖率凭空变高——正是本 crate 的审计最该防的事。
+    pub fn builds_geometry(&self) -> bool {
+        matches!(
+            self,
+            Category::LoopExtrusion
+                | Category::Revolution
+                | Category::Polyhedron
+                | Category::Primitive(_)
+                | Category::NegExtrusion
+                | Category::NegRevolution
+                | Category::NegPolyhedron
+                | Category::NegPrimitive(_)
+        )
+    }
+
+    /// 当前类别对应的实际交付状态。
+    pub fn build_disposition(&self) -> BuildDisposition {
+        if self.builds_geometry() {
+            BuildDisposition::Built
+        } else {
+            match self {
+                Category::List | Category::ProfileData | Category::NonGraphic => {
+                    BuildDisposition::ProvenNonGraphic
+                }
+                Category::Unknown => BuildDisposition::OutOfCorpus,
+                _ => BuildDisposition::EvidencePending,
+            }
+        }
+    }
+
     /// 本元素的成员会不会被**它自己**消费掉（剖面数据 + 负几何）。
     ///
-    /// 只有产正实体的元素消费成员；别处遇到 PLOO 或负体就是孤儿，要留名。
+    /// 直接基本体消费自己的剖面/负体；目录实例与 Core 复合构件也消费挂在自身
+    /// 下面的建模数据。后两类即使 builder 尚待补齐，属主关系仍是已确认语义：
+    /// AMS1112 的 WALL → SPINE → CURVE/POINSP 就是目录墙的路径数据，不是四个
+    /// 独立实体。
     pub fn consumes_members(&self) -> bool {
-        self.is_positive_solid()
+        self.is_positive_solid() || matches!(self, Category::Catalog | Category::Composite(_))
     }
 }
 
@@ -119,6 +236,17 @@ pub fn classify(noun: &str) -> Category {
         // 目录件与未实现项，于是 DFS 在这一层整片截断，4275 个 PANE 一个都没走到。
         "CWALL" | "CFLOOR" => List,
 
+        // ---- 管道容器：自己既不吃目录也不带几何，构件全在下面的 BRAN 上 ----
+        //
+        // 曾判成目录件，于是账上落一行「PIPE 47」，看着像有归属，其实是把一个纯
+        // 组织节点记成了待办目录件——二期照着这本账去实现目录求值会扑空。
+        "PIPE" | "HVAC" => List,
+
+        // ---- Core class 28 复合成员聚合器 ----
+        // GTGEOM 强制三者进入 sub_10714FC0；sub_107189A0 映射为 28；类 28 构造器
+        // sub_107210A0 逐成员调用 LegacyGeom_CreateBuilderForElement 并串成 builder 链。
+        "NOZZ" | "ELCONN" | "EQUCOM" => Composite(CompositeFamily::CoreClass28),
+
         // ---- 环拉伸家族（aios-core GNERAL_LOOP_OWNER_NOUN_NAMES） ----
         "PANE" | "FLOOR" | "EXTR" | "AEXTR" | "SCREED" | "GWALL" => LoopExtrusion,
         "NXTR" => NegExtrusion,
@@ -140,33 +268,309 @@ pub fn classify(noun: &str) -> Category {
         "NPYR" => NegPrimitive(Prim::Pyramid),
         "NRTO" => NegPrimitive(Prim::RectTorus),
         "NCTO" => NegPrimitive(Prim::CircTorus),
+
+        // ---- `A*` 设备图元族（IECOMP）：设计图元在目录侧的同形孪生 ----
+        //
+        // 取证（`scripts/a_family_attr_probe.py`，字典实读）：每个 `A*` 的属性集是对应
+        // 设计图元的**真子集**，差的 7~8 个全是设计侧记账属性（LOCK/OWNER/ORRF/PURP/
+        // REPCOU/TMRREF/TYPE/UDTYPE），**尺寸属性一个不差**——`ABOX` 同样是 XLEN/YLEN/
+        // ZLEN，`APYRA` 同样是 XBOT/YBOT/XTOP/YTOP/XOFF/YOFF/HEIG。能力位也逐位相同。
+        //
+        // 方法本身有对照组：`AEXTR` 早就按同形接在 `LoopExtrusion` 上，它与 `EXTR` 的
+        // 关系正是这套判据算出来的那种关系——判据能复现一个已知正确的答案。
+        //
+        // 曾经只认领了 `AEXTR` 一个，剩下 11 个兄弟整族落 Unknown：认领了一个，
+        // 看着像认领了一族。
+        "ABOX" => Primitive(Prim::Box),
+        "ACYLI" => Primitive(Prim::Cylinder),
+        "APYRA" => Primitive(Prim::Pyramid),
+        "ARTOR" => Primitive(Prim::RectTorus),
+        "ACTOR" => Primitive(Prim::CircTorus),
+
         "SLCY" | "CONE" | "DISH" | "SNOU" => {
             Unsupported("positive primitive not implemented in milestone 1")
         }
-        "NLCY" | "NSBO" | "NCON" | "NSNO" | "NDIS" | "NSCY" => {
+        // 正体自己就没实现，孪生体同理——等正体做出来这四个一起接。
+        "ASLCY" | "ACONE" | "ADISH" | "ASNOU" => {
+            Unsupported("A* twin of a positive primitive not implemented in milestone 1")
+        }
+        // 这两个的标量属性同样与 POLYHE / REVO 全同，但它们的几何来自**成员结构**
+        // （B-rep 顶点面表 / PLOO 剖面环），而属性表比对说不了成员的事。接线要先
+        // 取一个真元素看成员 noun，取证前留在这里显式挂着，别按「看着像」就接。
+        "APOLYH" | "AREVO" => Unsupported("A* twin whose member structure is not yet evidenced"),
+
+        "NCON" | "NSNO" | "NDIS" | "NSLC" => {
             NegUnimplemented("negative primitive not implemented in milestone 1")
         }
 
+        // ---- 几何集（core.dll 的另一条建模路，见 Category::GeometrySet） ----
+        //
+        // 三族共 42 个 noun，全部命中 GTGEOM 级联，此前一个都没认领。它们不是
+        // 「实现没跟上」而是建模概念缺失，所以给的是自己的类别而不是 Unsupported。
+        //
+        // IGMCOM 21 —— 几何集成员（集合里的一个个形状）。
+        "BOXI" | "GMSE" | "LCYL" | "LINE" | "LPYR" | "LSNO" | "SBOX" | "SCON" | "SCTO" | "SCYL"
+        | "SDIS" | "SDSH" | "SEXT" | "SLINE" | "SLOO" | "SREV" | "SRTO" | "SSLC" | "SSPH"
+        | "SVER" | "TUBE" => GeometrySet,
+        // IG2COM 5 —— 二维几何集（截面/环/矩形一类的平面元素）。
+        "GMSS" | "SANN" | "SPRO" | "SPVE" | "SREC" => GeometrySet,
+        // INGCOM 16 —— 几何集负体。`NSBO`/`NSCY`/`NLCY` 曾被当成设计负图元
+        // （`NegUnimplemented`），字典里它们 geomset=true 且属 INGCOM：是几何**集**
+        // 负体，不是设计图元。既有计划一度据此写「NSBO/NLCY 根本不存在、删或降为
+        // Unknown」——照做会抹掉一整族。
+        "NBXI" | "NGMS" | "NLCY" | "NLPY" | "NLSN" | "NSBO" | "NSCO" | "NSCT" | "NSCY" | "NSDS"
+        | "NSEX" | "NSRE" | "NSRT" | "NSSL" | "NSSP" | "NTUB" => NegGeometrySet,
+
         // ---- 目录件 / 型材（SPRE/CATR 驱动，二期） ----
-        "FITT" | "PFIT" | "SBFI" | "CMFI" | "FIXING" | "WALL" | "STWALL" | "GENSEC" | "SCTN"
-        | "PIPE" | "BRAN" | "HANG" => Catalog,
+        //
+        // BRAN / HANG 曾经也在这一行。它们不是目录件而是路由容器，交给下面的
+        // route_category 按结构判据认领；PIPE 则两头都不沾，见上面的组织节点。
+        "FITT" | "PFIT" | "SBFI" | "CMFI" | "FIXING" | "WALL" | "STWALL" | "GENSEC" | "SCTN" => {
+            Catalog
+        }
 
         // ---- 属主几何的数据 ----
-        // 后五个是多面体的 B-rep 内脏（顶点表/面/环/顶点引用），由 Polyhedron
+        // 后六个是多面体的 B-rep 内脏（顶点表/面/环/顶点引用），由 Polyhedron
         // 属主消费，遍历时不下钻。
-        "PLOO" | "PAVE" | "LOOP" | "VERT" | "SPINE" | "CURVE" | "POLPTL" | "POIN" | "POGON"
-        | "POLOOP" | "LOOPTS" => ProfileData,
+        //
+        // 面 noun 一度写作 `POGON`——**字典里没有这个 noun**。几何照样出得来
+        // （`polyhedron.rs` 按成员位置走，不按名字），错的是账：面落 unknown、
+        // 面下的 POLOOP/LOOPTS 落 orphans，而 `accounts_for` 是等式判据、元素没蒸发
+        // 就照样平，没有任何门禁会因此变红。真名两个：现代 POLYHE 的面是
+        // `POLFAC`(44236870)，旧式 POHE 的面是 `POGO`(832210)。
+        "PLOO" | "PAVE" | "LOOP" | "VERT" | "SPINE" | "CURVE" | "POLPTL" | "POIN" | "POLFAC"
+        | "POGO" | "POLOOP" | "LOOPTS" => ProfileData,
 
         // ---- 无三维表示 ----
         "JLDATU" | "PLDATU" | "POINSP" | "PNOD" | "SNOD" | "PJOI" | "SJOI" | "PALJ" | "SELJ"
-        | "SCOJ" | "SUBJ" | "SEVE" | "RNODE" | "CNODE" | "NOZZ" | "ELCONN" | "APPDAR"
-        | "APPLDA" | "APPLDW" => NonGraphic,
+        | "SCOJ" | "SUBJ" | "SEVE" | "RNODE" | "CNODE" | "APPDAR" | "APPLDA" | "APPLDW" => {
+            NonGraphic
+        }
+        // TEXT 是注释数据；E3D 3.1 字典只有文字与引用属性，不带任何 GTGEOM 家族位。
+        "TEXT" => NonGraphic,
         // 库务编号根（ams1112 实测 `17496/1`，名 `/**`，与 WORL `/*` 并列的第二个
         // 索引根）：无成员、无几何，只是 dabacon 的记账元素。
         "MNUM" => NonGraphic,
 
-        _ => Unknown,
+        // 上面那张手抄表没认领的，交给路由清单按结构判据认；再没有才算欠账。
+        _ => route_category(noun).unwrap_or_else(|| dictionary_composite_category(noun)),
     }
+}
+
+/// 这个 noun 会不会**自己成为一件模型单元**——即全量管线会为它调用
+/// [`crate::elmodl::model_element`]，并期待一件挂在它自己 refno 上的实体。
+///
+/// 全量产出与增量上卷必须共用这一个判据。两边各写一份名单的后果不是编译错误，
+/// 是静默漏件：`SBFI` 一度只写在管线那一侧（目录件里唯独它按设计侧 `DESP` 出套管），
+/// 而增量上卷只认 [`Category::is_positive_solid`]，于是**被删掉的 SBFI 永远上卷不到
+/// 单元、永远不出 Remove**。真库门上的形状是「ams1112 721→722 全量说消失 3398 件，
+/// 增量只移除 3356 件」——而两边各自的账都是平的，没有任何等式判据会因此变红。
+///
+/// **路由容器不在内。** `BRAN`/`HANG` 那五族确实会让管线产出几何，但隐式管身在
+/// 模型集里按 [`crate::elmodl::GeometryId::ImpliedTube`] 索引，而增量的 Remove 是按
+/// refno 发的——容器 refno 上并没有「一件」几何可删。把它们算进来只会发出对不上号
+/// 的 Remove。这条口子记在 `increment` 的模块文档里。
+///
+/// # 为什么是穷举 `match` 而不是 `is_positive_solid() || ...`
+///
+/// 这份名单必须与 [`crate::elmodl::model_element`] 的产出臂**逐项对齐**。写成
+/// `is_positive_solid()` 时对齐是**隐式**的——它今天恰好等于那四条产出臂，纯属巧合，
+/// 没有任何东西钉住它。给 [`Category::GeometrySet`] 补一条产出臂而忘了改这里，
+/// 后果不是编译错误：全量照常出几何，增量永远上卷不到它，**被删的那些永远不出
+/// Remove**，两边的账各自还都是平的。这正是 `SBFI` 那次静默漏件的机理。
+///
+/// 所以这里**不留通配符臂**：往 [`Category`] 里加一个变体，这个函数就编译不过，
+/// 加变体的人必须当场回答「它算不算一件模型单元」。把「记得同步」这件事从人
+/// 交给编译器，是这个函数唯一能给出的真保证。
+pub fn is_model_unit(noun: &str) -> bool {
+    match classify(noun) {
+        // 四条正体路径，与 `model_element` 的四条产出臂一一对应。
+        Category::LoopExtrusion
+        | Category::Revolution
+        | Category::Polyhedron
+        | Category::Primitive(_) => true,
+
+        // 目录件本期整体压在二期的目录求值上，唯独 SBFI 的套管尺寸直接挂在设计侧
+        // `DESP` 上，不查目录就能出几何（`elmodl::sbfitting_local_solid`）。
+        Category::Catalog => noun == "SBFI",
+
+        // 以下都不产出挂在自己 refno 上的实体。逐条列而不是一个 `_ => false`：
+        // 见上面那段——通配符会把「新变体默认不是单元」这个危险假设变成沉默的默认值。
+        Category::List
+        | Category::NegExtrusion
+        | Category::NegRevolution
+        | Category::NegPolyhedron
+        | Category::NegPrimitive(_)
+        | Category::NegUnimplemented(_)
+        | Category::GeometrySet
+        | Category::NegGeometrySet
+        | Category::RouteContainer
+        | Category::RouteMember
+        | Category::Composite(_)
+        | Category::ProfileData
+        | Category::NonGraphic
+        | Category::Unsupported(_)
+        | Category::Unknown => false,
+    }
+}
+
+/// 返回分类、实际完成状态和证据来源；报告按 NOUN 固化这三者。
+pub fn decision(noun: &str) -> NounDecision {
+    let category = classify(noun);
+    let evidence = match category {
+        Category::Composite(CompositeFamily::CoreClass28) => {
+            "Core3D GTGEOM 0x10341d2e -> sub_10714FC0; sub_107189A0 class 28; sub_107210A0 member builder chain"
+        }
+        Category::Composite(_) => {
+            "E3D 3.1 attlib family bit plus Core3D GTGEOM cascade; builder implementation pending"
+        }
+        Category::RouteContainer | Category::RouteMember => {
+            "E3D 3.1 noun_layout structural attributes; Core route semantics"
+        }
+        Category::NonGraphic => "E3D 3.1 dictionary has no independent 3D builder path",
+        Category::List | Category::ProfileData => "E3D 3.1 hierarchy/member-consumption semantics",
+        Category::Unknown => "noun absent from the supported E3D 3.1 modelling routes",
+        _ if category.builds_geometry() => {
+            "implemented Rust builder with geometry regression tests"
+        }
+        _ => "classified modelling route; implementation or corpus evidence pending",
+    };
+    NounDecision {
+        category,
+        disposition: category.build_disposition(),
+        evidence,
+    }
+}
+
+/// 路由 noun 清单（`data/route-nouns.json`），与 crate 一起编译进二进制。
+///
+/// 内嵌而不是运行时读盘：分类表是纯函数，`classify` 不该因为工作目录不同就换答案。
+const ROUTE_NOUNS_JSON: &str = include_str!("../data/route-nouns.json");
+
+/// `route-nouns.json` 的结构（只取分类要用的两组短名，其余字段是取证留痕）。
+#[derive(serde::Deserialize)]
+struct RouteNounsFile {
+    #[serde(rename = "routeContainers")]
+    containers: Vec<RouteNounEntry>,
+    #[serde(rename = "routeMembers")]
+    members: Vec<RouteNounEntry>,
+}
+
+#[derive(serde::Deserialize)]
+struct RouteNounEntry {
+    short: String,
+}
+
+/// 路由容器与路由成员两个短名集合。
+struct RouteNouns {
+    containers: BTreeSet<String>,
+    members: BTreeSet<String>,
+}
+
+/// 解析内嵌清单，只做一次。
+///
+/// 解析失败直接 panic：清单是编译期就定死的常量，解析不了说明这份构建从一开始
+/// 就是坏的。让它安静地退化成「全库路由元素落 Unknown」远比崩掉更难查——那正是
+/// 报告全绿、模型缺一整片的那种失败。
+fn route_nouns() -> &'static RouteNouns {
+    static ROUTE_NOUNS: OnceLock<RouteNouns> = OnceLock::new();
+    ROUTE_NOUNS.get_or_init(|| {
+        let parsed: RouteNounsFile =
+            serde_json::from_str(ROUTE_NOUNS_JSON).expect("内嵌的 route-nouns.json 解析失败");
+        RouteNouns {
+            containers: parsed.containers.into_iter().map(|e| e.short).collect(),
+            members: parsed.members.into_iter().map(|e| e.short).collect(),
+        }
+    })
+}
+
+/// 按路由清单认领 noun：先容器后成员，都不是才是分类表欠账。
+fn route_category(noun: &str) -> Option<Category> {
+    let route = route_nouns();
+    if route.containers.contains(noun) {
+        Some(Category::RouteContainer)
+    } else if route.members.contains(noun) {
+        Some(Category::RouteMember)
+    } else {
+        None
+    }
+}
+
+const NOUN_FAMILY_MATRIX_JSON: &str = include_str!("../data/noun-family-matrix.json");
+
+#[derive(serde::Deserialize)]
+struct FamilyMatrix {
+    nouns: Vec<FamilyMatrixRow>,
+}
+
+#[derive(serde::Deserialize)]
+struct FamilyMatrixRow {
+    noun_name: String,
+    families: Vec<String>,
+}
+
+fn noun_families() -> &'static BTreeMap<String, BTreeSet<String>> {
+    static FAMILIES: OnceLock<BTreeMap<String, BTreeSet<String>>> = OnceLock::new();
+    FAMILIES.get_or_init(|| {
+        let parsed: FamilyMatrix = serde_json::from_str(NOUN_FAMILY_MATRIX_JSON)
+            .expect("内嵌的 E3D 3.1 noun-family-matrix.json 解析失败");
+        parsed
+            .nouns
+            .into_iter()
+            .map(|row| (row.noun_name, row.families.into_iter().collect()))
+            .collect()
+    })
+}
+
+/// 用 E3D 3.1 的真实家族位认领剩余级联 NOUN。这里只决定建模路径，状态仍为
+/// `EvidencePending`；没有样本的专业族不会因此被伪报为已经建成。
+fn dictionary_composite_category(noun: &str) -> Category {
+    let Some(families) = noun_families().get(noun) else {
+        return Category::Unknown;
+    };
+    if families.contains("IGMCOM") || families.contains("IG2COM") {
+        return Category::GeometrySet;
+    }
+    if families.contains("INGCOM") {
+        return Category::NegGeometrySet;
+    }
+    if families.contains("INCOMP") {
+        return Category::NegUnimplemented("E3D 3.1 negative design primitive pending");
+    }
+    // `ICABCO` 排在 `IPFCOM` 前面：电缆桥架是一条自带容器（`CWAY`/`CWBRAN`）与成员的
+    // 独立专业线，带这个位就该记在桥架账上，哪怕它同时带 `IPFCOM` 这个最宽的板墙楼板族。
+    // 全字典目前只有 `CTRAY` 一例同时带两位——2.10 时它只有 `IPFCOM`，3.1 才补上 `ICABCO`，
+    // 顺序不动的话它会和 `CTSTRA`/`CTBEND`/`CWAY` 那批兄弟分家。
+    // 这个顺序只决定**记账口径**：core.dll 里 `IPFCOM` 与 `ICABCO` 都进 `sub_10714FC0`，
+    // 走哪个谓词进去都是同一条复合几何路，改顺序不改变几何产不产得出来。
+    let family = if families.contains("ICABCO") {
+        Some(CompositeFamily::CableTray)
+    } else if families.contains("IPFCOM") {
+        Some(CompositeFamily::Structural)
+    } else if families.contains("IFCOMP") {
+        Some(CompositeFamily::BuildingAssembly)
+    } else if families.contains("IECOMP") {
+        Some(CompositeFamily::Equipment)
+    } else if families.contains("ICCOMP") {
+        Some(CompositeFamily::Catalogue)
+    } else if families.contains("IPCOMP") {
+        Some(CompositeFamily::PipeComponent)
+    } else if families.contains("IHCOMP") {
+        Some(CompositeFamily::HangerComponent)
+    } else {
+        None
+    };
+    family.map(Category::Composite).unwrap_or(Category::Unknown)
+}
+
+/// 路由容器短名全集（`RouteWalker` 与报告分账都要按这 5 个来，不是 2 个）。
+pub fn route_container_nouns() -> impl Iterator<Item = &'static str> {
+    route_nouns().containers.iter().map(String::as_str)
+}
+
+/// 路由成员短名全集。
+pub fn route_member_nouns() -> impl Iterator<Item = &'static str> {
+    route_nouns().members.iter().map(String::as_str)
 }
 
 #[cfg(test)]
@@ -200,8 +604,68 @@ mod tests {
         assert!(classify("NPOLYH").is_negative());
         assert!(classify("POLYHE").is_positive_solid());
         assert!(classify("POLYHE").consumes_members());
-        for noun in ["POLPTL", "POIN", "POGON", "POLOOP", "LOOPTS"] {
+        for noun in ["POLPTL", "POIN", "POLFAC", "POGO", "POLOOP", "LOOPTS"] {
             assert_eq!(classify(noun), Category::ProfileData, "{noun}");
+        }
+    }
+
+    /// 面 noun 的真名是 `POLFAC`（现代 POLYHE）与 `POGO`（旧式 POHE）。
+    ///
+    /// 分类表里曾写着字典中并不存在的 `POGON`。那一支永远匹配不上，几何却照出——
+    /// 于是面落 unknown、面下的环与顶点引用落 orphans，而等式判据照样平账。
+    /// 这条与 `tests/noun_coverage.rs` 的源码扫描一起把这类笔误钉死。
+    #[test]
+    fn the_polyhedron_face_nouns_are_polfac_and_pogo() {
+        assert_eq!(classify("POLFAC"), Category::ProfileData);
+        assert_eq!(classify("POGO"), Category::ProfileData);
+        // 属主消费剖面数据，所以这两个不该被当成孤儿。
+        assert!(classify("POLYHE").consumes_members());
+        assert!(classify("POHE").consumes_members());
+    }
+
+    /// `A*` 设备图元族：与设计图元同形的那 5 个接进基本体，其余显式挂账。
+    ///
+    /// 判据是字典属性表实读（见 `classify` 里的取证注释）：`A*` 的属性集是对应
+    /// 设计图元的真子集，尺寸属性一个不差。曾经只认领 `AEXTR` 一个，剩下 11 个
+    /// 兄弟整族落 Unknown——认领了一个，看着像认领了一族。
+    #[test]
+    fn the_a_star_equipment_primitives_are_claimed() {
+        assert_eq!(classify("ABOX"), Category::Primitive(Prim::Box));
+        assert_eq!(classify("ACYLI"), Category::Primitive(Prim::Cylinder));
+        assert_eq!(classify("APYRA"), Category::Primitive(Prim::Pyramid));
+        assert_eq!(classify("ARTOR"), Category::Primitive(Prim::RectTorus));
+        assert_eq!(classify("ACTOR"), Category::Primitive(Prim::CircTorus));
+        assert_eq!(classify("AEXTR"), Category::LoopExtrusion);
+        // 正体没实现的、以及几何来自成员结构还没取证的，一律显式记账，不许落 Unknown。
+        for noun in ["ASLCY", "ACONE", "ADISH", "ASNOU", "APOLYH", "AREVO"] {
+            assert!(
+                matches!(classify(noun), Category::Unsupported(_)),
+                "{noun} 应当显式记账，实得 {:?}",
+                classify(noun)
+            );
+        }
+    }
+
+    /// 几何集三族 42 个 noun 全部认领，且**本期一个都不建**。
+    ///
+    /// 它们此前整族落 Unknown——不是实现没跟上，是 `Category` 里从来没有对应概念。
+    #[test]
+    fn the_geometry_set_families_are_claimed_but_not_built() {
+        for noun in ["SBOX", "SCYL", "TUBE", "GMSE", "LINE", "SVER"] {
+            assert_eq!(classify(noun), Category::GeometrySet, "{noun} 是几何集正体");
+        }
+        for noun in ["GMSS", "SANN", "SPRO", "SPVE", "SREC"] {
+            assert_eq!(classify(noun), Category::GeometrySet, "{noun} 是二维几何集");
+        }
+        for noun in ["NSBO", "NSCY", "NLCY", "NTUB", "NGMS"] {
+            assert_eq!(
+                classify(noun),
+                Category::NegGeometrySet,
+                "{noun} 是几何集负体"
+            );
+        }
+        for noun in ["SBOX", "GMSS", "NSBO", "NTUB"] {
+            assert!(!classify(noun).builds_geometry(), "{noun} 本期不建几何");
         }
     }
 
@@ -243,9 +707,12 @@ mod tests {
 
     /// 建不出来的负体也算负体：它的账要记在属主头上，不能滑进 unsupported
     /// 变成一行「NCON: 15」——那样就看不出是哪些 FLOOR 少挖了刀。
+    ///
+    /// 两类都在这条里：设计负图元（`NCON`/`NDIS`/`NSNO`/`NSLC`，正体也没实现）
+    /// 与几何集负体（`NSBO`/`NSCY`/`NLCY`…，属 INGCOM 的另一条建模路）。
     #[test]
     fn unimplemented_negatives_stay_in_the_negative_family() {
-        for noun in ["NSBO", "NCON", "NSNO", "NDIS", "NSCY", "NLCY"] {
+        for noun in ["NSBO", "NCON", "NSNO", "NDIS", "NSCY", "NLCY", "NSLC"] {
             let category = classify(noun);
             assert!(
                 category.is_negative(),
@@ -256,15 +723,21 @@ mod tests {
                 "{noun} 落进 unsupported 就丢了属主"
             );
         }
+        // 分家：NSLC 是设计负图元（primitive + INCOMP，正体 SLCY），此前整个漏掉；
+        // NSBO 那三个字典里 geomset=true，属 INGCOM 的几何集那条路。
+        assert!(matches!(classify("NSLC"), Category::NegUnimplemented(_)));
+        assert_eq!(classify("NSBO"), Category::NegGeometrySet);
     }
 
-    /// 只有产正实体的元素才消费成员（剖面 + 负体）。别处遇到 PLOO / 负体是孤儿，
-    /// 得留名而不是被当作「已被消费」抹掉。
+    /// 正基本体、目录实例和复合构件消费自己的建模成员；组织节点仍须下钻。
     #[test]
-    fn only_positive_solids_consume_their_members() {
+    fn geometry_owners_consume_their_members() {
         assert!(classify("PANE").consumes_members());
         assert!(classify("BOX").consumes_members());
-        for noun in ["CWALL", "CFLOOR", "ZONE", "FITT", "PLOO", "NXTR"] {
+        assert!(classify("FITT").consumes_members());
+        assert!(classify("WALL").consumes_members());
+        assert!(classify("NOZZ").consumes_members());
+        for noun in ["CWALL", "CFLOOR", "ZONE", "PLOO", "NXTR"] {
             assert!(!classify(noun).consumes_members(), "{noun} 不该消费成员");
         }
     }
@@ -290,5 +763,153 @@ mod tests {
         }
         // GWALL 自带 PLOO，是环拉伸而不是容器。
         assert_eq!(classify("GWALL"), Category::LoopExtrusion);
+    }
+
+    /// 路由清单必须真的是从 JSON 解析出来的，而且是那两个数目。
+    ///
+    /// 数字写死在这里是有意的：清单换了一版而没人注意到，这条会先响。
+    #[test]
+    fn the_route_lists_come_from_the_embedded_json() {
+        assert_eq!(route_container_nouns().count(), 5, "路由容器应当恰好 5 个");
+        assert_eq!(route_member_nouns().count(), 104, "路由成员应当恰好 104 个");
+        for noun in route_container_nouns() {
+            assert_eq!(classify(noun), Category::RouteContainer, "{noun}");
+        }
+        for noun in route_member_nouns() {
+            assert_eq!(classify(noun), Category::RouteMember, "{noun}");
+        }
+    }
+
+    /// 路由容器是 5 个不是 2 个。
+    ///
+    /// `GTTUBE` 硬编码的三个 noun 码里就有 LUG 和 TRUNNI，容器判据只写 BRAN+HANG
+    /// 会把支撑件那一支整片漏掉——漏掉的表现只是报告少几行，不报错、账还平。
+    #[test]
+    fn all_five_route_containers_are_recognised() {
+        for noun in ["BRAN", "HANG", "LUG", "SUPC", "TRUNNI"] {
+            assert_eq!(
+                classify(noun),
+                Category::RouteContainer,
+                "{noun} 是路由容器"
+            );
+        }
+        // PIPE 是纯组织节点：不吃目录、不带几何，构件全在下面的 BRAN 上。
+        assert_eq!(classify("PIPE"), Category::List);
+    }
+
+    /// `IHCOMP` 读的是 `HNGC`，是**吊架**构件不是 HVAC 构件。
+    ///
+    /// 这条钉的是全案最阴的一个坑：把 `IHCOMP` 当成「Is Hvac COMPonent」，整个吊架
+    /// 族就走不进路由账——而 `visited + consumed` 仍然相等，`accounts_for` 照样通过，
+    /// 报告一行都不会红，只是模型里少掉所有吊架。HVAC 另有谓词 `IHVCOM` 读 `HVAC`
+    /// 字段，两者在 core.dll 里就是两个函数。
+    #[test]
+    fn the_hanger_family_is_hangers_not_hvac() {
+        assert_eq!(
+            classify("HANG"),
+            Category::RouteContainer,
+            "HANG 是吊架容器"
+        );
+        // 吊架/支撑构件条条要有名目，一个都不许落 Unknown。
+        for noun in [
+            "HELE", "HROD", "HNUT", "HPIN", "HANCI", "HSAD", "HACC", "CLEV", "EYNT", "EYRD",
+            "UBOL", "BBLT", "SHOE", "PCLA", "PCLI", "SLUG", "SNUB", "WASH", "SWBR", "TRNB", "VSPR",
+            "RCPL", "SPAC", "POST",
+        ] {
+            assert_eq!(
+                classify(noun),
+                Category::RouteMember,
+                "{noun} 是吊架/支撑构件"
+            );
+        }
+        // 反面：HVAC 不是路由 noun，不该被吊架判据顺手收编。E3D 3.1 字典把它的
+        // hard base 设为 PIPE，实际是系统组织容器，不是一个独立吊架实体。
+        assert_eq!(classify("HVAC"), Category::List);
+    }
+
+    /// ams8000 的 8 个管件族 unknown 必须条条被路由清单接住。
+    ///
+    /// 这 8 个 noun 共 2612 件，此前全部堆在 `unknown_nouns` 里——那本账的语义是
+    /// 「分类表欠账」，2612 件欠账等于管道库整体没有归属。
+    #[test]
+    fn the_eight_ams8000_fitting_families_are_claimed() {
+        for noun in [
+            "FTUB", "BEND", "ATTA", "ELBO", "STRT", "REDU", "VALV", "WELD",
+        ] {
+            assert_eq!(
+                classify(noun),
+                Category::RouteMember,
+                "{noun} 是路由成员，不该再落 Unknown"
+            );
+        }
+    }
+
+    /// 「什么算一件模型单元」只能有一份判据：全量按它产出，增量按它上卷。
+    ///
+    /// 这条钉的是一次真事故。`SBFI` 只写在管线那一侧，增量上卷仍只认正体，于是被删
+    /// 的 SBFI 从来不出 Remove；真库门上是「全量说消失 3398 件，增量只移除 3356 件」，
+    /// 而两边各自的账都平——`accounts_for` 那类等式判据一个都不会响。
+    #[test]
+    fn the_model_unit_predicate_covers_sbfi_and_nothing_else_in_the_catalogue() {
+        // SBFI 是目录件、不是正体，却照样产出一件挂在自己 refno 上的套管。
+        assert_eq!(classify("SBFI"), Category::Catalog);
+        assert!(!classify("SBFI").is_positive_solid());
+        assert!(is_model_unit("SBFI"));
+
+        for noun in ["PANE", "FLOOR", "BOX", "CYLI", "REVO", "POLYHE", "AEXTR"] {
+            assert!(is_model_unit(noun), "{noun} 是正体，必然是模型单元");
+        }
+        // 其余目录件本期不出几何，不能被顺手一起认成单元——那会让增量对着一批
+        // 模型集里根本不存在的 refno 发 Remove。
+        for noun in ["FITT", "PFIT", "CMFI", "FIXING", "WALL", "STWALL", "SCTN"] {
+            assert_eq!(classify(noun), Category::Catalog, "{noun}");
+            assert!(!is_model_unit(noun), "{noun} 本期不产实体");
+        }
+        // 路由容器会产出隐式管身，但那些几何不按容器 refno 索引，见判据文档。
+        for noun in ["BRAN", "HANG", "LUG", "SUPC", "TRUNNI"] {
+            assert!(!is_model_unit(noun), "{noun} 的管身不按容器 refno 索引");
+        }
+        for noun in ["ZONE", "PLOO", "NBOX", "TEXT", "SBOX"] {
+            assert!(!is_model_unit(noun), "{noun}");
+        }
+    }
+
+    /// 路由族既不产正体也不是负体，更不消费成员——成员是路由本身，必须继续下钻。
+    #[test]
+    fn route_nouns_neither_build_nor_consume() {
+        for noun in ["BRAN", "HANG", "FTUB", "ELBO"] {
+            let category = classify(noun);
+            assert!(!category.is_positive_solid(), "{noun}");
+            assert!(!category.is_negative(), "{noun}");
+            assert!(
+                !category.consumes_members(),
+                "{noun} 的成员是路由，不能被吃掉"
+            );
+        }
+    }
+
+    /// 桥架族要整族记在一起，`CTRAY` 不许被最宽的板墙族顺走。
+    ///
+    /// `CTRAY` 在 3.1 字典里同时带 `ICABCO` 和 `IPFCOM`，是全字典唯一一个同时带两个
+    /// 复合族位的 noun。判据链原先先问 `IPFCOM`，于是这条桥架主干被记成结构件，跟
+    /// `CTSTRA`/`CTBEND` 那批兄弟分在两本账上。这种分家不会让任何等式失衡——几何照出
+    /// （两个族位在 core.dll 里都进同一个复合几何函数），错的只是「桥架这一族做完没有」
+    /// 这个问题的答案，而那正是覆盖矩阵要回答的东西。
+    #[test]
+    fn the_cable_tray_family_stays_together() {
+        for noun in ["CTRAY", "CTSTRA", "CTBEND", "CTREDU", "CTTEE"] {
+            assert_eq!(
+                classify(noun),
+                Category::Composite(CompositeFamily::CableTray),
+                "{noun} 是电缆桥架族"
+            );
+        }
+        // 反面：IFCOMP+IPFCOM 都带的 STWELD 仍归结构。桥架优先只针对 ICABCO 这条
+        // 独立专业线，不是「谁的族小谁优先」。
+        assert_eq!(
+            classify("STWELD"),
+            Category::Composite(CompositeFamily::Structural),
+            "STWELD 是结构焊缝"
+        );
     }
 }

@@ -29,13 +29,21 @@ fn triple_or_none(el: &DbElement, name: &str) -> Result<Option<[f64; 3]>, DbElem
 /// `(POS, ORI)` 原样三元组对，任一缺省时该项为 `None`。
 pub type LocalPlacement = (Option<[f64; 3]>, Option<[f64; 3]>);
 
-/// 一个元素进 [`local_matrix`] 的全部输入：`(POS, ORI)` 原样三元组。
+/// [`local_matrix`] 会读的**全部存储属性名**，按 [`LocalPlacement`] 的次序。
 ///
-/// 增量更新用它判「变换漂移」——两个会话读出的这一对不相等，子树里全部
-/// 已建模元素的世界矩阵就都变了。判据必须与矩阵折叠读同一条路（同名、
-/// 同缺省语义），否则会出现「矩阵变了但漂移检测说没变」的静默缺件。
+/// 增量的级联判据要回答「这个元素一动，子树里的世界矩阵变不变」，而它必须与
+/// 这里读的是同一组名字：矩阵折叠多读一个属性、级联判据不知道，表现就是
+/// 「矩阵变了但没人重建」的静默缺件。所以名字只有这一份，两边都从这里取。
+///
+/// 世界矩阵的输入不止这两个属性——还有 **owner 链本身**（[`world_matrix`] 逐级
+/// 上溯右乘）。改挂属主同样让世界矩阵变，那一条不是属性名能表达的，由
+/// [`crate::element_diff::ElementDiff::placement_input_changed`] 一并判。
+pub const PLACEMENT_ATTRIBUTES: [&str; 2] = ["POS", "ORI"];
+
+/// 一个元素进 [`local_matrix`] 的全部输入：`(POS, ORI)` 原样三元组。
 pub fn local_placement(el: &DbElement) -> Result<LocalPlacement, DbElementError> {
-    Ok((triple_or_none(el, "POS")?, triple_or_none(el, "ORI")?))
+    let [pos, ori] = PLACEMENT_ATTRIBUTES;
+    Ok((triple_or_none(el, pos)?, triple_or_none(el, ori)?))
 }
 
 /// ORI 角三元组（度）→ 旋转矩阵。

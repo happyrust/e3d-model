@@ -1,0 +1,599 @@
+//! 路由遍历与隐式管身（对标 `cachelib/GTTUBE` 取两端、`cachelib/TUMAT` 定位、
+//! core.dll `ORIMAT` 定向、`pplib/CGETOD` 取外径；几何入口 `cachegml/GTTUBG`）。
+//!
+//! 五个路由容器（`BRAN`/`HANG`/`LUG`/`SUPC`/`TRUNNI`）走同一套：链头由容器的
+//! `HPOS` 给，链尾由 `TPOS` 给，相邻两件之间补一根管身。`PDMS_HangElement` 的
+//! `nextElement` / `prevElement` 走到头分别回 `TposElement` / `HposElement`，
+//! 与 BRAN 逐点同构，**不要**为 HANG 另起分支（`task_plan.md` §2.6）。
+//!
+//! # 两端点有两种来源，可得性完全不同
+//!
+//! | 来源 | 属性 | 现在读不读得到 |
+//! |---|---|---|
+//! | 容器头 / 尾 | 容器自身的 `HPOS/HDIR/HBOR`、`TPOS/TDIR/TBOR` | **读得到**，直读 |
+//! | 构件离开 / 到达 | 目录侧 `LPOS/LDIR/LBOR`、`APOS/ADIR/ABOR` | **读不到**，见下 |
+//!
+//! 设计元素上的 `LEAV` / `ARRI` 只是 **P 点编号**（ams8000 全库 2612 个路由成员
+//! 实测清一色 `LEAV=2 / ARRI=1`），坐标在目录里，要走
+//! `SPRE → SPCO.CATR → SCOM.PTRE → PTAX`；而 `PTAX` 的 `PDIS` 实测是**目录表达式**
+//! （`/ACP1000-TFVL-P2` 存的就是 `( ATTRIB RPRO TLEN )`），求值要 e3d-io 的
+//! `DbElementParamEnv`。
+//!
+//! 所以「解构件 P 点」在这里是一条显式的缝 [`PPointResolver`]。走目录链的那份实现
+//! 在 [`crate::catalogue_point::CataloguePoints`]；[`CatalogueNotWired`] 留着，
+//! 给不开目录库的场合用，一律解不出、按 `missing_ppoint` 记账。
+//!
+//! **不拿构件 `POS` 顶替目录 P 点**：那样能算出一个看着合理、实则系统性偏短的
+//! 长度，而报告全绿——本仓最忌讳的正是这种静默错。ams8000 实测 3172 条槽位里
+//! 有 3171 条至少一端落在这条缝上，凑数的代价会是 3171 条假管。
+
+use glam::{DMat3, DMat4, DVec3};
+use manifold_csg::Manifold;
+
+use e3d_io::db_element::{DbElement, DbElementError};
+use e3d_io::record::descriptor::DescriptorValue;
+
+use crate::category::{Category, classify};
+use crate::solid::{RES_TOL_MM, SolidError, csg_cylinder_solid};
+
+/// `ORIMAT` 挑副轴时判「叉积退化」的阈值。
+///
+/// `Z` 与三个基轴的叉积长度是 `sin θ`，而按 X̂ / Ŷ / Ẑ 顺序试下来，**至少有一个**
+/// 的 `sin θ ≥ √(2/3) ≈ 0.816`——所以这个阈值只要能挡住真正的平行就够，取多小
+/// 都不会改变选中的是哪一根轴。定在 1e-9 是为了让「几乎平行」也走到下一根轴上去。
+const AXIS_DEGENERATE_TOL: f64 = 1.0e-9;
+
+/// 零长管身的判据阈值（mm）。
+///
+/// 算法文档 §4 只写「`length < ε` 记 `zero_length`」，**ε 的具体常量本轮没有
+/// 反编译到**（`GTTUBG` 里那个比较的立即数没解出来）。这里取 libgm 的面级判定
+/// 容差 [`RES_TOL_MM`]（0.051mm）作占位：比它更短的圆柱，两个端面在 libgm 眼里
+/// 已经重合，建出来也不成实体。
+///
+/// **这是本模块唯一一个不是从反编译抄来的数**，对拍阶段要拿真库把它钉死；
+/// 在那之前它偏保守（宁可多记一条 `zero_length`，不可凭空多出一根针状管）。
+pub const ZERO_LENGTH_TOL_MM: f64 = RES_TOL_MM;
+
+/// 一个 P 点的三件套：位置、方向、通径。
+///
+/// 对应 `GTTUBE` 里 `IHEAD`/`TAIL`/`PLEAVE`/`PARRIV` 四个例程各自取出的那一组。
+/// `bore` 允许缺省：`CGETOD` 只在目录外径取不到时才回落到它（见
+/// [`tube_outer_diameter`]），两端通径不齐并不阻止建管。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RoutePoint {
+    pub pos: DVec3,
+    pub dir: DVec3,
+    pub bore: Option<f64>,
+}
+
+/// 管身一端是谁给的。类型本身就说明了它现在解不解得出，见模块文档那张表。
+#[derive(Debug, Clone)]
+pub enum RouteEnd {
+    /// 容器头点：容器自身的 `HPOS/HDIR/HBOR`。
+    ContainerHead(DbElement),
+    /// 容器尾点：容器自身的 `TPOS/TDIR/TBOR`。
+    ContainerTail(DbElement),
+    /// 构件的离开点，`LEAV` 给的是 P 点编号而非坐标。
+    MemberLeave {
+        member: DbElement,
+        ppoint: Option<u32>,
+    },
+    /// 构件的到达点，`ARRI` 同上。
+    MemberArrive {
+        member: DbElement,
+        ppoint: Option<u32>,
+    },
+}
+
+/// 一条管身槽位：从 `from` 到 `to`。
+///
+/// 「槽位」不是「管子」——两端解不出、或解出来是零长时，槽位仍在账上（它是链的
+/// 一节），但不出几何。两个数不必相等，这正是 `ImpliedTubeDegenerate` 存在的理由。
+#[derive(Debug, Clone)]
+pub struct TubeSlot {
+    pub from: RouteEnd,
+    pub to: RouteEnd,
+}
+
+/// 一个路由容器走完的结果。
+#[derive(Debug)]
+pub struct Route {
+    /// 链上的路由成员，文件原序。
+    pub members: Vec<DbElement>,
+    /// 不在 104 个路由 noun 里的成员。**记账、继续下钻、但不参与串接**——
+    /// 它可能自带几何，却不在管路链上；算进去会凭空多出两截管身。
+    pub non_route_members: Vec<DbElement>,
+    /// 管身槽位，链序。条数恒为 `members.len() + 1`。
+    pub tubes: Vec<TubeSlot>,
+}
+
+/// 链上相邻两站的下标对：`0` = 容器头，`1..=n` = 第 i 个路由成员，`n + 1` = 容器尾。
+///
+/// 单独拎出来是为了能不开库就测：「尾管必须补」「非路由成员不前移」这两条都只是
+/// 这个序列的形状，而它们恰恰是最容易写错、又最难在真库上看出来的地方
+/// （多一条少一条，报告里只是个数字变了）。
+fn slot_indices(member_count: usize) -> impl Iterator<Item = (usize, usize)> {
+    (0..=member_count).map(|i| (i, i + 1))
+}
+
+/// 走一个路由容器（算法文档 §4 的 `RouteWalker`）。
+///
+/// `prev` 从容器 `HPOS` 起步，每遇到一个路由成员就产出一条 `prev → 成员到达点`
+/// 的槽位，`prev` 前移到该成员的离开点；走完补一条到容器 `TPOS` 的尾管。
+/// 空容器给 1 条：只有头尾没有构件的 BRAN，E3D 照样在 HPOS 与 TPOS 之间画一根管。
+pub fn walk_route(container: &DbElement) -> Result<Route, DbElementError> {
+    let mut members = Vec::new();
+    let mut non_route_members = Vec::new();
+    for member in container.members()? {
+        if matches!(classify(&member.element_type()?), Category::RouteMember) {
+            members.push(member);
+        } else {
+            non_route_members.push(member);
+        }
+    }
+
+    let mut leaves = Vec::with_capacity(members.len());
+    let mut arrivals = Vec::with_capacity(members.len());
+    for member in &members {
+        leaves.push(ppoint_number(member, "LEAV")?);
+        arrivals.push(ppoint_number(member, "ARRI")?);
+    }
+
+    let station = |index: usize| -> RouteEnd {
+        match index {
+            0 => RouteEnd::ContainerHead(container.clone()),
+            i if i <= members.len() => RouteEnd::MemberArrive {
+                member: members[i - 1].clone(),
+                ppoint: arrivals[i - 1],
+            },
+            _ => RouteEnd::ContainerTail(container.clone()),
+        }
+    };
+    // 出发端要的是**离开**侧，到达端要的是**到达**侧（§3.1 的 PLEAVE / PARRIV）。
+    let departure = |index: usize| -> RouteEnd {
+        match index {
+            0 => RouteEnd::ContainerHead(container.clone()),
+            i => RouteEnd::MemberLeave {
+                member: members[i - 1].clone(),
+                ppoint: leaves[i - 1],
+            },
+        }
+    };
+
+    let tubes = slot_indices(members.len())
+        .map(|(from, to)| TubeSlot {
+            from: departure(from),
+            to: station(to),
+        })
+        .collect();
+
+    Ok(Route {
+        members,
+        non_route_members,
+        tubes,
+    })
+}
+
+/// P 点编号：`LEAV` / `ARRI` 存的是字值（实测 `Word { raw: 2 }` / `Word { raw: 1 }`）。
+fn ppoint_number(el: &DbElement, name: &str) -> Result<Option<u32>, DbElementError> {
+    Ok(match el.attribute(name)? {
+        Some(DescriptorValue::Word { raw, .. }) => Some(raw),
+        Some(DescriptorValue::Int(number)) if number >= 0 => Some(number as u32),
+        _ => None,
+    })
+}
+
+/// 容器头点：`IHEAD` 读的那一组，P 点号固定 1。
+pub fn container_head(container: &DbElement) -> Result<Option<RoutePoint>, DbElementError> {
+    container_point(container, "HPOS", "HDIR", "HBOR")
+}
+
+/// 容器尾点：`TAIL` 读的那一组，P 点号固定 2。
+pub fn container_tail(container: &DbElement) -> Result<Option<RoutePoint>, DbElementError> {
+    container_point(container, "TPOS", "TDIR", "TBOR")
+}
+
+/// 位置读不到就整个点不成立（`PLEAVE`/`IHEAD` 出错时 ok 标志清零，见 §3.1）。
+/// 方向可以退化——`TUMAT` 只在两点重合时才回落到它。
+fn container_point(
+    container: &DbElement,
+    pos: &str,
+    dir: &str,
+    bore: &str,
+) -> Result<Option<RoutePoint>, DbElementError> {
+    let Some(position) = container.get_position(pos)? else {
+        return Ok(None);
+    };
+    Ok(Some(RoutePoint {
+        pos: DVec3::from_array(position),
+        dir: container
+            .get_direction(dir)?
+            .map(DVec3::from_array)
+            .unwrap_or(DVec3::Z),
+        bore: container.get_double(bore)?,
+    }))
+}
+
+/// 目录侧 P 点求解器 —— P1 与 P2 之间那条唯一的缝。
+///
+/// 实现它要能走 `SPRE → SPCO.CATR → SCOM.PTRE → PTAX/PTCA` 并对 `PDIS` / `PBOR`
+/// 这类目录表达式求值（e3d-io `catalogue_eval::ParamEnv` 的活元素实现）——
+/// 见 [`crate::catalogue_point::CataloguePoints`]。目录库没开时用
+/// [`CatalogueNotWired`]，让账面如实显示「解不出」。
+pub trait PPointResolver {
+    /// 构件的离开点。解不出给 `None`，不要拿别的值顶。
+    fn leave(
+        &self,
+        member: &DbElement,
+        ppoint: Option<u32>,
+    ) -> Result<Option<RoutePoint>, DbElementError>;
+
+    /// 构件的到达点。
+    fn arrive(
+        &self,
+        member: &DbElement,
+        ppoint: Option<u32>,
+    ) -> Result<Option<RoutePoint>, DbElementError>;
+}
+
+/// 目录链还没接上时的求解器：构件侧一律解不出。
+///
+/// 这不是「先返回个默认值让流程跑通」，而是把缺口如实摆在账上：用它跑出来的
+/// `missing_ppoint` 就是 P1 落地后能多出多少根真管的准确条数。
+#[derive(Debug, Default, Clone, Copy)]
+pub struct CatalogueNotWired;
+
+impl PPointResolver for CatalogueNotWired {
+    fn leave(&self, _: &DbElement, _: Option<u32>) -> Result<Option<RoutePoint>, DbElementError> {
+        Ok(None)
+    }
+
+    fn arrive(&self, _: &DbElement, _: Option<u32>) -> Result<Option<RoutePoint>, DbElementError> {
+        Ok(None)
+    }
+}
+
+/// 解一端。容器端直读，构件端交给 `resolver`。
+pub fn resolve_end(
+    end: &RouteEnd,
+    resolver: &dyn PPointResolver,
+) -> Result<Option<RoutePoint>, DbElementError> {
+    match end {
+        RouteEnd::ContainerHead(container) => container_head(container),
+        RouteEnd::ContainerTail(container) => container_tail(container),
+        RouteEnd::MemberLeave { member, ppoint } => resolver.leave(member, *ppoint),
+        RouteEnd::MemberArrive { member, ppoint } => resolver.arrive(member, *ppoint),
+    }
+}
+
+/// `ORIMAT`（core.dll `0x526d674`）：方向向量 → 旋转矩阵。
+///
+/// ```text
+/// Z = normalize(dir)                 退化 → None
+/// for e in (X̂, Ŷ, Ẑ):               ← 顺序不能换
+///     X = normalize(Z × e);  不退化就 break
+/// Y = Z × X
+/// ```
+///
+/// core.dll 存的是行序 `[X; Y; Z]` 的 4×3 行主序矩阵，配 FORTRAN 的行向量乘法
+/// `v' = v · M`；换成 glam 的列向量约定，等价形式就是**列**为 X/Y/Z 的矩阵，
+/// 即这里的 `from_cols`。两种写法同一个变换，别把它转置了。
+///
+/// **副轴的 tie-break 顺序决定圆柱的周向起点。** 体积与 AABB 对拍看不出来，
+/// 逐顶点复刻 E3D 就必须照抄，不能随手取一个垂直向量。
+pub fn orimat(dir: DVec3) -> Option<DMat3> {
+    let length = dir.length();
+    if !(length > AXIS_DEGENERATE_TOL) || !dir.is_finite() {
+        return None;
+    }
+    let z = dir / length;
+    let x = [DVec3::X, DVec3::Y, DVec3::Z]
+        .into_iter()
+        .find_map(|axis| {
+            let cross = z.cross(axis);
+            (cross.length() > AXIS_DEGENERATE_TOL).then(|| cross.normalize())
+        })?;
+    Some(DMat3::from_cols(x, z.cross(x), z))
+}
+
+/// `TUMAT`（Core3D `0x103439c0`）：两端点 → 管身的放置矩阵。
+///
+/// 平移取**中点** `(P1 + P2) · 0.5`（常量 0.5 已从 `0x10B4DC10` 读出），
+/// 旋转取 `ORIMAT(normalize(P1 − P2))`；两点重合致方向退化时**回落到 `D1`**
+/// （离开侧 P 点方向），不是回落到单位阵。
+pub fn tumat(p1: DVec3, d1: DVec3, p2: DVec3) -> Option<DMat4> {
+    let rotation = orimat(p1 - p2).or_else(|| orimat(d1))?;
+    Some(DMat4::from_translation((p1 + p2) * 0.5) * DMat4::from_mat3(rotation))
+}
+
+/// `VDIST`：管身长度 = 两端点**直线距离**。
+///
+/// 不扣端面、不往轴向投影。算法文档 §3.5 把这条单列，是因为「扣端面」是照着
+/// 别的 CAD 的直觉最容易加进来的一步，而 core.dll 没有这一步。
+pub fn tube_length(p1: DVec3, p2: DVec3) -> f64 {
+    (p1 - p2).length()
+}
+
+/// `CGETOD`（pplib `0x103bf7ac`）：管身外径。
+///
+/// 先取管子目录件 `PARA[2]`（外径），保温开关置位时再加 `IPAR[1]`；
+/// 取不到才回落到**到达侧**通径。前后通径不一致时 core.dll 取的就是到达侧，
+/// 不是离开侧、也不是两者平均——照抄，别顺手改成更「合理」的那个。
+pub fn tube_outer_diameter(
+    catalogue_od: Option<f64>,
+    insulation: Option<f64>,
+    arrive_bore: Option<f64>,
+) -> Option<f64> {
+    match catalogue_od.filter(|od| od.is_finite()) {
+        Some(od) => Some(od + insulation.filter(|value| value.is_finite()).unwrap_or(0.0)),
+        None => arrive_bore.filter(|bore| bore.is_finite()),
+    }
+}
+
+/// 建成的一根管身。
+pub struct TubeGeometry {
+    /// 世界系实体。
+    pub solid: Manifold,
+    pub length_mm: f64,
+    pub radius_mm: f64,
+    /// 管身局部系（原点在两端中点、`+Z` 沿 `P1 − P2`）到世界系。
+    pub placement: DMat4,
+}
+
+/// 建一根管身的结论。退化情形逐类分开，对应算法文档 §4 那张表——
+/// 混成一个 `None` 就没法回答「这 3172 条到底卡在哪一步」。
+pub enum TubeOutcome {
+    Built(Box<TubeGeometry>),
+    /// 两端点重合（`length <` [`ZERO_LENGTH_TOL_MM`]）。
+    ZeroLength {
+        length_mm: f64,
+    },
+    /// 定不出朝向：两点重合，且离开侧方向也退化。
+    NoDirection,
+    /// 外径与到达侧通径都取不到。
+    NoRadius,
+    /// 尺寸过了校验但内核没给出实体。
+    Failed(SolidError),
+}
+
+/// 造管身几何（算法文档 §3.5 的默认路）。
+///
+/// **圆柱按真实长度直接建**：`gm_CreateCylinder(r, length)`。别写成「单位圆柱 +
+/// Z 向缩放」——那是目录基本体（`CRCATI`）里 `TUBE` 那条路的约定（高恒为 1.0），
+/// 两条路混了会得到一根长度恒为 1mm 的管。
+///
+/// 用 [`csg_cylinder_solid`] 而不是 `cylinder_solid`：`TUMAT` 把原点放在两端
+/// 中点、轴沿 `+Z`，正是前者的约定（轴向局部 Z、原点居中）；后者是轴向局部 Y、
+/// 原点在底面，套上去会让管身整体偏移半根长度并且躺倒。
+///
+/// 只出圆柱这一件实体。`CLIN` 中心线与 `LINE` 线段不是实体，出网格时要跳过，
+/// 否则会污染连通分量与体积对拍。
+pub fn build_tube(from: &RoutePoint, to: &RoutePoint, outer_diameter: Option<f64>) -> TubeOutcome {
+    // 先判长度再判半径，顺序照 §4 那张退化表。ams8000 里那个空 BRAN
+    // （两端点都在原点、通径也是 0）两条都踩，先判半径会把它归成「取不到半径」，
+    // 读报告的人会去查目录，而它其实只是一条没画完的空分支。
+    let length = tube_length(from.pos, to.pos);
+    if !(length > ZERO_LENGTH_TOL_MM) {
+        return TubeOutcome::ZeroLength { length_mm: length };
+    }
+    let Some(diameter) = outer_diameter.filter(|value| *value > 0.0) else {
+        return TubeOutcome::NoRadius;
+    };
+    let Some(placement) = tumat(from.pos, from.dir, to.pos) else {
+        return TubeOutcome::NoDirection;
+    };
+    match csg_cylinder_solid(diameter, length) {
+        Ok(local) => TubeOutcome::Built(Box::new(TubeGeometry {
+            solid: crate::solid::placed(&local, placement),
+            length_mm: length,
+            radius_mm: diameter / 2.0,
+            placement,
+        })),
+        Err(error) => TubeOutcome::Failed(error),
+    }
+}
+
+/// 两端通径是否不一致。一致性不影响建管（半径按到达侧取），但要留痕：
+/// 通径突变处正是变径件该在而没在的地方。
+pub fn bore_mismatch(from: &RoutePoint, to: &RoutePoint) -> bool {
+    match (from.bore, to.bore) {
+        (Some(a), Some(b)) => (a - b).abs() > f64::EPSILON,
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn point(pos: [f64; 3], dir: [f64; 3], bore: Option<f64>) -> RoutePoint {
+        RoutePoint {
+            pos: DVec3::from_array(pos),
+            dir: DVec3::from_array(dir),
+            bore,
+        }
+    }
+
+    /// `ORIMAT` 出来的必须是右手正交标架，且第三列就是给定方向。
+    #[test]
+    fn orimat_builds_a_right_handed_frame_whose_z_is_the_direction() {
+        for dir in [
+            DVec3::new(0.0, 0.0, 1.0),
+            DVec3::new(1.0, 0.0, 0.0),
+            DVec3::new(0.0, 1.0, 0.0),
+            DVec3::new(1.0, 2.0, 3.0),
+            DVec3::new(-4.0, 0.5, -0.25),
+        ] {
+            let m = orimat(dir).expect("方向不退化");
+            let (x, y, z) = (m.x_axis, m.y_axis, m.z_axis);
+            assert!((z - dir.normalize()).length() < 1e-12, "{dir:?} → {z:?}");
+            for (a, b) in [(x, y), (y, z), (z, x)] {
+                assert!(a.dot(b).abs() < 1e-12, "{dir:?} 标架不正交");
+            }
+            for axis in [x, y, z] {
+                assert!((axis.length() - 1.0).abs() < 1e-12, "{dir:?} 标架不单位");
+            }
+            assert!(
+                (m.determinant() - 1.0).abs() < 1e-12,
+                "{dir:?} 不是右手系（行列式 {}）",
+                m.determinant()
+            );
+        }
+    }
+
+    /// 副轴的 tie-break **顺序**要照抄 X̂ → Ŷ → Ẑ。
+    ///
+    /// 方向恰好是 X̂ 时第一根轴退化，必须落到 Ŷ 上得到 `X = Ẑ`。随手挑一个垂直
+    /// 向量也能过上面那条正交性测试，却会把圆柱的周向起点转到别处——逐顶点对拍
+    /// 才会暴露，那时已经很难查到是这里。
+    #[test]
+    fn orimat_tie_break_order_is_x_then_y_then_z() {
+        let m = orimat(DVec3::X).unwrap();
+        assert!((m.x_axis - DVec3::Z).length() < 1e-12, "{:?}", m.x_axis);
+        assert!((m.y_axis + DVec3::Y).length() < 1e-12, "{:?}", m.y_axis);
+
+        // 方向是 Ŷ 时 X̂ 不退化，第一根就该选中：X = normalize(Ŷ × X̂) = −Ẑ。
+        let m = orimat(DVec3::Y).unwrap();
+        assert!((m.x_axis + DVec3::Z).length() < 1e-12, "{:?}", m.x_axis);
+    }
+
+    #[test]
+    fn orimat_rejects_a_degenerate_direction() {
+        assert!(orimat(DVec3::ZERO).is_none());
+        assert!(orimat(DVec3::new(f64::NAN, 0.0, 0.0)).is_none());
+    }
+
+    /// `TUMAT` 的平移是两端**中点**，不是起点。
+    #[test]
+    fn tumat_translates_to_the_midpoint_and_aims_local_z_from_p2_to_p1() {
+        let p1 = DVec3::new(0.0, 0.0, 1000.0);
+        let p2 = DVec3::new(0.0, 0.0, 200.0);
+        let m = tumat(p1, DVec3::Z, p2).unwrap();
+        assert!((m.w_axis.truncate() - DVec3::new(0.0, 0.0, 600.0)).length() < 1e-9);
+        let local_z = m.transform_vector3(DVec3::Z);
+        assert!(
+            (local_z - (p1 - p2).normalize()).length() < 1e-12,
+            "{local_z:?}"
+        );
+    }
+
+    /// 两点重合时朝向回落到 `D1`，**不是**回落到单位阵。
+    ///
+    /// 回落成单位阵会让所有零长管一律朝 +Z；虽然零长管不出几何，但这个矩阵也是
+    /// 特例路（自带目录几何集的管身）的摆放依据，那条路上它就不是无害的了。
+    #[test]
+    fn tumat_falls_back_to_the_leave_direction_not_to_identity() {
+        let p = DVec3::new(5.0, 6.0, 7.0);
+        let d1 = DVec3::new(1.0, 0.0, 0.0);
+        let m = tumat(p, d1, p).unwrap();
+        let local_z = m.transform_vector3(DVec3::Z);
+        assert!((local_z - d1).length() < 1e-12, "{local_z:?}");
+        assert!((m.w_axis.truncate() - p).length() < 1e-12);
+
+        // D1 也退化就真的定不出朝向，要如实给 None。
+        assert!(tumat(p, DVec3::ZERO, p).is_none());
+    }
+
+    /// 长度是直线距离，不做轴向投影、不扣端面。
+    #[test]
+    fn tube_length_is_the_straight_line_distance() {
+        let p1 = DVec3::new(3.0, 4.0, 0.0);
+        let p2 = DVec3::ZERO;
+        assert!((tube_length(p1, p2) - 5.0).abs() < 1e-12);
+    }
+
+    /// 外径取不到时回落到**到达侧**通径。
+    ///
+    /// 这条单独钉住：前后通径不一致时取哪一侧，是照抄与自作主张的分水岭，
+    /// 而取错了只会让管子粗细差一档，账面完全正常。
+    #[test]
+    fn outer_diameter_falls_back_to_the_arrive_side_bore() {
+        assert_eq!(tube_outer_diameter(None, None, Some(100.0)), Some(100.0));
+        assert_eq!(
+            tube_outer_diameter(Some(60.0), None, Some(100.0)),
+            Some(60.0)
+        );
+        assert_eq!(
+            tube_outer_diameter(Some(60.0), Some(25.0), Some(100.0)),
+            Some(85.0),
+            "保温开着要加 IPAR[1]"
+        );
+        assert_eq!(tube_outer_diameter(None, Some(25.0), None), None);
+    }
+
+    /// 管身按真实长度建，不是「单位圆柱 + 缩放」。
+    #[test]
+    fn a_tube_is_built_at_its_real_length() {
+        let from = point([0.0, 0.0, 1000.0], [0.0, 0.0, -1.0], Some(50.0));
+        let to = point([0.0, 0.0, 200.0], [0.0, 0.0, 1.0], Some(50.0));
+        let TubeOutcome::Built(tube) = build_tube(&from, &to, Some(100.0)) else {
+            panic!("这根管该建得出来");
+        };
+        assert!((tube.length_mm - 800.0).abs() < 1e-9);
+        assert!((tube.radius_mm - 50.0).abs() < 1e-12);
+
+        // 世界系 AABB：轴沿 Z，跨度就是长度；中心在中点，不在端点。
+        let bounds = tube.solid.bounding_box().expect("管身应当有包围盒");
+        let (min, max) = (bounds.min(), bounds.max());
+        assert!((max[2] - min[2] - 800.0).abs() < 1e-6, "{min:?} {max:?}");
+        assert!(((max[2] + min[2]) / 2.0 - 600.0).abs() < 1e-6, "{max:?}");
+    }
+
+    #[test]
+    fn a_collapsed_slot_is_reported_as_zero_length_rather_than_built() {
+        let p = point([1.0, 2.0, 3.0], [0.0, 0.0, 1.0], Some(50.0));
+        assert!(matches!(
+            build_tube(&p, &p, Some(100.0)),
+            TubeOutcome::ZeroLength { .. }
+        ));
+    }
+
+    #[test]
+    fn a_slot_without_any_diameter_is_reported_rather_than_guessed() {
+        let from = point([0.0, 0.0, 0.0], [0.0, 0.0, 1.0], None);
+        let to = point([0.0, 0.0, 500.0], [0.0, 0.0, -1.0], None);
+        assert!(matches!(
+            build_tube(&from, &to, tube_outer_diameter(None, None, to.bore)),
+            TubeOutcome::NoRadius
+        ));
+    }
+
+    /// 链形：n 个路由成员给 n+1 条槽位，首条从容器头出发、末条落到容器尾。
+    #[test]
+    fn the_chain_always_carries_one_more_slot_than_it_has_members() {
+        for members in 0..5usize {
+            let slots: Vec<_> = slot_indices(members).collect();
+            assert_eq!(slots.len(), members + 1, "{members} 个成员");
+            assert_eq!(slots[0].0, 0, "首条必须从容器头出发");
+            assert_eq!(
+                slots[slots.len() - 1].1,
+                members + 1,
+                "末条必须落到容器尾（尾管不能省）"
+            );
+            for pair in slots.windows(2) {
+                assert_eq!(pair[0].1, pair[1].0, "相邻两条要首尾相接");
+            }
+        }
+    }
+
+    /// 通径不一致要认出来，两边缺任意一边都不算「不一致」。
+    #[test]
+    fn a_missing_bore_is_not_a_mismatch() {
+        let a = point([0.0; 3], [0.0, 0.0, 1.0], Some(50.0));
+        let b = point([0.0; 3], [0.0, 0.0, 1.0], Some(100.0));
+        let unknown = point([0.0; 3], [0.0, 0.0, 1.0], None);
+        assert!(bore_mismatch(&a, &b));
+        assert!(!bore_mismatch(&a, &a));
+        assert!(!bore_mismatch(&a, &unknown));
+    }
+
+    /// 目录链没接上时，构件端必须如实解不出——不许拿构件 `POS` 顶。
+    ///
+    /// 顶上去能让 3171 条槽位「有几何」，长度却系统性偏短（P 点到构件原点的那段
+    /// 被吃掉了），而报告会一片绿。这条测试就是钉住这个诱惑。
+    #[test]
+    fn the_unwired_resolver_refuses_to_invent_a_member_point() {
+        fn assert_object_safe(_: &dyn PPointResolver) {}
+        assert_object_safe(&CatalogueNotWired);
+    }
+}

@@ -109,6 +109,7 @@ fn resolve_window(args: &Args) -> anyhow::Result<(u32, u32)> {
 
 #[derive(serde::Serialize)]
 struct UpsertInvariants {
+    geometry_id: e3d_model::GeometryId,
     refno: String,
     noun: String,
     name: Option<String>,
@@ -181,6 +182,7 @@ fn main() -> anyhow::Result<()> {
         let mesh = TriMesh::from_manifold(&generated.solid);
         let (lo, hi) = mesh.aabb().unwrap_or(([0.0; 3], [0.0; 3]));
         invariants.push(UpsertInvariants {
+            geometry_id: generated.geometry_id.clone(),
             refno: generated.refno.to_string(),
             noun: generated.noun.clone(),
             name: generated.name.clone(),
@@ -199,8 +201,8 @@ fn main() -> anyhow::Result<()> {
             negatives_skipped: generated.negatives_skipped.len(),
         });
         let label = match &generated.name {
-            Some(name) => format!("{} {} {}", generated.refno, generated.noun, name),
-            None => format!("{} {}", generated.refno, generated.noun),
+            Some(name) => format!("{} {} {}", generated.geometry_id, generated.noun, name),
+            None => format!("{} {}", generated.geometry_id, generated.noun),
         };
         index_offset = mesh.write_obj_object(&mut obj, &label, index_offset)?;
     }

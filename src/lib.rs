@@ -9,6 +9,8 @@
 //! | [`pipeline`] | `add/ADDDES` | 设计树 DFS 遍历（成员原序），逐元素派发 |
 //! | [`increment`] | `DB_IndexTableCompare` + `PartialUpdateDesiMgr` | 会话窗口差分 → 单元级增量重建 |
 //! | [`category`] | `build/MODCMP` + nounlib `I*COM` 谓词 | 按 noun 分类挑建模方式 |
+//! | [`route`] | `cachelib/GTTUBE` + `TUMAT` + `ORIMAT` + `pplib/CGETOD` | 路由链遍历与隐式管身 |
+//! | [`catalogue_point`] | `catdblib/GATCAT` + `exprlib/EXEV*` | 目录侧 P 点求解（`SPRE→SCOM→PTSE`） |
 //! | [`elmodl`] | `build/ELMODL` + `build/LNEGIT` | 单元素建模：正体 + 负几何 CSG |
 //! | [`solid`] | `cachegml/GTGEOM` → libgm `gm_Create*` | 几何构建（挤出/基本体/回转） |
 //! | [`profile`] | `DGETI/GATPOS` 等属性读 | PLOO/PAVE、LOOP/VERT 环与高度采集 |
@@ -26,25 +28,41 @@
 // 变成整块吞掉的坏网格。取反式让 NaN 落进拒绝分支，是刻意的，不是笔误。
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
+pub mod catalogue_point;
 pub mod category;
 pub mod discretise;
+pub mod element_diff;
 pub mod elmodl;
 pub mod increment;
+pub mod ledger;
 pub mod mesh;
 pub mod pipeline;
 pub mod polyhedron;
 pub mod primitive_instance;
 pub mod profile;
+pub mod route;
 pub mod solid;
 pub mod transform;
 
-pub use category::{Category, classify};
-pub use elmodl::{GeneratedElement, ModelError};
+pub use catalogue_point::CataloguePoints;
+pub use category::{
+    BuildDisposition, Category, CompositeFamily, NounDecision, classify, decision,
+    route_container_nouns, route_member_nouns,
+};
+pub use element_diff::{ElementDiff, MemberDelta, diff_element};
+pub use elmodl::{GeneratedElement, GeometryId, ModelError};
 pub use increment::{
     IncrementError, IncrementOutcome, IncrementReport, WindowDiff, collect_window, increment_update,
 };
+pub use ledger::{ChangeKind, ChangeLedger, ChangeTally, LedgerEntry};
 pub use mesh::TriMesh;
-pub use pipeline::{GenerationOutcome, Report, generate_subtree};
+pub use pipeline::{
+    GenerationOutcome, ImpliedTubeDegenerate, ImpliedTubes, Report, generate_subtree,
+};
 pub use primitive_instance::{
     PrimitiveCacheStats, PrimitiveInstance, PrimitiveMeshKey, primitive_cache_stats,
+};
+pub use route::{
+    CatalogueNotWired, PPointResolver, Route, RouteEnd, RoutePoint, TubeGeometry, TubeOutcome,
+    TubeSlot, build_tube, orimat, tube_length, tube_outer_diameter, tumat, walk_route,
 };

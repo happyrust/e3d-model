@@ -5,8 +5,11 @@
 //! ```text
 //! gen_ams --attlib <attlib.dat> --db <ams1112_0001> --template <模板文件或目录> \
 //!         [--db-type DESI] [--sesno N] [--root w0/w1] [--out out/ams1112] \
-//!         [--no-instance-cache]
+//!         [--catalogue <ams5052_0001> ...] [--no-instance-cache]
 //! ```
+//!
+//! `--catalogue` 可重复，把 `SPRE`/`CATR` 指向的目录库一并开进同一个 [`DbSet`]。
+//! 不给也能跑，只是隐式管身的 P 点全落在 `ppoint_db_not_open` 那本账上。
 //!
 //! 产物：
 //! - `<out>/model.obj`：全部实体，一个 OBJ object 一个元素（`refno noun name`）。
@@ -33,6 +36,7 @@ struct Args {
     sesno: Option<u32>,
     root: Option<RefNo>,
     out: PathBuf,
+    catalogues: Vec<PathBuf>,
     no_instance_cache: bool,
 }
 
@@ -44,6 +48,7 @@ fn parse_args() -> anyhow::Result<Args> {
     let mut sesno = None;
     let mut root = None;
     let mut out = PathBuf::from("out/gen_ams");
+    let mut catalogues = Vec::new();
     let mut no_instance_cache = false;
 
     let mut it = std::env::args().skip(1);
@@ -57,6 +62,7 @@ fn parse_args() -> anyhow::Result<Args> {
             "--sesno" => sesno = Some(value()?.parse().context("--sesno 要无符号整数")?),
             "--root" => root = Some(parse_refno(&value()?)?),
             "--out" => out = PathBuf::from(value()?),
+            "--catalogue" => catalogues.push(PathBuf::from(value()?)),
             "--no-instance-cache" => no_instance_cache = true,
             other => bail!("不认识的参数 {other}"),
         }
@@ -69,6 +75,7 @@ fn parse_args() -> anyhow::Result<Args> {
         sesno,
         root,
         out,
+        catalogues,
         no_instance_cache,
     })
 }
@@ -117,6 +124,7 @@ fn scan_index(db_file: &Path, sesno: Option<u32>) -> anyhow::Result<IndexCensus>
 
 #[derive(serde::Serialize)]
 struct ElementInvariants {
+    geometry_id: e3d_model::GeometryId,
     refno: String,
     noun: String,
     name: Option<String>,
@@ -260,6 +268,30 @@ fn main() -> anyhow::Result<()> {
         args.db_file.display()
     );
 
+    // 目录库跟设计库一个池子：P 点在 SPRE→SCOM→PTSE 链的另一头，跨库。
+    // 没给 --catalogue 就别去找 CATA 模板，免得模板目录里没有它时白报一个错。
+    let catalogue_template = if args.catalogues.is_empty() {
+        PathBuf::new()
+    } else {
+        template_file_for(
+            if args.template.is_dir() {
+                &args.template
+            } else {
+                args.template.parent().unwrap_or(Path::new("."))
+            },
+            "CATA",
+        )?
+    };
+    for file in &args.catalogues {
+        let cat_dbno = set.add_db(DbFilePin {
+            file: file.clone(),
+            template: catalogue_template.clone(),
+            db_type: Some("CATA".to_string()),
+            sesno: None,
+        })?;
+        println!("目录库 {} 打开为 dbno={cat_dbno}", file.display());
+    }
+
     // 只在从头整库生成时才拿索引总数当判据；`--root` 是子树，对不上是应该的。
     let (roots, index_total) = match args.root {
         Some(refno) => (vec![refno], None),
@@ -337,6 +369,7 @@ fn main() -> anyhow::Result<()> {
             components.sort_by(|a, b| b.volume_mm3.total_cmp(&a.volume_mm3));
             let (owner_desc, ordinal) = keys.get(&generated.refno).cloned().unwrap_or((None, 0));
             invariants.push(ElementInvariants {
+                geometry_id: generated.geometry_id.clone(),
                 refno: generated.refno.to_string(),
                 noun: generated.noun.clone(),
                 name: generated.name.clone(),
@@ -361,8 +394,8 @@ fn main() -> anyhow::Result<()> {
             });
             *noun_counts.entry(generated.noun.clone()).or_insert(0) += 1;
             let label = match &generated.name {
-                Some(name) => format!("{} {} {}", generated.refno, generated.noun, name),
-                None => format!("{} {}", generated.refno, generated.noun),
+                Some(name) => format!("{} {} {}", generated.geometry_id, generated.noun, name),
+                None => format!("{} {}", generated.geometry_id, generated.noun),
             };
             index_offset = mesh.write_obj_object(&mut obj, &label, index_offset)?;
         }
