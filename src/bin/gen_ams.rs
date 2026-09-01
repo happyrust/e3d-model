@@ -5,11 +5,17 @@
 //! ```text
 //! gen_ams --attlib <attlib.dat> --db <ams1112_0001> --template <模板文件或目录> \
 //!         [--db-type DESI] [--sesno N] [--root w0/w1] [--out out/ams1112] \
-//!         [--catalogue <ams5052_0001> ...] [--route-only] [--no-instance-cache]
+//!         [--catalogue <ams5052_0001> ...] [--project-dir <库目录> ...] \
+//!         [--route-only] [--no-instance-cache]
 //! ```
 //!
 //! `--catalogue` 可重复，把 `SPRE`/`CATR` 指向的目录库一并开进同一个 [`DbSet`]。
 //! 不给也能跑，只是隐式管身的 P 点全落在 `ppoint_db_not_open` 那本账上。
+//!
+//! `--project-dir` 可重复：扫这些目录（只扫本层）建「库号 → 文件」表，引用跳到
+//! 没开过的库时按需自动开，模板按库类型从 `--template` 的目录派生——一个目录顶
+//! 一串 `--catalogue`。两者可并用：`add_db` 先登记的文件不会被 resolver 顶掉。
+//! 目录仍然是显式给的，这条不猜安装位置的边界没有动。
 //!
 //! 产物：
 //! - `<out>/model.obj`：全部实体，一个 OBJ object 一个元素（`refno noun name`）。
@@ -26,6 +32,7 @@ use e3d_io::db_element::{DbFilePin, DbSet, template_file_for};
 use e3d_io::engine::{ReadOnlyEngine, ScanTier};
 use e3d_io::refno::RefNo;
 use e3d_model::catalogue::CatalogueMeshCache;
+use e3d_model::db_discovery::DirectoryDbResolver;
 use e3d_model::mesh::TriMesh;
 use e3d_model::pipeline::{GenerationOutcome, Report, generate_subtree_with_cache};
 
@@ -38,6 +45,7 @@ struct Args {
     root: Option<RefNo>,
     out: PathBuf,
     catalogues: Vec<PathBuf>,
+    project_dirs: Vec<PathBuf>,
     route_only: bool,
     no_instance_cache: bool,
 }
@@ -51,6 +59,7 @@ fn parse_args() -> anyhow::Result<Args> {
     let mut root = None;
     let mut out = PathBuf::from("out/gen_ams");
     let mut catalogues = Vec::new();
+    let mut project_dirs = Vec::new();
     let mut route_only = false;
     let mut no_instance_cache = false;
 
@@ -66,6 +75,7 @@ fn parse_args() -> anyhow::Result<Args> {
             "--root" => root = Some(parse_refno(&value()?)?),
             "--out" => out = PathBuf::from(value()?),
             "--catalogue" => catalogues.push(PathBuf::from(value()?)),
+            "--project-dir" => project_dirs.push(PathBuf::from(value()?)),
             "--route-only" => route_only = true,
             "--no-instance-cache" => no_instance_cache = true,
             other => bail!("不认识的参数 {other}"),
@@ -80,6 +90,7 @@ fn parse_args() -> anyhow::Result<Args> {
         root,
         out,
         catalogues,
+        project_dirs,
         route_only,
         no_instance_cache,
     })
@@ -296,13 +307,39 @@ fn main() -> anyhow::Result<()> {
     }
     let t0 = std::time::Instant::now();
 
+    // 模板目录：`--template` 给目录就是它本身，给文件就是它躺的目录。
+    // resolver 按库类型派生模板、显式 `--catalogue` 取 CATA 模板，都从这里出。
+    let template_dir = if args.template.is_dir() {
+        args.template.clone()
+    } else {
+        args.template
+            .parent()
+            .unwrap_or(Path::new("."))
+            .to_path_buf()
+    };
     let template_file = if args.template.is_dir() {
         template_file_for(&args.template, &args.db_type)?
     } else {
         args.template.clone()
     };
 
-    let set = std::sync::Arc::new(DbSet::with_attlib_file(&args.attlib)?);
+    let set = if args.project_dirs.is_empty() {
+        std::sync::Arc::new(DbSet::with_attlib_file(&args.attlib)?)
+    } else {
+        let resolver = DirectoryDbResolver::scan(&args.project_dirs, &template_dir)?;
+        for skipped in resolver.skipped() {
+            println!(
+                "project-dir 诊断 {}: {}",
+                skipped.file.display(),
+                skipped.reason
+            );
+        }
+        println!("{}", resolver.summary());
+        std::sync::Arc::new(DbSet::with_attlib_file_and_resolver(
+            &args.attlib,
+            Box::new(resolver),
+        )?)
+    };
     let dbno = set.add_db(DbFilePin {
         file: args.db_file.clone(),
         template: template_file,
@@ -320,14 +357,7 @@ fn main() -> anyhow::Result<()> {
     let catalogue_template = if args.catalogues.is_empty() {
         PathBuf::new()
     } else {
-        template_file_for(
-            if args.template.is_dir() {
-                &args.template
-            } else {
-                args.template.parent().unwrap_or(Path::new("."))
-            },
-            "CATA",
-        )?
+        template_file_for(&template_dir, "CATA")?
     };
     for file in &args.catalogues {
         let cat_dbno = set.add_db(DbFilePin {
@@ -466,7 +496,7 @@ fn main() -> anyhow::Result<()> {
             .collect();
         let keys = owner_keys(&set, &owners)?;
         for generated in &elements {
-            let mesh = TriMesh::from_manifold(&generated.solid);
+            let mesh = generated.mesh();
             let (lo, hi) = mesh.aabb().unwrap_or(([0.0; 3], [0.0; 3]));
             let inv_world = generated.world.inverse();
             let local_vertices = mesh.vertices.iter().map(|vertex| {
@@ -477,8 +507,7 @@ fn main() -> anyhow::Result<()> {
             let (local_lo, local_hi) =
                 aabb_of_points(local_vertices).unwrap_or(([0.0; 3], [0.0; 3]));
             let mut components = generated
-                .solid
-                .decompose()
+                .components()
                 .into_iter()
                 .map(|component| {
                     let component_mesh = TriMesh::from_manifold(&component);
@@ -507,7 +536,7 @@ fn main() -> anyhow::Result<()> {
                 name: generated.name.clone(),
                 owner_desc,
                 ordinal,
-                volume_mm3: generated.solid.volume(),
+                volume_mm3: generated.volume(),
                 aabb_min: lo,
                 aabb_max: hi,
                 local_aabb_min: local_lo,
@@ -519,7 +548,7 @@ fn main() -> anyhow::Result<()> {
                     generated.world.w_axis.truncate().to_array(),
                 ],
                 triangles: mesh.triangle_count(),
-                genus: generated.solid.genus(),
+                genus: generated.genus(),
                 components,
                 negatives_applied: generated.negatives_applied,
                 negatives_skipped: generated.negatives_skipped.len(),

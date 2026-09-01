@@ -738,6 +738,24 @@ mod tests {
     }
 
     #[test]
+    fn snout_places_dbot_on_negative_z_and_dtop_on_positive_z() {
+        let (dbot, dtop, height) = (80.0, 20.0, 30.0);
+        let mesh = crate::mesh::TriMesh::from_manifold(
+            &snout_solid(dbot, dtop, height, 0.0, 0.0).unwrap(),
+        );
+        let end_radius = |z: f64| {
+            mesh.vertices
+                .iter()
+                .filter(|vertex| (vertex[2] - z).abs() < 1e-9)
+                .map(|vertex| vertex[0].hypot(vertex[1]))
+                .fold(0.0_f64, f64::max)
+        };
+
+        assert!((end_radius(-height / 2.0) - dbot / 2.0).abs() < 1e-9);
+        assert!((end_radius(height / 2.0) - dtop / 2.0).abs() < 1e-9);
+    }
+
+    #[test]
     fn rvm_snout_with_two_box_trims_and_a_central_hole_keeps_the_observed_surface() {
         let positive = snout_solid(55.0, 32.0, 30.0, 0.0, 0.0).unwrap();
         let trim = box_solid(220.0, 55.0, 220.0).unwrap();

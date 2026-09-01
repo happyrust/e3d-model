@@ -50,6 +50,8 @@ pub struct CatalogueMeshCacheStats {
     pub evaluated_nsbo: usize,
     pub source_nlcy: usize,
     pub evaluated_nlcy: usize,
+    pub source_nsex: usize,
+    pub evaluated_nsex: usize,
     pub source_scyl: usize,
     pub evaluated_scyl: usize,
     pub source_lcyl: usize,
@@ -111,6 +113,8 @@ impl CatalogueMeshCacheStats {
             evaluated_nsbo: delta!(evaluated_nsbo),
             source_nlcy: delta!(source_nlcy),
             evaluated_nlcy: delta!(evaluated_nlcy),
+            source_nsex: delta!(source_nsex),
+            evaluated_nsex: delta!(evaluated_nsex),
             source_scyl: delta!(source_scyl),
             evaluated_scyl: delta!(evaluated_scyl),
             source_lcyl: delta!(source_lcyl),
@@ -147,6 +151,8 @@ impl CatalogueMeshCacheStats {
         add!(evaluated_nsbo);
         add!(source_nlcy);
         add!(evaluated_nlcy);
+        add!(source_nsex);
+        add!(evaluated_nsex);
         add!(source_scyl);
         add!(evaluated_scyl);
         add!(source_lcyl);
@@ -232,6 +238,11 @@ enum CatalogueCutKey {
         parameter_bits: [u64; 7],
         transform_bits: [u64; 16],
     },
+    /// NSEX：与正体 SEXT 同一份轮廓键（环组 + 高度），外加放置矩阵。
+    Extrusion {
+        profile: SextMeshKey,
+        transform_bits: [u64; 16],
+    },
 }
 
 struct CachedCatalogueMesh {
@@ -314,6 +325,12 @@ enum EvaluatedCatalogueCut {
         parameters: [f64; 7],
         transform: DMat4,
     },
+    /// NSEX 负挤出：轮廓与放置和正体 SEXT 同一个求值器给出。
+    Extrusion {
+        rings: Vec<Vec<[f64; 2]>>,
+        height: f64,
+        transform: DMat4,
+    },
 }
 
 /// Result of evaluating one design member's catalogue program.
@@ -323,6 +340,60 @@ pub struct CatalogueMemberBuild {
     /// those local failures visible instead of turning the whole member into a
     /// false failure or silently dropping them.
     pub diagnostics: Vec<String>,
+}
+
+/// 表现级（`REPRE LEVEL`）。几何集成员的 `LEVE=[lo,hi]` 与它比较决定画不画。
+///
+/// 默认 6：E3D GUI 交互与 `GenModelRvmExport` addin 导出（`GENMODEL_RVM_LEVEL=6`）
+/// 都在这一级。TTY 裸会话实测在 0 级（`1RX07-LCT.rvm`：同一目录件族只出
+/// `LEVE=[0,0]` 的 CABLEWAY 盒，`[1,10]` 的 BOARD/RESERVED 全不在）。
+/// 对拍不同口径的基准时用 `E3D_REPRE_LEVEL` 覆盖本轮进程。
+fn repre_level() -> u32 {
+    static LEVEL: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *LEVEL.get_or_init(|| {
+        std::env::var("E3D_REPRE_LEVEL")
+            .ok()
+            .and_then(|value| value.trim().parse().ok())
+            .unwrap_or(6)
+    })
+}
+
+/// E3D 的几何集成员显示过滤（GTGEOM 侧 `sub_107149B0` 那一签：
+/// `LEVE[2]/OBST/TVIS/BVIS/CLFL/TUFL`），落到装配路上按 E3D RVM 已坐实的两条筛：
+///
+/// - **LEVE 区间**：`lo <= level` 且（`hi == 0` 视为不设上限，否则 `level <= hi`）。
+///   证据：`C-IY-1R330-B.rvm`（addin 导出，level 6）里 `LEVE=[0,0]` 的 CABLEWAY、
+///   `[1,10]` 的 BOARD/RESERVED 同时在场——`[0,0]` 若按闭区间读在 6 级必被排掉，
+///   所以上限 0 只能读作「不设限」；`1RX07-LCT.rvm`（TTY 裸会话，level 0）里
+///   `[1,10]` 全不在而 `[0,0]` 在，钉住下限按闭区间读。
+/// - **OBST == 2 且 TUFL == false**（硬障碍体）：`repre obst off` 口径下
+///   ACP1000 托盘的 OBSTRUCTION 盒（OBST=2/TUFL=false）不导出、RESERVED
+///   （OBST=1/TUFL=false）导出。但**管道目录的实体成员也顶着 OBST=2**
+///   （AAEA 弯头的 SCTO、CNPE 阀体的 LSNO 都是 OBST=2/TUFL=true），显然照画——
+///   单看 OBST 会把整个管件族误杀，两旗联判是现有四份语料唯一都能过的读法。
+///
+/// `TUFL` 与 `CLFL` **单独都不是装配路的隐藏条件**：`C-IY` 基准里
+/// `TUFL=false` 的 RESERVED 盒被 E3D 导出；HANG 24381/177986 的 HELEMENT
+/// 则把 `CLFL=true` 的三个 SCYL 和一个 SEXT 全部导出。后者也是把 CLFL 当作
+/// “中心线即隐藏”会整件漏掉 HELE 的直接反例。
+fn display_filtered(primitive: &DbElement) -> Result<Option<&'static str>, ModelError> {
+    if let Some(DescriptorValue::RawWords(words) | DescriptorValue::WordArray(words)) =
+        primitive.attribute("LEVE")?
+        && let (Some(&lo), Some(&hi)) = (words.first(), words.get(1))
+    {
+        let level = repre_level();
+        if lo > level || (hi != 0 && hi < level) {
+            return Ok(Some("leve"));
+        }
+    }
+    let hard_obstruction = matches!(
+        primitive.attribute("OBST")?,
+        Some(DescriptorValue::Word { raw: 2, .. }) | Some(DescriptorValue::Int(2))
+    );
+    if hard_obstruction && primitive.get_bool("TUFL")? == Some(false) {
+        return Ok(Some("obst"));
+    }
+    Ok(None)
 }
 
 /// Build the visible catalogue geometry carried by one design route member.
@@ -364,10 +435,30 @@ pub fn model_catalogue_member_with_cache(
     let mut placed_parts = HashSet::new();
     let mut member_duplicates = 0usize;
     let mut catalogue_negatives = 0usize;
+    // 过滤记录与 diagnostics 分开收：`failed` 的账目 = diagnostics.len()，
+    // 被表现级筛掉不是失败，不能混进去。
+    let mut display_filter_notes = Vec::new();
     let mut diagnostics = Vec::new();
+    let mut saw_display_primitive = false;
+    let mut all_display_primitives_are_clfl = true;
 
     for primitive in geometry.members()? {
         let primitive_noun = primitive.element_type()?;
+        // LINE 成员本来就只记账不建体，不进显示过滤，保住 centre_lines 的账目口径。
+        if primitive_noun != "LINE"
+            && let Some(reason) = display_filtered(&primitive)?
+        {
+            display_filter_notes.push(format!(
+                "catalogue primitive {} noun {primitive_noun} display-filtered by {reason} (repre level {})",
+                primitive.refno(),
+                repre_level(),
+            ));
+            continue;
+        }
+        if primitive_noun != "LINE" {
+            saw_display_primitive = true;
+            all_display_primitives_are_clfl &= primitive.get_bool("CLFL")? == Some(true);
+        }
         match primitive_noun.as_str() {
             "SEXT" => {
                 sext_total += 1;
@@ -702,7 +793,9 @@ pub fn model_catalogue_member_with_cache(
             )),
         }
     }
+    let display_filtered_members = display_filter_notes.len();
     if solids.is_empty() {
+        diagnostics.extend(display_filter_notes);
         return Ok(CatalogueMemberBuild {
             generated: None,
             diagnostics,
@@ -716,17 +809,29 @@ pub fn model_catalogue_member_with_cache(
         }));
     }
     let world = world_matrix(member)?;
+    // E3D keeps a CLFL display program as independent RVM components even when
+    // its primitives overlap.  Require the whole visible program to be CLFL so
+    // a mixed catalogue solid does not accidentally bypass its boolean compose.
+    let preserve_components = saw_display_primitive && all_display_primitives_are_clfl;
+    let parts = preserve_components.then(|| {
+        solids
+            .iter()
+            .map(|solid| placed(solid, world))
+            .collect::<Vec<_>>()
+    });
     let noun = member.element_type()?;
     let notes = vec![format!(
-        "catalogue assembly: built={} sext_total={} sext_zero_height={} failed={} centre_lines={} duplicate_placements={} component={}",
+        "catalogue assembly: built={} sext_total={} sext_zero_height={} failed={} centre_lines={} display_filtered={} duplicate_placements={} component={}",
         solids.len(),
         sext_total,
         zero_height,
         diagnostics.len(),
         ignored_lines,
+        display_filtered_members,
         member_duplicates,
         component.refno()
     )];
+    diagnostics.extend(display_filter_notes);
     Ok(CatalogueMemberBuild {
         generated: Some(GeneratedElement {
             geometry_id: GeometryId::Element {
@@ -736,6 +841,7 @@ pub fn model_catalogue_member_with_cache(
             noun,
             name: member.stored_name()?,
             solid: placed(&local, world),
+            parts,
             world,
             primitive_instance: None,
             negatives_applied: catalogue_negatives,
@@ -783,6 +889,7 @@ fn model_hvac_rectangular_basic(
             noun,
             name: member.stored_name()?,
             solid: placed(&built.solid, world),
+            parts: None,
             world,
             primitive_instance: built.instance,
             negatives_applied: 0,
@@ -821,9 +928,6 @@ fn evaluate_lpyr(
     pyramid: &DbElement,
     env: &DbElementParamEnv,
 ) -> Result<Option<EvaluatedPyramid>, ModelError> {
-    if pyramid.get_bool("TUFL")? == Some(false) {
-        return Ok(None);
-    }
     let mut xtop = required_number(pyramid, "PBTP", env, "catalogue LPYR")?.abs();
     let mut ytop = required_number(pyramid, "PCTP", env, "catalogue LPYR")?.abs();
     let mut xbot = required_number(pyramid, "PBBT", env, "catalogue LPYR")?.abs();
@@ -894,10 +998,6 @@ fn evaluate_catalogue_snout(
     env: &DbElementParamEnv,
     noun: &str,
 ) -> Result<Option<EvaluatedSnout>, ModelError> {
-    if snout.get_bool("TUFL")? == Some(false) {
-        return Ok(None);
-    }
-
     let (dbot, dtop, height, xoff, centre, rotation) = if noun == "SCON" {
         let diameter = required_number(snout, "PDIA", env, "catalogue SCON")?.abs();
         let distance = required_number(snout, "PDIS", env, "catalogue SCON")?;
@@ -922,39 +1022,18 @@ fn evaluate_catalogue_snout(
             rotation,
         )
     } else {
-        let mut dbot = required_number(snout, "PBDM", env, "catalogue LSNO")?.abs();
-        let mut dtop = required_number(snout, "PTDM", env, "catalogue LSNO")?.abs();
+        let dbot = required_number(snout, "PBDM", env, "catalogue LSNO")?.abs();
+        let dtop = required_number(snout, "PTDM", env, "catalogue LSNO")?.abs();
         let bottom = required_number(snout, "PBDI", env, "catalogue LSNO")?;
         let top = required_number(snout, "PTDI", env, "catalogue LSNO")?;
-        let mut offset = required_number(snout, "POFF", env, "catalogue LSNO")?;
-        let mut pa = catalogue_axis(member, component, &required_words(snout, "PAAX")?)?
+        let offset = required_number(snout, "POFF", env, "catalogue LSNO")?;
+        let pa = catalogue_axis(member, component, &required_words(snout, "PAAX")?)?
             .ok_or_else(|| missing(snout, "PAAX", "catalogue LSNO axis"))?;
         let pb = catalogue_axis(member, component, &required_words(snout, "PBAX")?)?
             .ok_or_else(|| missing(snout, "PBAX", "catalogue LSNO offset axis"))?;
-        let mut height = top - bottom;
-        if height < 0.0 {
-            height = -height;
-            pa.direction = -pa.direction;
-            offset = -offset;
-            std::mem::swap(&mut dbot, &mut dtop);
-        }
-        let z = pa.direction.normalize_or_zero();
-        let x = (pb.direction - z * pb.direction.dot(z)).normalize_or_zero();
-        let y = z.cross(x).normalize_or_zero();
-        if x.length_squared() <= AXIS_TOL || y.length_squared() <= AXIS_TOL {
-            return Err(ModelError::Solid(SolidError::Degenerate {
-                what: "catalogue LSNO axes",
-                detail: format!("PAAX={:?}, PBAX={:?}", pa.direction, pb.direction),
-            }));
-        }
-        (
-            dbot,
-            dtop,
-            height,
-            offset,
-            pa.origin + z * ((bottom + top) * 0.5) + x * (offset * 0.5),
-            DMat3::from_cols(x, y, z),
-        )
+        let (dbot, dtop, height, offset) = normalize_lsnout_span(dbot, dtop, bottom, top, offset);
+        let (centre, rotation) = lsnout_frame(pa, pb, bottom, top, offset)?;
+        (dbot, dtop, height, offset, centre, rotation)
     };
     if height < HEIGHT_TOL_MM || dbot.max(dtop) < HEIGHT_TOL_MM {
         return Ok(None);
@@ -968,6 +1047,50 @@ fn evaluate_catalogue_snout(
         parameters,
         transform: DMat4::from_translation(centre) * DMat4::from_mat3(rotation),
     }))
+}
+
+fn normalize_lsnout_span(
+    dbot: f64,
+    dtop: f64,
+    bottom: f64,
+    top: f64,
+    offset: f64,
+) -> (f64, f64, f64, f64) {
+    let height = top - bottom;
+    if height < 0.0 {
+        // Re-parameterising the span from low to high swaps both end labels
+        // and the end-to-end eccentric offset. PAAX itself remains unchanged.
+        (dtop, dbot, -height, -offset)
+    } else {
+        (dbot, dtop, height, offset)
+    }
+}
+
+fn lsnout_frame(
+    pa: crate::catalogue_point::CatalogueAxis,
+    pb: crate::catalogue_point::CatalogueAxis,
+    bottom: f64,
+    top: f64,
+    offset: f64,
+) -> Result<(DVec3, DMat3), ModelError> {
+    // PBDI/PTDI are coordinates along the source PAAX. A negative span swaps
+    // mesh end labels, but must not reverse or relocate the primitive axis.
+    let z = pa.direction.normalize_or_zero();
+    let x = (pb.direction - z * pb.direction.dot(z)).normalize_or_zero();
+    let y = z.cross(x).normalize_or_zero();
+    if z.length_squared() <= AXIS_TOL
+        || x.length_squared() <= AXIS_TOL
+        || y.length_squared() <= AXIS_TOL
+    {
+        return Err(ModelError::Solid(SolidError::Degenerate {
+            what: "catalogue LSNO axes",
+            detail: format!("PAAX={:?}, PBAX={:?}", pa.direction, pb.direction),
+        }));
+    }
+    Ok((
+        pa.origin + z * ((bottom + top) * 0.5) + x * (offset * 0.5),
+        DMat3::from_cols(x, y, z),
+    ))
 }
 
 fn evaluate_nlpy(
@@ -1023,9 +1146,6 @@ fn evaluate_sext(
     sext: &DbElement,
     env: &DbElementParamEnv,
 ) -> Result<Option<EvaluatedSext>, ModelError> {
-    if sext.get_bool("TUFL")? == Some(false) {
-        return Ok(None);
-    }
     let height = required_number(sext, "PHEI", env, "catalogue SEXT")?.abs();
     if height < HEIGHT_TOL_MM {
         return Ok(None);
@@ -1101,9 +1221,6 @@ fn evaluate_sbox(
     env: &DbElementParamEnv,
     cache: &mut CatalogueMeshCache,
 ) -> Result<Option<EvaluatedSbox>, ModelError> {
-    if sbox.get_bool("TUFL")? == Some(false) {
-        return Ok(None);
-    }
     let dimensions = DVec3::new(
         required_number(sbox, "PXLE", env, "catalogue SBOX")?.abs(),
         required_number(sbox, "PYLE", env, "catalogue SBOX")?.abs(),
@@ -1166,6 +1283,27 @@ fn evaluate_sbox(
                     child.refno()
                 )),
             }
+        } else if noun.eq_ignore_ascii_case("NSEX") {
+            // CRCATI 942751/1008005：正体 SEXT 与负体 NSEX 落同一个臂
+            // （`QSSEXT` 0x103B7FCC，高度 ≥1e-6 才建），几何完全同构、负性由
+            // 消费方施加，且**没有** NSCY 那条 +0.01 轴向过切——反编译核实，
+            // 见方案文档 §2.1/§2.3。放置照 NLPY 的样式回到 SBOX 局部系。
+            cache.stats.source_nsex += 1;
+            match evaluate_sext(member, component, &child, env) {
+                Ok(Some(cutter)) => {
+                    cache.stats.evaluated_nsex += 1;
+                    cutters.push(EvaluatedCatalogueCut::Extrusion {
+                        rings: cutter.rings,
+                        height: cutter.height,
+                        transform: DMat4::from_translation(-position) * cutter.transform,
+                    });
+                }
+                Ok(None) => {}
+                Err(error) => diagnostics.push(format!(
+                    "catalogue negative {} skipped by Core-style local failure: {error}",
+                    child.refno()
+                )),
+            }
         } else {
             diagnostics.push(format!(
                 "catalogue negative {} noun {noun} is not implemented",
@@ -1197,6 +1335,14 @@ fn evaluate_sbox(
                 transform,
             } => Ok(CatalogueCutKey::Pyramid {
                 parameter_bits: parameters.map(|value| value.to_bits()),
+                transform_bits: matrix_bits(*transform),
+            }),
+            EvaluatedCatalogueCut::Extrusion {
+                rings,
+                height,
+                transform,
+            } => Ok(CatalogueCutKey::Extrusion {
+                profile: sext_mesh_key(rings, *height)?,
                 transform_bits: matrix_bits(*transform),
             }),
         })
@@ -1322,9 +1468,6 @@ fn evaluate_catalogue_cylinder(
     env: &DbElementParamEnv,
     noun: &str,
 ) -> Result<Option<EvaluatedCylinder>, ModelError> {
-    if cylinder.get_bool("TUFL")? == Some(false) {
-        return Ok(None);
-    }
     let diameter = required_number(cylinder, "PDIA", env, "catalogue cylinder")?.abs();
     let mut axis = catalogue_axis(member, component, &required_words(cylinder, "PAXI")?)?
         .ok_or_else(|| missing(cylinder, "PAXI", "catalogue cylinder axis"))?;
@@ -1345,13 +1488,25 @@ fn evaluate_catalogue_cylinder(
     if height < HEIGHT_TOL_MM {
         return Ok(None);
     }
-    let rotation = orimat(axis.direction).ok_or_else(|| {
+    let frame = orimat(axis.direction).ok_or_else(|| {
         ModelError::Solid(SolidError::Degenerate {
             what: "catalogue cylinder axis",
             detail: format!("PAXI={:?}", axis.direction),
         })
     })?;
-    let centre = axis.origin + axis.direction * centre_distance;
+    // CLFL cylinders are exported by E3D as centre-line primitives: PAXI is
+    // the frame Z/datum direction, while the RVM Cylinder's longitudinal axis
+    // is that frame's Y.  Ordinary catalogue solids keep the historical
+    // QSCYLI convention where PAXI is the solid axis itself.
+    let (rotation, centre) = if cylinder.get_bool("CLFL")? == Some(true) && noun == "SCYL" {
+        let rotation = frame * DMat3::from_rotation_x(-std::f64::consts::FRAC_PI_2);
+        (
+            rotation,
+            axis.origin + axis.direction * centre_distance + rotation.z_axis * (height * 0.5),
+        )
+    } else {
+        (frame, axis.origin + axis.direction * centre_distance)
+    };
     Ok(Some(EvaluatedCylinder {
         mesh_key: CatalogueMeshKey::Cylinder {
             tessellation_version: CYLINDER_TESSELLATION_VERSION,
@@ -1394,9 +1549,6 @@ fn evaluate_catalogue_sphere(
     sphere: &DbElement,
     env: &DbElementParamEnv,
 ) -> Result<Option<EvaluatedSphere>, ModelError> {
-    if sphere.get_bool("TUFL")? == Some(false) {
-        return Ok(None);
-    }
     let diameter = required_number(sphere, "PDIA", env, "catalogue sphere")?.abs();
     let radius = diameter * 0.5;
     if !(radius > f64::EPSILON) {
@@ -1430,9 +1582,6 @@ fn evaluate_catalogue_torus(
     env: &DbElementParamEnv,
     noun: &str,
 ) -> Result<Option<EvaluatedTorus>, ModelError> {
-    if torus.get_bool("TUFL")? == Some(false) {
-        return Ok(None);
-    }
     let pa = catalogue_axis(member, component, &required_words(torus, "PAAX")?)?
         .ok_or_else(|| missing(torus, "PAAX", "catalogue torus axis"))?;
     let pb = catalogue_axis(member, component, &required_words(torus, "PBAX")?)?
@@ -1565,6 +1714,12 @@ fn build_sbox(evaluated: &EvaluatedSbox) -> Result<Manifold, ModelError> {
                     *transform,
                 )
             }
+            // NSEX 与正体 SEXT 同一条建体路（extrude_rings），无过切。
+            EvaluatedCatalogueCut::Extrusion {
+                rings,
+                height,
+                transform,
+            } => (extrude_rings(rings.clone(), *height)?, *transform),
         };
         body = &body - &placed(&local, transform);
     }
@@ -1683,6 +1838,48 @@ mod tests {
     use super::*;
 
     #[test]
+    fn negative_lsnout_span_reparameterizes_ends_without_reversing_paax() {
+        assert_eq!(
+            normalize_lsnout_span(84.42, 66.33, 115.2, 0.0, 12.06),
+            (66.33, 84.42, 115.2, -12.06)
+        );
+
+        let (centre, rotation) = lsnout_frame(
+            crate::catalogue_point::CatalogueAxis {
+                origin: DVec3::new(-144.0, 0.0, 0.0),
+                direction: DVec3::X,
+            },
+            crate::catalogue_point::CatalogueAxis {
+                origin: DVec3::ZERO,
+                direction: DVec3::Z,
+            },
+            129.6,
+            14.4,
+            -12.06,
+        )
+        .unwrap();
+        assert!(centre.abs_diff_eq(DVec3::new(-72.0, 0.0, -6.03), 1.0e-9));
+        assert!(rotation.z_axis.abs_diff_eq(DVec3::X, 1.0e-9));
+
+        let (centre, rotation) = lsnout_frame(
+            crate::catalogue_point::CatalogueAxis {
+                origin: DVec3::new(144.0, 0.0, 0.0),
+                direction: -DVec3::X,
+            },
+            crate::catalogue_point::CatalogueAxis {
+                origin: DVec3::ZERO,
+                direction: -DVec3::Z,
+            },
+            129.6,
+            14.4,
+            -12.06,
+        )
+        .unwrap();
+        assert!(centre.abs_diff_eq(DVec3::new(72.0, 0.0, 6.03), 1.0e-9));
+        assert!(rotation.z_axis.abs_diff_eq(-DVec3::X, 1.0e-9));
+    }
+
+    #[test]
     fn rectangular_hvac_specs_extract_one_canonical_box() {
         let mut straight = vec![0.0; 90];
         straight[1] = 580.0;
@@ -1732,6 +1929,8 @@ mod tests {
                 evaluated_nsbo: value,
                 source_nlcy: value,
                 evaluated_nlcy: value,
+                source_nsex: value,
+                evaluated_nsex: value,
                 source_scyl: value,
                 evaluated_scyl: value,
                 source_lcyl: value,
@@ -1798,5 +1997,38 @@ mod tests {
         let centre = axis * (distance + height * 0.5);
         assert_eq!(centre, DVec3::ZERO);
         assert_eq!(height + NSCY_AXIAL_OVERCUT_MM, 5.01);
+    }
+
+    /// NSEX 从 SBOX 上扣掉的必须恰好是「轮廓 × 高度」的棱柱——CRCATI 里
+    /// 942751/1008005 正负同臂、几何同构、**无过切**（对比 NSCY 的 +0.01）。
+    /// 轮廓贯穿箱体时，体积差就是精确的解析值。
+    #[test]
+    fn an_nsex_cutter_removes_exactly_the_profile_prism() {
+        // 40×40 方轮廓、贯穿 Z 向 30mm 高的 100×100 箱体。
+        let ring = vec![[-20.0, -20.0], [20.0, -20.0], [20.0, 20.0], [-20.0, 20.0]];
+        let evaluated = EvaluatedSbox {
+            mesh_key: CatalogueMeshKey::Sbox(SboxMeshKey {
+                tessellation_version: SBOX_TESSELLATION_VERSION,
+                dimension_bits: [0; 3],
+                cutters: Vec::new(),
+            }),
+            dimensions: DVec3::new(100.0, 100.0, 30.0),
+            cutters: vec![EvaluatedCatalogueCut::Extrusion {
+                rings: vec![ring],
+                // 贯穿并两侧探出：没有过切，探出必须来自轮廓自己的高度。
+                height: 40.0,
+                transform: DMat4::from_translation(DVec3::new(0.0, 0.0, -20.0)),
+            }],
+            transform: DMat4::IDENTITY,
+            diagnostics: Vec::new(),
+        };
+        let body = build_sbox(&evaluated).expect("sbox with NSEX cutter");
+        let expected = 100.0 * 100.0 * 30.0 - 40.0 * 40.0 * 30.0;
+        assert!(
+            (body.volume() - expected).abs() < 1e-6,
+            "体积 {} 应为 {expected}",
+            body.volume()
+        );
+        assert_eq!(body.genus(), 1, "贯穿孔应当带来一个环柄");
     }
 }

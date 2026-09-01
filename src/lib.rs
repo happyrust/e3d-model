@@ -31,6 +31,7 @@
 pub mod catalogue;
 pub mod catalogue_point;
 pub mod category;
+pub mod db_discovery;
 pub mod discretise;
 pub mod element_diff;
 pub mod elmodl;
@@ -55,6 +56,7 @@ pub use category::{
     BuildDisposition, Category, CompositeFamily, NounDecision, classify, decision,
     route_container_nouns, route_member_nouns,
 };
+pub use db_discovery::{DirectoryDbResolver, DiscoveredDb, DiscoveryError, SkippedFile};
 pub use element_diff::{ElementDiff, MemberDelta, diff_element};
 pub use elmodl::{GeneratedElement, GeometryId, ModelError};
 pub use extrusion_reuse::ExtrusionReuseStats;

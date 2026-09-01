@@ -1,10 +1,17 @@
 //! 路由遍历与隐式管身（对标 `cachelib/GTTUBE` 取两端、`cachelib/TUMAT` 定位、
 //! core.dll `ORIMAT` 定向、`pplib/CGETOD` 取外径；几何入口 `cachegml/GTTUBG`）。
 //!
-//! 五个路由容器（`BRAN`/`HANG`/`LUG`/`SUPC`/`TRUNNI`）走同一套：链头由容器的
-//! `HPOS` 给，链尾由 `TPOS` 给，相邻两件之间补一根管身。`PDMS_HangElement` 的
-//! `nextElement` / `prevElement` 走到头分别回 `TposElement` / `HposElement`，
-//! 与 BRAN 逐点同构，**不要**为 HANG 另起分支（`task_plan.md` §2.6）。
+//! 五个路由容器（`BRAN`/`HANG`/`LUG`/`SUPC`/`TRUNNI`）的**遍历**走同一套：链头由
+//! 容器的 `HPOS` 给，链尾由 `TPOS` 给，相邻两件之间是一条槽位。`PDMS_HangElement`
+//! 的 `nextElement` / `prevElement` 走到头分别回 `TposElement` / `HposElement`，
+//! 与 BRAN 逐点同构，走法上**不要**为 HANG 另起分支（`task_plan.md` §2.6）。
+//!
+//! 但「槽位上补不补管身」不归这里管，归
+//! [`crate::category::DERIVED_ROUTE_CONTAINER_NOUNS`]：E3D 只为 BRAN/LUG/SUPC/
+//! TRUNNI 四族在成员间补管，**HANG 不补**（RVM 24381/177986 只导出 PCLAMP 与
+//! HELEMENT 两组几何；把两个独立支撑件当管路串起来会凭空得到一根 33.8m 的假管）。
+//! 管线与增量都按 [`crate::category::is_derived_unit`] 收口：HANG 不进本模块，
+//! 它的成员照常由通用遍历下钻、按目录件建模。
 //!
 //! # 两端点有两种来源，可得性完全不同
 //!
@@ -27,6 +34,8 @@
 //! 长度，而报告全绿——本仓最忌讳的正是这种静默错。ams8000 实测 3172 条槽位里
 //! 有 3171 条至少一端落在这条缝上，凑数的代价会是 3171 条假管。
 
+use std::collections::BTreeMap;
+
 use glam::{DMat3, DMat4, DVec3};
 use manifold_csg::Manifold;
 
@@ -35,7 +44,8 @@ use e3d_io::record::descriptor::DescriptorValue;
 use e3d_io::refno::RefNo;
 
 use crate::category::{Category, classify};
-use crate::solid::{RES_TOL_MM, SolidError, csg_cylinder_solid};
+use crate::primitive_instance::{PrimitiveInstance, instantiate_centered_cylinder};
+use crate::solid::SolidError;
 
 /// `ORIMAT` 挑副轴时判「叉积退化」的阈值。
 ///
@@ -44,16 +54,22 @@ use crate::solid::{RES_TOL_MM, SolidError, csg_cylinder_solid};
 /// 都不会改变选中的是哪一根轴。定在 1e-9 是为了让「几乎平行」也走到下一根轴上去。
 const AXIS_DEGENERATE_TOL: f64 = 1.0e-9;
 
-/// 零长管身的判据阈值（mm）。
+/// 隐式管身的最小管长阈值（mm）：短于它按「无效管身」处理，不出几何。
 ///
-/// 算法文档 §4 只写「`length < ε` 记 `zero_length`」，**ε 的具体常量本轮没有
-/// 反编译到**（`GTTUBG` 里那个比较的立即数没解出来）。这里取 libgm 的面级判定
-/// 容差 [`RES_TOL_MM`]（0.051mm）作占位：比它更短的圆柱，两个端面在 libgm 眼里
-/// 已经重合，建出来也不成实体。
+/// **从 `Core3D.dll` 反编译钉死为 1.0mm**：`FAB_PipePieceManager::isValidTubeLength`
+/// （`0x1057be50`）开头两道硬门——`fabs(管长) < 1.0`、或两端点直线距离 `< 1.0`，
+/// 命中任一即判无效（`return 0`）。两道门在这里塌成一道：本仓的管长就是两端点
+/// 直线距离（[`tube_length`]），没有独立的长度属性输入。`FAB_WeldingMachine::
+/// validMinimumLength`（`0x1058ec00`）与图形侧 `GFX_QPR_IgnoreMinimumTubeLength` /
+/// `PDMS_QPR_Operations::setIgnoreMinimumTubeLength` 印证同一口径（默认不忽略）。
+/// 比较取 `< 1.0` 判无效的原样：恰好 1.0mm 的管 Core 判有效，照建。
 ///
-/// **这是本模块唯一一个不是从反编译抄来的数**，对拍阶段要拿真库把它钉死；
-/// 在那之前它偏保守（宁可多记一条 `zero_length`，不可凭空多出一根针状管）。
-pub const ZERO_LENGTH_TOL_MM: f64 = RES_TOL_MM;
+/// 之前借 libgm 面级容差 `RES_TOL_MM`（0.051mm）占位，比真值小约 20 倍——
+/// 0.051~1.0mm 的短管 E3D 判无效、本仓却会建出来，凭空多出针状假管。
+/// 取证见 `evidence/20260901-pipe-baseline/bran-hang-algorithm-analysis.md` §二。
+/// （遗留 `GTTUBG` 自身无显式阈值、靠内核判退化；这道 1.0mm 门作用在可视化路上
+/// 的最终确认归 G0-2 RVM 对拍。）
+pub const ZERO_LENGTH_TOL_MM: f64 = 1.0;
 
 /// 一个 P 点的三件套：位置、方向、通径。
 ///
@@ -115,11 +131,12 @@ pub struct TubeSlot {
 }
 
 impl TubeSlot {
-    /// 这条槽位的键：两端站点的 refno。
+    /// 这条槽位键的**站点分量**：两端站点的 refno。
     ///
     /// 只要成员表的**相邻关系**没变，这对 refno 就不变——链上别处插删多少件都不影响。
-    /// 增量正是靠这一点在两端各走一遍路由、拿键做差分（见
-    /// [`crate::elmodl::GeometryId::ImpliedTube`]）。
+    /// 完整的键还带一个槽位序号（见 [`route_slot_keys`] 与
+    /// [`crate::elmodl::GeometryId::ImpliedTube`]）：站点对负责可读与常态去重，
+    /// 序号兜底成员表回环时同一站点对出现两次的场合。
     pub fn station_refnos(&self) -> (RefNo, RefNo) {
         (self.from.station_refno(), self.to.station_refno())
     }
@@ -231,19 +248,55 @@ pub fn walk_route(container: &DbElement) -> Result<Route, DbElementError> {
     })
 }
 
+/// 每项的出现序：第 i 项的序号 = 它前面有多少个与它相等的键。
+fn occurrence_ordinals<K: Ord>(keys: impl IntoIterator<Item = K>) -> Vec<u32> {
+    let mut seen: BTreeMap<K, u32> = BTreeMap::new();
+    keys.into_iter()
+        .map(|key| {
+            let counter = seen.entry(key).or_insert(0);
+            let ordinal = *counter;
+            *counter += 1;
+            ordinal
+        })
+        .collect()
+}
+
+/// 每条槽位在**同 `(from, to)` 站点对内**的出现序（0 基，链序数第几次出现）。
+/// 这就是 [`crate::elmodl::GeometryId::ImpliedTube`] 里 `route_ordinal` 的定义，
+/// 全量（`pipeline::build_route_tubes`）与增量（[`route_slot_keys`]）共用这一份。
+///
+/// # 为什么是出现序，不是槽位下标
+///
+/// 键的局部性要求「链上别处插删不动我的键」，而槽位下标在链头插一件就整链平移，
+/// 两端做差分看到的是「旧管身全消失、新管身全出现」——正是换两站点键要治的病，
+/// 序号用下标等于把病带回来一半（下面 `inserting_*` 两条测试钉的就是这个）。
+/// 出现序只在同一对站点真的重复（成员被重复挂进成员表、路由折返）时才递增，
+/// 那正是序号存在的唯一理由：不消歧，两条真实槽位会碰成同一个 GeometryId。
+pub fn slot_ordinals(tubes: &[TubeSlot]) -> Vec<u32> {
+    occurrence_ordinals(tubes.iter().map(|slot| {
+        let (from, to) = slot.station_refnos();
+        ((from.word0, from.word1), (to.word0, to.word1))
+    }))
+}
+
 /// 一个路由容器上全部管身槽位的键，链序。
 ///
 /// 增量在 base 与 target 两端各算一遍「这条链上有哪几根管身」，两份键一比就得出
 /// 该 upsert 哪几根、该 remove 哪几根（见 [`crate::increment`] 的派生单元一节）。
-/// 走的是同一条 [`walk_route`]，**不另写一份串接规则**——串接规则各写两份的下场，
-/// [`crate::category::is_model_unit`] 的文档里记着那次静默漏件。
+/// 走的是同一条 [`walk_route`]，序号是同一份 [`slot_ordinals`]，**不另写一份
+/// 串接规则**——串接规则各写两份的下场，[`crate::category::is_model_unit`] 的
+/// 文档里记着那次静默漏件。
 ///
 /// 只要键不要几何，所以这条路不解 P 点、不查目录，两端都读得出来。
-pub fn route_slot_keys(container: &DbElement) -> Result<Vec<(RefNo, RefNo)>, DbElementError> {
-    Ok(walk_route(container)?
-        .tubes
-        .iter()
-        .map(TubeSlot::station_refnos)
+pub fn route_slot_keys(container: &DbElement) -> Result<Vec<(u32, RefNo, RefNo)>, DbElementError> {
+    let route = walk_route(container)?;
+    Ok(slot_ordinals(&route.tubes)
+        .into_iter()
+        .zip(&route.tubes)
+        .map(|(ordinal, slot)| {
+            let (from, to) = slot.station_refnos();
+            (ordinal, from, to)
+        })
         .collect())
 }
 
@@ -411,13 +464,15 @@ pub struct TubeGeometry {
     pub radius_mm: f64,
     /// 管身局部系（原点在两端中点、`+Z` 沿 `P1 − P2`）到世界系。
     pub placement: DMat4,
+    /// Canonical CylinderV3 placement in the tube-local frame.
+    pub primitive_instance: Option<PrimitiveInstance>,
 }
 
 /// 建一根管身的结论。退化情形逐类分开，对应算法文档 §4 那张表——
 /// 混成一个 `None` 就没法回答「这 3172 条到底卡在哪一步」。
 pub enum TubeOutcome {
     Built(Box<TubeGeometry>),
-    /// 两端点重合（`length <` [`ZERO_LENGTH_TOL_MM`]）。
+    /// 低于最小管长（`length <` [`ZERO_LENGTH_TOL_MM`]，两端点重合是其特例）。
     ZeroLength {
         length_mm: f64,
     },
@@ -431,13 +486,14 @@ pub enum TubeOutcome {
 
 /// 造管身几何（算法文档 §3.5 的默认路）。
 ///
-/// **圆柱按真实长度直接建**：`gm_CreateCylinder(r, length)`。别写成「单位圆柱 +
-/// Z 向缩放」——那是目录基本体（`CRCATI`）里 `TUBE` 那条路的约定（高恒为 1.0），
-/// 两条路混了会得到一根长度恒为 1mm 的管。
+/// 圆柱的实体仍按真实半径和长度得到；无布尔的最终表示同时保留同一个
+/// `CylinderV3` 单位体及其 centered-Z 实例变换。长度必须进入变换，不能套用
+/// 目录 `TUBE` 那条“高恒为 1.0”的约定，否则会得到长度恒为 1mm 的管。
 ///
-/// 用 [`csg_cylinder_solid`] 而不是 `cylinder_solid`：`TUMAT` 把原点放在两端
-/// 中点、轴沿 `+Z`，正是前者的约定（轴向局部 Z、原点居中）；后者是轴向局部 Y、
-/// 原点在底面，套上去会让管身整体偏移半根长度并且躺倒。
+/// 走 [`instantiate_centered_cylinder`]，其实体约定与
+/// [`crate::solid::csg_cylinder_solid`] 相同而非 `cylinder_solid`：`TUMAT` 把
+/// 原点放在两端中点、轴沿 `+Z`，正是前者的约定（轴向局部 Z、原点居中）；后者是
+/// 轴向局部 Y、原点在底面，套上去会让管身整体偏移半根长度并且躺倒。
 ///
 /// 只出圆柱这一件实体。`CLIN` 中心线与 `LINE` 线段不是实体，出网格时要跳过，
 /// 否则会污染连通分量与体积对拍。
@@ -446,7 +502,9 @@ pub fn build_tube(from: &RoutePoint, to: &RoutePoint, outer_diameter: Option<f64
     // （两端点都在原点、通径也是 0）两条都踩，先判半径会把它归成「取不到半径」，
     // 读报告的人会去查目录，而它其实只是一条没画完的空分支。
     let length = tube_length(from.pos, to.pos);
-    if !(length > ZERO_LENGTH_TOL_MM) {
+    // `isValidTubeLength` 的原样是 `< 1.0` 判无效——恰好 1.0mm 有效。写成
+    // `!(>=)` 而不是 `<`，让 NaN 长度也落进无效侧，不往半径/朝向那两步漏。
+    if !(length >= ZERO_LENGTH_TOL_MM) {
         return TubeOutcome::ZeroLength { length_mm: length };
     }
     let Some(diameter) = outer_diameter.filter(|value| *value > 0.0) else {
@@ -455,12 +513,13 @@ pub fn build_tube(from: &RoutePoint, to: &RoutePoint, outer_diameter: Option<f64
     let Some(placement) = tumat(from.pos, from.dir, to.pos) else {
         return TubeOutcome::NoDirection;
     };
-    match csg_cylinder_solid(diameter, length) {
+    match instantiate_centered_cylinder(diameter, length) {
         Ok(local) => TubeOutcome::Built(Box::new(TubeGeometry {
-            solid: crate::solid::placed(&local, placement),
+            solid: crate::solid::placed(&local.solid, placement),
             length_mm: length,
             radius_mm: diameter / 2.0,
             placement,
+            primitive_instance: local.instance,
         })),
         Err(error) => TubeOutcome::Failed(error),
     }
@@ -621,6 +680,25 @@ mod tests {
         ));
     }
 
+    /// 最小管长是 1.0mm，不是 libgm 的 0.051mm：`isValidTubeLength`（`0x1057be50`）
+    /// 判 `< 1.0` 无效——0.4mm 的针状管不许建，恰好 1.0mm 的照建。
+    /// 0.051~1.0mm 这一档正是占位阈值年代凭空多出的假管。
+    #[test]
+    fn a_needle_tube_under_one_millimetre_is_invalid_but_exactly_one_builds() {
+        let from = point([0.0, 0.0, 0.4], [0.0, 0.0, -1.0], Some(50.0));
+        let to = point([0.0, 0.0, 0.0], [0.0, 0.0, 1.0], Some(50.0));
+        assert!(matches!(
+            build_tube(&from, &to, Some(100.0)),
+            TubeOutcome::ZeroLength { length_mm } if (length_mm - 0.4).abs() < 1e-12
+        ));
+
+        let from = point([0.0, 0.0, 1.0], [0.0, 0.0, -1.0], Some(50.0));
+        assert!(matches!(
+            build_tube(&from, &to, Some(100.0)),
+            TubeOutcome::Built(_)
+        ));
+    }
+
     #[test]
     fn a_slot_without_any_diameter_is_reported_rather_than_guessed() {
         let from = point([0.0, 0.0, 0.0], [0.0, 0.0, 1.0], None);
@@ -660,15 +738,21 @@ mod tests {
         }
     }
 
-    /// 一条链上全部管身的键，链序。
-    fn slot_keys<'a>(container: &'a str, members: &[&'a str]) -> Vec<(&'a str, &'a str)> {
-        slot_indices(members.len())
+    /// 一条链上全部管身的**生产形键**：出现序 + 两端站点，与
+    /// [`route_slot_keys`] / `pipeline::build_route_tubes` 同一套序号规则。
+    fn keyed_slots<'a>(container: &'a str, members: &[&'a str]) -> Vec<(u32, &'a str, &'a str)> {
+        let pairs: Vec<(&str, &str)> = slot_indices(members.len())
             .map(|(from, to)| {
                 (
                     station_element(container, members, from),
                     station_element(container, members, to),
                 )
             })
+            .collect();
+        occurrence_ordinals(pairs.iter().copied())
+            .into_iter()
+            .zip(pairs)
+            .map(|(ordinal, (from, to))| (ordinal, from, to))
             .collect()
     }
 
@@ -676,43 +760,69 @@ mod tests {
     #[test]
     fn a_slot_is_keyed_by_the_two_stations_it_spans() {
         assert_eq!(
-            slot_keys("C", &["A", "B", "D"]),
-            vec![("C", "A"), ("A", "B"), ("B", "D"), ("D", "C")]
+            keyed_slots("C", &["A", "B", "D"]),
+            vec![(0, "C", "A"), (0, "A", "B"), (0, "B", "D"), (0, "D", "C")]
         );
         // 空容器仍有一条槽位（HPOS 到 TPOS 那根），两站都站在容器自己身上。
-        assert_eq!(slot_keys("C", &[]), vec![("C", "C")]);
+        assert_eq!(keyed_slots("C", &[]), vec![(0, "C", "C")]);
+    }
+
+    /// 出现序只在同一对站点重复时递增——它不是槽位下标。
+    ///
+    /// 序号存在的唯一理由是消歧：成员被重复挂进成员表、或路由折返时，同一对
+    /// `(from, to)` 会出现两次，不带序号它们就碰成同一个 GeometryId。除此之外
+    /// 它必须纹丝不动，否则就是下两条测试钉死的那种整链平移。
+    #[test]
+    fn the_ordinal_counts_occurrences_within_one_station_pair_only() {
+        assert_eq!(
+            keyed_slots("C", &["A", "B", "A", "B"]),
+            vec![
+                (0, "C", "A"),
+                (0, "A", "B"),
+                (0, "B", "A"),
+                (1, "A", "B"),
+                (0, "B", "C"),
+            ]
+        );
     }
 
     /// **换键的全部理由**：在链中间插一件，只有被它劈开的那一条键该动。
     ///
-    /// 旧键 `{container, preceding, ordinal}` 里 `ordinal` 就是槽位下标，插件之后
-    /// 后面每一根的序号都平移一位，两端做差分看到的是「旧管身全消失、新管身全出现」，
-    /// 逐根比对彻底失去意义——而增量恰恰要在这上面做差分。
+    /// 这条测的是含序号的生产形键。旧键 `{container, preceding, ordinal}` 里
+    /// `ordinal` 是槽位下标，插件之后后面每一根的序号都平移一位，两端做差分
+    /// 看到的是「旧管身全消失、新管身全出现」，逐根比对彻底失去意义——而增量
+    /// 恰恰要在这上面做差分。出现序不受别处插删影响，局部性连着序号一起成立。
     #[test]
     fn inserting_a_member_only_disturbs_the_slot_it_splits() {
-        let before = slot_keys("C", &["A", "B", "D"]);
-        let after = slot_keys("C", &["A", "X", "B", "D"]);
+        let before = keyed_slots("C", &["A", "B", "D"]);
+        let after = keyed_slots("C", &["A", "X", "B", "D"]);
 
         let gone: Vec<_> = before.iter().filter(|k| !after.contains(k)).collect();
         let fresh: Vec<_> = after.iter().filter(|k| !before.contains(k)).collect();
-        assert_eq!(gone, [&("A", "B")], "只有被劈开的那条该消失");
-        assert_eq!(fresh, [&("A", "X"), &("X", "B")], "只该多出跨新件的两条");
+        assert_eq!(gone, [&(0, "A", "B")], "只有被劈开的那条该消失");
+        assert_eq!(
+            fresh,
+            [&(0, "A", "X"), &(0, "X", "B")],
+            "只该多出跨新件的两条"
+        );
     }
 
-    /// 在链**头部**插一件同样只动一条：旧键会在这里整条平移，新键不会。
+    /// 在链**头部**插一件同样只动一条：旧键（槽位下标当序号）会在这里整条平移，
+    /// 生产形键不会。
     #[test]
     fn inserting_at_the_head_does_not_shift_the_rest() {
-        let before = slot_keys("C", &["A", "B"]);
-        let after = slot_keys("C", &["X", "A", "B"]);
+        let before = keyed_slots("C", &["A", "B"]);
+        let after = keyed_slots("C", &["X", "A", "B"]);
         assert!(
-            before.contains(&("A", "B")) && after.contains(&("A", "B")),
+            before.contains(&(0, "A", "B")) && after.contains(&(0, "A", "B")),
             "头部插件不该惊动下游任何一条键"
         );
         let gone: Vec<_> = before.iter().filter(|k| !after.contains(k)).collect();
-        assert_eq!(gone, [&("C", "A")], "只有原来的头条该消失");
+        assert_eq!(gone, [&(0, "C", "A")], "只有原来的头条该消失");
     }
 
-    /// 同一容器内键唯一：相邻站点对不会重复，所以键不需要序号来去重。
+    /// 同一容器内键唯一。相邻站点对**可以**重复（重复成员 / 折返路由），
+    /// 唯一性靠出现序补齐——这正是序号进键的理由。
     #[test]
     fn keys_within_one_container_are_unique() {
         for members in [
@@ -720,8 +830,10 @@ mod tests {
             vec!["A"],
             vec!["A", "B"],
             vec!["A", "B", "D", "E", "F"],
+            // 重复成员：站点对 (A,B) 出现两次，只有序号分得开。
+            vec!["A", "B", "A", "B"],
         ] {
-            let keys = slot_keys("C", &members);
+            let keys = keyed_slots("C", &members);
             let mut unique = keys.clone();
             unique.sort_unstable();
             unique.dedup();

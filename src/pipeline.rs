@@ -33,11 +33,11 @@ use crate::catalogue::{
     CatalogueMeshCache, CatalogueMeshCacheStats, model_catalogue_member_with_cache,
 };
 use crate::catalogue_point::{CataloguePoints, tube_outer_diameter_from_stub};
-use crate::category::{BuildDisposition, Category, decision, is_model_unit};
+use crate::category::{BuildDisposition, Category, decision, is_derived_unit, is_model_unit};
 use crate::elmodl::{GeneratedElement, GeometryId, Modeled, model_element_with_cache};
 use crate::extrusion_reuse::ExtrusionReuseStats;
 use crate::route::{
-    PPointResolver, Route, TubeOutcome, bore_mismatch, build_tube, resolve_end,
+    PPointResolver, Route, TubeOutcome, bore_mismatch, build_tube, resolve_end, slot_ordinals,
     tube_outer_diameter, walk_route,
 };
 
@@ -93,7 +93,8 @@ impl ImpliedTubes {
 /// 建不出几何的管身分类计数（算法文档 §4 的退化表）。
 #[derive(Debug, Default, serde::Serialize)]
 pub struct ImpliedTubeDegenerate {
-    /// 两端点重合（`length <` [`crate::route::ZERO_LENGTH_TOL_MM`]）。
+    /// 低于最小管长（`length <` [`crate::route::ZERO_LENGTH_TOL_MM`]，1.0mm，
+    /// 两端点重合是其特例）。
     pub zero_length: usize,
     /// P 点取不到（`GTTUBE` 的 ok 标志为 0）：链走通了但目录里没这个 P 点，
     /// 或轴向/距离表达式求不出值。
@@ -130,7 +131,8 @@ pub struct Report {
     pub failed: Vec<Incident>,
     /// 目录件记账：noun → 数量（二期 G4）。
     pub catalog_pending: BTreeMap<String, usize>,
-    /// 路由容器记账：noun → 数量。BRAN/HANG/LUG/SUPC/TRUNNI 五族。
+    /// 路由容器记账：noun → 数量。BRAN/HANG/LUG/SUPC/TRUNNI 五族**都记**——
+    /// HANG 也在账上，只是它不派生管身（[`crate::category::is_derived_unit`]）。
     pub route_containers: BTreeMap<String, usize>,
     /// 图元容器记账：noun → 数量。[`Category::PrimitiveContainer`]，目前只有 `TMPL`。
     ///
@@ -329,22 +331,24 @@ pub fn generate_subtree_with_cache(
             }
             Category::RouteContainer => {
                 *report.route_containers.entry(noun.clone()).or_insert(0) += 1;
-                let route = walk_route(&el)?;
-                let tubes = route.tubes.len();
-                report.implied_tubes.count += tubes;
-                *report
-                    .implied_tubes
-                    .by_owner_noun
-                    .entry(noun.clone())
-                    .or_insert(0) += tubes;
-                let built = build_route_tubes(
-                    &el,
-                    &route,
-                    &CataloguePoints,
-                    &mut report.implied_tubes,
-                    &mut elements,
-                )?;
-                report.generated += built;
+                if is_derived_unit(&noun) {
+                    let route = walk_route(&el)?;
+                    let tubes = route.tubes.len();
+                    report.implied_tubes.count += tubes;
+                    *report
+                        .implied_tubes
+                        .by_owner_noun
+                        .entry(noun.clone())
+                        .or_insert(0) += tubes;
+                    let built = build_route_tubes(
+                        &el,
+                        &route,
+                        &CataloguePoints,
+                        &mut report.implied_tubes,
+                        &mut elements,
+                    )?;
+                    report.generated += built;
+                }
             }
             Category::RouteMember => {
                 *report.route_members.entry(noun.clone()).or_insert(0) += 1;
@@ -444,6 +448,10 @@ fn decrement(ledger: &mut BTreeMap<String, usize>, noun: &str) {
 /// 记账用的 [`ImpliedTubes`] 在这里是**就地丢弃**的：增量报告有自己的账目口径，
 /// 这条只负责交出「该有哪几根、长什么样」。
 pub fn route_tubes_of(container: &DbElement) -> Result<Vec<GeneratedElement>, DbElementError> {
+    let noun = container.element_type()?;
+    if !is_derived_unit(&noun) {
+        return Ok(Vec::new());
+    }
     let route = walk_route(container)?;
     let mut discarded = ImpliedTubes::default();
     let mut elements = Vec::new();
@@ -471,7 +479,10 @@ fn build_route_tubes(
     elements: &mut Vec<GeneratedElement>,
 ) -> Result<usize, DbElementError> {
     let mut built_count = 0usize;
-    for slot in &route.tubes {
+    // 序号是同 (from,to) 站点对内的出现序，与增量侧 `route_slot_keys` 同一份
+    // [`slot_ordinals`]——两边各自 enumerate 就是两份串接规则，键会静默分叉。
+    let ordinals = slot_ordinals(&route.tubes);
+    for (slot, route_ordinal) in route.tubes.iter().zip(ordinals) {
         let ends = resolve_end(&slot.from, resolver)
             .and_then(|from| Ok((from, resolve_end(&slot.to, resolver)?)));
         let (Some(from), Some(to)) = (match ends {
@@ -539,6 +550,7 @@ fn build_route_tubes(
                 elements.push(GeneratedElement {
                     geometry_id: GeometryId::ImpliedTube {
                         container_refno: container.refno().to_string(),
+                        route_ordinal,
                         from_refno: from_station.to_string(),
                         to_refno: to_station.to_string(),
                     },
@@ -547,8 +559,9 @@ fn build_route_tubes(
                     noun: "TUBI".into(),
                     name: None,
                     solid: tube.solid,
+                    parts: None,
                     world: tube.placement,
-                    primitive_instance: None,
+                    primitive_instance: tube.primitive_instance,
                     negatives_applied: 0,
                     negatives_skipped: Vec::new(),
                     notes: vec![format!(

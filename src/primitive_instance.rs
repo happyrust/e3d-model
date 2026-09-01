@@ -13,8 +13,8 @@ use manifold_csg::Manifold;
 use serde::{Deserialize, Serialize};
 
 use crate::solid::{
-    BOX_WHAT, CYLINDER_WHAT, SolidError, box_solid, cylinder_segments, cylinder_solid,
-    cylinder_tilt, ensure_solid, placed, validate_box_dims, validate_cylinder_dims,
+    BOX_WHAT, CYLINDER_WHAT, SolidError, box_solid, csg_cylinder_solid, cylinder_segments,
+    cylinder_solid, cylinder_tilt, ensure_solid, placed, validate_box_dims, validate_cylinder_dims,
 };
 
 pub const INSTANCE_CACHE_ENV: &str = "E3D_MODEL_NO_INSTANCE_CACHE";
@@ -222,6 +222,42 @@ pub(crate) fn instantiate_cylinder(
     })
 }
 
+/// Instantiate a centered, local-`Z` cylinder using the same `CylinderV3`
+/// canonical body as an ordinary CYLI.
+///
+/// Route-derived TUBI bodies have no negative operands and differ only by
+/// radius, length and placement. Keeping those dimensions in the transform
+/// avoids baking one mesh per route span without adding another primitive key.
+pub(crate) fn instantiate_centered_cylinder(
+    diam: f64,
+    height: f64,
+) -> Result<PrimitiveBuild, SolidError> {
+    if !instance_cache_enabled() {
+        cache().bypasses.fetch_add(1, Ordering::Relaxed);
+        return Ok(PrimitiveBuild {
+            solid: csg_cylinder_solid(diam, height)?,
+            instance: None,
+        });
+    }
+    validate_cylinder_dims(diam, height)?;
+    let radius = diam / 2.0;
+    let key = PrimitiveMeshKey::CylinderV3 {
+        segments: cylinder_segments(radius),
+    };
+    // The canonical cylinder occupies local Z=[0,1], while TUMAT expects a
+    // body centered on Z=0. Translation follows scale in application order.
+    let local_transform = DMat4::from_translation(DVec3::new(0.0, 0.0, -height / 2.0))
+        * DMat4::from_scale(DVec3::new(radius, radius, height));
+    let canonical = cached_canonical(key)?;
+    Ok(PrimitiveBuild {
+        solid: ensure_solid(placed(canonical.as_ref(), local_transform), CYLINDER_WHAT)?,
+        instance: Some(PrimitiveInstance {
+            key,
+            local_transform,
+        }),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,6 +295,22 @@ mod tests {
         );
         assert_same_geometry(&a.solid, &cylinder_solid(2.0, 10.0).unwrap());
         assert_same_geometry(&c.solid, &cylinder_solid(200.0, 30.0).unwrap());
+    }
+
+    #[test]
+    fn centered_route_cylinder_reuses_cylinder_v3_without_moving_its_midpoint() {
+        let instanced = instantiate_centered_cylinder(200.0, 3000.0).unwrap();
+        let direct = csg_cylinder_solid(200.0, 3000.0).unwrap();
+        assert_eq!(
+            instanced.instance.as_ref().unwrap().key,
+            PrimitiveMeshKey::CylinderV3 {
+                segments: cylinder_segments(100.0),
+            }
+        );
+        assert_same_geometry(&instanced.solid, &direct);
+        let bounds = instanced.solid.bounding_box().unwrap();
+        assert!((bounds.min()[2] + 1500.0).abs() < 1e-9);
+        assert!((bounds.max()[2] - 1500.0).abs() < 1e-9);
     }
 
     #[test]

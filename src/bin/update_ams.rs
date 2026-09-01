@@ -4,10 +4,17 @@
 //!
 //! ```text
 //! update_ams --attlib <attlib.dat> --db <ams1112_0001> --template <模板文件或目录> \
-//!            [--db-type DESI] [--base-sesno N] [--target-sesno M] [--out out/update_ams]
+//!            [--db-type DESI] [--base-sesno N] [--target-sesno M] [--out out/update_ams] \
+//!            [--catalogue <ams5052_0001> ...] [--project-dir <库目录> ...]
 //! ```
 //!
 //! 两个会话号都缺省时取「最新窗口」：target = 链头（最新），base = 它的前一个。
+//!
+//! `--catalogue` / `--project-dir` 与 gen_ams 同义：前者逐个钉目录库文件，后者扫
+//! 显式点名的目录建「库号 → 文件」表按需补开（[`DirectoryDbResolver`]）。**base 与
+//! target 两个端点池共用同一份表**（目录库不钉会话号，两端读到同一时点的目录），
+//! 路由成员的目录实体与隐式管身外径在增量重算里因此与全量同源。缺了它们，
+//! 跨库引用照旧响亮报 `DbNotRegistered`，SPRE 驱动的单元全落 `regen_failed`。
 //!
 //! 产物：
 //! - `<out>/update-report.json`：增量总账（候选分类 / 级联 / 执行结论）。
@@ -19,12 +26,13 @@
 //! 与 gen_ams 相同：产物先落盘再判账，查因就用那几份文件。
 
 use std::io::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context, bail};
-use e3d_io::db_element::{DbFilePin, DbSet, template_file_for};
+use e3d_io::db_element::{DbFilePin, DbFileResolver, DbSet, template_file_for};
+use e3d_model::db_discovery::DirectoryDbResolver;
 use e3d_model::increment::{collect_window, increment_update};
-use e3d_model::mesh::TriMesh;
 
 struct Args {
     attlib: PathBuf,
@@ -34,7 +42,19 @@ struct Args {
     base_sesno: Option<u32>,
     target_sesno: Option<u32>,
     out: PathBuf,
+    catalogues: Vec<PathBuf>,
+    project_dirs: Vec<PathBuf>,
     no_instance_cache: bool,
+}
+
+/// 同一份扫描表交给 base/target 两个端点池用。
+/// [`DirectoryDbResolver::scan`] 只在开场跑一次，诊断也只打一遍。
+struct SharedResolver(Arc<DirectoryDbResolver>);
+
+impl DbFileResolver for SharedResolver {
+    fn resolve(&self, dbno: u32) -> Option<DbFilePin> {
+        self.0.resolve(dbno)
+    }
 }
 
 fn parse_args() -> anyhow::Result<Args> {
@@ -45,6 +65,8 @@ fn parse_args() -> anyhow::Result<Args> {
     let mut base_sesno = None;
     let mut target_sesno = None;
     let mut out = PathBuf::from("out/update_ams");
+    let mut catalogues = Vec::new();
+    let mut project_dirs = Vec::new();
     let mut no_instance_cache = false;
 
     let mut it = std::env::args().skip(1);
@@ -62,6 +84,8 @@ fn parse_args() -> anyhow::Result<Args> {
                 target_sesno = Some(value()?.parse().context("--target-sesno 要无符号整数")?)
             }
             "--out" => out = PathBuf::from(value()?),
+            "--catalogue" => catalogues.push(PathBuf::from(value()?)),
+            "--project-dir" => project_dirs.push(PathBuf::from(value()?)),
             "--no-instance-cache" => no_instance_cache = true,
             other => bail!("不认识的参数 {other}"),
         }
@@ -74,6 +98,8 @@ fn parse_args() -> anyhow::Result<Args> {
         base_sesno,
         target_sesno,
         out,
+        catalogues,
+        project_dirs,
         no_instance_cache,
     })
 }
@@ -148,20 +174,64 @@ fn main() -> anyhow::Result<()> {
         window.diff.io.pages_read,
     );
 
+    // 模板目录：`--template` 给目录就是它本身，给文件就是它躺的目录（与 gen_ams 同则）。
+    let template_dir = if args.template.is_dir() {
+        args.template.clone()
+    } else {
+        args.template
+            .parent()
+            .unwrap_or(Path::new("."))
+            .to_path_buf()
+    };
     let template_file = if args.template.is_dir() {
         template_file_for(&args.template, &args.db_type)?
     } else {
         args.template.clone()
     };
+    // `--project-dir` 的扫描只做一次，base/target 两端共用同一份表。
+    let discovery = if args.project_dirs.is_empty() {
+        None
+    } else {
+        let resolver = DirectoryDbResolver::scan(&args.project_dirs, &template_dir)?;
+        for skipped in resolver.skipped() {
+            println!(
+                "project-dir 诊断 {}: {}",
+                skipped.file.display(),
+                skipped.reason
+            );
+        }
+        println!("{}", resolver.summary());
+        Some(Arc::new(resolver))
+    };
+    let catalogue_template = if args.catalogues.is_empty() {
+        PathBuf::new()
+    } else {
+        template_file_for(&template_dir, "CATA")?
+    };
     // 两个端点各开一个池：差分归差分（DbView），读数归读数（DbSet）。
-    let open_endpoint = |sesno: u32| -> anyhow::Result<std::sync::Arc<DbSet>> {
-        let set = std::sync::Arc::new(DbSet::with_attlib_file(&args.attlib)?);
+    // 设计库分别钉在窗口两端的会话号上；目录库/发现表不钉（读最新目录时点）。
+    let open_endpoint = |sesno: u32| -> anyhow::Result<Arc<DbSet>> {
+        let set = match &discovery {
+            None => Arc::new(DbSet::with_attlib_file(&args.attlib)?),
+            Some(resolver) => Arc::new(DbSet::with_attlib_file_and_resolver(
+                &args.attlib,
+                Box::new(SharedResolver(Arc::clone(resolver))),
+            )?),
+        };
         set.add_db(DbFilePin {
             file: args.db_file.clone(),
             template: template_file.clone(),
             db_type: Some(args.db_type.clone()),
             sesno: Some(sesno),
         })?;
+        for file in &args.catalogues {
+            set.add_db(DbFilePin {
+                file: file.clone(),
+                template: catalogue_template.clone(),
+                db_type: Some("CATA".to_string()),
+                sesno: None,
+            })?;
+        }
         Ok(set)
     };
     let base_set = open_endpoint(base_sesno)?;
@@ -179,14 +249,14 @@ fn main() -> anyhow::Result<()> {
     let mut index_offset = 0u32;
     let mut invariants = Vec::with_capacity(outcome.upserts.len());
     for generated in &outcome.upserts {
-        let mesh = TriMesh::from_manifold(&generated.solid);
+        let mesh = generated.mesh();
         let (lo, hi) = mesh.aabb().unwrap_or(([0.0; 3], [0.0; 3]));
         invariants.push(UpsertInvariants {
             geometry_id: generated.geometry_id.clone(),
             refno: generated.refno.to_string(),
             noun: generated.noun.clone(),
             name: generated.name.clone(),
-            volume_mm3: generated.solid.volume(),
+            volume_mm3: generated.volume(),
             aabb_min: lo,
             aabb_max: hi,
             world: [
@@ -196,7 +266,7 @@ fn main() -> anyhow::Result<()> {
                 generated.world.w_axis.truncate().to_array(),
             ],
             triangles: mesh.triangle_count(),
-            genus: generated.solid.genus(),
+            genus: generated.genus(),
             negatives_applied: generated.negatives_applied,
             negatives_skipped: generated.negatives_skipped.len(),
         });

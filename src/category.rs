@@ -418,9 +418,10 @@ pub fn classify(noun: &str) -> Category {
 /// 单元、永远不出 Remove**。真库门上的形状是「ams1112 721→722 全量说消失 3398 件，
 /// 增量只移除 3356 件」——而两边各自的账都是平的，没有任何等式判据会因此变红。
 ///
-/// **路由容器不在内，但那不等于增量管不着它。** `BRAN`/`HANG` 那五族确实会让管线
-/// 产出几何，可产出的是**挂在容器名下的 N 根隐式管身**，不是「一件挂在容器自己
-/// refno 上的实体」——这个函数问的恰恰是后者，所以答案就该是否。
+/// **路由容器不在内，但那不等于增量管不着它。** 路由容器里 RVM 坐实会补管的四族
+/// （[`DERIVED_ROUTE_CONTAINER_NOUNS`]）确实会让管线产出几何，可产出的是**挂在
+/// 容器名下的 N 根隐式管身**，不是「一件挂在容器自己 refno 上的实体」——这个
+/// 函数问的恰恰是后者，所以答案就该是否。
 /// 它们由另一条正交判据 [`is_derived_unit`] 认领，走派生单元那条路。
 ///
 /// # 为什么是穷举 `match` 而不是 `is_positive_solid() || ...`
@@ -479,7 +480,7 @@ pub fn is_model_unit(noun: &str) -> bool {
 /// 却会为它产出 N 件挂在它名下、按别的键索引的东西。
 ///
 /// 与 [`is_model_unit`] 正交：那条问「它自己算不算一件」，这条问「它名下会不会长
-/// 出几件」。今天只有路由容器（`BRAN`/`HANG` 那五族）落在这一侧，它名下长出的是
+/// 出几件」。目前只有 E3D 确认会补管身的路由容器落在这一侧，它名下长出的是
 /// [`crate::elmodl::GeometryId::ImpliedTube`] 那批隐式管身。
 ///
 /// # 为什么必须单列一条，而不是把容器塞进 `is_model_unit`
@@ -493,10 +494,18 @@ pub fn is_model_unit(noun: &str) -> bool {
 ///
 /// 理由与 [`is_model_unit`] 那段一字不差：往 [`Category`] 里加变体时，加的人必须当场
 /// 回答「它名下会不会派生出几何」。让编译器逼问，而不是指望人记得。
+/// Route containers for which E3D actually synthesizes inter-member tube bodies.
+///
+/// HANG deliberately stays a [`Category::RouteContainer`] so its PCLA/HELE members are
+/// traversed and modeled, but it is absent here: E3D RVM 24381/177986 exports only the
+/// PCLAMP and HELEMENT groups. Treating those two support members as a pipe route creates
+/// a spurious 33.8m cylinder between otherwise independent catalogue instances.
+pub const DERIVED_ROUTE_CONTAINER_NOUNS: [&str; 4] = ["BRAN", "LUG", "SUPC", "TRUNNI"];
+
 pub fn is_derived_unit(noun: &str) -> bool {
-    match classify(noun) {
-        // 唯一一条：路由容器名下按槽位派生隐式管身。
-        Category::RouteContainer => true,
+    let noun = noun.trim().to_ascii_uppercase();
+    match classify(&noun) {
+        Category::RouteContainer => DERIVED_ROUTE_CONTAINER_NOUNS.contains(&noun.as_str()),
 
         // 其余都不在自己名下派生几何。逐条列的理由见上。
         Category::LoopExtrusion
@@ -999,17 +1008,21 @@ mod tests {
     /// 「全量说没了、增量没删」。修法与 SBFI 同款：判据翻真 +
     /// `model_element` 加 RouteMember 臂（委托目录求值，全量/增量同一份答案）。
     #[test]
-    fn route_members_are_model_units_and_their_container_stays_derived() {
+    fn route_members_are_model_units_and_only_rvm_confirmed_containers_are_derived() {
         for noun in ["ELBO", "FTUB", "BEND", "ATTA", "GASK"] {
             assert_eq!(classify(noun), Category::RouteMember, "{noun}");
             assert!(is_model_unit(noun), "{noun} 的目录实体挂在自己 refno 上");
             assert!(!is_derived_unit(noun), "{noun} 名下不派生别的键");
         }
-        // 容器的分工不动：自己不是单元，名下管身走派生腿。
-        for noun in ["BRAN", "HANG", "LUG", "SUPC", "TRUNNI"] {
+        for noun in DERIVED_ROUTE_CONTAINER_NOUNS {
             assert!(!is_model_unit(noun), "{noun} 自己 refno 上没有一件实体");
             assert!(is_derived_unit(noun), "{noun} 名下的管身按两端键派生");
         }
+        assert!(!is_model_unit("HANG"));
+        assert!(
+            !is_derived_unit("HANG"),
+            "HANG 只下钻并生成 PCLA/HELE；E3D RVM 不在二者之间补管身"
+        );
     }
 
     /// 路由族既不产正体也不是负体，更不消费成员——成员是路由本身，必须继续下钻。

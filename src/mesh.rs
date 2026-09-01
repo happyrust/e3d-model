@@ -30,6 +30,20 @@ impl TriMesh {
         Self { vertices, indices }
     }
 
+    /// Concatenate closed parts without a boolean union.  E3D keeps CLFL
+    /// catalogue primitives as separate RVM components even when they touch.
+    pub fn from_manifolds(solids: &[Manifold]) -> Self {
+        let mut out = Self::default();
+        for solid in solids {
+            let part = Self::from_manifold(solid);
+            let base = out.vertices.len() as u32;
+            out.vertices.extend(part.vertices);
+            out.indices
+                .extend(part.indices.into_iter().map(|index| index + base));
+        }
+        out
+    }
+
     pub fn triangle_count(&self) -> usize {
         self.indices.len() / 3
     }
@@ -104,5 +118,14 @@ mod tests {
         assert_eq!(next2, 6);
         let text2 = String::from_utf8(buf2).unwrap();
         assert!(text2.contains("f 4 5 6\n"), "{text2}");
+    }
+
+    #[test]
+    fn concatenation_preserves_overlapping_parts_without_boolean_union() {
+        let a = Manifold::cube(10.0, 10.0, 10.0, true);
+        let b = a.translate(5.0, 0.0, 0.0);
+        let mesh = TriMesh::from_manifolds(&[a, b]);
+        assert_eq!(mesh.triangle_count(), 24);
+        assert_eq!(mesh.aabb(), Some(([-5.0, -5.0, -5.0], [10.0, 5.0, 5.0])));
     }
 }

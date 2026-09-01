@@ -135,26 +135,26 @@ pub struct SkippedNegative {
 pub enum GeometryId {
     /// 库中真实存在的元素。
     Element { refno: String },
-    /// 运行时派生管身：由容器和它跨过的**两个站点**共同确定。
-    ///
-    /// # 为什么是两端而不是序号
-    ///
-    /// 这里曾经是 `{container, preceding, ordinal}`，`ordinal` 就是槽位在容器里的
-    /// 下标（`route::Route::tubes` 条数恒为成员数 + 1）。于是在 BRAN 头部插进一个
-    /// 构件，**后面每一根管身的键都平移一位**——两端做差分看到的是「全部旧管身
-    /// 消失、全部新管身出现」，逐根比对彻底失去意义，而这正是增量要用它的地方。
-    ///
-    /// 换成两端站点后，在 A、B 之间插进 X：只有 `(A, B)` 这一条消失，
-    /// `(A, X)` 与 `(X, B)` 两条新增，**其余键一个都不动**。
-    /// 链头站与链尾站都站在容器自己身上（头点 `HPOS`、尾点 `TPOS` 是容器的属性），
-    /// 所以空容器那唯一一条槽位退化成 `(c, c, c)`，仍然是一个合法且唯一的键。
-    ///
-    /// 同一个容器内相邻站点对唯一，键因此不需要序号来去重。
+    /// 运行时派生管身：容器、两端站点、及同站点对内的出现序共同确定。
+    /// 两端使普通插入的差分保持局部；出现序只在同一对 `(from, to)` 重复出现
+    /// （成员被重复挂进成员表、路由折返）时消歧，否则两条真实槽位会碰成同一个
+    /// GeometryId。
     ImpliedTube {
         container_refno: String,
+        /// 槽位在**同 `(from, to)` 站点对内**的出现序（[`crate::route::slot_ordinals`]，
+        /// 0 基链序）。它不是槽位下标——下标在链头插一件就整链平移，键的局部性
+        /// 就没了（`route.rs` 的 `inserting_*` 测试钉着这条）。旧持久化 JSON 没有
+        /// 该字段，反序列化时回落到 `u32::MAX`；首次 v2 发布会以完整根 manifest
+        /// 替换旧槽位。
+        #[serde(default = "legacy_route_ordinal")]
+        route_ordinal: u32,
         from_refno: String,
         to_refno: String,
     },
+}
+
+const fn legacy_route_ordinal() -> u32 {
+    u32::MAX
 }
 
 impl std::fmt::Display for GeometryId {
@@ -163,9 +163,13 @@ impl std::fmt::Display for GeometryId {
             GeometryId::Element { refno } => write!(f, "element:{refno}"),
             GeometryId::ImpliedTube {
                 container_refno,
+                route_ordinal,
                 from_refno,
                 to_refno,
-            } => write!(f, "implied-tube:{container_refno}:{from_refno}:{to_refno}"),
+            } => write!(
+                f,
+                "implied-tube:{container_refno}:{route_ordinal}:{from_refno}:{to_refno}"
+            ),
         }
     }
 }
@@ -179,6 +183,9 @@ pub struct GeneratedElement {
     pub name: Option<String>,
     /// 世界系实体，负几何已扣。
     pub solid: Manifold,
+    /// RVM-compatible, non-boolean component list.  Present only when E3D
+    /// preserves touching catalogue primitives as separate display meshes.
+    pub parts: Option<Vec<Manifold>>,
     /// 本元素局部系到世界系的刚体变换。实体里的 SJUS 下移保留在局部几何中，
     /// 因而把最终网格乘这个矩阵的逆即可得到与 E3D facet 可比的元素局部坐标。
     pub world: DMat4,
@@ -190,6 +197,33 @@ pub struct GeneratedElement {
     pub negatives_skipped: Vec<SkippedNegative>,
     /// 倒圆越界、SJUS 未生效等非致命观察。
     pub notes: Vec<String>,
+}
+
+impl GeneratedElement {
+    pub fn mesh(&self) -> crate::mesh::TriMesh {
+        self.parts.as_deref().map_or_else(
+            || crate::mesh::TriMesh::from_manifold(&self.solid),
+            crate::mesh::TriMesh::from_manifolds,
+        )
+    }
+
+    pub fn components(&self) -> Vec<Manifold> {
+        self.parts.clone().unwrap_or_else(|| self.solid.decompose())
+    }
+
+    pub fn volume(&self) -> f64 {
+        self.parts.as_ref().map_or_else(
+            || self.solid.volume(),
+            |parts| parts.iter().map(Manifold::volume).sum(),
+        )
+    }
+
+    pub fn genus(&self) -> i32 {
+        self.parts.as_ref().map_or_else(
+            || self.solid.genus(),
+            |parts| parts.iter().map(Manifold::genus).sum(),
+        )
+    }
 }
 
 /// 建模结论：出了实体 / 有依据地没出。
@@ -371,6 +405,7 @@ pub fn model_element_with_cache(
         noun,
         name: el.stored_name()?,
         solid,
+        parts: None,
         world,
         primitive_instance: (!had_negative_members)
             .then_some(primitive_instance)
@@ -426,25 +461,27 @@ fn wall_local_solid(el: &DbElement, notes: &mut Vec<String>) -> Result<Manifold,
             what: "WALL path",
         })?;
     let path = spine.members()?.collect::<Vec<_>>();
-    if path.len() != 3 {
+    if path.len() != 3 && path.len() != 5 {
         return Err(ModelError::UnresolvedAttribute {
             refno: el.refno().to_string(),
             noun: "WALL".into(),
             name: "SPINE",
-            what: "three-point circular WALL path",
-            detail: format!("member count {} != 3", path.len()),
+            what: "circular WALL path",
+            detail: format!("member count {} is neither 3 nor 5", path.len()),
         });
     }
     let nouns = path
         .iter()
         .map(DbElement::element_type)
         .collect::<Result<Vec<_>, _>>()?;
-    if nouns != ["POINSP", "CURVE", "POINSP"] {
+    let supported_nouns = nouns == ["POINSP", "CURVE", "POINSP"]
+        || nouns == ["POINSP", "CURVE", "POINSP", "CURVE", "POINSP"];
+    if !supported_nouns {
         return Err(ModelError::UnresolvedAttribute {
             refno: el.refno().to_string(),
             noun: "WALL".into(),
             name: "SPINE",
-            what: "three-point circular WALL path",
+            what: "circular WALL path",
             detail: format!("members = {nouns:?}"),
         });
     }
@@ -458,27 +495,20 @@ fn wall_local_solid(el: &DbElement, notes: &mut Vec<String>) -> Result<Manifold,
                 what: "WALL spine point",
             })
     };
-    let (p0, pm, p1) = (point(&path[0])?, point(&path[1])?, point(&path[2])?);
-    if p0.z.abs().max(pm.z.abs()).max(p1.z.abs()) > 0.051 {
+    let points = path.iter().map(point).collect::<Result<Vec<_>, _>>()?;
+    if points.iter().map(|point| point.z.abs()).fold(0.0, f64::max) > 0.051 {
         return Err(ModelError::UnresolvedAttribute {
             refno: spine.refno().to_string(),
             noun: "SPINE".into(),
             name: "POS",
             what: "planar WALL spine",
-            detail: format!("non-planar z = [{}, {}, {}]", p0.z, pm.z, p1.z),
+            detail: format!(
+                "non-planar z = {:?}",
+                points.iter().map(|point| point.z).collect::<Vec<_>>()
+            ),
         });
     }
-    let (center, radius) = circle_through_xy(p0, pm, p1)?;
-    let a0 = (p0.y - center.y).atan2(p0.x - center.x);
-    let am = (pm.y - center.y).atan2(pm.x - center.x);
-    let a1 = (p1.y - center.y).atan2(p1.x - center.x);
-    let ccw_mid = positive_angle(am - a0);
-    let ccw_end = positive_angle(a1 - a0);
-    let sweep = if ccw_mid <= ccw_end + 1e-9 {
-        ccw_end
-    } else {
-        -(std::f64::consts::TAU - ccw_end)
-    };
+    let (center, radius, a0, sweep) = circular_spine_geometry(&points)?;
     let inner = radius - thickness;
     if !(inner >= 0.0 && sweep.abs() > 1e-9) {
         return Err(ModelError::Solid(SolidError::Degenerate {
@@ -500,6 +530,45 @@ fn wall_local_solid(el: &DbElement, notes: &mut Vec<String>) -> Result<Manifold,
         sweep.to_degrees()
     ));
     Ok(placed(&torus, local))
+}
+
+fn circular_spine_geometry(points: &[DVec3]) -> Result<(DVec3, f64, f64, f64), ModelError> {
+    let (p0, pm, p1) = (points[0], points[1], points[2]);
+    let (center, radius) = circle_through_xy(p0, pm, p1)?;
+    let a0 = (p0.y - center.y).atan2(p0.x - center.x);
+    if points.len() == 5 {
+        let closure_error = (points[4] - p0).length();
+        let radial_error = (points[3] - center).length() - radius;
+        if closure_error > 0.051 || radial_error.abs() > 0.051 {
+            return Err(ModelError::Solid(SolidError::Degenerate {
+                what: "WALL full-circle spine",
+                detail: format!(
+                    "closure/radial error = {closure_error}/{}",
+                    radial_error.abs()
+                ),
+            }));
+        }
+        let r0 = p0 - center;
+        let rq = pm - center;
+        let cross_z = r0.x * rq.y - r0.y * rq.x;
+        if cross_z.abs() <= 1e-9 {
+            return Err(ModelError::Solid(SolidError::Degenerate {
+                what: "WALL full-circle spine",
+                detail: "first CURVE point does not establish direction".into(),
+            }));
+        }
+        return Ok((center, radius, a0, cross_z.signum() * std::f64::consts::TAU));
+    }
+    let am = (pm.y - center.y).atan2(pm.x - center.x);
+    let a1 = (p1.y - center.y).atan2(p1.x - center.x);
+    let ccw_mid = positive_angle(am - a0);
+    let ccw_end = positive_angle(a1 - a0);
+    let sweep = if ccw_mid <= ccw_end + 1e-9 {
+        ccw_end
+    } else {
+        -(std::f64::consts::TAU - ccw_end)
+    };
+    Ok((center, radius, a0, sweep))
 }
 
 fn positive_angle(angle: f64) -> f64 {
@@ -625,13 +694,13 @@ fn wall_spine_points(wall: &DbElement) -> Result<(DVec3, DVec3, DVec3), ModelErr
             what: "WALL host frame",
         })?;
     let path = spine.members()?.collect::<Vec<_>>();
-    if path.len() != 3 {
+    if path.len() != 3 && path.len() != 5 {
         return Err(ModelError::UnresolvedAttribute {
             refno: spine.refno().to_string(),
             noun: "SPINE".into(),
             name: "MEMBERS",
             what: "WALL host frame",
-            detail: format!("member count {} != 3", path.len()),
+            detail: format!("member count {} is neither 3 nor 5", path.len()),
         });
     }
     let point = |node: &DbElement| -> Result<DVec3, ModelError> {
@@ -1094,6 +1163,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn implied_tube_v2_identity_includes_route_ordinal() {
+        let tube = |route_ordinal| GeometryId::ImpliedTube {
+            container_refno: "24383/73948".into(),
+            route_ordinal,
+            from_refno: "24383/10".into(),
+            to_refno: "24383/20".into(),
+        };
+        assert_ne!(
+            tube(0),
+            tube(1),
+            "repeated endpoints are distinct route slots"
+        );
+        assert_ne!(tube(0).to_string(), tube(1).to_string());
+    }
+
+    #[test]
+    fn implied_tube_legacy_json_remains_readable() {
+        let value = r#"{"kind":"implied_tube","container_refno":"24383/73948","from_refno":"24383/10","to_refno":"24383/20"}"#;
+        let decoded: GeometryId = serde_json::from_str(value).expect("legacy geometry id");
+        assert!(matches!(
+            decoded,
+            GeometryId::ImpliedTube {
+                route_ordinal: u32::MAX,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn three_spine_points_recover_their_circle() {
         let center = DVec3::new(120.0, -45.0, 0.0);
         let radius = 3200.0;
@@ -1116,6 +1214,27 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn five_member_closed_spine_recovers_a_full_circle_and_direction() {
+        let ccw = [
+            DVec3::new(5000.0, 0.0, 0.0),
+            DVec3::new(0.0, 5000.0, 0.0),
+            DVec3::new(-5000.0, 0.0, 0.0),
+            DVec3::new(0.0, -5000.0, 0.0),
+            DVec3::new(5000.0, 0.0, 0.0),
+        ];
+        let (center, radius, start, sweep) =
+            circular_spine_geometry(&ccw).expect("closed full circle");
+        assert!(center.length() < 1e-9);
+        assert!((radius - 5000.0).abs() < 1e-9);
+        assert!(start.abs() < 1e-9);
+        assert!((sweep - std::f64::consts::TAU).abs() < 1e-9);
+
+        let clockwise = [ccw[0], ccw[3], ccw[2], ccw[1], ccw[4]];
+        let (_, _, _, sweep) = circular_spine_geometry(&clockwise).expect("clockwise full circle");
+        assert!((sweep + std::f64::consts::TAU).abs() < 1e-9);
     }
 
     #[test]

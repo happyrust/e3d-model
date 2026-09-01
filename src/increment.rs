@@ -65,8 +65,10 @@
 //!
 //! ## 派生单元：隐式管身的增量走另一条腿
 //!
-//! 路由容器（BRAN/HANG 那五族）不是模型单元——它自己 refno 上没有「一件」几何，
-//! 名下却派生出 N 根按 [`crate::elmodl::GeometryId::ImpliedTube`]（两端站点键）
+//! 路由容器不是模型单元——它自己 refno 上没有「一件」几何。其中 RVM 坐实会补管
+//! 的四族（[`crate::category::DERIVED_ROUTE_CONTAINER_NOUNS`]，HANG 除外：E3D
+//! 不在 HANG 成员间补管）名下派生出 N 根按
+//! [`crate::elmodl::GeometryId::ImpliedTube`]（两端站点 + 同站点对内出现序）
 //! 索引的管身。它们的增量动作因此与模型单元不同：
 //!
 //! - **计划**：上卷路上跨过路由容器（[`is_derived_unit`]，含候选自身）、或级联
@@ -340,7 +342,8 @@ impl IncrementReport {
 pub struct UpdatePlan {
     pub regenerate: BTreeSet<(u32, u32)>,
     pub remove: BTreeSet<(u32, u32)>,
-    /// 需要重算名下派生几何的容器（[`is_derived_unit`]，今天只有路由容器）。
+    /// 需要重算名下派生几何的容器（[`is_derived_unit`]，今天只有会补管身的
+    /// 那四族路由容器，HANG 不在内）。
     ///
     /// 与 `regenerate` 分开，因为**执行动作不同**：模型单元是「按 refno 删一件画
     /// 一件」，这些是「两端各算一遍链上的槽位键，新的 upsert、旧键里没被接住的
@@ -393,12 +396,14 @@ fn element_id(unit: (u32, u32)) -> GeometryId {
     }
 }
 
-/// 一根隐式管身的键：容器 + 它跨过的两个站点（[`crate::route::route_slot_keys`] 给的那对）。
-fn tube_id(container: RefNo, slot: (RefNo, RefNo)) -> GeometryId {
+/// 一根隐式管身的键：容器 + 同站点对内出现序 + 两个站点
+/// （[`crate::route::route_slot_keys`] 给的那三元组）。
+fn tube_id(container: RefNo, slot: (u32, RefNo, RefNo)) -> GeometryId {
     GeometryId::ImpliedTube {
         container_refno: container.to_string(),
-        from_refno: slot.0.to_string(),
-        to_refno: slot.1.to_string(),
+        route_ordinal: slot.0,
+        from_refno: slot.1.to_string(),
+        to_refno: slot.2.to_string(),
     }
 }
 
@@ -436,7 +441,7 @@ struct Rollup {
 ///
 /// 这里一度是「碰到模型单元立即返回」。那对单元搜索没错，却把容器搜索一并砍了：
 /// 链上**自身是模型单元**的成员（SBFI 是现成的例子——目录件里唯独它出几何；
-/// HANG/SUPC 族名下挂型钢件同理）一挪位，早退让上层的 BRAN/HANG 永远进不了
+/// SUPC 族名下挂型钢件同理）一挪位，早退让上层的 BRAN/SUPC 永远进不了
 /// `regenerate_derived`，它两侧管身的世界坐标就静默过期了。级联也救不了——
 /// [`collect_unit_subtree`] 只收候选**子树内**，不收它上方的容器。
 /// 所以命中单元后继续上爬，直到容器也有了、或到根。
@@ -459,9 +464,15 @@ fn nearest_unit(set: &Arc<DbSet>, refno: RefNo) -> Result<Rollup, DbElementError
             break;
         }
         match current.owner()? {
+            // owner 指向自己是 dabacon 的另一种根形态，不是环——真库门的
+            // `roots_at` 就是这个口径（「owner 指向自己、无效、或不在本库索引里」
+            // 都算根）。判成 OwnerCycle 会把这类根下整棵子树的候选统统打进
+            // unresolved，报的是「数据问题」而数据没有问题。
+            // 真正的环（A→B→…→A）仍由 MAX_ANCESTOR_DEPTH 兜住。
+            Some(owner) if owner.refno() == current.refno() => break,
             Some(owner) => {
                 depth += 1;
-                if depth > MAX_ANCESTOR_DEPTH || owner.refno() == current.refno() {
+                if depth > MAX_ANCESTOR_DEPTH {
                     return Err(DbElementError::OwnerCycle {
                         start: refno,
                         at: owner.refno(),
@@ -482,7 +493,15 @@ fn nearest_unit(set: &Arc<DbSet>, refno: RefNo) -> Result<Rollup, DbElementError
 }
 
 /// 收集 `root` 子树内（不含 root 自身）全部模型单元与派生单元。
-/// 返回两者合计新加进去的个数。
+/// 返回子树内**命中**的单元总数（模型 + 派生，含已在计划集里的）。
+///
+/// # fanout 数的是命中，不是新插入
+///
+/// 返回值决定调用方的 `contributed`（这个候选折没折进单元动作）。这里一度返回
+/// 「新插进集合的个数」：子树单元恰好已全部被同窗其它候选点名时返回 0，候选被
+/// 记成 `no_model`——而那本账的语义是「改动落在没有模型归属的元素上」，它明明有。
+/// 去重是计划集自己的事，不该改写「这个候选贡献了什么」；[`plan_update`] 里
+/// `mark_derived` 对同一件事早已是这个口径（容器已在计划里，候选照样算 rolled_up）。
 ///
 /// # 为什么派生单元也要一起收
 ///
@@ -502,7 +521,7 @@ fn collect_unit_subtree(
     derived: &mut BTreeSet<(u32, u32)>,
     notes: &mut Vec<Incident>,
 ) -> Result<usize, DbElementError> {
-    let mut added = 0usize;
+    let mut hits = 0usize;
     let mut visited: BTreeSet<(u32, u32)> = BTreeSet::new();
     let mut stack = vec![set.element(root)];
     visited.insert(key(root));
@@ -517,16 +536,18 @@ fn collect_unit_subtree(
                 continue;
             }
             let noun = member.element_type()?;
-            if is_model_unit(&noun) && out.insert(key(member.refno())) {
-                added += 1;
+            if is_model_unit(&noun) {
+                out.insert(key(member.refno()));
+                hits += 1;
             }
-            if is_derived_unit(&noun) && derived.insert(key(member.refno())) {
-                added += 1;
+            if is_derived_unit(&noun) {
+                derived.insert(key(member.refno()));
+                hits += 1;
             }
             stack.push(member);
         }
     }
-    Ok(added)
+    Ok(hits)
 }
 
 /// 把索引候选折算成模型单元动作。只读两端 `DbSet`，不建任何几何。

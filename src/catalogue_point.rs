@@ -127,7 +127,17 @@ fn resolve(member: &DbElement, ppoint: Option<u32>) -> Result<Option<RoutePoint>
     if !(dir.length() > DIRECTION_TOL) || !dir.is_finite() {
         return Ok(None);
     }
-    let pos = world.transform_point3(local.pos);
+    // 斜接弯头（切割拼成的 BEND）：管身端点取**构件自身原点**，不取目录
+    // leave/arrive P 点。`isValidTubeLength`（Core3D `0x1057be50`）的端点选取原样：
+    // 非 BRAN 端 `IsMitredBend ? POS : LPOS/APOS`；**方向仍读 LDIR/ADIR**，
+    // 所以上面那步目录方向解析照旧，只有位置换源。构件原点经属主链折叠
+    // （`world_matrix` 的平移列），与本函数输出的世界系口径一致。
+    // 目录链断掉的斜接弯头仍如实解不出：方向没有别的来源，不拿缺省值顶。
+    let pos = if is_mitred_bend(member)? {
+        world.w_axis.truncate()
+    } else {
+        world.transform_point3(local.pos)
+    };
     if !pos.is_finite() {
         return Ok(None);
     }
@@ -137,6 +147,51 @@ fn resolve(member: &DbElement, ppoint: Option<u32>) -> Result<Option<RoutePoint>
         dir: dir.normalize(),
         bore: local.bore,
     }))
+}
+
+/// 斜接弯头判定，抄 `FAB_PipePieceManager::IsMitredBend`（Core3D `0x105773d0`）：
+/// `DB_Element::type == NOUN_BEND && DB_Element::getInt(ATT_ACTNCU, 0) != 0`。
+///
+/// `ACTNCU`（actual number of cuts）非零 = 这只 BEND 是直段切割拼的斜接弯头，
+/// 不是光滑弯管。但 `ACTNCU` 是**伪属性**（`DB_PseudoACTNCU` → `DB_ImplicitBend`
+/// 构造器 `0x108BF610` / `getACTNCU` `0x108BFD50`），dabacon 记录里没有这一格；
+/// 存储侧的展开是：`NCUTS` 为基值（字典缺省 0），`CPAR[3] >= 0` 时覆盖之
+/// （缺省 −1 = 不覆盖），最后钳到 `[0, 25]`。字典不识 `NCUTS` 时 `getAtt` 失败、
+/// `ACTNCU` 未定义，`getInt` 落回缺省 0——不是斜接，也不是错。
+///
+/// ams8000 622 / ams7997 3320 只 BEND 实测 `NCUTS` 全 0、`CPAR` 全缺席
+/// （`examples/mitre_probe`）：现有语料没有斜接弯头，这条分支目前只有反编译
+/// 背书，RVM 侧的最终确认要等带斜接弯头的语料（G0-2）。
+fn is_mitred_bend(member: &DbElement) -> Result<bool, DbElementError> {
+    if member.element_type()? != "BEND" {
+        return Ok(false);
+    }
+    let ncuts = match member.attribute("NCUTS") {
+        Ok(Some(DescriptorValue::Word { raw, .. })) => i64::from(raw),
+        Ok(Some(DescriptorValue::Int(number))) => i64::from(number),
+        // 属性没写：按字典缺省 0 起算，CPAR 仍可覆盖。
+        Ok(None) => 0,
+        // 形状意外：当不成计数，如实按「不是斜接」。
+        Ok(Some(_)) => return Ok(false),
+        Err(DbElementError::UnknownAttribute { .. }) => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    let cuts = match cpar_third(member)? {
+        Some(value) if value >= 0.0 => value as i64,
+        _ => ncuts,
+    };
+    Ok(cuts.clamp(0, 25) != 0)
+}
+
+/// `DB_ImplicitBend` 的覆盖臂：`CPAR` 第 3 个参数（一基），读不出按缺省 −1
+/// 处理（即不覆盖 `NCUTS`）。
+fn cpar_third(member: &DbElement) -> Result<Option<f64>, DbElementError> {
+    let values = match member.get_double_array("CPAR") {
+        Ok(values) => values,
+        Err(DbElementError::UnknownAttribute { .. }) => None,
+        Err(error) => return Err(error),
+    };
+    Ok(values.and_then(|values| values.get(2).copied()))
 }
 
 /// Resolve one catalogue P point in the design member's **local** frame.
@@ -186,7 +241,18 @@ fn cartesian(point: &DbElement, env: &DbElementParamEnv) -> Option<(DVec3, DVec3
         DescriptorValue::IntArray(words) => words.into_iter().map(|word| word as u32).collect(),
         _ => return None,
     };
-    let dir = DVec3::from_array(direction_spec::direction(&words, env)?);
+    // PTCD is the catalogue point definition.  DIR is only an evaluated fallback:
+    // making it authoritative breaks expression-backed PTCA directions (for example
+    // the PCLA torus points whose PTCD contains ASIN(PARA[...])).
+    let dir = direction_spec::direction(&words, env)
+        .map(DVec3::from_array)
+        .or_else(|| {
+            point
+                .get_direction("DIR")
+                .ok()
+                .flatten()
+                .map(DVec3::from_array)
+        })?;
     Some((pos, dir))
 }
 
