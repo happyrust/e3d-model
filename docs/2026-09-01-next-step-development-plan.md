@@ -123,19 +123,24 @@ CRCATI 的圆柱/锥族负臂（SCON/NSCO、SCYL/NSCY、LSNO/NLSN、LCYL/NLCY）
 - **G0-1c 低频缺臂**（本库实测 0 次，等语料再排期）：SDSH/NSDS（QSDISH，翻轴语义在案）、
   SSLC/NSSL（斜切圆柱）、SDIS（QSDISC 圆盘，初版漏记的第 20 臂）。先在 aps 系列库上
   `dump_categories`/GMRE 扫描找实例，有实例才动手。
-- **G0-2 管道端到端 RVM 验证**：新基线 missing_ppoint 已从 3171 收敛到 **6**、TUBI 334 根
-  全建（catalogue_od 2777 / bore_fallback 50）。下一步导出 ams8000 管道区 TTY RVM
-  （含 facets），对 BEND/ELBO/FTUB/TUBI 逐件对拍——`MDR_BranchVisualisationManager::
-  getCSGTree` 语义的落地验收。
+- **G0-2 管道端到端 RVM 验证**：生成侧基线已刷新到 c13f836 之后
+  （evidence/20260901-g02-postfix-baseline）：ams8000 库注册缺口清零、TUBI built
+  **553**（acp000 目录解活一批 P 点端）、missing_ppoint 11；ams7997 failed=0、
+  HANG 325 条假槽位整体消失。**剩余就差参考侧**：导出 ams8000 管道区 / ams7997
+  支撑区 TTY RVM（含 facets，WFxx 同款口径）后 `rvm_compare` 逐件裁决——
+  `MDR_BranchVisualisationManager::getCSGTree` 语义的落地验收。本机无可编程
+  E3D 会话，导出待人工执行。
 - **G0-3 隐式管身对齐 GTTUBG**：核对头/尾 stub 语义（§2.2；TUBE/NTUB/BOXI/NBXI 四个
   stub noun 已定名），确认 Rust「每槽位一圆柱」与 Core「成员 stub 串接」在真库上产物
   一致。~~顺带钉死或文档化 `ZERO_LENGTH_TOL_MM`~~ ✅ 已钉 1.0mm（§2.2 修订注）。
 - **G0-4 重做 ams8000 基线**：✅ **已完成**（evidence/20260901-model-reuse）：
   generated 153→**2803**，unknown 只剩 HVAC 2 / TEXT 24，orphans 0，账平。
-- **G0-5 目录库注册收口（新）**：本次 252 件 failed 全是「db 7000/6890/7320 没注册进
-  DbSet」——SPRE 跨到未开的目录库。两步：① gen_ams/update_ams 支持按 `ppoint_db_not_open
-  _by_dbno` 账目提示自动补 `--catalogue`（文件都在 ams000 目录里）；② 913583b 自报的
-  已知敞口「update_ams 尚无 --catalogue 注册」一并补上，增量重算不再退 bore 半径。
+- **G0-5 目录库注册收口**：✅ 机制已落（`db_discovery` + `--project-dir`，c13f836）。
+  实测修正旧说法：跨库目标**不都在 ams000**——7002/7320 在 `AvevaCatalogue\acp000`、
+  7600 在 `AvevaPlantSample\aps000`；**db 7000 两个项目各有一份常规命名主文件且内容
+  不同**，resolver 按设计拒仲裁，要用 `--catalogue` 显式钉本项目那份。ams8000 库注册
+  缺口已清零（残余 failed=2 是 db 7600 会话 12 索引里没有 `23984/105633` 的数据侧
+  悬空引用），ams7997 failed=0。见 evidence/20260901-g02-postfix-baseline。
 
 **P1 —— 目录件与复合构件**
 
@@ -183,12 +188,14 @@ CRCATI 的圆柱/锥族负臂（SCON/NSCO、SCYL/NSCY、LSNO/NLSN、LCYL/NLCY）
 
 1. ~~G0-4 先跑~~ ✅ 已完成（evidence/20260901-model-reuse，硬数字：NSEX 1593 / SREV 425 /
    其余 0；252 failed 全是目录库未注册）。
-2. **G0-5 目录库注册收口**（半天）：把 252 件 failed 清零——它挡在所有管件对拍前面，
-   而且是纯接线活。
+2. ~~G0-5 目录库注册收口~~ ✅ 已完成（c13f836 + 基线刷新，见上）：failed 只剩 2 件
+   数据侧悬空引用。
 3. **G0-1a NSEX 成员级负体集**（1-2 天）：最大单项；架构对标 GMRE CSG 树，RVM 对拍裁决
    让刀策略（§2.3：不许照抄 +0.01）。
 4. **G0-1b SREV 回转臂**（1 天）：QSSREV 语义在案，builder 现成。
-5. **G0-2 / G0-3 管道端到端对拍**（核心验收）：ams8000 管道区 TTY RVM 导出 + 逐件对拍。
+5. **G0-2 / G0-3 管道端到端对拍**（核心验收）：生成侧基线已就位
+   （evidence/20260901-g02-postfix-baseline），剩 ams8000 管道区 / ams7997 支撑区的
+   TTY RVM 导出（人工，E3D 侧）+ `rvm_compare` 逐件裁决。
 6. P1 / P2 / P2' 按上表推进；G0-1c 低频臂等语料。
 
 **验收判据（每一步都必须过）**：
