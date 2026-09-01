@@ -120,9 +120,12 @@ CRCATI 的圆柱/锥族负臂（SCON/NSCO、SCYL/NSCY、LSNO/NLSN、LCYL/NLCY）
 - **G0-1b SREV/NSRE：目录回转体（实测 425 次）**。QSSREV 语义已反编译在案（§2.1）：
   PANG 缺省 360、钳 ±360、负角相位 +180、>180° 的双段劈分；`solid::revolve_rings` 与
   设计侧 REV 求值可复用，环组采集与 SEXT 同源（`sub_10715170` 同一个 profile 组装器）。
-- **G0-1c 低频缺臂**（本库实测 0 次，等语料再排期）：SDSH/NSDS（QSDISH，翻轴语义在案）、
-  SSLC/NSSL（斜切圆柱）、SDIS（QSDISC 圆盘，初版漏记的第 20 臂）。先在 aps 系列库上
-  `dump_categories`/GMRE 扫描找实例，有实例才动手。
+- **G0-1c 低频缺臂**——**语料已到位，不再是"等语料"**（2026-09-01 深夜，ams7997 全量
+  实测，evidence/20260901-g02-postfix-baseline）：`is not implemented` 残余
+  **SSLC 275 / SDSH 237 / SDIS 233**（另 NSRT 8、SREV 4 两笔零头待 NSEX/SREV 落地方
+  复核）。三臂反编译语义均在案（§2.1：QSDISH 翻轴、SSLC helper `0x103C0514` 四角、
+  QSDISC `0x103C25E0` 圆盘），`solid::revolve_rings`/snout 可复用——可以排期动手了。
+  当初"本库实测 0 次"只量了 ams8000。
 - **G0-2 管道端到端 RVM 验证**：生成侧基线已刷新到 c13f836 之后
   （evidence/20260901-g02-postfix-baseline）：ams8000 库注册缺口清零、TUBI built
   **553**（acp000 目录解活一批 P 点端）、missing_ppoint 11；ams7997 failed=0、
