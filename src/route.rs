@@ -32,6 +32,7 @@ use manifold_csg::Manifold;
 
 use e3d_io::db_element::{DbElement, DbElementError};
 use e3d_io::record::descriptor::DescriptorValue;
+use e3d_io::refno::RefNo;
 
 use crate::category::{Category, classify};
 use crate::solid::{RES_TOL_MM, SolidError, csg_cylinder_solid};
@@ -85,6 +86,24 @@ pub enum RouteEnd {
     },
 }
 
+impl RouteEnd {
+    /// 这一端**站在**哪个元素上：容器头尾都站在容器自己身上，构件端站在那个构件上。
+    ///
+    /// 这不是取个名字方便打印——管身的键就是两端站点的这对 refno
+    /// （[`crate::elmodl::GeometryId::ImpliedTube`]），所以这个映射是键的一半。
+    /// 写成穷举 `match`：往 [`RouteEnd`] 里加一种端点，这里必须当场回答它站在谁身上。
+    pub fn station_refno(&self) -> RefNo {
+        match self {
+            RouteEnd::ContainerHead(container) | RouteEnd::ContainerTail(container) => {
+                container.refno()
+            }
+            RouteEnd::MemberLeave { member, .. } | RouteEnd::MemberArrive { member, .. } => {
+                member.refno()
+            }
+        }
+    }
+}
+
 /// 一条管身槽位：从 `from` 到 `to`。
 ///
 /// 「槽位」不是「管子」——两端解不出、或解出来是零长时，槽位仍在账上（它是链的
@@ -93,6 +112,17 @@ pub enum RouteEnd {
 pub struct TubeSlot {
     pub from: RouteEnd,
     pub to: RouteEnd,
+}
+
+impl TubeSlot {
+    /// 这条槽位的键：两端站点的 refno。
+    ///
+    /// 只要成员表的**相邻关系**没变，这对 refno 就不变——链上别处插删多少件都不影响。
+    /// 增量正是靠这一点在两端各走一遍路由、拿键做差分（见
+    /// [`crate::elmodl::GeometryId::ImpliedTube`]）。
+    pub fn station_refnos(&self) -> (RefNo, RefNo) {
+        (self.from.station_refno(), self.to.station_refno())
+    }
 }
 
 /// 一个路由容器走完的结果。
@@ -114,6 +144,30 @@ pub struct Route {
 /// （多一条少一条，报告里只是个数字变了）。
 fn slot_indices(member_count: usize) -> impl Iterator<Item = (usize, usize)> {
     (0..=member_count).map(|i| (i, i + 1))
+}
+
+/// 链上第 `index` 站是谁。
+///
+/// 与 [`slot_indices`] 同一个理由单拎出来：管身的键是相邻两站**所站元素**的那一对，
+/// 而头尾两站都站在容器自己身上，所以这段下标算术就是键的定义本身
+/// （[`crate::elmodl::GeometryId::ImpliedTube`]）。放在这里能不开库就把
+/// 「链中间插一件，只有跨它那条键该变」测掉。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Station {
+    /// 容器头点（容器的 `HPOS`）。
+    Head,
+    /// 第 `.0` 个路由成员，0 基。
+    Member(usize),
+    /// 容器尾点（容器的 `TPOS`）。
+    Tail,
+}
+
+fn station_at(index: usize, member_count: usize) -> Station {
+    match index {
+        0 => Station::Head,
+        i if i <= member_count => Station::Member(i - 1),
+        _ => Station::Tail,
+    }
 }
 
 /// 走一个路由容器（算法文档 §4 的 `RouteWalker`）。
@@ -140,23 +194,26 @@ pub fn walk_route(container: &DbElement) -> Result<Route, DbElementError> {
     }
 
     let station = |index: usize| -> RouteEnd {
-        match index {
-            0 => RouteEnd::ContainerHead(container.clone()),
-            i if i <= members.len() => RouteEnd::MemberArrive {
-                member: members[i - 1].clone(),
-                ppoint: arrivals[i - 1],
+        match station_at(index, members.len()) {
+            Station::Head => RouteEnd::ContainerHead(container.clone()),
+            Station::Member(i) => RouteEnd::MemberArrive {
+                member: members[i].clone(),
+                ppoint: arrivals[i],
             },
-            _ => RouteEnd::ContainerTail(container.clone()),
+            Station::Tail => RouteEnd::ContainerTail(container.clone()),
         }
     };
     // 出发端要的是**离开**侧，到达端要的是**到达**侧（§3.1 的 PLEAVE / PARRIV）。
     let departure = |index: usize| -> RouteEnd {
-        match index {
-            0 => RouteEnd::ContainerHead(container.clone()),
-            i => RouteEnd::MemberLeave {
-                member: members[i - 1].clone(),
-                ppoint: leaves[i - 1],
+        match station_at(index, members.len()) {
+            Station::Head => RouteEnd::ContainerHead(container.clone()),
+            Station::Member(i) => RouteEnd::MemberLeave {
+                member: members[i].clone(),
+                ppoint: leaves[i],
             },
+            // 槽位是 `(i, i + 1)`，出发下标最大是成员数，永远落不到尾站上。
+            // 真落到了说明 `slot_indices` 被改坏了，此时按尾站走仍是自洽的形状。
+            Station::Tail => RouteEnd::ContainerTail(container.clone()),
         }
     };
 
@@ -172,6 +229,22 @@ pub fn walk_route(container: &DbElement) -> Result<Route, DbElementError> {
         non_route_members,
         tubes,
     })
+}
+
+/// 一个路由容器上全部管身槽位的键，链序。
+///
+/// 增量在 base 与 target 两端各算一遍「这条链上有哪几根管身」，两份键一比就得出
+/// 该 upsert 哪几根、该 remove 哪几根（见 [`crate::increment`] 的派生单元一节）。
+/// 走的是同一条 [`walk_route`]，**不另写一份串接规则**——串接规则各写两份的下场，
+/// [`crate::category::is_model_unit`] 的文档里记着那次静默漏件。
+///
+/// 只要键不要几何，所以这条路不解 P 点、不查目录，两端都读得出来。
+pub fn route_slot_keys(container: &DbElement) -> Result<Vec<(RefNo, RefNo)>, DbElementError> {
+    Ok(walk_route(container)?
+        .tubes
+        .iter()
+        .map(TubeSlot::station_refnos)
+        .collect())
 }
 
 /// P 点编号：`LEAV` / `ARRI` 存的是字值（实测 `Word { raw: 2 }` / `Word { raw: 1 }`）。
@@ -573,6 +646,86 @@ mod tests {
             for pair in slots.windows(2) {
                 assert_eq!(pair[0].1, pair[1].0, "相邻两条要首尾相接");
             }
+        }
+    }
+
+    /// 链上第几站站在谁身上：头尾都是容器，中间按 0 基取成员。
+    ///
+    /// 与 [`RouteEnd::station_refno`] 是同一个映射，那边由编译器保证穷举，
+    /// 这边负责在不开库的前提下把下标算术钉死。
+    fn station_element<'a>(container: &'a str, members: &[&'a str], index: usize) -> &'a str {
+        match station_at(index, members.len()) {
+            Station::Head | Station::Tail => container,
+            Station::Member(i) => members[i],
+        }
+    }
+
+    /// 一条链上全部管身的键，链序。
+    fn slot_keys<'a>(container: &'a str, members: &[&'a str]) -> Vec<(&'a str, &'a str)> {
+        slot_indices(members.len())
+            .map(|(from, to)| {
+                (
+                    station_element(container, members, from),
+                    station_element(container, members, to),
+                )
+            })
+            .collect()
+    }
+
+    /// 键的形状：头条从容器出发，末条落回容器，中间逐段串起相邻两件。
+    #[test]
+    fn a_slot_is_keyed_by_the_two_stations_it_spans() {
+        assert_eq!(
+            slot_keys("C", &["A", "B", "D"]),
+            vec![("C", "A"), ("A", "B"), ("B", "D"), ("D", "C")]
+        );
+        // 空容器仍有一条槽位（HPOS 到 TPOS 那根），两站都站在容器自己身上。
+        assert_eq!(slot_keys("C", &[]), vec![("C", "C")]);
+    }
+
+    /// **换键的全部理由**：在链中间插一件，只有被它劈开的那一条键该动。
+    ///
+    /// 旧键 `{container, preceding, ordinal}` 里 `ordinal` 就是槽位下标，插件之后
+    /// 后面每一根的序号都平移一位，两端做差分看到的是「旧管身全消失、新管身全出现」，
+    /// 逐根比对彻底失去意义——而增量恰恰要在这上面做差分。
+    #[test]
+    fn inserting_a_member_only_disturbs_the_slot_it_splits() {
+        let before = slot_keys("C", &["A", "B", "D"]);
+        let after = slot_keys("C", &["A", "X", "B", "D"]);
+
+        let gone: Vec<_> = before.iter().filter(|k| !after.contains(k)).collect();
+        let fresh: Vec<_> = after.iter().filter(|k| !before.contains(k)).collect();
+        assert_eq!(gone, [&("A", "B")], "只有被劈开的那条该消失");
+        assert_eq!(fresh, [&("A", "X"), &("X", "B")], "只该多出跨新件的两条");
+    }
+
+    /// 在链**头部**插一件同样只动一条：旧键会在这里整条平移，新键不会。
+    #[test]
+    fn inserting_at_the_head_does_not_shift_the_rest() {
+        let before = slot_keys("C", &["A", "B"]);
+        let after = slot_keys("C", &["X", "A", "B"]);
+        assert!(
+            before.contains(&("A", "B")) && after.contains(&("A", "B")),
+            "头部插件不该惊动下游任何一条键"
+        );
+        let gone: Vec<_> = before.iter().filter(|k| !after.contains(k)).collect();
+        assert_eq!(gone, [&("C", "A")], "只有原来的头条该消失");
+    }
+
+    /// 同一容器内键唯一：相邻站点对不会重复，所以键不需要序号来去重。
+    #[test]
+    fn keys_within_one_container_are_unique() {
+        for members in [
+            vec![],
+            vec!["A"],
+            vec!["A", "B"],
+            vec!["A", "B", "D", "E", "F"],
+        ] {
+            let keys = slot_keys("C", &members);
+            let mut unique = keys.clone();
+            unique.sort_unstable();
+            unique.dedup();
+            assert_eq!(unique.len(), keys.len(), "{members:?} 出现了重复的键");
         }
     }
 

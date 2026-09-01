@@ -16,7 +16,9 @@
 //! 挑到的全是空窗口。三个窗口由 [`probe_chain_for_model_change`] 在会话链上
 //! 二分出来，分别压住插入 / 修改 / 删除三条路径，见 [`SAMPLES`]。
 //!
-//! 缺 E3D 安装或影子资产就跳过，与仓里其它真库门一个惯例。
+//! 缺 E3D 安装或影子资产**默认红**（[`fixtures_present`]），与仓里探针类真库门的
+//! 软跳过惯例有意不同：这道门是增量正确性的唯一裁判，缺席必须出声。
+//! 确属无语料环境，显式设 `E3D_SKIP_REAL_GATES=1` 换回跳过。
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
@@ -29,7 +31,7 @@ use e3d_io::engine::{ReadOnlyEngine, ScanTier};
 use e3d_io::refno::RefNo;
 use e3d_io::session::DbView;
 use e3d_model::category::is_model_unit;
-use e3d_model::elmodl::GeneratedElement;
+use e3d_model::elmodl::{GeneratedElement, GeometryId};
 use e3d_model::increment::{collect_window, execute_plan, plan_update};
 use e3d_model::ledger::ChangeKind;
 use e3d_model::mesh::TriMesh;
@@ -146,14 +148,33 @@ const SAMPLES: &[Sample] = &[
     },
 ];
 
+/// 缺语料默认**红**，不再静默变绿。
+///
+/// 这里一度是 `eprintln` + `return`：换台没有语料盘的机器，整道门一个断言都
+/// 不跑照样全绿——门等于没有（设计文档 §4 点名的欠账）。仓里其它真库门的软跳过
+/// 惯例是给探针与解码器的；这道门是本 crate 增量正确性的**唯一裁判**，它不在场
+/// 必须让人知道。确属无语料环境（只改纯函数、CI 沙箱），显式设
+/// `E3D_SKIP_REAL_GATES=1` 换回软跳过——跳过该是一个决定，不该是一个默认。
 fn fixtures_present() -> bool {
-    for path in [AMS_DIR, ATTLIB, TEMPLATE_DIR] {
-        if !Path::new(path).exists() {
-            eprintln!("跳过：缺 {path}");
-            return false;
-        }
+    let missing: Vec<&str> = [AMS_DIR, ATTLIB, TEMPLATE_DIR]
+        .into_iter()
+        .filter(|path| !Path::new(path).exists())
+        .collect();
+    if missing.is_empty() {
+        return true;
     }
-    true
+    if std::env::var_os("E3D_SKIP_REAL_GATES").is_some() {
+        eprintln!(
+            "跳过（E3D_SKIP_REAL_GATES 已设）：缺 {}",
+            missing.join("、")
+        );
+        return false;
+    }
+    panic!(
+        "真库门语料缺失：{}。这道门是增量正确性的唯一裁判，缺席不许静默变绿；\
+         确属无语料环境要跳过，显式设 E3D_SKIP_REAL_GATES=1。",
+        missing.join("、"),
+    );
 }
 
 /// 一个库的会话链，**新 → 旧**（链序才是先后的权威，会话号不保证连号）。
@@ -271,26 +292,27 @@ impl Invariants {
     }
 }
 
-type Snapshot = BTreeMap<(u32, u32), Invariants>;
+/// 裁判的键是 [`GeometryId`]，**不是 refno**。
+///
+/// 这里一度是 `BTreeMap<(u32, u32), _>`：refno 那把键在计划集、Remove、模型集、
+/// 裁判四处都用着，而产物侧早就是 `GeometryId` 了。一个路由容器名下的 N 根隐式
+/// 管身共享同一个容器 refno，按 refno 收全量快照会把它们**塌成一条**——那条
+/// 「upsert 里有重复 refno」的断言会当场炸，炸得对，但它给的理由是错的
+/// （不是「同一件被重建了两次」，是「键根本不够用」）。
+type Snapshot = BTreeMap<GeometryId, Invariants>;
 
 /// 两份快照逐件一致（件数、键集、不变量都算）。
 fn snapshots_agree(before: &Snapshot, after: &Snapshot) -> bool {
     before.len() == after.len()
-        && before.iter().all(|(refno, left)| {
-            after
-                .get(refno)
-                .is_some_and(|right| left.agrees_with(right))
-        })
+        && before
+            .iter()
+            .all(|(id, left)| after.get(id).is_some_and(|right| left.agrees_with(right)))
 }
 
-/// 把整个库在某个会话上全量生成一遍，收成 refno → 不变量。**这是裁判。**
-fn full_generation(
-    attlib: &Arc<AttlibData>,
-    db_file: &Path,
-    sesno: u32,
-) -> BTreeMap<(u32, u32), Invariants> {
+/// 把整个库在某个会话上全量生成一遍，收成 [`GeometryId`] → 不变量。**这是裁判。**
+fn full_generation(attlib: &Arc<AttlibData>, db_file: &Path, sesno: u32) -> Snapshot {
     let set = open_pinned(attlib, db_file, sesno);
-    let mut snapshot = BTreeMap::new();
+    let mut snapshot = Snapshot::new();
     for root in roots_at(db_file, sesno) {
         let outcome = generate_subtree(set.element(root)).unwrap_or_else(|error| {
             panic!(
@@ -299,10 +321,23 @@ fn full_generation(
             )
         });
         for generated in &outcome.elements {
-            snapshot.insert(key(generated.refno), Invariants::of(generated));
+            snapshot.insert(generated.geometry_id.clone(), Invariants::of(generated));
         }
     }
     snapshot
+}
+
+/// 这件几何**挂在哪个库元素上**：实体是它自己，隐式管身是它的容器。
+///
+/// 只用来跟索引候选对名字（管身没有库记录，索引差分永远点不到它）。
+/// 别拿它当键用——一个容器 refno 名下会有多根管身，那正是换键要解决的问题。
+fn owning_refno(id: &GeometryId) -> &str {
+    match id {
+        GeometryId::Element { refno } => refno,
+        GeometryId::ImpliedTube {
+            container_refno, ..
+        } => container_refno,
+    }
 }
 
 /// **主门。** 三个库各跑一次「两端全量当裁判」的对账。
@@ -324,24 +359,24 @@ fn an_increment_says_what_two_full_generations_say() {
         // 裁判：两端各全量生成一遍，逐件比不变量。
         let base_full = full_generation(&attlib, &db_file, base_sesno);
         let target_full = full_generation(&attlib, &db_file, target_sesno);
-        let appeared: BTreeSet<(u32, u32)> = target_full
+        let appeared: BTreeSet<GeometryId> = target_full
             .keys()
-            .filter(|refno| !base_full.contains_key(*refno))
-            .copied()
+            .filter(|id| !base_full.contains_key(*id))
+            .cloned()
             .collect();
-        let vanished: BTreeSet<(u32, u32)> = base_full
+        let vanished: BTreeSet<GeometryId> = base_full
             .keys()
-            .filter(|refno| !target_full.contains_key(*refno))
-            .copied()
+            .filter(|id| !target_full.contains_key(*id))
+            .cloned()
             .collect();
-        let changed: BTreeSet<(u32, u32)> = target_full
+        let changed: BTreeSet<GeometryId> = target_full
             .iter()
-            .filter(|(refno, after)| {
+            .filter(|(id, after)| {
                 base_full
-                    .get(*refno)
+                    .get(*id)
                     .is_some_and(|before| !before.agrees_with(after))
             })
-            .map(|(refno, _)| *refno)
+            .map(|(id, _)| id.clone())
             .collect();
 
         // 空窗口自检：这道门此前挑窗口挑的是索引候选数，三个样本折算到模型单元
@@ -397,69 +432,56 @@ fn an_increment_says_what_two_full_generations_say() {
             .accounts_for()
             .unwrap_or_else(|detail| panic!("{name}: 增量账不平：{detail}"));
 
-        let upserts: BTreeMap<(u32, u32), Invariants> = outcome
+        let upserts: BTreeMap<GeometryId, Invariants> = outcome
             .upserts
             .iter()
-            .map(|generated| (key(generated.refno), Invariants::of(generated)))
+            .map(|generated| (generated.geometry_id.clone(), Invariants::of(generated)))
             .collect();
         assert_eq!(
             upserts.len(),
             outcome.upserts.len(),
-            "{name}: upsert 里有重复 refno，同一件被重建了两次"
+            "{name}: upsert 里有重复的 GeometryId，同一件被重建了两次"
         );
-        let removals: BTreeSet<(u32, u32)> =
-            outcome.removals.iter().map(|refno| key(*refno)).collect();
+        let removals: BTreeSet<GeometryId> = outcome.removals.iter().cloned().collect();
 
         // 一件都不许漏：全量说变了的，增量必须动过。
-        for refno in appeared.iter().chain(changed.iter()) {
+        for id in appeared.iter().chain(changed.iter()) {
             assert!(
-                upserts.contains_key(refno),
-                "{name}: 全量说 {}/{} 在 {base_sesno}→{target_sesno} 里变了（{}），\
-                 增量却没重建它",
-                refno.0,
-                refno.1,
-                target_full[refno].summary(),
+                upserts.contains_key(id),
+                "{name}: 全量说 {id} 在 {base_sesno}→{target_sesno} 里变了（{}），增量却没重建它",
+                target_full[id].summary(),
             );
         }
-        for refno in &vanished {
+        for id in &vanished {
             assert!(
-                removals.contains(refno),
-                "{name}: 全量说 {}/{} 在 {target_sesno} 上没了（{} 时还是 {}），\
+                removals.contains(id),
+                "{name}: 全量说 {id} 在 {target_sesno} 上没了（{base_sesno} 时还是 {}），\
                  增量却没把它移除",
-                refno.0,
-                refno.1,
-                base_sesno,
-                base_full[refno].summary(),
+                base_full[id].summary(),
             );
         }
 
         // 反向这条更要命：多重建只是白干活，多移除是把一件真实存在的几何从模型集里
         // 抹掉。所以 Remove 虽然是幂等的「确保不存在」，也不许落在目标端还活着的件上。
-        for refno in &removals {
+        for id in &removals {
             assert!(
-                !target_full.contains_key(refno),
-                "{name}: 增量把 {}/{} 移除了，但目标端全量生成里它还在（{}）",
-                refno.0,
-                refno.1,
-                target_full[refno].summary(),
+                !target_full.contains_key(id),
+                "{name}: 增量把 {id} 移除了，但目标端全量生成里它还在（{}）",
+                target_full[id].summary(),
             );
         }
 
         // 多算可以，但算出来的必须跟全量一模一样。
-        for (refno, rebuilt) in &upserts {
-            let Some(judge) = target_full.get(refno) else {
+        for (id, rebuilt) in &upserts {
+            let Some(judge) = target_full.get(id) else {
                 panic!(
-                    "{name}: 增量重建了 {}/{}（{}），但目标端全量生成里根本没有这一件",
-                    refno.0,
-                    refno.1,
+                    "{name}: 增量重建了 {id}（{}），但目标端全量生成里根本没有这一件",
                     rebuilt.summary(),
                 );
             };
             assert!(
                 rebuilt.agrees_with(judge),
-                "{name}: {}/{} 增量重建成 {}，全量生成是 {}",
-                refno.0,
-                refno.1,
+                "{name}: {id} 增量重建成 {}，全量生成是 {}",
                 rebuilt.summary(),
                 judge.summary(),
             );
@@ -481,16 +503,15 @@ fn an_increment_says_what_two_full_generations_say() {
                 !outcome.report.cascades.is_empty(),
                 "{name}: 样本声明压级联，plan_update 却一次 POS/ORI 漂移都没检出",
             );
-            let named_by_index: BTreeSet<(u32, u32)> = window
+            let named_by_index: BTreeSet<String> = window
                 .diff
                 .changes
                 .iter()
-                .map(|candidate| key(candidate.refno()))
+                .map(|candidate| candidate.refno().to_string())
                 .collect();
-            let silent: Vec<(u32, u32)> = changed
+            let silent: Vec<&GeometryId> = changed
                 .iter()
-                .filter(|refno| !named_by_index.contains(*refno))
-                .copied()
+                .filter(|id| !named_by_index.contains(owning_refno(id)))
                 .collect();
             assert!(
                 !silent.is_empty(),

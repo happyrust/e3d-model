@@ -28,11 +28,13 @@
 // 变成整块吞掉的坏网格。取反式让 NaN 落进拒绝分支，是刻意的，不是笔误。
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
+pub mod catalogue;
 pub mod catalogue_point;
 pub mod category;
 pub mod discretise;
 pub mod element_diff;
 pub mod elmodl;
+pub mod extrusion_reuse;
 pub mod increment;
 pub mod ledger;
 pub mod mesh;
@@ -44,6 +46,10 @@ pub mod route;
 pub mod solid;
 pub mod transform;
 
+pub use catalogue::{
+    CatalogueMeshCache, CatalogueMeshCacheStats, model_catalogue_member,
+    model_catalogue_member_with_cache,
+};
 pub use catalogue_point::CataloguePoints;
 pub use category::{
     BuildDisposition, Category, CompositeFamily, NounDecision, classify, decision,
@@ -51,6 +57,7 @@ pub use category::{
 };
 pub use element_diff::{ElementDiff, MemberDelta, diff_element};
 pub use elmodl::{GeneratedElement, GeometryId, ModelError};
+pub use extrusion_reuse::ExtrusionReuseStats;
 pub use increment::{
     IncrementError, IncrementOutcome, IncrementReport, WindowDiff, collect_window, increment_update,
 };
@@ -58,6 +65,7 @@ pub use ledger::{ChangeKind, ChangeLedger, ChangeTally, LedgerEntry};
 pub use mesh::TriMesh;
 pub use pipeline::{
     GenerationOutcome, ImpliedTubeDegenerate, ImpliedTubes, Report, generate_subtree,
+    generate_subtree_with_cache,
 };
 pub use primitive_instance::{
     PrimitiveCacheStats, PrimitiveInstance, PrimitiveMeshKey, primitive_cache_stats,

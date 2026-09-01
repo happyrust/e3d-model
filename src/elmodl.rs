@@ -19,8 +19,10 @@ use manifold_csg::Manifold;
 use e3d_io::db_element::{DbElement, DbElementError};
 use e3d_io::refno::RefNo;
 
+use crate::catalogue::{CatalogueMeshCache, model_catalogue_member_with_cache};
 use crate::category::{Category, Prim, classify};
 use crate::discretise::{flatten_ring, has_core3d_skipped_link};
+use crate::extrusion_reuse::{ExtrusionVariant, cached_extrusion};
 use crate::polyhedron::{PolyhedronError, polyhedron_faces, polyhedron_solid};
 use crate::primitive_instance::{
     PrimitiveBuild, PrimitiveInstance, instantiate_box, instantiate_cylinder,
@@ -28,8 +30,8 @@ use crate::primitive_instance::{
 use crate::profile::{LoopProfile, ProfileError, loop_profile};
 use crate::solid::{
     MANIFOLD_NUDGE_MM, SolidError, circ_torus_solid, cleanup_floor_boolean_components,
-    csg_cylinder_solid, extrude_rings, extrude_rings_inflated, extrude_rings_largest_component,
-    inflate_about_center, placed, pyramid_solid, rect_torus_solid, revolve_rings_inflated,
+    csg_cylinder_solid, csg_cylinder_solid_with_segments, extrude_rings, inflate_about_center,
+    placed, pyramid_solid, rect_torus_solid, revolve_rings_inflated, snout_segments, snout_solid,
     subtract_negatives,
 };
 use crate::transform::world_matrix;
@@ -56,6 +58,14 @@ pub enum ModelError {
         noun: String,
         name: &'static str,
         what: &'static str,
+    },
+    #[error("{refno}（{noun}）属性 {name} 求值失败，建不出 {what}: {detail}")]
+    UnresolvedAttribute {
+        refno: String,
+        noun: String,
+        name: &'static str,
+        what: &'static str,
+        detail: String,
     },
 }
 
@@ -118,16 +128,32 @@ pub struct SkippedNegative {
 }
 
 /// 建成的元素：世界系实体 + 账目。
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum GeometryId {
     /// 库中真实存在的元素。
     Element { refno: String },
-    /// 运行时派生管身：由容器、前件和该容器内稳定序号共同确定。
+    /// 运行时派生管身：由容器和它跨过的**两个站点**共同确定。
+    ///
+    /// # 为什么是两端而不是序号
+    ///
+    /// 这里曾经是 `{container, preceding, ordinal}`，`ordinal` 就是槽位在容器里的
+    /// 下标（`route::Route::tubes` 条数恒为成员数 + 1）。于是在 BRAN 头部插进一个
+    /// 构件，**后面每一根管身的键都平移一位**——两端做差分看到的是「全部旧管身
+    /// 消失、全部新管身出现」，逐根比对彻底失去意义，而这正是增量要用它的地方。
+    ///
+    /// 换成两端站点后，在 A、B 之间插进 X：只有 `(A, B)` 这一条消失，
+    /// `(A, X)` 与 `(X, B)` 两条新增，**其余键一个都不动**。
+    /// 链头站与链尾站都站在容器自己身上（头点 `HPOS`、尾点 `TPOS` 是容器的属性），
+    /// 所以空容器那唯一一条槽位退化成 `(c, c, c)`，仍然是一个合法且唯一的键。
+    ///
+    /// 同一个容器内相邻站点对唯一，键因此不需要序号来去重。
     ImpliedTube {
         container_refno: String,
-        preceding_refno: String,
-        ordinal: u32,
+        from_refno: String,
+        to_refno: String,
     },
 }
 
@@ -137,12 +163,9 @@ impl std::fmt::Display for GeometryId {
             GeometryId::Element { refno } => write!(f, "element:{refno}"),
             GeometryId::ImpliedTube {
                 container_refno,
-                preceding_refno,
-                ordinal,
-            } => write!(
-                f,
-                "implied-tube:{container_refno}:{preceding_refno}:{ordinal}"
-            ),
+                from_refno,
+                to_refno,
+            } => write!(f, "implied-tube:{container_refno}:{from_refno}:{to_refno}"),
         }
     }
 }
@@ -177,7 +200,42 @@ pub enum Modeled {
 
 /// 对一个**正实体**类别的元素建模。调用方负责用 [`classify`] 先分好类；
 /// 传进来的类别不产正体时按里程碑边界跳过。
+///
+/// 每次调用自带一次性网格池——批量调用方（全量管线、增量执行）应改走
+/// [`model_element_with_cache`] 共享同一个池，语义一字不差，只省重复建体。
 pub fn model_element(el: &DbElement, category: Category) -> Result<Modeled, ModelError> {
+    model_element_with_cache(el, category, &mut CatalogueMeshCache::default())
+}
+
+/// 与 [`model_element`] 相同，但由调用者持有世代网格池：同批内容相同的
+/// 环拉伸（正体与负体）只建一次网格，命中者取克隆——克隆与直建同输入
+/// 逐位一致，输出身份、世界矩阵、CSG 次序均不受影响。
+pub fn model_element_with_cache(
+    el: &DbElement,
+    category: Category,
+    cache: &mut CatalogueMeshCache,
+) -> Result<Modeled, ModelError> {
+    // 路由成员的实体不是设计侧正体，而是目录 GMRE 程序求值的产物——与全量管线
+    // pipeline 的 RouteMember 臂共用同一个 [`model_catalogue_member_with_cache`]。
+    // 这条臂必须存在的理由与 `category::is_model_unit` 文档里那次 SBFI 事故同型：
+    // 全量为成员产出 element:refno 键的实体，增量上卷到成员后走的是这里；两边
+    // 不是同一份答案，被删/被改的成员实体就既不重建也不出 Remove。
+    //
+    // 有意不走下面共享的负体扣减路：成员的负体语义在目录侧（SBOX 底下的
+    // NSCY/NSBO/NLCY，已在求值臂内扣完），设计侧子负体在全量管线里同样不由
+    // 路由成员消费，两边照旧各记各的账。
+    if category == Category::RouteMember {
+        let build = model_catalogue_member_with_cache(el, cache)?;
+        return Ok(match build.generated {
+            Some(generated) => Modeled::Solid(Box::new(generated)),
+            None => Modeled::Skipped {
+                reason: format!(
+                    "目录侧无可见几何（无 SPRE/GMRE 或成员全退化；局部失败 {} 条），E3D 同样不出几何",
+                    build.diagnostics.len()
+                ),
+            },
+        });
+    }
     let noun = el.element_type()?;
     let mut notes = Vec::new();
     // Decide the instancing boundary before constructing the positive body.
@@ -188,7 +246,16 @@ pub fn model_element(el: &DbElement, category: Category) -> Result<Modeled, Mode
     let had_negative_members = !negatives.is_empty();
 
     let (local, primitive_instance) = match category {
-        Category::LoopExtrusion => match extrusion_local_solid(el, &noun, true, 0.0, &mut notes) {
+        // 与基本体同一条实例化边界：正体一旦有负体要扣，就按布尔参与者烘焙直建。
+        Category::LoopExtrusion => match extrusion_local_solid(
+            el,
+            &noun,
+            true,
+            0.0,
+            &mut notes,
+            cache,
+            !had_negative_members,
+        ) {
             Ok(LocalSolid::Solid(s)) => (s, None),
             Ok(LocalSolid::ZeroHeight(h)) => {
                 return Ok(Modeled::Skipped {
@@ -231,6 +298,7 @@ pub fn model_element(el: &DbElement, category: Category) -> Result<Modeled, Mode
                 return Err(error);
             }
         },
+        Category::Catalog if noun == "WALL" => (wall_local_solid(el, &mut notes)?, None),
         other => {
             return Ok(Modeled::Skipped {
                 reason: format!("类别 {other:?} 不产正实体"),
@@ -249,7 +317,7 @@ pub fn model_element(el: &DbElement, category: Category) -> Result<Modeled, Mode
     let mut applied = Vec::new();
     let mut skipped = Vec::new();
     for neg in negatives {
-        let reason = match negative_world_solid(&neg) {
+        let reason = match negative_world_solid(&neg, noun == "SNOU", cache) {
             Ok(NegativeSolid::Solid(solid)) => {
                 applied.push(solid);
                 continue;
@@ -262,6 +330,20 @@ pub fn model_element(el: &DbElement, category: Category) -> Result<Modeled, Mode
             noun: neg.element_type().unwrap_or_else(|_| "?".into()),
             reason,
         });
+    }
+    if noun == "WALL" {
+        let mut fixings = Vec::new();
+        collect_host_fixings(el, &mut fixings)?;
+        for fixing in fixings {
+            match fixing_world_cutter(el, &fixing) {
+                Ok(solid) => applied.push(solid),
+                Err(error) => skipped.push(SkippedNegative {
+                    refno: fixing.refno(),
+                    noun: "FIXING".into(),
+                    reason: error.to_string(),
+                }),
+            }
+        }
     }
     let negatives_applied = applied.len();
     let mut solid = subtract_negatives(pos_world, applied);
@@ -297,6 +379,272 @@ pub fn model_element(el: &DbElement, category: Category) -> Result<Modeled, Mode
         negatives_skipped: skipped,
         notes,
     })))
+}
+
+/// Build a design WALL from its SPINE.  The wall profile is the catalogue
+/// rectangle `(thickness, height)` carried by DESP; the design SPINE supplies
+/// the path.  The first supported path is E3D's common three-point circular
+/// spine (`POINSP, CURVE THRU, POINSP`).
+fn wall_local_solid(el: &DbElement, notes: &mut Vec<String>) -> Result<Manifold, ModelError> {
+    let desp = el
+        .get_double_array("DESP")?
+        .ok_or_else(|| ModelError::MissingAttribute {
+            refno: el.refno().to_string(),
+            noun: "WALL".into(),
+            name: "DESP",
+            what: "WALL profile",
+        })?;
+    if desp.len() < 2 {
+        return Err(ModelError::UnresolvedAttribute {
+            refno: el.refno().to_string(),
+            noun: "WALL".into(),
+            name: "DESP",
+            what: "WALL profile",
+            detail: format!("DESP length {} < 2", desp.len()),
+        });
+    }
+    let (thickness, height) = (desp[0], desp[1]);
+    if !(thickness > f64::EPSILON && height > f64::EPSILON) {
+        return Err(ModelError::Solid(SolidError::Degenerate {
+            what: "WALL profile",
+            detail: format!("thickness/height = {thickness}/{height}"),
+        }));
+    }
+
+    let spine = el
+        .members()?
+        .find_map(|member| match member.element_type() {
+            Ok(noun) if noun == "SPINE" => Some(Ok(member)),
+            Ok(_) => None,
+            Err(error) => Some(Err(error)),
+        })
+        .transpose()?
+        .ok_or_else(|| ModelError::MissingAttribute {
+            refno: el.refno().to_string(),
+            noun: "WALL".into(),
+            name: "SPINE",
+            what: "WALL path",
+        })?;
+    let path = spine.members()?.collect::<Vec<_>>();
+    if path.len() != 3 {
+        return Err(ModelError::UnresolvedAttribute {
+            refno: el.refno().to_string(),
+            noun: "WALL".into(),
+            name: "SPINE",
+            what: "three-point circular WALL path",
+            detail: format!("member count {} != 3", path.len()),
+        });
+    }
+    let nouns = path
+        .iter()
+        .map(DbElement::element_type)
+        .collect::<Result<Vec<_>, _>>()?;
+    if nouns != ["POINSP", "CURVE", "POINSP"] {
+        return Err(ModelError::UnresolvedAttribute {
+            refno: el.refno().to_string(),
+            noun: "WALL".into(),
+            name: "SPINE",
+            what: "three-point circular WALL path",
+            detail: format!("members = {nouns:?}"),
+        });
+    }
+    let point = |node: &DbElement| -> Result<DVec3, ModelError> {
+        node.get_position("POS")?
+            .map(DVec3::from_array)
+            .ok_or_else(|| ModelError::MissingAttribute {
+                refno: node.refno().to_string(),
+                noun: node.element_type().unwrap_or_else(|_| "?".into()),
+                name: "POS",
+                what: "WALL spine point",
+            })
+    };
+    let (p0, pm, p1) = (point(&path[0])?, point(&path[1])?, point(&path[2])?);
+    if p0.z.abs().max(pm.z.abs()).max(p1.z.abs()) > 0.051 {
+        return Err(ModelError::UnresolvedAttribute {
+            refno: spine.refno().to_string(),
+            noun: "SPINE".into(),
+            name: "POS",
+            what: "planar WALL spine",
+            detail: format!("non-planar z = [{}, {}, {}]", p0.z, pm.z, p1.z),
+        });
+    }
+    let (center, radius) = circle_through_xy(p0, pm, p1)?;
+    let a0 = (p0.y - center.y).atan2(p0.x - center.x);
+    let am = (pm.y - center.y).atan2(pm.x - center.x);
+    let a1 = (p1.y - center.y).atan2(p1.x - center.x);
+    let ccw_mid = positive_angle(am - a0);
+    let ccw_end = positive_angle(a1 - a0);
+    let sweep = if ccw_mid <= ccw_end + 1e-9 {
+        ccw_end
+    } else {
+        -(std::f64::consts::TAU - ccw_end)
+    };
+    let inner = radius - thickness;
+    if !(inner >= 0.0 && sweep.abs() > 1e-9) {
+        return Err(ModelError::Solid(SolidError::Degenerate {
+            what: "WALL circular spine",
+            detail: format!(
+                "radius/thickness/sweep = {radius}/{thickness}/{}deg",
+                sweep.to_degrees()
+            ),
+        }));
+    }
+    let torus = rect_torus_solid(inner, radius, height, sweep.to_degrees())?;
+    let local = DMat4::from_translation(DVec3::new(center.x, center.y, height * 0.5))
+        * DMat4::from_rotation_z(a0)
+        * DMat4::from_rotation_x(-std::f64::consts::FRAC_PI_2);
+    notes.push(format!(
+        "WALL circular SPINE center=({:.6},{:.6}) radius={radius:.6} sweep={:.6}deg",
+        center.x,
+        center.y,
+        sweep.to_degrees()
+    ));
+    Ok(placed(&torus, local))
+}
+
+fn positive_angle(angle: f64) -> f64 {
+    angle.rem_euclid(std::f64::consts::TAU)
+}
+
+fn circle_through_xy(p0: DVec3, p1: DVec3, p2: DVec3) -> Result<(DVec3, f64), ModelError> {
+    let d = 2.0 * (p0.x * (p1.y - p2.y) + p1.x * (p2.y - p0.y) + p2.x * (p0.y - p1.y));
+    if d.abs() <= 1e-9 {
+        return Err(ModelError::Solid(SolidError::Degenerate {
+            what: "WALL circular spine",
+            detail: "three points are collinear".into(),
+        }));
+    }
+    let q0 = p0.x * p0.x + p0.y * p0.y;
+    let q1 = p1.x * p1.x + p1.y * p1.y;
+    let q2 = p2.x * p2.x + p2.y * p2.y;
+    let center = DVec3::new(
+        (q0 * (p1.y - p2.y) + q1 * (p2.y - p0.y) + q2 * (p0.y - p1.y)) / d,
+        (q0 * (p2.x - p1.x) + q1 * (p0.x - p2.x) + q2 * (p1.x - p0.x)) / d,
+        0.0,
+    );
+    Ok((center, (p0 - center).length()))
+}
+
+fn collect_host_fixings(el: &DbElement, out: &mut Vec<DbElement>) -> Result<(), DbElementError> {
+    for member in el.members()? {
+        if member.element_type()? == "FIXING" {
+            if member
+                .get_double_array("DESP")?
+                .is_some_and(|desp| desp.len() >= SBFI_DESP_MIN)
+            {
+                out.push(member);
+            }
+        } else {
+            collect_host_fixings(&member, out)?;
+        }
+    }
+    Ok(())
+}
+
+fn fixing_world_cutter(wall: &DbElement, fixing: &DbElement) -> Result<Manifold, ModelError> {
+    let desp = fixing
+        .get_double_array("DESP")?
+        .ok_or_else(|| ModelError::MissingAttribute {
+            refno: fixing.refno().to_string(),
+            noun: "FIXING".into(),
+            name: "DESP",
+            what: "host cutter",
+        })?;
+    let pldatu = fixing
+        .owner()?
+        .ok_or_else(|| ModelError::MissingAttribute {
+            refno: fixing.refno().to_string(),
+            noun: "FIXING".into(),
+            name: "OWNER",
+            what: "PLDATU host frame",
+        })?;
+    let jldatu = pldatu
+        .owner()?
+        .ok_or_else(|| ModelError::MissingAttribute {
+            refno: pldatu.refno().to_string(),
+            noun: "PLDATU".into(),
+            name: "OWNER",
+            what: "JLDATU host frame",
+        })?;
+    let zdis = require_double(&jldatu, "JLDATU", "ZDIS", "WALL joint datum")?;
+    let (p0, pm, p1) = wall_spine_points(wall)?;
+    let (curve_center, radius) = circle_through_xy(p0, pm, p1)?;
+    let a0 = (p0.y - curve_center.y).atan2(p0.x - curve_center.x);
+    let theta = a0 + zdis / radius;
+    let station = curve_center + DVec3::new(radius * theta.cos(), radius * theta.sin(), 0.0);
+    let inward = (curve_center - station).normalize();
+    let up = DVec3::Z;
+    let along = inward.cross(up).normalize();
+    let joint = DMat4::from_cols(
+        inward.extend(0.0),
+        up.extend(0.0),
+        along.extend(0.0),
+        station.extend(1.0),
+    );
+    // PLDATU POSL=OBOW is E3D's implicit wall pline: PLAX=-X. With
+    // YDIR=+Z, cal_ori_by_ydir gives columns (-Y,+Z,-X).
+    let pldatum = DMat4::from_cols(
+        DVec3::NEG_Y.extend(0.0),
+        DVec3::Z.extend(0.0),
+        DVec3::NEG_X.extend(0.0),
+        DVec3::ZERO.extend(1.0),
+    );
+    let local_to_wall = joint * pldatum * crate::transform::local_matrix(fixing)?;
+    let local = match desp.as_slice() {
+        [_, outer_diam, _, length, _, _, _, x, y, z, ..] if *outer_diam > 0.0 && *length > 0.0 => {
+            let segments = if *outer_diam <= 240.0 { 8 } else { 12 };
+            csg_cylinder_solid_with_segments(*outer_diam, *length, segments)?.translate(
+                *x,
+                *y,
+                *z - *length * 0.5,
+            )
+        }
+        _ => {
+            return Err(ModelError::UnresolvedAttribute {
+                refno: fixing.refno().to_string(),
+                noun: "FIXING".into(),
+                name: "DESP",
+                what: "host cutter",
+                detail: format!("unsupported layout {desp:?}"),
+            });
+        }
+    };
+    Ok(placed(&local, world_matrix(wall)? * local_to_wall))
+}
+
+fn wall_spine_points(wall: &DbElement) -> Result<(DVec3, DVec3, DVec3), ModelError> {
+    let spine = wall
+        .members()?
+        .find_map(|member| {
+            (member.element_type().ok().as_deref() == Some("SPINE")).then_some(member)
+        })
+        .ok_or_else(|| ModelError::MissingAttribute {
+            refno: wall.refno().to_string(),
+            noun: "WALL".into(),
+            name: "SPINE",
+            what: "WALL host frame",
+        })?;
+    let path = spine.members()?.collect::<Vec<_>>();
+    if path.len() != 3 {
+        return Err(ModelError::UnresolvedAttribute {
+            refno: spine.refno().to_string(),
+            noun: "SPINE".into(),
+            name: "MEMBERS",
+            what: "WALL host frame",
+            detail: format!("member count {} != 3", path.len()),
+        });
+    }
+    let point = |node: &DbElement| -> Result<DVec3, ModelError> {
+        node.get_position("POS")?
+            .map(DVec3::from_array)
+            .ok_or_else(|| ModelError::MissingAttribute {
+                refno: node.refno().to_string(),
+                noun: node.element_type().unwrap_or_else(|_| "?".into()),
+                name: "POS",
+                what: "WALL host frame",
+            })
+    };
+    Ok((point(&path[0])?, point(&path[1])?, point(&path[2])?))
 }
 
 /// Build the design-side SBFI sleeve carried directly by `DESP`.
@@ -408,6 +756,8 @@ fn extrusion_local_solid(
     allow_sjus: bool,
     grow: f64,
     notes: &mut Vec<String>,
+    cache: &mut CatalogueMeshCache,
+    reuse: bool,
 ) -> Result<LocalSolid, ModelError> {
     let profile = loop_profile(el)?;
     if !(profile.height > f64::EPSILON) {
@@ -420,11 +770,13 @@ fn extrusion_local_solid(
     let main_component_only =
         grow == 0.0 && (noun == "GWALL" || (noun == "FLOOR" && has_skipped_link));
     let rings = flatten_profile_rings(el, noun, &profile, notes)?;
-    let mut solid = if main_component_only {
-        extrude_rings_largest_component(rings, profile.height)?
+    // SJUS 下移留在池外逐元素应用；池键覆盖环组/高度/让刀量/变体全部构造输入。
+    let variant = if main_component_only {
+        ExtrusionVariant::LargestComponent
     } else {
-        extrude_rings_inflated(rings, profile.height, grow)?
+        ExtrusionVariant::Inflated { grow }
     };
+    let mut solid = cached_extrusion(cache, rings, profile.height, variant, reuse)?;
     if profile.sjus_drop != 0.0 {
         if allow_sjus && SJUS_NOUNS.contains(&noun) {
             solid = solid.translate(0.0, 0.0, -profile.sjus_drop);
@@ -554,6 +906,16 @@ fn primitive_local_solid(
                 instance: None,
             })
         }
+        Prim::Snout => Ok(PrimitiveBuild {
+            solid: snout_solid(
+                require_double(el, noun, "DBOT", "snout")?,
+                require_double(el, noun, "DTOP", "snout")?,
+                require_double(el, noun, "HEIG", "snout")?,
+                default_zero(el, "XOFF")?,
+                default_zero(el, "YOFF")?,
+            )?,
+            instance: None,
+        }),
     }
 }
 
@@ -603,6 +965,19 @@ fn default_zero(el: &DbElement, name: &str) -> Result<f64, DbElementError> {
 
 /// 收集要扣的负几何：直属负体成员 + 直属 CMPF 成员**深层**里的负体
 /// （gen-model `loop_model` 的同款圈定）。
+///
+/// # 圈定只向下，不向兄弟
+///
+/// [`Category::PrimitiveContainer`]（`TMPL`）底下负体与正体是并排挂着的，看起来
+/// 像是该由正体兄弟扣掉。**实测证否**：`aps250110` 上照这条规则跑，5 个
+/// `TMPL "Fire Hose Wheel and Housing"` 的 31 件零件**全部被扣空**——它那件
+/// `NXTR` 是 1000×450×700 的**墙上凹龛**，而水带箱正是装在凹龛里的，拿凹龛扣箱子
+/// 当然一件不剩；`TMPL "Flexible End Plate - 150mmx8mm"` 的端板则只剩两条 8.4mm
+/// 窄条，因为那件 `NBOX` 的 133.2×203.2 是 203×133 工字梁的截面、给梁让位用的。
+///
+/// 也就是说这些负体扣的是**容器之外的宿主**（墙 / 梁 / 被连接的构件）。E3D 的这条
+/// 「构件在别处、洞开在宿主上」的路我们整条都还没有；在找到宿主的判据之前，
+/// 它们由管线记进 `Report::host_negatives` 挂账，不参与任何扣减。
 fn collect_negatives(el: &DbElement, out: &mut Vec<DbElement>) -> Result<(), DbElementError> {
     for member in el.members()? {
         let noun = member.element_type()?;
@@ -642,12 +1017,25 @@ enum NegativeSolid {
 /// [`MANIFOLD_NUDGE_MM`]）；
 /// 基本体 = 局部系逐轴放大——box/cylinder 的面在局部系轴对齐，精确；
 /// pyramid 斜面 / torus 径向面的外移量略小于 restol，出现共壁案例再按面法向补。
-fn negative_world_solid(neg: &DbElement) -> Result<NegativeSolid, ModelError> {
+fn negative_world_solid(
+    neg: &DbElement,
+    snout_rvm_facets: bool,
+    cache: &mut CatalogueMeshCache,
+) -> Result<NegativeSolid, ModelError> {
     let noun = neg.element_type()?;
     let mut notes = Vec::new();
     let local = match classify(&noun) {
         Category::NegExtrusion => {
-            match extrusion_local_solid(neg, &noun, false, MANIFOLD_NUDGE_MM, &mut notes)? {
+            // 负体是布尔运算数：按边界烘焙直建（cached_extrusion 只记账不入池）。
+            match extrusion_local_solid(
+                neg,
+                &noun,
+                false,
+                MANIFOLD_NUDGE_MM,
+                &mut notes,
+                cache,
+                false,
+            )? {
                 LocalSolid::Solid(s) => s,
                 LocalSolid::ZeroHeight(h) => {
                     return Ok(NegativeSolid::Skipped(format!(
@@ -656,6 +1044,14 @@ fn negative_world_solid(neg: &DbElement) -> Result<NegativeSolid, ModelError> {
                 }
             }
         }
+        Category::NegPrimitive(Prim::Cylinder) if snout_rvm_facets => inflate_about_center(
+            &csg_cylinder_solid_with_segments(
+                require_double(neg, &noun, "DIAM", "cylinder")?,
+                require_double(neg, &noun, "HEIG", "cylinder")?,
+                snout_segments(0.0, require_double(neg, &noun, "DIAM", "cylinder")? / 2.0),
+            )?,
+            MANIFOLD_NUDGE_MM,
+        ),
         Category::NegPrimitive(prim) => inflate_about_center(
             &primitive_local_solid(neg, &noun, prim, false)?.solid,
             MANIFOLD_NUDGE_MM,
@@ -696,6 +1092,31 @@ pub fn world_with_sjus(world: DMat4, sjus_drop: f64) -> DMat4 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn three_spine_points_recover_their_circle() {
+        let center = DVec3::new(120.0, -45.0, 0.0);
+        let radius = 3200.0;
+        let point =
+            |angle: f64| center + DVec3::new(radius * angle.cos(), radius * angle.sin(), 0.0);
+        let (actual_center, actual_radius) =
+            circle_through_xy(point(-0.8), point(0.15), point(1.1)).expect("valid arc");
+        assert!((actual_center - center).length() < 1e-9);
+        assert!((actual_radius - radius).abs() < 1e-9);
+    }
+
+    #[test]
+    fn collinear_wall_spine_is_rejected() {
+        let error = circle_through_xy(DVec3::ZERO, DVec3::X, DVec3::X * 2.0)
+            .expect_err("a straight line has no finite circle");
+        assert!(matches!(
+            error,
+            ModelError::Solid(SolidError::Degenerate {
+                what: "WALL circular spine",
+                ..
+            })
+        ));
+    }
 
     #[test]
     fn only_dimensionally_empty_primitives_are_no_shape_results() {

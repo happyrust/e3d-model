@@ -78,12 +78,38 @@ pub enum Category {
     /// **容器不止 BRAN 和 HANG。** 只认前两个会把 LUG/SUPC/TRUNNI 那一支支撑件
     /// 整片漏掉，而漏掉的表现只是报告里少几行，不报错。
     RouteContainer,
-    /// 路由成员：管件与吊架构件，104 个 noun。目录驱动，几何走 P1 的目录求值。
+    /// 路由成员：管件与吊架构件，104 个 noun。目录驱动，几何 = 目录 GMRE 程序
+    /// 求值（`crate::catalogue`），挂在成员自己的 refno 上，因此它是模型单元
+    /// （[`is_model_unit`]）；目录解不到（库没开、SPRE 空）时有依据地不出几何。
     ///
     /// 判据同样是结构式的「同时拥有 `ARRI` 与 `LEAV`」——能进能出即在路由链上。
-    /// 本期记账不建模，与 [`Category::Catalog`] 分开记：目录件是型材/墙族那一路，
+    /// 与 [`Category::Catalog`] 分开记：目录件是型材/墙族那一路，
     /// 路由成员另有隐式管身要配对，两本账混在一起就看不出管路缺了多少。
     RouteMember,
+    /// 图元容器：自己不出几何，成员里的正体各自成件；成员里的负体扣的是**容器之外的
+    /// 宿主**，由 `Report::host_negatives` 挂账，本期不做扣减。
+    ///
+    /// 目前只有 `TMPL`——目录模板在设计侧实例化出来的那层壳（`DESC` 形如
+    /// "Flexible End Plate - 150mmx8mm"、"Fire Hose Wheel and Housing"）。出处是
+    /// core.dll 的 `LPRMTV`：「属主是 `TMPL` 即算图元」，也就是 Core3D 把它的**孩子**
+    /// 当图元逐个走，容器自己不是图元。
+    ///
+    /// 与 [`Category::List`] 只差一条，而那一条就是它存在的理由：**它消费成员**。
+    /// 判 [`Category::Unknown`]（改判前）时那些负体没人认领，`aps250110` 里 1559 件
+    /// 整片落进 `orphans`——而那本账的语义是「数据或分类有问题」，它们其实两样都不是。
+    ///
+    /// # 负体是并排挂的，但**不是**给兄弟准备的
+    ///
+    /// 成员表长这样（`TMPL 2013286654/25291`，负体在正体前后都有）：
+    /// `DPSE DDSE NBOX NCYL NCYL PANE TMRPSE NCYL NCYL`。看起来像是该由那块 `PANE`
+    /// 把 4 个 `NCYL` 螺栓孔和 1 个 `NBOX` 扣掉。**实测证否**，见
+    /// `elmodl::collect_negatives` 的模块注释：照那条规则跑，5 个消防水带箱的
+    /// 31 件零件被自己的墙龛扣得一件不剩，端板只剩两条 8.4mm 窄条。
+    ///
+    /// 所以这个类别只做两件事：把容器本身从欠账里摘出来，以及**把它的负体交给一本
+    /// 名字对的账**。不做扣减——在拿到宿主判据（`NAPP`？连接关系？core.dll 另有机制？）
+    /// 之前，任何扣减都是在猜。
+    PrimitiveContainer,
     /// Core 的复合构件路径：元素本身是一个 builder 容器，成员分别建模后再聚合。
     Composite(CompositeFamily),
     /// 属主几何的**数据**而非独立实体：PLOO/PAVE/LOOP/VERT/SPINE/CURVE。
@@ -181,9 +207,13 @@ impl Category {
             BuildDisposition::Built
         } else {
             match self {
-                Category::List | Category::ProfileData | Category::NonGraphic => {
-                    BuildDisposition::ProvenNonGraphic
-                }
+                // 图元容器自己不出几何是有出处的结论（`LPRMTV` 只把它的**孩子**
+                // 算图元），不是「还没实现」，所以它跟 List 一样算已证无图形，
+                // 不进 evidence_pending 那本待办账。
+                Category::List
+                | Category::ProfileData
+                | Category::NonGraphic
+                | Category::PrimitiveContainer => BuildDisposition::ProvenNonGraphic,
                 Category::Unknown => BuildDisposition::OutOfCorpus,
                 _ => BuildDisposition::EvidencePending,
             }
@@ -196,8 +226,17 @@ impl Category {
     /// 下面的建模数据。后两类即使 builder 尚待补齐，属主关系仍是已确认语义：
     /// AMS1112 的 WALL → SPINE → CURVE/POINSP 就是目录墙的路径数据，不是四个
     /// 独立实体。
+    ///
+    /// [`Category::PrimitiveContainer`] 在这里，但它「消费」的含义与其余几项不同：
+    /// 别人是把成员的几何吃进自己的实体，它只是**认领**——负体的宿主在容器之外，
+    /// 本期一刀都不扣，认领的意思仅仅是「这些负体有主、别记成孤儿」。管线据此
+    /// 把它们转进 `Report::host_negatives`。
     pub fn consumes_members(&self) -> bool {
-        self.is_positive_solid() || matches!(self, Category::Catalog | Category::Composite(_))
+        self.is_positive_solid()
+            || matches!(
+                self,
+                Category::Catalog | Category::Composite(_) | Category::PrimitiveContainer
+            )
     }
 }
 
@@ -214,6 +253,8 @@ pub enum Prim {
     RectTorus,
     /// RINS/ROUT/ANGL，圆管截面绕局部 Z 扫（`GM_CircTorus`）。
     CircTorus,
+    /// DBOT/DTOP/HEIG + XOFF/YOFF，局部 Z 轴、原点居中的偏心圆锥台。
+    Snout,
 }
 
 /// noun 名 → 类别。名字用 e3d-io 反哈希出的规范大写 noun 名。
@@ -242,6 +283,14 @@ pub fn classify(noun: &str) -> Category {
         // 组织节点记成了待办目录件——二期照着这本账去实现目录求值会扑空。
         "PIPE" | "HVAC" => List,
 
+        // ---- 图元容器：几何在成员上，负体是正体的兄弟（见 Category::PrimitiveContainer） ----
+        //
+        // `TMPL` 是目录模板在设计侧实例化出来的那层壳（`DESC` 形如
+        // "Flexible End Plate - 150mmx8mm"、"Railing Corner Section Size 8"），
+        // 不是扶手专有件：`aps250110` 的 370 件挂在 FIXING 227 / HRPOST 124 /
+        // HRTERM 6 / FITT 5 / HRPANE 5 / EQUI 2 / HRGATE 1 底下。
+        "TMPL" => PrimitiveContainer,
+
         // ---- Core class 28 复合成员聚合器 ----
         // GTGEOM 强制三者进入 sub_10714FC0；sub_107189A0 映射为 28；类 28 构造器
         // sub_107210A0 逐成员调用 LegacyGeom_CreateBuilderForElement 并串成 builder 链。
@@ -263,11 +312,13 @@ pub fn classify(noun: &str) -> Category {
         "PYRA" => Primitive(Prim::Pyramid),
         "RTOR" => Primitive(Prim::RectTorus),
         "CTOR" => Primitive(Prim::CircTorus),
+        "SNOU" => Primitive(Prim::Snout),
         "NBOX" => NegPrimitive(Prim::Box),
         "NCYL" => NegPrimitive(Prim::Cylinder),
         "NPYR" => NegPrimitive(Prim::Pyramid),
         "NRTO" => NegPrimitive(Prim::RectTorus),
         "NCTO" => NegPrimitive(Prim::CircTorus),
+        "NSNO" => NegPrimitive(Prim::Snout),
 
         // ---- `A*` 设备图元族（IECOMP）：设计图元在目录侧的同形孪生 ----
         //
@@ -286,12 +337,13 @@ pub fn classify(noun: &str) -> Category {
         "APYRA" => Primitive(Prim::Pyramid),
         "ARTOR" => Primitive(Prim::RectTorus),
         "ACTOR" => Primitive(Prim::CircTorus),
+        "ASNOU" => Primitive(Prim::Snout),
 
-        "SLCY" | "CONE" | "DISH" | "SNOU" => {
+        "SLCY" | "CONE" | "DISH" => {
             Unsupported("positive primitive not implemented in milestone 1")
         }
         // 正体自己就没实现，孪生体同理——等正体做出来这四个一起接。
-        "ASLCY" | "ACONE" | "ADISH" | "ASNOU" => {
+        "ASLCY" | "ACONE" | "ADISH" => {
             Unsupported("A* twin of a positive primitive not implemented in milestone 1")
         }
         // 这两个的标量属性同样与 POLYHE / REVO 全同，但它们的几何来自**成员结构**
@@ -299,7 +351,7 @@ pub fn classify(noun: &str) -> Category {
         // 取一个真元素看成员 noun，取证前留在这里显式挂着，别按「看着像」就接。
         "APOLYH" | "AREVO" => Unsupported("A* twin whose member structure is not yet evidenced"),
 
-        "NCON" | "NSNO" | "NDIS" | "NSLC" => {
+        "NCON" | "NDIS" | "NSLC" => {
             NegUnimplemented("negative primitive not implemented in milestone 1")
         }
 
@@ -366,10 +418,10 @@ pub fn classify(noun: &str) -> Category {
 /// 单元、永远不出 Remove**。真库门上的形状是「ams1112 721→722 全量说消失 3398 件，
 /// 增量只移除 3356 件」——而两边各自的账都是平的，没有任何等式判据会因此变红。
 ///
-/// **路由容器不在内。** `BRAN`/`HANG` 那五族确实会让管线产出几何，但隐式管身在
-/// 模型集里按 [`crate::elmodl::GeometryId::ImpliedTube`] 索引，而增量的 Remove 是按
-/// refno 发的——容器 refno 上并没有「一件」几何可删。把它们算进来只会发出对不上号
-/// 的 Remove。这条口子记在 `increment` 的模块文档里。
+/// **路由容器不在内，但那不等于增量管不着它。** `BRAN`/`HANG` 那五族确实会让管线
+/// 产出几何，可产出的是**挂在容器名下的 N 根隐式管身**，不是「一件挂在容器自己
+/// refno 上的实体」——这个函数问的恰恰是后者，所以答案就该是否。
+/// 它们由另一条正交判据 [`is_derived_unit`] 认领，走派生单元那条路。
 ///
 /// # 为什么是穷举 `match` 而不是 `is_positive_solid() || ...`
 ///
@@ -392,11 +444,21 @@ pub fn is_model_unit(noun: &str) -> bool {
 
         // 目录件本期整体压在二期的目录求值上，唯独 SBFI 的套管尺寸直接挂在设计侧
         // `DESP` 上，不查目录就能出几何（`elmodl::sbfitting_local_solid`）。
-        Category::Catalog => noun == "SBFI",
+        Category::Catalog => matches!(noun, "SBFI" | "WALL"),
+
+        // 路由成员的实体 = 目录 GMRE 程序求值（`crate::catalogue`），键正是
+        // element:refno——这个函数问的「挂在自己 refno 上的一件」。全量在管线的
+        // RouteMember 臂产出它，增量靠这里上卷到成员本身、走 `model_element` 的
+        // RouteMember 臂重建；隐式管身与它无关，照旧走 [`is_derived_unit`]（容器）
+        // 那条正交腿。2026-09-01 之前这里是 false：成员实体落在两条增量判据之外，
+        // 被删/被改的成员既不重建也不出 Remove——SBFI 那次静默漏件的同型复发，
+        // 目录库一进增量门就会咬（DESI-only 门上两边都建不出，所以一直没响）。
+        Category::RouteMember => true,
 
         // 以下都不产出挂在自己 refno 上的实体。逐条列而不是一个 `_ => false`：
         // 见上面那段——通配符会把「新变体默认不是单元」这个危险假设变成沉默的默认值。
         Category::List
+        | Category::PrimitiveContainer
         | Category::NegExtrusion
         | Category::NegRevolution
         | Category::NegPolyhedron
@@ -405,6 +467,52 @@ pub fn is_model_unit(noun: &str) -> bool {
         | Category::GeometrySet
         | Category::NegGeometrySet
         | Category::RouteContainer
+        | Category::Composite(_)
+        | Category::ProfileData
+        | Category::NonGraphic
+        | Category::Unsupported(_)
+        | Category::Unknown => false,
+    }
+}
+
+/// 这个 noun 会不会**在自己名下派生出一批几何**——即全量管线不为它本身出实体，
+/// 却会为它产出 N 件挂在它名下、按别的键索引的东西。
+///
+/// 与 [`is_model_unit`] 正交：那条问「它自己算不算一件」，这条问「它名下会不会长
+/// 出几件」。今天只有路由容器（`BRAN`/`HANG` 那五族）落在这一侧，它名下长出的是
+/// [`crate::elmodl::GeometryId::ImpliedTube`] 那批隐式管身。
+///
+/// # 为什么必须单列一条，而不是把容器塞进 `is_model_unit`
+///
+/// 两者的**增量动作根本不同**。模型单元的增量是「按它的 refno 删掉一件、再画一件」；
+/// 派生单元没有「一件挂在容器 refno 上的几何」可删，它的增量是**两端各算一遍这条链
+/// 上的槽位键，新的一批 upsert、旧键里不在新批中的那些 remove**。混进 `is_model_unit`
+/// 只会让增量对着容器 refno 发一条谁也对不上号的 Remove。
+///
+/// # 同样不留通配符
+///
+/// 理由与 [`is_model_unit`] 那段一字不差：往 [`Category`] 里加变体时，加的人必须当场
+/// 回答「它名下会不会派生出几何」。让编译器逼问，而不是指望人记得。
+pub fn is_derived_unit(noun: &str) -> bool {
+    match classify(noun) {
+        // 唯一一条：路由容器名下按槽位派生隐式管身。
+        Category::RouteContainer => true,
+
+        // 其余都不在自己名下派生几何。逐条列的理由见上。
+        Category::LoopExtrusion
+        | Category::Revolution
+        | Category::Polyhedron
+        | Category::Primitive(_)
+        | Category::Catalog
+        | Category::List
+        | Category::PrimitiveContainer
+        | Category::NegExtrusion
+        | Category::NegRevolution
+        | Category::NegPolyhedron
+        | Category::NegPrimitive(_)
+        | Category::NegUnimplemented(_)
+        | Category::GeometrySet
+        | Category::NegGeometrySet
         | Category::RouteMember
         | Category::Composite(_)
         | Category::ProfileData
@@ -428,6 +536,9 @@ pub fn decision(noun: &str) -> NounDecision {
             "E3D 3.1 noun_layout structural attributes; Core route semantics"
         }
         Category::NonGraphic => "E3D 3.1 dictionary has no independent 3D builder path",
+        Category::PrimitiveContainer => {
+            "core.dll LPRMTV treats a member of TMPL as a primitive; the container carries none, and aps250110 shows its negatives cut a host outside the container"
+        }
         Category::List | Category::ProfileData => "E3D 3.1 hierarchy/member-consumption semantics",
         Category::Unknown => "noun absent from the supported E3D 3.1 modelling routes",
         _ if category.builds_geometry() => {
@@ -635,9 +746,10 @@ mod tests {
         assert_eq!(classify("APYRA"), Category::Primitive(Prim::Pyramid));
         assert_eq!(classify("ARTOR"), Category::Primitive(Prim::RectTorus));
         assert_eq!(classify("ACTOR"), Category::Primitive(Prim::CircTorus));
+        assert_eq!(classify("ASNOU"), Category::Primitive(Prim::Snout));
         assert_eq!(classify("AEXTR"), Category::LoopExtrusion);
         // 正体没实现的、以及几何来自成员结构还没取证的，一律显式记账，不许落 Unknown。
-        for noun in ["ASLCY", "ACONE", "ADISH", "ASNOU", "APOLYH", "AREVO"] {
+        for noun in ["ASLCY", "ACONE", "ADISH", "APOLYH", "AREVO"] {
             assert!(
                 matches!(classify(noun), Category::Unsupported(_)),
                 "{noun} 应当显式记账，实得 {:?}",
@@ -850,18 +962,21 @@ mod tests {
     /// 的 SBFI 从来不出 Remove；真库门上是「全量说消失 3398 件，增量只移除 3356 件」，
     /// 而两边各自的账都平——`accounts_for` 那类等式判据一个都不会响。
     #[test]
-    fn the_model_unit_predicate_covers_sbfi_and_nothing_else_in_the_catalogue() {
-        // SBFI 是目录件、不是正体，却照样产出一件挂在自己 refno 上的套管。
+    fn the_model_unit_predicate_covers_the_supported_catalogue_units_only() {
+        // SBFI/WALL 是目录件、不是正体，却照样各产出一件挂在自己 refno 上的实体。
         assert_eq!(classify("SBFI"), Category::Catalog);
         assert!(!classify("SBFI").is_positive_solid());
         assert!(is_model_unit("SBFI"));
+        assert_eq!(classify("WALL"), Category::Catalog);
+        assert!(!classify("WALL").is_positive_solid());
+        assert!(is_model_unit("WALL"));
 
         for noun in ["PANE", "FLOOR", "BOX", "CYLI", "REVO", "POLYHE", "AEXTR"] {
             assert!(is_model_unit(noun), "{noun} 是正体，必然是模型单元");
         }
         // 其余目录件本期不出几何，不能被顺手一起认成单元——那会让增量对着一批
         // 模型集里根本不存在的 refno 发 Remove。
-        for noun in ["FITT", "PFIT", "CMFI", "FIXING", "WALL", "STWALL", "SCTN"] {
+        for noun in ["FITT", "PFIT", "CMFI", "FIXING", "STWALL", "SCTN"] {
             assert_eq!(classify(noun), Category::Catalog, "{noun}");
             assert!(!is_model_unit(noun), "{noun} 本期不产实体");
         }
@@ -871,6 +986,29 @@ mod tests {
         }
         for noun in ["ZONE", "PLOO", "NBOX", "TEXT", "SBOX"] {
             assert!(!is_model_unit(noun), "{noun}");
+        }
+    }
+
+    /// 路由成员是模型单元；它的容器不是，容器走派生腿。两条判据必须这样分工。
+    ///
+    /// 这条钉的是 SBFI 同型缺口的第二次现身（2026-09-01 审查轮查出）：管线为
+    /// 路由成员产出 element:refno 键的目录实体，而当时两条增量判据都不认领它
+    /// ——`is_model_unit(RouteMember)` 是 false，`is_derived_unit` 只认容器且
+    /// 执行侧只重算管身。设计侧改/删一个 ELBO，它自己的实体既不重建也不出
+    /// Remove；DESI-only 真库门上两边都建不出所以不响，目录库一进门就是
+    /// 「全量说没了、增量没删」。修法与 SBFI 同款：判据翻真 +
+    /// `model_element` 加 RouteMember 臂（委托目录求值，全量/增量同一份答案）。
+    #[test]
+    fn route_members_are_model_units_and_their_container_stays_derived() {
+        for noun in ["ELBO", "FTUB", "BEND", "ATTA", "GASK"] {
+            assert_eq!(classify(noun), Category::RouteMember, "{noun}");
+            assert!(is_model_unit(noun), "{noun} 的目录实体挂在自己 refno 上");
+            assert!(!is_derived_unit(noun), "{noun} 名下不派生别的键");
+        }
+        // 容器的分工不动：自己不是单元，名下管身走派生腿。
+        for noun in ["BRAN", "HANG", "LUG", "SUPC", "TRUNNI"] {
+            assert!(!is_model_unit(noun), "{noun} 自己 refno 上没有一件实体");
+            assert!(is_derived_unit(noun), "{noun} 名下的管身按两端键派生");
         }
     }
 
@@ -885,6 +1023,50 @@ mod tests {
                 !category.consumes_members(),
                 "{noun} 的成员是路由，不能被吃掉"
             );
+        }
+    }
+
+    /// `TMPL` 是图元容器：它认领自己那批负体，但**一刀都不扣**。
+    ///
+    /// 改判前它是 [`Category::Unknown`]，`aps250110` 里底下 1282 个 `NCYL`、232 个
+    /// `NBOX`、45 个 `NXTR` 共 1559 件负体整片落进 `orphans`——而那本账的语义是
+    /// 「数据或分类有问题」，这些负体两样都不是。
+    ///
+    /// **这条同时钉住一个被实测证否的改法**：负体在成员表里与正体并排
+    /// （`DPSE DDSE NBOX NCYL NCYL PANE TMRPSE NCYL NCYL`），看着就该由正体兄弟扣掉。
+    /// 真按那样跑，5 个 `TMPL "Fire Hose Wheel and Housing"` 的 31 件零件被自己的
+    /// **墙龛**扣得一件不剩，端板只剩两条 8.4mm 窄条——那些负体扣的是容器之外的宿主。
+    /// 所以 `is_positive_solid()` 在这里必须是假：`elmodl::collect_negatives` 只向下
+    /// 圈定，容器不能有任何一条路径把自己的负体递给兄弟。
+    #[test]
+    fn tmpl_is_a_primitive_container_that_only_claims_its_negatives() {
+        assert_eq!(classify("TMPL"), Category::PrimitiveContainer);
+        assert!(
+            classify("TMPL").consumes_members(),
+            "负体要有主，否则整片落进语义不对的 orphans"
+        );
+        assert!(
+            !classify("TMPL").is_positive_solid(),
+            "容器自己不出几何，也不许成为负体的扣减方"
+        );
+        assert!(!classify("TMPL").builds_geometry());
+        assert!(
+            !is_model_unit("TMPL"),
+            "几何在成员上，容器自己不是一件模型单元"
+        );
+        assert_eq!(
+            decision("TMPL").disposition,
+            BuildDisposition::ProvenNonGraphic,
+            "LPRMTV 已证它不是图元，这不是「还没实现」"
+        );
+        // 那批负体仍然是负几何：账要记在属主头上，不许滑进别的本子。
+        for noun in ["NCYL", "NBOX", "NXTR"] {
+            assert!(classify(noun).is_negative(), "{noun}");
+        }
+        // 反面：真正的纯组织节点不消费成员，别被这个新类别顺手带走。
+        for noun in ["ZONE", "STRU", "FRMW", "PIPE"] {
+            assert_eq!(classify(noun), Category::List, "{noun}");
+            assert!(!classify(noun).consumes_members(), "{noun} 不该消费成员");
         }
     }
 

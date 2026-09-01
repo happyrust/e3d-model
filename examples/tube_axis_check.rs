@@ -157,11 +157,12 @@ struct Tally {
     /// 事导向完全不同的结论：紧贴着下一件却差了几十毫米，是解错了；隔着一整根
     /// 管，那间隙本来就该在那儿。差别全写在槽长上。
     focus_lengths: BTreeMap<&'static str, usize>,
-    /// 盯住那一族的逐条明细，按横向偏移排序留证。
+    /// 盯住那一族的逐条明细 `(横向偏移, 槽长, 行)`，留证用。
     ///
-    /// 排序键取横向偏移而非槽长：一族元件里真正需要看脸的是**歪着的那几条**，
-    /// 按出现次序留前几条只会留到一堆一模一样的正常样本。
-    focus_detail: Vec<(f64, String)>,
+    /// 打印两刀：按横向偏移降序列歪着的（真正需要看脸的那几条），再按槽长升序
+    /// 列 10mm 以下的短槽——「本该贴着装却差了一点」正是解错位置该有的形态，
+    /// 而这种缝横向未必过 1mm，只按横向排序它们永远轮不到露脸。
+    focus_detail: Vec<(f64, f64, String)>,
     /// 夹角超过 30° 的样本，留证。**按端型各留几条**——只留全局前几条的话，
     /// 条数最多的那一类会把别的类挤没，而恰恰是别的类才分得出错在哪一侧。
     outliers: BTreeMap<&'static str, Vec<String>>,
@@ -275,7 +276,9 @@ fn dump_container(container: &DbElement) -> anyhow::Result<()> {
             member.element_type()?,
             member.stored_name()?
         );
-        for name in ["POS", "ORI", "ARRI", "LEAV", "ANGL", "DESP"] {
+        // HEIG 在列：`RPRO TLEN` 的求值就是拿它顶的，FTUB 的轴向缝要靠
+        // 「HEIG 与两件实距之差」来分「目录求值错」与「模型本来就短一截」。
+        for name in ["POS", "ORI", "ARRI", "LEAV", "ANGL", "DESP", "HEIG"] {
             println!(
                 "      {name:<5} = {:?}",
                 member.attribute(name).ok().flatten()
@@ -469,6 +472,7 @@ fn note_focus(
     let flat = (across.x * across.x + across.y * across.y).sqrt();
     tally.focus_detail.push((
         lateral,
+        length,
         format!(
             "槽长 {length:>9.2}mm  横向 {lateral:>8.2}mm（水平 {flat:>7.2} 铅垂 {:>7.2}）\
              两端轴 {pair_deg:>6.2}°  离开件 {}  容器 {} {}",
@@ -902,13 +906,31 @@ fn report(tally: &mut Tally) {
         let skewed = tally
             .focus_detail
             .iter()
-            .filter(|(mm, _)| *mm > 1.0)
+            .filter(|(mm, _, _)| *mm > 1.0)
             .count();
         println!(
             "  横向偏移 > 1mm 的 {skewed}/{total} 条，列前 {}：",
             skewed.min(30)
         );
-        for (_, line) in tally.focus_detail.iter().take(skewed.min(30)) {
+        for (_, _, line) in tally.focus_detail.iter().take(skewed.min(30)) {
+            println!("    {line}");
+        }
+        // 第二刀：短槽。零长判到 ZERO_LENGTH_TOL_MM 为止，从那往上到几毫米的缝
+        // 是「两件本该贴着装」的强候选——解错位置（目录求值差一口、世界矩阵少一环）
+        // 会做出这种缝，设计师手滑挪了 0.1mm 也会。分不出谁是谁就谈不上收口，
+        // 所以逐条列出来供 --dump 追查。
+        let mut shortest: Vec<&(f64, f64, String)> = tally
+            .focus_detail
+            .iter()
+            .filter(|(_, length, _)| *length < 10.0)
+            .collect();
+        shortest.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        println!(
+            "  槽长 < 10mm 的 {} 条（零长线 {ZERO_LENGTH_TOL_MM}mm 以上、贴装缝候选），列前 {}：",
+            shortest.len(),
+            shortest.len().min(12)
+        );
+        for (_, _, line) in shortest.iter().take(12) {
             println!("    {line}");
         }
     }

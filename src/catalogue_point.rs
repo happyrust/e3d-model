@@ -68,6 +68,9 @@ const CARTESIAN_POINT: &str = "PTCA";
 /// 与 [`crate::route::orimat`] 的退化阈值同源：定不出朝向的管身宁可记
 /// `unbuildable`，也不能拿一个近乎零的向量归一化出一个随机方向。
 const DIRECTION_TOL: f64 = 1.0e-9;
+/// Core3D `pplib/NAXIS` subtracts 1000 from a point-axis number and negates
+/// the resolved point direction.  The point position remains the axis datum.
+const NEGATED_POINT_BASE: u32 = 1000;
 
 /// 走目录链解 P 点的 [`PPointResolver`]。
 ///
@@ -76,6 +79,15 @@ const DIRECTION_TOL: f64 = 1.0e-9;
 /// 都要），键搞错了会把甲零件的尺寸发给乙零件，代价远大于省下的时间。
 #[derive(Debug, Default, Clone, Copy)]
 pub struct CataloguePoints;
+
+/// One catalogue axis in the design member's local frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct CatalogueAxis {
+    /// `Pn` axes pass through the referenced P point; named axes pass through
+    /// the component origin.
+    pub origin: DVec3,
+    pub direction: DVec3,
+}
 
 impl PPointResolver for CataloguePoints {
     fn leave(
@@ -106,30 +118,55 @@ fn resolve(member: &DbElement, ppoint: Option<u32>) -> Result<Option<RoutePoint>
     let Some(component) = catalogue_component(member)? else {
         return Ok(None);
     };
-    let Some(point) = point_numbered(&component, number)? else {
-        return Ok(None);
-    };
-
-    let env = DbElementParamEnv::new(Some(member.clone()), Some(component.clone()));
-    let local = if point.element_type()?.eq_ignore_ascii_case(CARTESIAN_POINT) {
-        cartesian(&point, &env)
-    } else {
-        axial(&point, &env)
-    };
-    let Some((pos, dir)) = local else {
+    let Some(local) = catalogue_point_local(member, &component, number)? else {
         return Ok(None);
     };
 
     let world = world_matrix(member)?;
-    let dir = world.transform_vector3(dir);
+    let dir = world.transform_vector3(local.dir);
     if !(dir.length() > DIRECTION_TOL) || !dir.is_finite() {
         return Ok(None);
     }
-    let pos = world.transform_point3(pos);
+    let pos = world.transform_point3(local.pos);
     if !pos.is_finite() {
         return Ok(None);
     }
 
+    Ok(Some(RoutePoint {
+        pos,
+        dir: dir.normalize(),
+        bore: local.bore,
+    }))
+}
+
+/// Resolve one catalogue P point in the design member's **local** frame.
+///
+/// Catalogue geometry uses the same point set as route endpoint placement:
+/// `SEXT.PAAX = P6`, for example, means the direction of point 6.  Keeping the
+/// local resolver here prevents the catalogue builder from reimplementing the
+/// `SPRE -> SCOM -> PTRE` expression environment or accidentally applying the
+/// design member's world matrix twice.
+pub(crate) fn catalogue_point_local(
+    member: &DbElement,
+    component: &DbElement,
+    number: u32,
+) -> Result<Option<RoutePoint>, DbElementError> {
+    let Some(point) = point_numbered(component, number)? else {
+        return Ok(None);
+    };
+    let env =
+        DbElementParamEnv::new(Some(member.clone()), Some(component.clone())).without_insulation();
+    let local = match point.element_type()?.as_str() {
+        CARTESIAN_POINT => cartesian(&point, &env),
+        "PTMI" => mixed(&point, &env),
+        _ => axial(&point, &env),
+    };
+    let Some((pos, dir)) = local else {
+        return Ok(None);
+    };
+    if !pos.is_finite() || !dir.is_finite() || !(dir.length() > DIRECTION_TOL) {
+        return Ok(None);
+    }
     Ok(Some(RoutePoint {
         pos,
         dir: dir.normalize(),
@@ -153,11 +190,112 @@ fn cartesian(point: &DbElement, env: &DbElementParamEnv) -> Option<(DVec3, DVec3
     Some((pos, dir))
 }
 
+fn mixed(point: &DbElement, env: &DbElementParamEnv) -> Option<(DVec3, DVec3)> {
+    let pos = DVec3::new(
+        number_of(point, "PX", env)?,
+        number_of(point, "PY", env)?,
+        number_of(point, "PZ", env)?,
+    );
+    let dir = DVec3::from_array(axis_spec::direction(&axis_words(point)?, env)?);
+    Some((pos, dir))
+}
+
 /// `SPRE`（→ `CATR`）→ 目录件。
-fn catalogue_component(member: &DbElement) -> Result<Option<DbElement>, DbElementError> {
-    let Some(mut current) = member.get_element(SPEC_REF)? else {
+pub(crate) fn catalogue_component(member: &DbElement) -> Result<Option<DbElement>, DbElementError> {
+    let Some(current) = member.get_element(SPEC_REF)? else {
         return Ok(None);
     };
+    follow_catalogue_component(current)
+}
+
+/// Resolve a catalogue axis, including Core's `Pn` form.
+///
+/// Plain/named axes stay delegated to e3d-io's single axis decoder.  Only the
+/// form that necessarily needs the surrounding PTSE (`[3,n]`, optionally
+/// count-prefixed as `[2,3,n]`) is completed here from the shared P-point
+/// resolver.
+/// Resolve both the direction and datum of a catalogue axis.
+pub(crate) fn catalogue_axis(
+    member: &DbElement,
+    component: &DbElement,
+    words: &[u32],
+) -> Result<Option<CatalogueAxis>, DbElementError> {
+    let env =
+        DbElementParamEnv::new(Some(member.clone()), Some(component.clone())).without_insulation();
+    if let Some(direction) = axis_spec::direction(words, &env) {
+        let direction = DVec3::from_array(direction);
+        return Ok(
+            (direction.length() > DIRECTION_TOL && direction.is_finite()).then(|| CatalogueAxis {
+                origin: DVec3::ZERO,
+                direction: direction.normalize(),
+            }),
+        );
+    }
+    let payload = match words {
+        [3, number] => Some([*number]),
+        [count, rest @ ..] if *count as usize == rest.len() => match rest {
+            [3, number] => Some([*number]),
+            _ => None,
+        },
+        _ => None,
+    };
+    let Some([encoded_number]) = payload else {
+        return Ok(None);
+    };
+    let (number, negated) = if encoded_number >= NEGATED_POINT_BASE {
+        (encoded_number - NEGATED_POINT_BASE, true)
+    } else {
+        (encoded_number, false)
+    };
+    Ok(
+        catalogue_point_local(member, component, number)?.map(|point| CatalogueAxis {
+            origin: point.pos,
+            direction: if negated { -point.dir } else { point.dir },
+        }),
+    )
+}
+
+/// Resolve the runtime TUBI component selected by a route departure element.
+///
+/// `GTTUBE` chooses the stub on the **departure** side (`HSTU`/`HSRO` for a
+/// container head, `LSTU`/`LSRO` for a member leave).  The stub is normally an
+/// `SPCO`; its `CATR` reaches the `SCOM` whose one-based `PARA[2]` is CGETOD's
+/// outside diameter.  Keeping this beside the P-point resolver means both
+/// consumers share the same bounded SPCO -> SCOM traversal.
+pub(crate) fn tube_outer_diameter_from_stub(
+    departure: &DbElement,
+    stub_attributes: &[&str],
+) -> Result<Option<f64>, DbElementError> {
+    for name in stub_attributes {
+        let start = match departure.get_element(name) {
+            Ok(start) => start,
+            Err(DbElementError::UnknownAttribute { .. }) => None,
+            Err(error) => return Err(error),
+        };
+        let Some(start) = start else {
+            continue;
+        };
+        let Some(component) = follow_catalogue_component(start)? else {
+            continue;
+        };
+        let para = match component.get_double_array("PARA") {
+            Ok(para) => para,
+            Err(DbElementError::UnknownAttribute { .. }) => None,
+            Err(error) => return Err(error),
+        };
+        if let Some(diameter) = para
+            .as_deref()
+            .and_then(|values| values.get(1))
+            .copied()
+            .filter(|value| value.is_finite() && *value > 0.0)
+        {
+            return Ok(Some(diameter));
+        }
+    }
+    Ok(None)
+}
+
+fn follow_catalogue_component(mut current: DbElement) -> Result<Option<DbElement>, DbElementError> {
     // 有些项目是设计 SPCO → SCOM；有些还会经过目录侧 SPCO。按 refno 有界追踪，
     // 只在真正到达 SCOM 后读 PTRE，避免把中间规格节点误当几何组件。
     let mut seen = std::collections::HashSet::new();
@@ -228,9 +366,21 @@ fn axis_words(point: &DbElement) -> Option<Vec<u32>> {
     }
 }
 
-/// 一个属性读成数，含它可能带的目录表达式。求不出给 `None`，不折成 0。
+/// 一个属性读成数，含它可能带的目录表达式。
+///
+/// Core3D `pplib/SPARAM` (`0x103C4BB4`) 对四词全零元组返回显式数值 0；它不是
+/// “求不出”。PTCA 点大量用这个编码表示原点坐标，若当 unresolved，`Pn` 目录轴和
+/// 路由端点会一起消失。
 fn number_of(element: &DbElement, name: &str, env: &DbElementParamEnv) -> Option<f64> {
-    element.get_number(name, env).ok()?.value()
+    let outcome = element.get_number(name, env).ok()?;
+    outcome.value().or_else(|| {
+        matches!(
+            element.attribute(name),
+            Ok(Some(DescriptorValue::RawWords(words)))
+                if !words.is_empty() && words.iter().all(|word| *word == 0)
+        )
+        .then_some(0.0)
+    })
 }
 
 #[cfg(test)]

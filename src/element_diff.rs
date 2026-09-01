@@ -25,6 +25,16 @@
 //! 属性表只覆盖模板声明的属性。纯 UDA、以及本 crate 尚未解码的存储形态，
 //! 都可能让记录字节不同而属性表逐项相等。那种情况记 [`ElementDiff::opaque`]，
 //! 由调用方按「变了」处置——把它折算成「没变」就是静默缺件。
+//!
+//! ## 唯一的例外：`TUBI` 有一道 core 硬编码的门
+//!
+//! `DB_Element::hasElementChangedBetween`（`0x593d6d0`）对 `NOUN_TUBI` 不走
+//! 记录级判据，只认四个属性：`POS`/`ORI`/`ITLE`/`SPRE`（[`TUBI_CHANGE_GATE`]）。
+//! 管身记录是半派生数据——路由一动它就被连带重写，字节噪音极多；四个都没变，
+//! core 对这个候选的回答就是「没变」，attChange 一个都不发，**连 opaque 都不算**。
+//! 我们照抄这道门（[`attribute_diff_passes_noun_gate`]）。类型变更与改挂不受
+//! 此门约束：core 在 `checkEle` 里对 OWNER 是绕开元素门的单独一问，类型变更
+//! 走 `dealWithChangeType`。
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -34,6 +44,23 @@ use e3d_io::record::descriptor::DescriptorValue;
 use e3d_io::refno::RefNo;
 
 use crate::transform::PLACEMENT_ATTRIBUTES;
+
+/// core 对 `NOUN_TUBI` 硬编码的变化门（`hasElementChangedBetween` @ `0x593d6d0`）：
+/// 只有这四个属性之一变了，TUBI 的属性差分才算数。
+///
+/// 字面照抄取证结果，**不**从 [`PLACEMENT_ATTRIBUTES`] 拼——前两项重合是巧合，
+/// 不是耦合：那张表是我们世界矩阵的输入清单，会随取证扩；这张是 core 反出来的
+/// 常量，只随 core 的新证据动。
+const TUBI_CHANGE_GATE: [&str; 4] = ["POS", "ORI", "ITLE", "SPRE"];
+
+/// 这个 noun 的属性差分结果算不算数（core 的 NOUN_TUBI 门，见模块文档最后一节）。
+/// 除 `TUBI` 外一律算数。
+fn attribute_diff_passes_noun_gate(noun: &str, changed: &[String]) -> bool {
+    noun != "TUBI"
+        || changed
+            .iter()
+            .any(|name| TUBI_CHANGE_GATE.contains(&name.as_str()))
+}
 
 /// 成员表在两端之间的变化（对标 `checkEle` 的 `reorder*` 与次层级成员分支）。
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize)]
@@ -167,13 +194,22 @@ pub fn diff_element(
 
     // 类型变了就没有共同的属性表可比。core 同样不比：`dealWithChangeType` 直接
     // 走「删除 + 整棵子树重建」。
-    let attributes = if type_changed.is_some() {
+    let mut attributes = if type_changed.is_some() {
         Vec::new()
     } else {
         changed_attributes(&base_el, &target_el)?
     };
 
-    let opaque = type_changed.is_none()
+    // NOUN_TUBI 门：四个门属性都没变，这个候选的记录差异就是重写噪音——
+    // 属性差分归零，opaque 也不亮，core 对它的回答就是「没变」。
+    let muted_by_noun_gate =
+        type_changed.is_none() && !attribute_diff_passes_noun_gate(&noun, &attributes);
+    if muted_by_noun_gate {
+        attributes = Vec::new();
+    }
+
+    let opaque = !muted_by_noun_gate
+        && type_changed.is_none()
         && owner_changed.is_none()
         && members.is_none()
         && attributes.is_empty();
@@ -432,5 +468,27 @@ mod tests {
         };
         assert!(!opaque.is_unchanged());
         assert!(opaque.placement_input_changed(), "说不出哪变了就得保守级联");
+    }
+
+    /// core 对 NOUN_TUBI 的门：四个门属性之一变了才算数，其余差异是重写噪音。
+    #[test]
+    fn a_tubi_only_counts_as_changed_through_its_gate() {
+        for name in TUBI_CHANGE_GATE {
+            assert!(
+                attribute_diff_passes_noun_gate("TUBI", &[name.to_string()]),
+                "{name} 是门属性，必须过门"
+            );
+        }
+        assert!(
+            !attribute_diff_passes_noun_gate("TUBI", &["LSRO".into(), "NAME".into()]),
+            "门外属性变了不算 TUBI 变了"
+        );
+        assert!(
+            !attribute_diff_passes_noun_gate("TUBI", &[]),
+            "没有属性差异也过不了门——记录噪音不许折成 opaque"
+        );
+        // 门只长在 TUBI 上：别的 noun 一个属性都不吞。
+        assert!(attribute_diff_passes_noun_gate("PANE", &["NAME".into()]));
+        assert!(attribute_diff_passes_noun_gate("PANE", &[]));
     }
 }

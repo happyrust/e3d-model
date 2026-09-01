@@ -212,14 +212,11 @@ fn main() -> anyhow::Result<()> {
         args.out.join("upserts.json"),
         serde_json::to_vec_pretty(&invariants)?,
     )?;
-    let removals: Vec<String> = outcome
-        .removals
-        .iter()
-        .map(|refno| refno.to_string())
-        .collect();
+    // 按 GeometryId 落盘，与 upserts.json 同一把键：一个路由容器 refno 名下可能有
+    // 多根管身，只写 refno 的话消费端分不出该擦哪一根。
     std::fs::write(
         args.out.join("removals.json"),
-        serde_json::to_vec_pretty(&removals)?,
+        serde_json::to_vec_pretty(&outcome.removals)?,
     )?;
     let report_path = args.out.join("update-report.json");
     std::fs::write(&report_path, serde_json::to_vec_pretty(&outcome.report)?)?;

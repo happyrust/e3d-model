@@ -97,6 +97,7 @@ fn category_name(category: Category) -> String {
         Category::Catalog => "Catalog".into(),
         Category::RouteContainer => "RouteContainer".into(),
         Category::RouteMember => "RouteMember".into(),
+        Category::PrimitiveContainer => "PrimitiveContainer".into(),
         Category::Composite(family) => format!("Composite({family:?})"),
         Category::ProfileData => "ProfileData".into(),
         Category::NonGraphic => "NonGraphic".into(),

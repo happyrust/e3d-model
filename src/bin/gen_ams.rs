@@ -5,7 +5,7 @@
 //! ```text
 //! gen_ams --attlib <attlib.dat> --db <ams1112_0001> --template <模板文件或目录> \
 //!         [--db-type DESI] [--sesno N] [--root w0/w1] [--out out/ams1112] \
-//!         [--catalogue <ams5052_0001> ...] [--no-instance-cache]
+//!         [--catalogue <ams5052_0001> ...] [--route-only] [--no-instance-cache]
 //! ```
 //!
 //! `--catalogue` 可重复，把 `SPRE`/`CATR` 指向的目录库一并开进同一个 [`DbSet`]。
@@ -25,8 +25,9 @@ use anyhow::{Context, bail};
 use e3d_io::db_element::{DbFilePin, DbSet, template_file_for};
 use e3d_io::engine::{ReadOnlyEngine, ScanTier};
 use e3d_io::refno::RefNo;
+use e3d_model::catalogue::CatalogueMeshCache;
 use e3d_model::mesh::TriMesh;
-use e3d_model::pipeline::{GenerationOutcome, Report, generate_subtree};
+use e3d_model::pipeline::{GenerationOutcome, Report, generate_subtree_with_cache};
 
 struct Args {
     attlib: PathBuf,
@@ -37,6 +38,7 @@ struct Args {
     root: Option<RefNo>,
     out: PathBuf,
     catalogues: Vec<PathBuf>,
+    route_only: bool,
     no_instance_cache: bool,
 }
 
@@ -49,6 +51,7 @@ fn parse_args() -> anyhow::Result<Args> {
     let mut root = None;
     let mut out = PathBuf::from("out/gen_ams");
     let mut catalogues = Vec::new();
+    let mut route_only = false;
     let mut no_instance_cache = false;
 
     let mut it = std::env::args().skip(1);
@@ -63,6 +66,7 @@ fn parse_args() -> anyhow::Result<Args> {
             "--root" => root = Some(parse_refno(&value()?)?),
             "--out" => out = PathBuf::from(value()?),
             "--catalogue" => catalogues.push(PathBuf::from(value()?)),
+            "--route-only" => route_only = true,
             "--no-instance-cache" => no_instance_cache = true,
             other => bail!("不认识的参数 {other}"),
         }
@@ -76,6 +80,7 @@ fn parse_args() -> anyhow::Result<Args> {
         root,
         out,
         catalogues,
+        route_only,
         no_instance_cache,
     })
 }
@@ -122,6 +127,28 @@ fn scan_index(db_file: &Path, sesno: Option<u32>) -> anyhow::Result<IndexCensus>
     })
 }
 
+/// 独立扫出本库全部 BRAN/HANG 容器；仍由 [`generate_subtree`] 生成，避免审计探针
+/// 另造一条比生产路径更容易“通过”的模型链。
+fn scan_route_roots(
+    db_file: &Path,
+    sesno: Option<u32>,
+    set: &std::sync::Arc<DbSet>,
+) -> anyhow::Result<Vec<RefNo>> {
+    let mut engine = match sesno {
+        Some(s) => ReadOnlyEngine::open_at(db_file, s),
+        None => ReadOnlyEngine::open(db_file),
+    }
+    .with_context(|| format!("开库扫 BRAN/HANG {}", db_file.display()))?;
+    let mut roots = Vec::new();
+    for scanned in engine.scan_elements(ScanTier::Header)? {
+        let refno = scanned?.refno;
+        if matches!(set.element(refno).element_type()?.as_str(), "BRAN" | "HANG") {
+            roots.push(refno);
+        }
+    }
+    Ok(roots)
+}
+
 #[derive(serde::Serialize)]
 struct ElementInvariants {
     geometry_id: e3d_model::GeometryId,
@@ -156,6 +183,26 @@ struct ComponentInvariants {
     local_aabb_max: [f64; 3],
     triangles: usize,
     genus: i32,
+}
+
+#[derive(serde::Serialize)]
+struct RouteRootAudit {
+    refno: String,
+    noun: String,
+    name: Option<String>,
+    direct_members: usize,
+    direct_member_nouns: BTreeMap<String, usize>,
+    direct_route_members: usize,
+    /// Route members whose SPRE resolves to a catalogue/specification element.
+    direct_route_members_with_spre: usize,
+    /// Route members whose SPRE is unset/nulref. E3D can legitimately export
+    /// zero geometry for a HANG made only from such placeholder PCLA members.
+    direct_route_members_without_spre: usize,
+    generated_elements: usize,
+    generated_real_elements: usize,
+    generated_implied_tubes: usize,
+    skipped: usize,
+    failed: usize,
 }
 
 /// 对拍主键：属主显示名 + 同 noun 兄弟序号。
@@ -295,6 +342,11 @@ fn main() -> anyhow::Result<()> {
     // 只在从头整库生成时才拿索引总数当判据；`--root` 是子树，对不上是应该的。
     let (roots, index_total) = match args.root {
         Some(refno) => (vec![refno], None),
+        None if args.route_only => {
+            let roots = scan_route_roots(&args.db_file, args.sesno, &set)?;
+            println!("route-only 扫到 {} 个 BRAN/HANG 根", roots.len());
+            (roots, None)
+        }
         None => {
             let census = scan_index(&args.db_file, args.sesno)?;
             println!(
@@ -306,7 +358,7 @@ fn main() -> anyhow::Result<()> {
             (census.roots, Some(census.total))
         }
     };
-    if roots.is_empty() {
+    if roots.is_empty() && !args.route_only {
         bail!("没有可用的根元素（--root 也没给）");
     }
 
@@ -321,9 +373,89 @@ fn main() -> anyhow::Result<()> {
     );
     let mut index_offset = 0u32;
     let mut noun_counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut route_audit = Vec::new();
+    let mut catalogue_mesh_cache = CatalogueMeshCache::default();
 
     for root in roots {
-        let GenerationOutcome { elements, report } = generate_subtree(set.element(root))?;
+        let route_element = args.route_only.then(|| set.element(root));
+        let route_identity = route_element
+            .as_ref()
+            .map(|element| {
+                let mut direct_member_nouns = BTreeMap::new();
+                let mut direct_route_members = 0;
+                let mut direct_route_members_with_spre = 0;
+                let mut direct_route_members_without_spre = 0;
+                for member in element.members()? {
+                    let noun = member.element_type()?;
+                    *direct_member_nouns.entry(noun.clone()).or_insert(0) += 1;
+                    if matches!(
+                        e3d_model::category::decision(&noun).category,
+                        e3d_model::category::Category::RouteMember
+                    ) {
+                        direct_route_members += 1;
+                        if member.get_element("SPRE")?.is_some() {
+                            direct_route_members_with_spre += 1;
+                        } else {
+                            direct_route_members_without_spre += 1;
+                        }
+                    }
+                }
+                Ok::<_, e3d_io::db_element::DbElementError>((
+                    element.element_type()?,
+                    element.stored_name()?,
+                    direct_member_nouns.values().sum(),
+                    direct_member_nouns,
+                    direct_route_members,
+                    direct_route_members_with_spre,
+                    direct_route_members_without_spre,
+                ))
+            })
+            .transpose()?;
+        let GenerationOutcome { elements, report } =
+            generate_subtree_with_cache(set.element(root), &mut catalogue_mesh_cache)?;
+        if let Some((
+            noun,
+            name,
+            direct_members,
+            direct_member_nouns,
+            direct_route_members,
+            direct_route_members_with_spre,
+            direct_route_members_without_spre,
+        )) = route_identity
+        {
+            route_audit.push(RouteRootAudit {
+                refno: root.to_string(),
+                noun,
+                name,
+                direct_members,
+                direct_member_nouns,
+                direct_route_members,
+                direct_route_members_with_spre,
+                direct_route_members_without_spre,
+                generated_elements: elements.len(),
+                generated_real_elements: elements
+                    .iter()
+                    .filter(|element| {
+                        matches!(element.geometry_id, e3d_model::GeometryId::Element { .. })
+                    })
+                    .count(),
+                generated_implied_tubes: elements
+                    .iter()
+                    .filter(|element| {
+                        matches!(
+                            element.geometry_id,
+                            e3d_model::GeometryId::ImpliedTube { .. }
+                        )
+                    })
+                    .count(),
+                skipped: report.skipped.len(),
+                failed: report.failed.len(),
+            });
+        }
+        if args.route_only {
+            merged.merge(report);
+            continue;
+        }
         let owners = elements
             .iter()
             .map(|generated| set.element(generated.refno).owner())
@@ -401,6 +533,11 @@ fn main() -> anyhow::Result<()> {
         }
         merged.merge(report);
     }
+    debug_assert_eq!(
+        merged.catalogue_mesh_cache,
+        catalogue_mesh_cache.stats(),
+        "merged per-root catalogue-cache deltas must equal final batch counters",
+    );
     obj.flush()?;
 
     let elements_path = args.out.join("elements.json");
@@ -410,6 +547,12 @@ fn main() -> anyhow::Result<()> {
     let cache_path = args.out.join("primitive-cache.json");
     let cache_stats = e3d_model::primitive_cache_stats();
     std::fs::write(&cache_path, serde_json::to_vec_pretty(&cache_stats)?)?;
+    if args.route_only {
+        std::fs::write(
+            args.out.join("routes.json"),
+            serde_json::to_vec_pretty(&route_audit)?,
+        )?;
+    }
 
     println!("{}", merged.totals_line());
     println!("按 noun 生成: {noun_counts:?}");

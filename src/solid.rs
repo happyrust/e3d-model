@@ -144,6 +144,7 @@ fn extrude_rings_grown(
 
 pub(crate) const BOX_WHAT: &str = "box";
 pub(crate) const CYLINDER_WHAT: &str = "cylinder";
+pub(crate) const SPHERE_WHAT: &str = "sphere";
 
 /// [`box_solid`] 的尺寸校验，单独一份、**不构造几何**。
 ///
@@ -209,6 +210,15 @@ pub fn cylinder_tilt(heig: f64) -> f64 {
 /// `24381/130755,130757,130767` 的 RVM 面片明确显示，进入组合体后正体和 NCYL
 /// 刀具都按这一套居中 Z 约定构造。两条路径不能再共用一个隐含约定。
 pub fn csg_cylinder_solid(diam: f64, heig: f64) -> Result<Manifold, SolidError> {
+    csg_cylinder_solid_with_segments(diam, heig, cylinder_segments(diam / 2.0))
+}
+
+/// 指定段数的局部 Z 轴居中圆柱，供已经由外部 RVM facet 策略定形的 baked 组合体。
+pub fn csg_cylinder_solid_with_segments(
+    diam: f64,
+    heig: f64,
+    segments: i32,
+) -> Result<Manifold, SolidError> {
     const WHAT: &str = "CSG cylinder";
     let height = heig.abs();
     if !(diam > 0.0 && height > f64::EPSILON) {
@@ -219,9 +229,22 @@ pub fn csg_cylinder_solid(diam: f64, heig: f64) -> Result<Manifold, SolidError> 
     }
     let radius = diam / 2.0;
     ensure_solid(
-        Manifold::cylinder(height, radius, radius, cylinder_segments(radius), true),
+        Manifold::cylinder(height, radius, radius, segments, true),
         WHAT,
     )
+}
+
+/// Unit-radius sphere with libgm's radius-dependent facet count supplied by
+/// the caller. Catalogue spheres scale this canonical body at placement time,
+/// so equal segment classes share one mesh even when their diameters differ.
+pub fn unit_sphere_solid(segments: i32) -> Result<Manifold, SolidError> {
+    if segments < 4 {
+        return Err(SolidError::Degenerate {
+            what: SPHERE_WHAT,
+            detail: format!("segments = {segments}"),
+        });
+    }
+    ensure_solid(Manifold::sphere(1.0, segments), SPHERE_WHAT)
 }
 
 /// `gm_CreatePyramid`：底面 XBOT×YBOT 在 z = −H/2，顶面 XTOP×YTOP 在 z = +H/2，
@@ -282,6 +305,48 @@ pub fn pyramid_solid(
         [-hx_t + ox, hy_t + oy, h2],
     ];
     ensure_solid(Manifold::hull_pts(&corners), WHAT)
+}
+
+/// `GM_Snout`：两端直径 DBOT/DTOP，高 HEIG，局部 Z 轴且原点居中。
+/// XOFF/YOFF 是顶面中心相对底面中心的偏移；线性剪切自然把偏移上下各摊一半。
+pub fn snout_solid(
+    dbot: f64,
+    dtop: f64,
+    height: f64,
+    xoff: f64,
+    yoff: f64,
+) -> Result<Manifold, SolidError> {
+    const WHAT: &str = "snout";
+    if !(height > f64::EPSILON) {
+        return Err(SolidError::BadHeight { what: WHAT, height });
+    }
+    if dbot < 0.0 || dtop < 0.0 || !(dbot > f64::EPSILON || dtop > f64::EPSILON) {
+        return Err(SolidError::Degenerate {
+            what: WHAT,
+            detail: format!("DBOT/DTOP = {dbot}/{dtop}"),
+        });
+    }
+    let (rb, rt) = (dbot / 2.0, dtop / 2.0);
+    let body = Manifold::cylinder(height, rb, rt, snout_segments(rb, rt), true);
+    let shear = DMat4::from_cols_array(&[
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        xoff / height,
+        yoff / height,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ]);
+    ensure_solid(placed(&body, shear), WHAT)
 }
 
 /// `GM_RectTorus`：矩形截面（径向 RINS→ROUT，轴向 ±HEIG/2）绕局部 **Y** 轴，
@@ -481,7 +546,11 @@ fn swept_solid_grown(
         return Err(SolidError::EmptySection { what });
     }
     let segments = part_rev_segments(radius_for_segments, sweep);
-    let solid = Manifold::revolve(&cross, segments, sweep);
+    // Manifold::Revolve treats values <= 2 as "use the global default" and
+    // then truncates `default * sweep / 360`. A valid narrow E3D sweep can
+    // therefore become zero divisions (AMS7997 BEND 24381/104871). Three is
+    // the smallest explicit division count accepted by that API.
+    let solid = Manifold::revolve(&cross, segments.max(3), sweep);
     let solid = if angle_deg < 0.0 {
         solid.rotate(0.0, 0.0, -sweep)
     } else {
@@ -501,6 +570,12 @@ pub const MAX_SEGMENTS: i32 = 1000;
 /// `GM_Cylinder::calcFacets` 的整圆段数：喂自己的半径，封顶 [`MAX_SEGMENTS`]。
 pub fn cylinder_segments(radius: f64) -> i32 {
     circle_segments_uncapped(radius, FACET_TOL_MM).min(MAX_SEGMENTS)
+}
+
+/// E3D RVM 的 SNOU FacetGroup 使用粗粒度 baked facet；`24381/130759,130763`
+/// 的 R=27.5mm 外圈及其中心孔均为 8 段。SNOU 直接按唯一外部基准定形。
+pub fn snout_segments(r_bottom: f64, r_top: f64) -> i32 {
+    circle_segments_uncapped(r_bottom.max(r_top), 5.0).min(MAX_SEGMENTS)
 }
 
 /// `d2_numberOfSegmentsForPartRev`：一段扫角分几段。
@@ -639,6 +714,54 @@ pub(crate) fn ensure_solid(solid: Manifold, what: &'static str) -> Result<Manifo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snout_is_closed_centered_and_preserves_volume_under_eccentric_shear() {
+        let (dbot, dtop, height, xoff, yoff) = (55.0, 32.0, 30.0, 8.0, -4.0);
+        let solid = snout_solid(dbot, dtop, height, xoff, yoff).unwrap();
+        assert!(!solid.is_empty());
+        assert_eq!(solid.genus(), 0);
+        let analytic = std::f64::consts::PI
+            * height
+            * ((dbot / 2.0_f64).powi(2) + (dbot / 2.0) * (dtop / 2.0) + (dtop / 2.0_f64).powi(2))
+            / 3.0;
+        let segments = snout_segments(dbot / 2.0, dtop / 2.0) as f64;
+        assert_eq!(segments, 8.0, "RVM 样本外圈是 8 段");
+        let inscribed = analytic
+            * (segments * (std::f64::consts::TAU / segments).sin() / std::f64::consts::TAU);
+        assert!((solid.volume() - inscribed).abs() / inscribed < 1e-12);
+        let bb = solid.bounding_box().unwrap();
+        assert!((bb.min()[2] + height / 2.0).abs() < 1e-9);
+        assert!((bb.max()[2] - height / 2.0).abs() < 1e-9);
+        assert!((bb.min()[0] - (-dbot / 2.0 - xoff / 2.0)).abs() < 1e-9);
+        assert!((bb.max()[0] - (dbot / 2.0 - xoff / 2.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn rvm_snout_with_two_box_trims_and_a_central_hole_keeps_the_observed_surface() {
+        let positive = snout_solid(55.0, 32.0, 30.0, 0.0, 0.0).unwrap();
+        let trim = box_solid(220.0, 55.0, 220.0).unwrap();
+        let lower = placed(
+            &trim,
+            DMat4::from_translation(glam::DVec3::new(0.0, -37.5, 0.0)),
+        );
+        let upper = placed(
+            &trim,
+            DMat4::from_translation(glam::DVec3::new(0.0, 37.5, 0.0)),
+        );
+        let bore = csg_cylinder_solid_with_segments(20.0, 30.0, snout_segments(0.0, 10.0)).unwrap();
+        let cut = subtract_negatives(
+            positive,
+            vec![
+                inflate_about_center(&lower, MANIFOLD_NUDGE_MM),
+                inflate_about_center(&upper, MANIFOLD_NUDGE_MM),
+                inflate_about_center(&bore, MANIFOLD_NUDGE_MM),
+            ],
+        );
+        assert_eq!(cut.num_tri(), 56, "两件 E3D RVM 样本均为 56 三角形");
+        assert_eq!(cut.decompose().len(), 2, "中心孔把窄带分成左右两瓣");
+        assert!((cut.volume() - 15_125.707).abs() < 0.1, "{}", cut.volume());
+    }
 
     #[test]
     fn extrusion_volume_matches_profile_area_times_height() {
@@ -883,6 +1006,17 @@ mod tests {
         );
     }
 
+    /// AMS7997 BEND 24381/104871 evaluates its catalogue SCTO to this narrow
+    /// sweep.  E3D exports a visible bend, so the local builder must not return
+    /// an empty manifold merely because the sweep is about ten degrees.
+    #[test]
+    fn narrow_catalogue_circular_torus_is_a_solid() {
+        let solid = circ_torus_solid(66.75, 93.45, 9.99786).unwrap();
+        assert!(!solid.is_empty());
+        assert!(solid.num_tri() > 0);
+        assert!(solid.volume() > 0.0);
+    }
+
     /// 回转体与矩形环面是两条独立的实现路径（一条走 PLOO 环、一条走参数），
     /// 但整圈回转一个矩形轮廓就是矩形环面。体积必须**逐位**相等——两边喂给
     /// `part_rev_segments` 的都是外半径，段数一样，网格就该一样。
@@ -1012,6 +1146,15 @@ mod tests {
             let got = cylinder_segments(radius);
             assert_eq!(got, expect, "R={radius} 应当是 {expect} 段，实得 {got}");
         }
+    }
+
+    #[test]
+    fn unit_sphere_is_a_closed_unit_radius_body() {
+        let sphere = unit_sphere_solid(32).expect("unit sphere");
+        assert!(!sphere.is_empty());
+        assert!(sphere.num_tri() > 0);
+        let exact = 4.0 * std::f64::consts::PI / 3.0;
+        assert!((sphere.volume() - exact).abs() < exact * 0.05);
     }
 
     #[test]

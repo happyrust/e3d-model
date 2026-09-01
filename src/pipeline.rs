@@ -9,6 +9,7 @@
 //! | `Catalog` / `Unsupported` / `Unknown` | 记账 |
 //! | `RouteContainer` | 记账，并按 `RouteWalker` 的串接方式数出隐式管身 |
 //! | `RouteMember` | 记账 |
+//! | `PrimitiveContainer` | 记账；负体成员认领进 [`Report::host_negatives`]，本期不扣 |
 //! | `NonGraphic` | 记账（判「无三维表示」的放行要留名，见 [`Report::non_graphic`]） |
 //! | `Neg*` / `ProfileData` | 属主消费掉了就不会走到这里；走到了就是孤儿，记账 |
 //!
@@ -28,9 +29,13 @@ use std::collections::BTreeMap;
 
 use e3d_io::db_element::{DbElement, DbElementError};
 
-use crate::catalogue_point::CataloguePoints;
+use crate::catalogue::{
+    CatalogueMeshCache, CatalogueMeshCacheStats, model_catalogue_member_with_cache,
+};
+use crate::catalogue_point::{CataloguePoints, tube_outer_diameter_from_stub};
 use crate::category::{BuildDisposition, Category, decision, is_model_unit};
-use crate::elmodl::{GeneratedElement, GeometryId, Modeled, model_element};
+use crate::elmodl::{GeneratedElement, GeometryId, Modeled, model_element_with_cache};
+use crate::extrusion_reuse::ExtrusionReuseStats;
 use crate::route::{
     PPointResolver, Route, TubeOutcome, bore_mismatch, build_tube, resolve_end,
     tube_outer_diameter, walk_route,
@@ -65,6 +70,10 @@ pub struct ImpliedTubes {
     /// 已量出的那部分长度之和（mm）。名字不叫 `total_*`，因为在
     /// `measured == count` 之前它只是个部分和。
     pub measured_length_mm: f64,
+    /// CGETOD 从离开侧的 TUBI 目录件 `PARA[2]` 取得真外径的槽位数。
+    pub catalogue_od: usize,
+    /// 目录件或外径缺失，按 Core 的规则回落到到达侧 bore 的槽位数。
+    pub bore_fallback: usize,
     /// 按属主容器 noun 分账：BRAN 一支和 HANG 一支的管身要能分开看。
     pub by_owner_noun: BTreeMap<String, usize>,
     /// 退化情形明细，P2 出几何时才填得上。
@@ -123,11 +132,37 @@ pub struct Report {
     pub catalog_pending: BTreeMap<String, usize>,
     /// 路由容器记账：noun → 数量。BRAN/HANG/LUG/SUPC/TRUNNI 五族。
     pub route_containers: BTreeMap<String, usize>,
+    /// 图元容器记账：noun → 数量。[`Category::PrimitiveContainer`]，目前只有 `TMPL`。
+    ///
+    /// 单开一本而不是并进 [`Report::proven_non_graphic`]：容器自己确实不出几何，
+    /// 但它**替宿主持有负体**，与 SITE/ZONE 那种纯组织节点不是一回事。
+    pub primitive_containers: BTreeMap<String, usize>,
+    /// 宿主负体：被图元容器认领、但**一刀都还没扣**的负几何，noun → 数量。
+    ///
+    /// `aps250110` 里 `TMPL` 底下 1559 件（`NCYL` 1282 / `NBOX` 232 / `NXTR` 45）。
+    /// 它们扣的不是容器自己的正体成员，而是容器之外的宿主——消防水带箱的 `NXTR`
+    /// 是墙上的凹龛，钢结构端板的 `NBOX` 是给 203×133 工字梁让位的梁廓开口。
+    /// E3D 这条「构件在别处、洞开在宿主上」的路我们整条都还没有。
+    ///
+    /// **为什么非要单开一本**：这些元素被 [`Category::PrimitiveContainer`] 剪枝之后
+    /// 只剩 [`Report::consumed`] 里的一个数，而那本账里绝大多数是被属主真正吃进
+    /// 实体的剖面环与负体。混在一起，「已经扣掉了」和「还没有人扣」就长得一模一样
+    /// ——报告全绿，宿主上却少了洞。放进 [`Report::orphans`] 也不对：那本的语义是
+    /// 「数据或分类有问题」，而这些负体数据没问题、分类也没问题，缺的是机制。
+    ///
+    /// 这本账不进 [`Report::accounts_for`] 的等式（元素已在 `consumed` 里算过一次），
+    /// 与 [`Report::implied_tubes`] 同一个道理。
+    pub host_negatives: BTreeMap<String, usize>,
     /// 路由成员记账：noun → 数量。目录驱动，几何压在 P1。
     ///
     /// 与 [`Report::catalog_pending`] 分开记：目录件是型材与墙族那一路，路由成员
     /// 另有隐式管身要配对，两本混在一起就看不出管路到底缺了多少件。
     pub route_members: BTreeMap<String, usize>,
+    /// 已求值的目录 SEXT 在整次生成中的瞬态复用统计。它不改变输出身份或持久化格式。
+    pub catalogue_mesh_cache: CatalogueMeshCacheStats,
+    /// 设计侧环拉伸（含负体）的同批网格复用统计，见 [`crate::extrusion_reuse`]。
+    /// 与上一本同为瞬态观测账，不改变输出身份或持久化格式。
+    pub extrusion_mesh_cache: ExtrusionReuseStats,
     /// 隐式管身账，见 [`ImpliedTubes`]。
     pub implied_tubes: ImpliedTubes,
     /// 几何集正体记账：noun → 数量。[`Category::GeometrySet`] 那 26 个 noun。
@@ -184,8 +219,21 @@ pub struct GenerationOutcome {
 /// 从 `root` 起 DFS 生成整棵子树。遍历中的 I/O 错误（读不到成员表）直接上抛——
 /// 那是库文件层面的问题，不是单元素账。
 pub fn generate_subtree(root: DbElement) -> Result<GenerationOutcome, DbElementError> {
+    generate_subtree_with_cache(root, &mut CatalogueMeshCache::default())
+}
+
+/// 与 [`generate_subtree`] 相同，但由调用者持有目录局部网格缓存。
+///
+/// 批量生成多个独立根时复用同一缓存，可以避免对相同目录基本体重复求值和三角化；
+/// 输出元素身份、世界变换和最终 CSG 仍逐根独立。报告中的缓存统计只包含本次调用增量。
+pub fn generate_subtree_with_cache(
+    root: DbElement,
+    catalogue_mesh_cache: &mut CatalogueMeshCache,
+) -> Result<GenerationOutcome, DbElementError> {
     let mut elements = Vec::new();
     let mut report = Report::default();
+    let cache_stats_before = catalogue_mesh_cache.stats();
+    let extrusion_stats_before = catalogue_mesh_cache.extrusion_stats();
     // 显式栈，避免深树递归爆栈；压栈顺序反转以保持文件原序遍历。
     let mut stack: Vec<DbElement> = vec![root];
 
@@ -211,36 +259,38 @@ pub fn generate_subtree(root: DbElement) -> Result<GenerationOutcome, DbElementE
             Category::LoopExtrusion
             | Category::Primitive(_)
             | Category::Revolution
-            | Category::Polyhedron => match model_element(&el, category) {
-                Ok(Modeled::Solid(generated)) => {
-                    for skip in &generated.negatives_skipped {
-                        report.negatives_skipped.push(Incident {
-                            refno: skip.refno.to_string(),
-                            noun: skip.noun.clone(),
-                            detail: format!("属主 {refno}（{noun}）: {}", skip.reason),
-                        });
+            | Category::Polyhedron => {
+                match model_element_with_cache(&el, category, catalogue_mesh_cache) {
+                    Ok(Modeled::Solid(generated)) => {
+                        for skip in &generated.negatives_skipped {
+                            report.negatives_skipped.push(Incident {
+                                refno: skip.refno.to_string(),
+                                noun: skip.noun.clone(),
+                                detail: format!("属主 {refno}（{noun}）: {}", skip.reason),
+                            });
+                        }
+                        for note in &generated.notes {
+                            report.notes.push(Incident {
+                                refno: refno.clone(),
+                                noun: noun.clone(),
+                                detail: note.clone(),
+                            });
+                        }
+                        report.generated += 1;
+                        elements.push(*generated);
                     }
-                    for note in &generated.notes {
-                        report.notes.push(Incident {
-                            refno: refno.clone(),
-                            noun: noun.clone(),
-                            detail: note.clone(),
-                        });
-                    }
-                    report.generated += 1;
-                    elements.push(*generated);
+                    Ok(Modeled::Skipped { reason }) => report.skipped.push(Incident {
+                        refno,
+                        noun,
+                        detail: reason,
+                    }),
+                    Err(error) => report.failed.push(Incident {
+                        refno,
+                        noun,
+                        detail: error.to_string(),
+                    }),
                 }
-                Ok(Modeled::Skipped { reason }) => report.skipped.push(Incident {
-                    refno,
-                    noun,
-                    detail: reason,
-                }),
-                Err(error) => report.failed.push(Incident {
-                    refno,
-                    noun,
-                    detail: error.to_string(),
-                }),
-            },
+            }
             // 目录件里唯独 SBFI 出实体。判据取自 `category::is_model_unit`，增量的
             // 上卷读的是同一个函数——这份名单一旦两处各写一份，被删的 SBFI 就会在
             // 增量里永远上卷不到单元、永远不出 Remove，而两边的账各自还都是平的。
@@ -248,30 +298,32 @@ pub fn generate_subtree(root: DbElement) -> Result<GenerationOutcome, DbElementE
             // 「DESP 够不够长」那道门也曾写在这里，同样只写了这一份：增量直接调
             // `model_element`，短 DESP 在那边成了 `regen_failed`，在这边却是没这件事。
             // 现在门在 `elmodl` 里，短 DESP 两边统一落 `Skipped`。
-            Category::Catalog if is_model_unit(&noun) => match model_element(&el, category) {
-                Ok(Modeled::Solid(generated)) => {
-                    for note in &generated.notes {
-                        report.notes.push(Incident {
-                            refno: refno.clone(),
-                            noun: noun.clone(),
-                            detail: note.clone(),
-                        });
+            Category::Catalog if is_model_unit(&noun) => {
+                match model_element_with_cache(&el, category, catalogue_mesh_cache) {
+                    Ok(Modeled::Solid(generated)) => {
+                        for note in &generated.notes {
+                            report.notes.push(Incident {
+                                refno: refno.clone(),
+                                noun: noun.clone(),
+                                detail: note.clone(),
+                            });
+                        }
+                        report.generated += 1;
+                        decrement(&mut report.evidence_pending, &noun);
+                        elements.push(*generated);
                     }
-                    report.generated += 1;
-                    decrement(&mut report.evidence_pending, &noun);
-                    elements.push(*generated);
+                    Ok(Modeled::Skipped { reason }) => report.skipped.push(Incident {
+                        refno,
+                        noun,
+                        detail: reason,
+                    }),
+                    Err(error) => report.failed.push(Incident {
+                        refno,
+                        noun,
+                        detail: error.to_string(),
+                    }),
                 }
-                Ok(Modeled::Skipped { reason }) => report.skipped.push(Incident {
-                    refno,
-                    noun,
-                    detail: reason,
-                }),
-                Err(error) => report.failed.push(Incident {
-                    refno,
-                    noun,
-                    detail: error.to_string(),
-                }),
-            },
+            }
             Category::Catalog => {
                 *report.catalog_pending.entry(noun.clone()).or_insert(0) += 1;
             }
@@ -296,6 +348,36 @@ pub fn generate_subtree(root: DbElement) -> Result<GenerationOutcome, DbElementE
             }
             Category::RouteMember => {
                 *report.route_members.entry(noun.clone()).or_insert(0) += 1;
+                match model_catalogue_member_with_cache(&el, catalogue_mesh_cache) {
+                    Ok(build) => {
+                        for detail in &build.diagnostics {
+                            report.notes.push(Incident {
+                                refno: refno.clone(),
+                                noun: noun.clone(),
+                                detail: detail.clone(),
+                            });
+                        }
+                        if let Some(generated) = build.generated {
+                            for note in &generated.notes {
+                                report.notes.push(Incident {
+                                    refno: refno.clone(),
+                                    noun: noun.clone(),
+                                    detail: note.clone(),
+                                });
+                            }
+                            report.generated += 1;
+                            elements.push(generated);
+                        }
+                    }
+                    Err(error) => report.failed.push(Incident {
+                        refno,
+                        noun,
+                        detail: error.to_string(),
+                    }),
+                }
+            }
+            Category::PrimitiveContainer => {
+                *report.primitive_containers.entry(noun.clone()).or_insert(0) += 1;
             }
             Category::Composite(_) => {
                 // 类 28 与其余复合族必须经真实成员聚合 builder 才能转入 composites_built。
@@ -331,6 +413,12 @@ pub fn generate_subtree(root: DbElement) -> Result<GenerationOutcome, DbElementE
     }
 
     report.implied_tubes.settle_total_length();
+    report.catalogue_mesh_cache = catalogue_mesh_cache
+        .stats()
+        .checked_delta_from(cache_stats_before);
+    report.extrusion_mesh_cache = catalogue_mesh_cache
+        .extrusion_stats()
+        .checked_delta_from(extrusion_stats_before);
     Ok(GenerationOutcome { elements, report })
 }
 
@@ -343,11 +431,38 @@ fn decrement(ledger: &mut BTreeMap<String, usize>, noun: &str) {
     }
 }
 
-/// 量一个容器上的全部管身槽位，逐类记账（算法文档 §4 的退化表）。
+/// 单独为**一个**路由容器产出它名下该有的全部隐式管身——增量重建派生几何走这一条。
 ///
-/// 这里**只量不建**：`GeneratedElement` 是按 refno 索引的，而管身没有库记录，
-/// 塞进去要先定死伪 refno 的形状，那会连带动到增量更新与 RVM 对拍的主键。
-/// 那两处一动就牵到增量更新与 RVM 对拍，等长度先在真库上对平了再改建几何。
+/// # 为什么增量不许自己再写一遍
+///
+/// 这条与 [`generate_subtree`] 里那段路由容器分支**是同一段代码**：同一个
+/// [`walk_route`]、同一个 [`CataloguePoints`]、同一个 [`build_route_tubes`]。
+/// 键怎么定、哪些槽位退化得建不出来，全量和增量只能有一份答案——两边各写一份的
+/// 下场不是编译错误，是真库门上「全量说有这根、增量说没有」的静默分歧，机理与
+/// [`crate::category::is_model_unit`] 文档里记的那次 `SBFI` 漏件一模一样。
+///
+/// 记账用的 [`ImpliedTubes`] 在这里是**就地丢弃**的：增量报告有自己的账目口径，
+/// 这条只负责交出「该有哪几根、长什么样」。
+pub fn route_tubes_of(container: &DbElement) -> Result<Vec<GeneratedElement>, DbElementError> {
+    let route = walk_route(container)?;
+    let mut discarded = ImpliedTubes::default();
+    let mut elements = Vec::new();
+    build_route_tubes(
+        container,
+        &route,
+        &CataloguePoints,
+        &mut discarded,
+        &mut elements,
+    )?;
+    Ok(elements)
+}
+
+/// 量一个容器上的全部管身槽位，逐类记账（算法文档 §4 的退化表），能建的建出来。
+///
+/// 管身没有自己的库记录，`refno` 一律填容器的（绝不制造伪 refno），身份全靠
+/// [`GeometryId::ImpliedTube`] 那把两端站点的键——**一个容器 refno 名下会有 N 根管身，
+/// 只有这把键区分得开它们**。这也是模型集、增量 Remove 与真库门都必须按
+/// [`GeometryId`] 而不是按 refno 索引的原因。
 fn build_route_tubes(
     container: &DbElement,
     route: &Route,
@@ -356,7 +471,7 @@ fn build_route_tubes(
     elements: &mut Vec<GeneratedElement>,
 ) -> Result<usize, DbElementError> {
     let mut built_count = 0usize;
-    for (ordinal, slot) in route.tubes.iter().enumerate() {
+    for slot in &route.tubes {
         let ends = resolve_end(&slot.from, resolver)
             .and_then(|from| Ok((from, resolve_end(&slot.to, resolver)?)));
         let (Some(from), Some(to)) = (match ends {
@@ -389,27 +504,43 @@ fn build_route_tubes(
         if bore_mismatch(&from, &to) {
             ledger.degenerate.bore_mismatch += 1;
         }
-        // 目录外径要等 P1 的目录求值，现在只有回落的到达侧通径这一路。
-        let diameter = tube_outer_diameter(None, None, to.bore);
+        // CGETOD 的 A 是槽位离开侧：容器头读 HSTU/HSRO，普通构件离开读
+        // LSTU/LSRO。目录 PARA 是一基下标，PARA[2] 即 Rust values[1]。
+        let catalogue_od_result = match &slot.from {
+            crate::route::RouteEnd::ContainerHead(departure)
+            | crate::route::RouteEnd::ContainerTail(departure) => {
+                tube_outer_diameter_from_stub(departure, &["HSTU", "HSRO"])
+            }
+            crate::route::RouteEnd::MemberLeave { member, .. }
+            | crate::route::RouteEnd::MemberArrive { member, .. } => {
+                tube_outer_diameter_from_stub(member, &["LSTU", "LSRO"])
+            }
+        };
+        // CGETOD 本来就是可失败查询：目录库没打开、历史 stub 不在所钉会话，
+        // 都必须走 GTTUBG 的 arrive-bore 回落，不能把整棵生成打断。
+        let catalogue_od = match catalogue_od_result {
+            Ok(value) => value,
+            Err(DbElementError::DbNotRegistered { .. } | DbElementError::NotFound { .. }) => None,
+            Err(error) => return Err(error),
+        };
+        if catalogue_od.is_some() {
+            ledger.catalogue_od += 1;
+        } else {
+            ledger.bore_fallback += 1;
+        }
+        let diameter = tube_outer_diameter(catalogue_od, None, to.bore);
         match build_tube(&from, &to, diameter) {
             TubeOutcome::Built(tube) => {
                 ledger.measured += 1;
                 ledger.measured_length_mm += tube.length_mm;
                 ledger.built += 1;
                 built_count += 1;
-                let preceding_refno = match &slot.from {
-                    crate::route::RouteEnd::ContainerHead(element)
-                    | crate::route::RouteEnd::ContainerTail(element) => element.refno().to_string(),
-                    crate::route::RouteEnd::MemberLeave { member, .. }
-                    | crate::route::RouteEnd::MemberArrive { member, .. } => {
-                        member.refno().to_string()
-                    }
-                };
+                let (from_station, to_station) = slot.station_refnos();
                 elements.push(GeneratedElement {
                     geometry_id: GeometryId::ImpliedTube {
                         container_refno: container.refno().to_string(),
-                        preceding_refno,
-                        ordinal: u32::try_from(ordinal).unwrap_or(u32::MAX),
+                        from_refno: from_station.to_string(),
+                        to_refno: to_station.to_string(),
                     },
                     // 管身没有库记录；来源元素固定保存容器，绝不制造伪 refno。
                     refno: container.refno(),
@@ -421,8 +552,14 @@ fn build_route_tubes(
                     negatives_applied: 0,
                     negatives_skipped: Vec::new(),
                     notes: vec![format!(
-                        "implied tube length={}mm radius={}mm",
-                        tube.length_mm, tube.radius_mm
+                        "implied tube length={}mm radius={}mm source={}",
+                        tube.length_mm,
+                        tube.radius_mm,
+                        if catalogue_od.is_some() {
+                            "catalogue PARA[2]"
+                        } else {
+                            "arrive bore fallback"
+                        }
                     )],
                 });
             }
@@ -451,6 +588,13 @@ fn push_members(
         let consumed = consumes
             && (matches!(member_category, Category::ProfileData) || member_category.is_negative());
         if consumed {
+            // 图元容器「认领」负体只是为了不让它们落进孤儿账，一刀都没扣
+            // （宿主在容器之外，见 [`Category::PrimitiveContainer`]）。剪枝之后
+            // 它们只剩 `consumed` 里的一个数，与被属主真吃掉的剖面环混在一本账上
+            // ——单看那本分不出「扣掉了」和「还没人扣」。所以在这里再记一笔。
+            if matches!(category, Category::PrimitiveContainer) && member_category.is_negative() {
+                *report.host_negatives.entry(noun.clone()).or_insert(0) += 1;
+            }
             *report.consumed.entry(noun).or_insert(0) += subtree_size(&member)?;
         } else {
             batch.push(member);
@@ -487,6 +631,10 @@ impl Report {
             catalog_pending,
             route_containers,
             route_members,
+            catalogue_mesh_cache,
+            extrusion_mesh_cache,
+            primitive_containers,
+            host_negatives,
             implied_tubes,
             geometry_sets,
             geometry_set_negatives,
@@ -507,10 +655,14 @@ impl Report {
         self.failed.extend(failed);
         self.negatives_skipped.extend(negatives_skipped);
         self.notes.extend(notes);
+        self.catalogue_mesh_cache.accumulate(catalogue_mesh_cache);
+        self.extrusion_mesh_cache.accumulate(extrusion_mesh_cache);
         self.implied_tubes.count += implied_tubes.count;
         self.implied_tubes.built += implied_tubes.built;
         self.implied_tubes.measured += implied_tubes.measured;
         self.implied_tubes.measured_length_mm += implied_tubes.measured_length_mm;
+        self.implied_tubes.catalogue_od += implied_tubes.catalogue_od;
+        self.implied_tubes.bore_fallback += implied_tubes.bore_fallback;
         self.implied_tubes.total_length =
             match (self.implied_tubes.total_length, implied_tubes.total_length) {
                 // 一边还没量过就整体算没量过：把 None 当 0 加进去会得到一个偏小的
@@ -541,6 +693,8 @@ impl Report {
             (&mut self.catalog_pending, catalog_pending),
             (&mut self.route_containers, route_containers),
             (&mut self.route_members, route_members),
+            (&mut self.primitive_containers, primitive_containers),
+            (&mut self.host_negatives, host_negatives),
             (
                 &mut self.implied_tubes.by_owner_noun,
                 implied_tubes.by_owner_noun,
@@ -598,7 +752,8 @@ impl Report {
         format!(
             "visited={} consumed={} generated={} skipped={} failed={} catalog={} \
              route_containers={} route_members={} implied_tubes={} tubes_measured={} \
-             tubes_built={} tubes_no_ppoint={} unsupported={} unknown={} orphans={} neg_skipped={}",
+             tubes_built={} tubes_catalogue_od={} tubes_bore_fallback={} tubes_no_ppoint={} \
+             unsupported={} unknown={} orphans={} neg_skipped={}",
             self.visited,
             self.consumed_total(),
             self.generated,
@@ -610,6 +765,8 @@ impl Report {
             self.implied_tubes.count,
             self.implied_tubes.measured,
             self.implied_tubes.built,
+            self.implied_tubes.catalogue_od,
+            self.implied_tubes.bore_fallback,
             self.implied_tubes.degenerate.missing_ppoint,
             self.unsupported.values().sum::<usize>(),
             self.unknown_nouns.values().sum::<usize>(),
@@ -657,8 +814,12 @@ mod tests {
         let mut left = Report::default();
         left.route_containers.insert("BRAN".into(), 2);
         left.route_members.insert("ELBO".into(), 3);
+        left.primitive_containers.insert("TMPL".into(), 6);
+        left.host_negatives.insert("NCYL".into(), 40);
         left.implied_tubes.count = 5;
         left.implied_tubes.built = 3;
+        left.implied_tubes.catalogue_od = 2;
+        left.implied_tubes.bore_fallback = 1;
         left.implied_tubes.by_owner_noun.insert("BRAN".into(), 5);
         left.implied_tubes.degenerate.zero_length = 1;
         left.proven_non_graphic.insert("TEXT".into(), 2);
@@ -669,8 +830,12 @@ mod tests {
         let mut right = Report::default();
         right.route_containers.insert("HANG".into(), 1);
         right.route_members.insert("ELBO".into(), 4);
+        right.primitive_containers.insert("TMPL".into(), 7);
+        right.host_negatives.insert("NCYL".into(), 2);
         right.implied_tubes.count = 2;
         right.implied_tubes.built = 2;
+        right.implied_tubes.catalogue_od = 1;
+        right.implied_tubes.bore_fallback = 1;
         right.implied_tubes.by_owner_noun.insert("HANG".into(), 2);
         right.implied_tubes.degenerate.bore_mismatch = 3;
         right.implied_tubes.degenerate.ppoint_db_not_open = 4;
@@ -689,8 +854,12 @@ mod tests {
         assert_eq!(left.route_containers["BRAN"], 2);
         assert_eq!(left.route_containers["HANG"], 1);
         assert_eq!(left.route_members["ELBO"], 7, "同 noun 要相加而不是覆盖");
+        assert_eq!(left.primitive_containers["TMPL"], 13);
+        assert_eq!(left.host_negatives["NCYL"], 42);
         assert_eq!(left.implied_tubes.count, 7);
         assert_eq!(left.implied_tubes.built, 5);
+        assert_eq!(left.implied_tubes.catalogue_od, 3);
+        assert_eq!(left.implied_tubes.bore_fallback, 2);
         assert_eq!(left.implied_tubes.by_owner_noun["BRAN"], 5);
         assert_eq!(left.implied_tubes.by_owner_noun["HANG"], 2);
         assert_eq!(left.implied_tubes.degenerate.zero_length, 1);
