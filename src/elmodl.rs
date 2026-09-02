@@ -266,7 +266,10 @@ pub fn model_element_with_cache(
             Some(generated) => Modeled::Solid(Box::new(generated)),
             None => Modeled::Skipped {
                 reason: format!(
-                    "目录侧无可见几何（无 SPRE/GMRE 或成员全退化；局部失败 {} 条），E3D 同样不出几何",
+                    "目录侧无可见几何，E3D 同样不出几何：{}（局部失败 {} 条）",
+                    build
+                        .no_shape
+                        .unwrap_or_else(|| "无 SPRE/GMRE 或成员全退化".to_string()),
                     build.diagnostics.len()
                 ),
             },
@@ -288,7 +291,8 @@ pub fn model_element_with_cache(
             Some(generated) => Modeled::Solid(Box::new(generated)),
             None => Modeled::Skipped {
                 reason: format!(
-                    "目录链（SPRE→…→SCOM→GMRE）没有产出可见几何（局部失败 {} 条）",
+                    "目录链（SPRE→…→SCOM→GMRE）没有产出可见几何：{}（局部失败 {} 条）",
+                    build.no_shape.unwrap_or_else(|| "原因未记".to_string()),
                     build.diagnostics.len()
                 ),
             },

@@ -488,6 +488,13 @@ pub struct CatalogueMemberBuild {
     /// those local failures visible instead of turning the whole member into a
     /// false failure or silently dropping them.
     pub diagnostics: Vec<String>,
+    /// `generated` 为 `None` 时的**依据**：链断在哪一跳、还是目录件本来就不画。
+    ///
+    /// 「没出几何」在报告上必须与「漏了」分得开（原则 III）。ams8000 的 560 条 BRAN 体检
+    /// （`evidence/20260902-ams8000-bran-audit`）里 101 只 MDS `…/SREF` ATTA 的 SCOM 没有
+    /// GMRE、3 只 FTUB 没有 SPRE、1 只 FTUB 的 LCYL 零高——几何结论全对，报告里却一笔都
+    /// 没有，从报告上看不出是有意不画还是漏了。有形状时恒为 `None`。
+    pub no_shape: Option<String>,
 }
 
 /// 表现级（`REPRE LEVEL`）。几何集成员的 `LEVE=[lo,hi]` 与它比较决定画不画。
@@ -581,15 +588,35 @@ pub fn model_catalogue_member_with_cache(
         return Ok(build);
     }
     let Some(component) = catalogue_component(member)? else {
+        // 两种没形状要分开记：没有 SPRE 是设计数据没给规格（E3D 同样不出几何）；有 SPRE
+        // 却走不到 SCOM 是链断（SPCO 无 CATR/PRTREF、引用悬空、库没开），得指出从哪儿断。
+        let no_shape = match member.get_element("SPRE")? {
+            None => "路由成员无 SPRE：没有目录链，无几何（E3D 同样不出）".to_string(),
+            Some(spec) => format!(
+                "目录链从 SPRE {} 走不到 SCOM（SPCO 无 CATR/PRTREF 或引用悬空），无几何",
+                spec.refno()
+            ),
+        };
         return Ok(CatalogueMemberBuild {
             generated: None,
             diagnostics: Vec::new(),
+            no_shape: Some(no_shape),
         });
     };
     let Some(geometry) = component.get_element(GEOMETRY_REF)? else {
+        // 目录件没有 GMRE 就是「按设计不画」——MDS 支撑参考（`/SPECIAL.500`，PTSE
+        // `/PTSE-NODRAW`）整族如此，E3D 一件都不画。
         return Ok(CatalogueMemberBuild {
             generated: None,
             diagnostics: Vec::new(),
+            no_shape: Some(format!(
+                "目录件 {}{} 无 GMRE：按设计不画，无几何",
+                component.refno(),
+                component
+                    .stored_name()?
+                    .map(|name| format!(" {name}"))
+                    .unwrap_or_default()
+            )),
         });
     };
     let env =
@@ -598,6 +625,10 @@ pub fn model_catalogue_member_with_cache(
     let mut ignored_lines = 0usize;
     let mut sext_total = 0usize;
     let mut zero_height = 0usize;
+    // SEXT 之外各臂求值返回 `Ok(None)` 的次数：零高 / 退化，与 Core 一样不出体。此前这一档
+    // 一笔不记，一只 LCYL 全零高的 FTUB 在报告上与「漏建」长得一样。
+    let mut degenerate_other = 0usize;
+    let mut primitives = 0usize;
     let mut placed_parts = HashSet::new();
     let mut member_duplicates = 0usize;
     let mut catalogue_negatives = 0usize;
@@ -609,6 +640,7 @@ pub fn model_catalogue_member_with_cache(
     let mut all_display_primitives_are_clfl = true;
 
     for primitive in geometry.members()? {
+        primitives += 1;
         let primitive_noun = primitive.element_type()?;
         // LINE 成员本来就只记账不建体，不进显示过滤，保住 centre_lines 的账目口径。
         if primitive_noun != "LINE"
@@ -746,7 +778,7 @@ pub fn model_catalogue_member_with_cache(
                             .solid;
                         solids.push(placed(local_mesh, evaluated.transform));
                     }
-                    Ok(None) => {}
+                    Ok(None) => degenerate_other += 1,
                     Err(error) => diagnostics.push(format!(
                         "catalogue primitive {} skipped by Core-style local failure: {error}",
                         primitive.refno()
@@ -788,7 +820,7 @@ pub fn model_catalogue_member_with_cache(
                             .solid;
                         solids.push(placed(local_mesh, evaluated.transform));
                     }
-                    Ok(None) => {}
+                    Ok(None) => degenerate_other += 1,
                     Err(error) => diagnostics.push(format!(
                         "catalogue primitive {} skipped by Core-style local failure: {error}",
                         primitive.refno()
@@ -837,7 +869,7 @@ pub fn model_catalogue_member_with_cache(
                             .solid;
                         solids.push(placed(local_mesh, evaluated.transform));
                     }
-                    Ok(None) => {}
+                    Ok(None) => degenerate_other += 1,
                     Err(error) => diagnostics.push(format!(
                         "catalogue primitive {} skipped by Core-style local failure: {error}",
                         primitive.refno()
@@ -886,7 +918,7 @@ pub fn model_catalogue_member_with_cache(
                             .solid;
                         solids.push(placed(local_mesh, evaluated.transform));
                     }
-                    Ok(None) => {}
+                    Ok(None) => degenerate_other += 1,
                     Err(error) => diagnostics.push(format!(
                         "catalogue primitive {} skipped by Core-style local failure: {error}",
                         primitive.refno()
@@ -950,7 +982,7 @@ pub fn model_catalogue_member_with_cache(
                             .solid;
                         solids.push(placed(local_mesh, evaluated.transform));
                     }
-                    Ok(None) => {}
+                    Ok(None) => degenerate_other += 1,
                     Err(error) => diagnostics.push(format!(
                         "catalogue primitive {} skipped by Core-style local failure: {error}",
                         primitive.refno()
@@ -995,7 +1027,7 @@ pub fn model_catalogue_member_with_cache(
                             .solid;
                         solids.push(placed(local_mesh, evaluated.transform));
                     }
-                    Ok(None) => {}
+                    Ok(None) => degenerate_other += 1,
                     Err(error) => diagnostics.push(format!(
                         "catalogue primitive {} skipped by Core-style local failure: {error}",
                         primitive.refno()
@@ -1031,7 +1063,7 @@ pub fn model_catalogue_member_with_cache(
                             Err(error) => diagnostics.push(local_failure(&primitive, &error)),
                         }
                     }
-                    Ok(None) => {}
+                    Ok(None) => degenerate_other += 1,
                     Err(error) => diagnostics.push(local_failure(&primitive, &error)),
                 }
             }
@@ -1064,7 +1096,7 @@ pub fn model_catalogue_member_with_cache(
                             Err(error) => diagnostics.push(local_failure(&primitive, &error)),
                         }
                     }
-                    Ok(None) => {}
+                    Ok(None) => degenerate_other += 1,
                     Err(error) => diagnostics.push(local_failure(&primitive, &error)),
                 }
             }
@@ -1087,7 +1119,7 @@ pub fn model_catalogue_member_with_cache(
                             Err(error) => diagnostics.push(local_failure(&primitive, &error)),
                         }
                     }
-                    Ok(None) => {}
+                    Ok(None) => degenerate_other += 1,
                     Err(error) => diagnostics.push(local_failure(&primitive, &error)),
                 }
             }
@@ -1101,10 +1133,20 @@ pub fn model_catalogue_member_with_cache(
     }
     let display_filtered_members = display_filter_notes.len();
     if solids.is_empty() {
+        // GMRE 在、图元一个都没成体：把每个图元的去向数出来，读报告的人不用再翻目录。
+        let no_shape = format!(
+            "目录件 {} 的 GMRE {} 共 {primitives} 个图元无一成体：display-filtered {display_filtered_members} / \
+             零高或退化 {}（SEXT {zero_height}）/ 局部失败 {} / LINE {ignored_lines} / 重复放置 {member_duplicates}",
+            component.refno(),
+            geometry.refno(),
+            zero_height + degenerate_other,
+            diagnostics.len(),
+        );
         diagnostics.extend(display_filter_notes);
         return Ok(CatalogueMemberBuild {
             generated: None,
             diagnostics,
+            no_shape: Some(no_shape),
         });
     }
 
@@ -1127,10 +1169,11 @@ pub fn model_catalogue_member_with_cache(
     });
     let noun = member.element_type()?;
     let notes = vec![format!(
-        "catalogue assembly: built={} sext_total={} sext_zero_height={} failed={} centre_lines={} display_filtered={} duplicate_placements={} component={}",
+        "catalogue assembly: built={} sext_total={} sext_zero_height={} degenerate_other={} failed={} centre_lines={} display_filtered={} duplicate_placements={} component={}",
         solids.len(),
         sext_total,
         zero_height,
+        degenerate_other,
         diagnostics.len(),
         ignored_lines,
         display_filtered_members,
@@ -1139,6 +1182,7 @@ pub fn model_catalogue_member_with_cache(
     )];
     diagnostics.extend(display_filter_notes);
     Ok(CatalogueMemberBuild {
+        no_shape: None,
         generated: Some(GeneratedElement {
             geometry_id: GeometryId::Element {
                 refno: member.refno().to_string(),
@@ -1206,6 +1250,7 @@ fn model_hvac_rectangular_basic(
             )],
         }),
         diagnostics: Vec::new(),
+        no_shape: None,
     }))
 }
 

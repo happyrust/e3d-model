@@ -370,16 +370,30 @@ pub fn generate_subtree_with_cache(
                                 detail: detail.clone(),
                             });
                         }
-                        if let Some(generated) = build.generated {
-                            for note in &generated.notes {
-                                report.notes.push(Incident {
-                                    refno: refno.clone(),
-                                    noun: noun.clone(),
-                                    detail: note.clone(),
-                                });
+                        match build.generated {
+                            Some(generated) => {
+                                for note in &generated.notes {
+                                    report.notes.push(Incident {
+                                        refno: refno.clone(),
+                                        noun: noun.clone(),
+                                        detail: note.clone(),
+                                    });
+                                }
+                                report.generated += 1;
+                                elements.push(generated);
                             }
-                            report.generated += 1;
-                            elements.push(generated);
+                            // 路由成员没形状是常态（无 SPRE 的 FTUB、无 GMRE 的 MDS 支撑
+                            // 参考、全零高的目录件），不进 skipped；但**依据**必须留在 notes 里，
+                            // 否则报告上分不出「有意不画」与「漏建」（ams8000 体检 105 件）。
+                            None => {
+                                if let Some(reason) = build.no_shape {
+                                    report.notes.push(Incident {
+                                        refno: refno.clone(),
+                                        noun: noun.clone(),
+                                        detail: reason,
+                                    });
+                                }
+                            }
                         }
                     }
                     Err(error) => report.failed.push(Incident {
@@ -439,7 +453,10 @@ pub fn generate_subtree_with_cache(
                             None => report.skipped.push(Incident {
                                 refno,
                                 noun,
-                                detail: "目录链（SPRE→…→SCOM→GMRE）没有产出可见几何".to_string(),
+                                detail: format!(
+                                    "目录链（SPRE→…→SCOM→GMRE）没有产出可见几何：{}",
+                                    build.no_shape.unwrap_or_else(|| "原因未记".to_string())
+                                ),
                             }),
                         }
                     }
