@@ -259,6 +259,12 @@ pub enum Prim {
     CircTorus,
     /// DBOT/DTOP/HEIG + XOFF/YOFF，局部 Z 轴、原点居中的偏心圆锥台。
     Snout,
+    /// DIAM/HEIG/RADI，底圆在局部 XY 平面、顶点在 +Z（`gm_CreateSphericalDish` /
+    /// `gm_CreateEllipticalDish`；`CSG_BasicDIS::getPrimGeom@0x10726d10`）。
+    Dish,
+    /// DIAM/HEIG + XTSH/YTSH/XBSH/YBSH，局部 Z 轴、原点居中、两端斜切的圆柱
+    /// （`gm_CreateSlopeEndedCylinder`；`CSG_BasicSLC::getPrimGeom@0x107272d0`）。
+    SlopedCylinder,
 }
 
 /// noun 名 → 类别。名字用 e3d-io 反哈希出的规范大写 noun 名。
@@ -344,19 +350,25 @@ pub fn classify(noun: &str) -> Category {
         "ASNOU" => Primitive(Prim::Snout),
 
         "CONE" => Primitive(Prim::Cone),
-        "SLCY" | "DISH" => Unsupported("positive primitive not implemented in milestone 1"),
-        // 正体自己就没实现，孪生体同理——等正体做出来这四个一起接。
+        // DISH / SLCY 与 Core3D 现代路同臂：`CSG_PrimitiveUtilities::initialise@0x10727540`
+        // 把 DISH/NDIS 挂 `CSG_BasicDIS`、SLCY/NSLC 挂 `CSG_BasicSLC`；旧路 `CRDESI@0x10343b80`
+        // 的 703003/912101 与 1026046/599765 两臂读同一组属性、走同一个 libgm 原语。
+        // 局部帧已由 ams7997 `/Copy-of-1TFM020MN冷凝罐` SUBE 4 的两只 DISH（24381/107780、
+        // 107781）对 RVM 坐实：RVM 记录帧 = 元素世界帧，底圆在 z=0、顶点在 +Z，**没有**
+        // CYLI 那一转。
+        "DISH" => Primitive(Prim::Dish),
+        "SLCY" => Primitive(Prim::SlopedCylinder),
         "ACONE" => Primitive(Prim::Cone),
-        "ASLCY" | "ADISH" => {
-            Unsupported("A* twin of a positive primitive not implemented in milestone 1")
-        }
+        "ADISH" => Primitive(Prim::Dish),
+        "ASLCY" => Primitive(Prim::SlopedCylinder),
         // 这两个的标量属性同样与 POLYHE / REVO 全同，但它们的几何来自**成员结构**
         // （B-rep 顶点面表 / PLOO 剖面环），而属性表比对说不了成员的事。接线要先
         // 取一个真元素看成员 noun，取证前留在这里显式挂着，别按「看着像」就接。
         "APOLYH" | "AREVO" => Unsupported("A* twin whose member structure is not yet evidenced"),
 
         "NCON" => NegPrimitive(Prim::Cone),
-        "NDIS" | "NSLC" => NegUnimplemented("negative primitive not implemented in milestone 1"),
+        "NDIS" => NegPrimitive(Prim::Dish),
+        "NSLC" => NegPrimitive(Prim::SlopedCylinder),
 
         // ---- 几何集（core.dll 的另一条建模路，见 Category::GeometrySet） ----
         //
@@ -1042,14 +1054,37 @@ mod tests {
         assert_eq!(classify("ACTOR"), Category::Primitive(Prim::CircTorus));
         assert_eq!(classify("ASNOU"), Category::Primitive(Prim::Snout));
         assert_eq!(classify("AEXTR"), Category::LoopExtrusion);
-        // 正体没实现的、以及几何来自成员结构还没取证的，一律显式记账，不许落 Unknown。
         assert_eq!(classify("ACONE"), Category::Primitive(Prim::Cone));
-        for noun in ["ASLCY", "ADISH", "APOLYH", "AREVO"] {
+        assert_eq!(classify("ADISH"), Category::Primitive(Prim::Dish));
+        assert_eq!(classify("ASLCY"), Category::Primitive(Prim::SlopedCylinder));
+        // 几何来自成员结构还没取证的，显式记账，不许落 Unknown。
+        for noun in ["APOLYH", "AREVO"] {
             assert!(
                 matches!(classify(noun), Category::Unsupported(_)),
                 "{noun} 应当显式记账，实得 {:?}",
                 classify(noun)
             );
+        }
+    }
+
+    /// DISH / SLCY 与它们的负体、`A*` 孪生走同一条基本体路（G2-2）：Core3D 现代路把
+    /// DISH/NDIS 挂 `CSG_BasicDIS`、SLCY/NSLC 挂 `CSG_BasicSLC`，正负同臂同形。
+    #[test]
+    fn dish_and_sloped_cylinder_families_are_wired_as_primitives() {
+        assert_eq!(classify("DISH"), Category::Primitive(Prim::Dish));
+        assert_eq!(classify("NDIS"), Category::NegPrimitive(Prim::Dish));
+        assert_eq!(classify("SLCY"), Category::Primitive(Prim::SlopedCylinder));
+        assert_eq!(
+            classify("NSLC"),
+            Category::NegPrimitive(Prim::SlopedCylinder)
+        );
+        for noun in ["DISH", "SLCY", "ADISH", "ASLCY"] {
+            assert!(classify(noun).is_positive_solid(), "{noun}");
+            assert!(classify(noun).builds_geometry(), "{noun}");
+        }
+        for noun in ["NDIS", "NSLC"] {
+            assert!(classify(noun).is_negative(), "{noun}");
+            assert!(classify(noun).builds_geometry(), "{noun}");
         }
     }
 
@@ -1115,7 +1150,7 @@ mod tests {
     /// 建不出来的负体也算负体：它的账要记在属主头上，不能滑进 unsupported
     /// 变成一行「NCON: 15」——那样就看不出是哪些 FLOOR 少挖了刀。
     ///
-    /// 两类都在这条里：设计负图元（`NDIS`/`NSLC`，正体也没实现）
+    /// 两类都在这条里：设计负图元（`NDIS`/`NSLC`，G2-2 之后与正体同臂可建）
     /// 与几何集负体（`NSBO`/`NSCY`/`NLCY`…，属 INGCOM 的另一条建模路）。
     #[test]
     fn unimplemented_negatives_stay_in_the_negative_family() {
@@ -1132,7 +1167,10 @@ mod tests {
         }
         // 分家：NSLC 是设计负图元（primitive + INCOMP，正体 SLCY），此前整个漏掉；
         // NSBO 那三个字典里 geomset=true，属 INGCOM 的几何集那条路。
-        assert!(matches!(classify("NSLC"), Category::NegUnimplemented(_)));
+        assert_eq!(
+            classify("NSLC"),
+            Category::NegPrimitive(Prim::SlopedCylinder)
+        );
         assert_eq!(classify("NSBO"), Category::NegGeometrySet);
     }
 

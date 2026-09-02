@@ -74,8 +74,9 @@ fn cascade_coverage_matches_the_recorded_baseline() {
     }
 
     assert_eq!(rows.len(), 327, "级联内 noun 总数（覆盖率的分母）变了");
-    assert_eq!(built, 33, "会建几何的 noun 数变了");
-    assert_eq!(ledgered, 294, "记账不建的 noun 数变了");
+    // 39 = 33 + DISH/SLCY/NDIS/NSLC/ADISH/ASLCY（G2-2，2026-09-02）。
+    assert_eq!(built, 39, "会建几何的 noun 数变了");
+    assert_eq!(ledgered, 288, "记账不建的 noun 数变了");
     assert_eq!(
         unknown.len(),
         0,
@@ -173,17 +174,14 @@ fn negative_primitives_and_their_positive_twins_agree() {
         ("NXTR", "EXTR"),
         ("NSNO", "SNOU"),
         ("NCON", "CONE"),
+        // G2-2（2026-09-02）：DISH/SLCY 两对从「同时不建」翻成「同时可建」，
+        // Core3D 现代路正负同挂 `CSG_BasicDIS` / `CSG_BasicSLC`。
+        ("NDIS", "DISH"),
+        ("NSLC", "SLCY"),
     ] {
         assert!(
             classify(negative).builds_geometry() && classify(positive).builds_geometry(),
             "{negative}/{positive} 必须同时可建"
-        );
-    }
-    // 剩余两对是成对的「本期不做」，同样不许一半一半。
-    for (negative, positive) in [("NDIS", "DISH"), ("NSLC", "SLCY")] {
-        assert!(
-            !classify(negative).builds_geometry() && !classify(positive).builds_geometry(),
-            "{negative}/{positive} 必须同时不建"
         );
     }
 }
@@ -194,9 +192,10 @@ fn negative_primitives_and_their_positive_twins_agree() {
 /// 整个翻面：翻面本身就是「基线跟着覆盖面一起动」这套机制在起作用。
 #[test]
 fn the_n1_defects_are_closed() {
-    // 缺陷 2：NSLC 是设计负图元（primitive + INCOMP，正体 SLCY），补回负几何家族。
+    // 缺陷 2：NSLC 是设计负图元（primitive + INCOMP，正体 SLCY），补回负几何家族；
+    // G2-2 之后它与正体同臂可建，但仍必须是负体。
     assert!(
-        matches!(classify("NSLC"), Category::NegUnimplemented(_)),
+        matches!(classify("NSLC"), Category::NegPrimitive(_)) && classify("NSLC").is_negative(),
         "NSLC 是设计负图元，得留在负几何家族里让属主记账"
     );
     // 缺陷 2：这三个字典里 geomset=true 且属 INGCOM，是几何集负体不是设计负图元。

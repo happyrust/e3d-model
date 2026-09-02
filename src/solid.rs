@@ -706,6 +706,28 @@ pub fn slope_ended_cylinder_solid(
     xbot_deg: f64,
     ybot_deg: f64,
 ) -> Result<Manifold, SolidError> {
+    slope_ended_cylinder_solid_with_segments(
+        radius,
+        height,
+        xtop_deg,
+        ytop_deg,
+        xbot_deg,
+        ybot_deg,
+        cylinder_segments(radius),
+    )
+}
+
+/// [`slope_ended_cylinder_solid`] 的定段数版：进入最终布尔的设计侧 SLCY / NSLC 要与
+/// 它的刀同一张圆周网格（[`negative_cylinder_segments`]），形体定义不变。
+pub fn slope_ended_cylinder_solid_with_segments(
+    radius: f64,
+    height: f64,
+    xtop_deg: f64,
+    ytop_deg: f64,
+    xbot_deg: f64,
+    ybot_deg: f64,
+    segments: i32,
+) -> Result<Manifold, SolidError> {
     const WHAT: &str = "slope-ended cylinder";
     if !(radius > 0.0 && height > 0.0) || !radius.is_finite() || !height.is_finite() {
         return Err(SolidError::Degenerate {
@@ -721,7 +743,7 @@ pub fn slope_ended_cylinder_solid(
         });
     }
     let [tan_xt, tan_yt, tan_xb, tan_yb] = angles.map(|a| a.to_radians().tan());
-    let n = cylinder_segments(radius).max(3);
+    let n = segments.max(3);
     let mut points = Vec::with_capacity(2 * n as usize);
     for i in 0..n {
         let theta = std::f64::consts::TAU * f64::from(i) / f64::from(n);
@@ -749,6 +771,22 @@ pub fn dish_knuckle_radius(radius: f64, height: f64) -> f64 {
 /// 周向 n = `d2_numberOfSegmentsForCircle(r > h ? r : R)`；纬向 m = ⌈φmax / (2π/n)⌉，
 /// φmax = acos(1 − h/R)，纬线均分 φmax；底面封平。
 pub fn spherical_dish_solid(radius: f64, height: f64) -> Result<Manifold, SolidError> {
+    spherical_dish_solid_with_segments(radius, height, None)
+}
+
+/// [`spherical_dish_solid`] 的定段数版。`segments = None` 走 libgm 曲面口径
+/// （`d2_numberOfSegmentsForCircle(r > h ? r : R)`）；`Some(n)` 由调用方定周向段数，
+/// 纬向段数仍按同一条 `⌈φmax / (2π/n)⌉` 规则跟着 n 走。
+///
+/// 进入最终布尔的设计侧 DISH 要与它的刀同一张圆周网格（[`negative_cylinder_segments`]）：
+/// ams7997 `24381/159302`（R=1330 的半球壳，被 NDIS + 一把 r=1335 的 NCYL 切掉底 291 mm）
+/// 的 E3D FacetGroup 底环实测 28 段——与 10 mm 弦高口径的刀同网格；正体照 0.5 mm 口径画
+/// 会比刀的内接多边形还宽 3.4 mm，环底留下 28 片刀缝碎片。
+pub fn spherical_dish_solid_with_segments(
+    radius: f64,
+    height: f64,
+    segments: Option<i32>,
+) -> Result<Manifold, SolidError> {
     const WHAT: &str = "spherical dish";
     if !(radius > 0.0 && height > 0.0) || !radius.is_finite() || !height.is_finite() {
         return Err(SolidError::Degenerate {
@@ -757,15 +795,20 @@ pub fn spherical_dish_solid(radius: f64, height: f64) -> Result<Manifold, SolidE
         });
     }
     let sphere_radius = (radius * radius / height + height) * 0.5;
-    let n = circle_segments_uncapped(
-        if radius > height {
-            radius
-        } else {
-            sphere_radius
+    let n = segments.map_or_else(
+        || {
+            circle_segments_uncapped(
+                if radius > height {
+                    radius
+                } else {
+                    sphere_radius
+                },
+                FACET_TOL_MM,
+            )
+            .min(MAX_SEGMENTS)
         },
-        FACET_TOL_MM,
-    )
-    .min(MAX_SEGMENTS);
+        |n| n.clamp(3, MAX_SEGMENTS),
+    );
     let ratio = height / sphere_radius;
     let phi_max = if ratio.abs() > 1e-6 {
         (1.0 - ratio).clamp(-1.0, 1.0).acos()
@@ -802,6 +845,18 @@ pub fn elliptical_dish_solid(
     height: f64,
     knuckle: f64,
 ) -> Result<Manifold, SolidError> {
+    elliptical_dish_solid_with_segments(radius, height, knuckle, None)
+}
+
+/// [`elliptical_dish_solid`] 的定段数版：`None` 走 libgm 曲面口径（`d2_numberOfSegmentsForCircle(r)`），
+/// `Some(n)` 由调用方定周向段数；冠 / 折边的纬向段数仍按各自的 `part_rev_segments` 算。
+/// 用途同 [`spherical_dish_solid_with_segments`]。
+pub fn elliptical_dish_solid_with_segments(
+    radius: f64,
+    height: f64,
+    knuckle: f64,
+    segments: Option<i32>,
+) -> Result<Manifold, SolidError> {
     const WHAT: &str = "elliptical dish";
     if !(radius > 0.0 && height > 0.0)
         || !radius.is_finite()
@@ -813,7 +868,10 @@ pub fn elliptical_dish_solid(
             detail: format!("radius/height/knuckle = {radius}/{height}/{knuckle}"),
         });
     }
-    let n = circle_segments_uncapped(radius, FACET_TOL_MM).min(MAX_SEGMENTS);
+    let n = segments.map_or_else(
+        || circle_segments_uncapped(radius, FACET_TOL_MM).min(MAX_SEGMENTS),
+        |n| n.clamp(3, MAX_SEGMENTS),
+    );
     if (radius - height).abs() <= 1e-6 {
         // isSpherical：一整个半球，冠与折边各占 45°。
         let quarter = std::f64::consts::FRAC_PI_4;

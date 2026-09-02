@@ -8,8 +8,8 @@
 //!   由管线记进 `failed`，响亮。
 //! - **E3D 也不出几何**（高度 ≈ 0，`loop_model` 的既有跳过口径）→
 //!   [`Modeled::Skipped`]，记进 `skipped`，有数可查。
-//! - **本期不做**（NDIS/NSLC 一族曲面基本体）→ 同样 `Skipped`，reason 说清是
-//!   里程碑边界。
+//! - **本期不做**（`Category::NegUnimplemented` 里剩下的字典兜底项）→ 同样 `Skipped`，
+//!   reason 说清是里程碑边界。DISH/SLCY 与 NDIS/NSLC 自 G2-2 起走基本体臂，不在此列。
 //! - 负几何单个失败**不拖垮正体**：记进 [`GeneratedElement::negatives_skipped`]，
 //!   正体照出——RVM 对拍时这类元素会以体积偏大暴露，报告里有对应记录。
 
@@ -31,10 +31,12 @@ use crate::primitive_instance::{
 use crate::profile::{LoopProfile, ProfileError, loop_profile};
 use crate::solid::{
     MANIFOLD_NUDGE_MM, SolidError, circ_torus_solid, cleanup_floor_boolean_components,
-    csg_cylinder_solid_with_segments, extrude_rings, inflate_about_center,
+    csg_cylinder_solid_with_segments, cylinder_segments, dish_knuckle_radius,
+    elliptical_dish_solid_with_segments, extrude_rings, inflate_about_center,
     negative_cylinder_segments, negative_part_rev_segments, placed, pyramid_solid,
-    rect_torus_solid, rect_torus_solid_with_segments, revolve_rings_inflated, snout_segments,
-    snout_solid, subtract_negatives,
+    rect_torus_solid, rect_torus_solid_with_segments, revolve_rings_inflated,
+    slope_ended_cylinder_solid_with_segments, snout_segments, snout_solid,
+    spherical_dish_solid_with_segments, subtract_negatives,
 };
 use crate::transform::world_matrix;
 
@@ -1060,7 +1062,90 @@ fn primitive_local_solid(
             )?,
             instance: None,
         }),
+        Prim::Dish => Ok(PrimitiveBuild {
+            solid: dish_local_solid(
+                require_double(el, noun, "DIAM", "dish")?,
+                require_double(el, noun, "HEIG", "dish")?,
+                default_zero(el, "RADI")?,
+                !allow_instance,
+            )?,
+            instance: None,
+        }),
+        Prim::SlopedCylinder => {
+            let radius = require_double(el, noun, "DIAM", "slope-ended cylinder")? * 0.5;
+            Ok(PrimitiveBuild {
+                solid: slope_ended_cylinder_solid_with_segments(
+                    radius,
+                    require_double(el, noun, "HEIG", "slope-ended cylinder")?,
+                    fold_shear_angle(default_zero(el, "XTSH")?),
+                    fold_shear_angle(default_zero(el, "YTSH")?),
+                    fold_shear_angle(default_zero(el, "XBSH")?),
+                    fold_shear_angle(default_zero(el, "YBSH")?),
+                    if allow_instance {
+                        cylinder_segments(radius)
+                    } else {
+                        negative_cylinder_segments(radius)
+                    },
+                )?,
+                instance: None,
+            })
+        }
     }
+}
+
+/// 设计侧 DISH 的三路（`CSG_BasicDIS::getPrimGeom@0x10726d10`，旧路 `CRDESI@0x10343b80`
+/// case 703003/912101 同一分支）：`HEIG <= 0` 退成 1 mm 厚的圆盘 `gm_CreateCylinder(DIAM/2, 1.0)`；
+/// `RADI > 0` 走折边碟 `gm_CreateEllipticalDish(r, h, k)`，折边半径 `k` 由 CREDSH 的公式
+/// 从 r/h 算出（[`dish_knuckle_radius`]），RADI 的数值本身不进几何；否则球形碟
+/// `gm_CreateSphericalDish(r, h)`。与目录 SDSH 臂（`catalogue::evaluate_sdsh`）同一组
+/// libgm 原语，差别只在属性来源。
+///
+/// 局部帧照 libgm：底圆在 XY 平面、顶点在 +Z，**不做** CYLI 那一转——ams7997
+/// `/Copy-of-1TFM020MN冷凝罐` 两只 DISH（24381/107780、107781）的 RVM 记录帧与元素世界帧
+/// 逐列相同。退化圆盘走 libgm 圆柱的居中 Z 帧（[`csg_cylinder_solid_with_segments`]）。
+///
+/// `boolean_operand`：带负体的正体（与所有负体自身）按 E3D 最终 LNEGIT FacetGroup 的粗口径
+/// （[`negative_cylinder_segments`]）画圆周，与刀同网格——理由与 `Prim::Cylinder` 那支相同，
+/// 实测见 [`spherical_dish_solid_with_segments`]；独立正体走 libgm 0.5 mm 曲面口径。
+fn dish_local_solid(
+    diam: f64,
+    heig: f64,
+    radi: f64,
+    boolean_operand: bool,
+) -> Result<Manifold, SolidError> {
+    let radius = diam * 0.5;
+    let segments = boolean_operand.then(|| negative_cylinder_segments(radius));
+    if !(heig > 0.0) {
+        return csg_cylinder_solid_with_segments(
+            diam,
+            1.0,
+            segments.unwrap_or_else(|| cylinder_segments(radius)),
+        );
+    }
+    if radi > 0.0 {
+        elliptical_dish_solid_with_segments(
+            radius,
+            heig,
+            dish_knuckle_radius(radius, heig),
+            segments,
+        )
+    } else {
+        spherical_dish_solid_with_segments(radius, heig, segments)
+    }
+}
+
+/// SLCY 的四个斜切角在建体前各折回一次到 (−90°, 90°]：`> 90 → −180`、`< −90 → +180`
+/// （`CSG_BasicSLC::getPrimGeom@0x107272d0`，旧路 `CRDESI` 1026046/599765 臂逐字相同）。
+/// 折完仍落在 ±90° 上的，libgm 交空面片组，[`slope_ended_cylinder_solid`] 报退化。
+fn fold_shear_angle(deg: f64) -> f64 {
+    let mut a = deg;
+    if a > 90.0 {
+        a -= 180.0;
+    }
+    if a < -90.0 {
+        a += 180.0;
+    }
+    a
 }
 
 /// 多面体局部实体（`CSG_BasicPOL::getPrimGeom` @0x10726f10 → `sub_1071DCF0`，
