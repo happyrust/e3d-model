@@ -186,8 +186,12 @@ NOZZ/EQUCOM/IPCOMP…）就是这条链 + 缺省 `DB_makeCSG`**。Rust 侧 `Comp
 
 - **G1-1a SCTN 直段（2330 件：ams7997 1762 / ams8000 528 / aps 40）**
   按 §2.4 分四步，每步可单独验收：
-  1. 截面：`SPRE → SPCO → CATR → 截面目录件` 求 `D2_Profile`（SPRO 的 PLOO/PAVE 环 + bulge、SREC/SANN 参数臂；
-     GMRE 表达式仍经 e3d-io `DbElementParamEnv`）。锚点 `sub_10410BB0`。
+  1. ~~截面：`SPRE → SPCO → CATR → 截面目录件` 求 `D2_Profile`~~ ✅ **已完成（2026-09-02 晚，`src/section.rs`，
+     `evidence/20260902-g11a-section-profiles/`）**：链是 `SPRE → SPCO → CATR → SPRF → GSTR → GMSS → {SPRO{SPVE}, SREC, SANN}`
+     （不是 PLOO/PAVE）；ams7997 1761/1761 求出、0 失败，L40X4 截面 40 × 40 与 E3D FacetGroup 对上。三条实测口径：
+     GMSS 过筛成员**全部**要（DTUB = 两个 `PANG=180` 的 SANN 拼整圈、H 型钢带空占位 SPRO）、`PLAX` 按 `GTPLAX` 算角、
+     JUSL 从 `PSTR` 的 PLIN 取 `PX/PY`。**库注册**：ams7997 的截面目录在 `ZDJ\ZDJ000\zdj7600_0001`，不是
+     `aps7600_0001`，跑结构线要显式 `--catalogue`；ams8000 的 500 只 MSUP 杆件无 SPRE，E3D 只画中心线（不建）。
   2. 直段实体：截面沿 `POSS→POSE` 拉伸、按 `BANG` 旋、`LMIRR` 镜像；标架用 **`GTSTDT@0x1036CEC4`** 的口径
      （别再用 ORIMAT 猜——SSLC 那次教训）。
   3. 两端切平面 `CUTB/CUTE`（GTSTDT 出的两组点+法向）→ manifold 半空间裁切；对应 `gm_CreateSection`。

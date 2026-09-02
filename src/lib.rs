@@ -10,6 +10,7 @@
 //! | [`increment`] | `DB_IndexTableCompare` + `PartialUpdateDesiMgr` | 会话窗口差分 → 单元级增量重建 |
 //! | [`category`] | `build/MODCMP` + nounlib `I*COM` 谓词 | 按 noun 分类挑建模方式 |
 //! | [`route`] | `cachelib/GTTUBE` + `TUMAT` + `ORIMAT` + `pplib/CGETOD` | 路由链遍历与隐式管身 |
+//! | [`section`] | `getProfileFromDB` + `pplib/QSPROF` + `pllib/GJLORI` | 型材截面（SPRO/SREC/SANN）求值与 JUSL 对齐 |
 //! | [`catalogue_point`] | `catdblib/GATCAT` + `exprlib/EXEV*` | 目录侧 P 点求解（`SPRE→SCOM→PTSE`） |
 //! | [`elmodl`] | `build/ELMODL` + `build/LNEGIT` | 单元素建模：正体 + 负几何 CSG |
 //! | [`solid`] | `cachegml/GTGEOM` → libgm `gm_Create*` | 几何构建（挤出/基本体/回转） |
@@ -46,6 +47,7 @@ pub mod polyhedron;
 pub mod primitive_instance;
 pub mod profile;
 pub mod route;
+pub mod section;
 pub mod solid;
 pub mod transform;
 

@@ -585,7 +585,10 @@ fn has_hvac_ancestor(el: &DbElement) -> bool {
 ///
 /// `level` 是**成员**那一档的表现级（[`repre_level_of`]）：同一 GMSE 被管道构件与风管构件
 /// 共用时，两边按各自的 `LEVEL PIPE` / `LEVEL HVAC` 筛。
-fn display_filtered(primitive: &DbElement, level: u32) -> Result<Option<&'static str>, ModelError> {
+pub(crate) fn display_filtered(
+    primitive: &DbElement,
+    level: u32,
+) -> Result<Option<&'static str>, ModelError> {
     if let Some(DescriptorValue::RawWords(words) | DescriptorValue::WordArray(words)) =
         primitive.attribute("LEVE")?
         && let (Some(&lo), Some(&hi)) = (words.first(), words.get(1))
@@ -2891,7 +2894,7 @@ pub(crate) fn canonical_bits(value: f64) -> u64 {
     }
 }
 
-fn required_number(
+pub(crate) fn required_number(
     element: &DbElement,
     name: &'static str,
     env: &DbElementParamEnv,
@@ -2913,7 +2916,11 @@ fn required_number(
         })
 }
 
-fn optional_number(element: &DbElement, name: &str, env: &DbElementParamEnv) -> Option<f64> {
+pub(crate) fn optional_number(
+    element: &DbElement,
+    name: &str,
+    env: &DbElementParamEnv,
+) -> Option<f64> {
     let outcome = element.get_number(name, env).ok()?;
     outcome
         .value()
