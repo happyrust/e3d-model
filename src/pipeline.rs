@@ -42,9 +42,9 @@ use crate::category::{
 use crate::elmodl::{GeneratedElement, GeometryId, Modeled, model_element_with_cache};
 use crate::extrusion_reuse::ExtrusionReuseStats;
 use crate::route::{
-    PPointResolver, Route, SlotAlignment, TubeOutcome, ZERO_LENGTH_TOL_MM, bore_mismatch,
-    build_tube, resolve_end, slot_alignment, slot_ordinals, tube_length, tube_outer_diameter,
-    walk_route,
+    ArriveCheck, PPointResolver, Route, RouteEnd, SlotAlignment, TubeOutcome, ZERO_LENGTH_TOL_MM,
+    bore_mismatch, build_tube, resolve_end, slot_alignment, slot_ordinals, tube_length,
+    tube_outer_diameter, walk_route,
 };
 
 /// 一条有名有姓的记录。
@@ -614,11 +614,15 @@ fn build_route_tubes(
             ledger.degenerate.missing_ppoint += 1;
             continue;
         };
-        // E3D 的第一道门：槽位要与离开侧方向共线且朝前，否则不画（见
+        // E3D 的第一道门：槽位要与两端方向共轴且朝前，否则不画（见
         // `TUBE_ALIGNMENT_TOL_DEG`）。零长槽位先让 `build_tube` 按 zero_length 记账——
-        // 两点重合时夹角没有意义。
+        // 两点重合时夹角没有意义。到达端是容器尾时只判离开侧（TDIR 约定未核）。
         if tube_length(from.pos, to.pos) >= ZERO_LENGTH_TOL_MM {
-            match slot_alignment(&from, &to) {
+            let arrive = match &slot.to {
+                RouteEnd::MemberArrive { .. } | RouteEnd::MemberLeave { .. } => ArriveCheck::Member,
+                RouteEnd::ContainerHead(_) | RouteEnd::ContainerTail(_) => ArriveCheck::Skip,
+            };
+            match slot_alignment(&from, &to, arrive) {
                 SlotAlignment::Misaligned { .. } => {
                     ledger.degenerate.misaligned += 1;
                     continue;

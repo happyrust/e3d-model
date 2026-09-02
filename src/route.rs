@@ -74,14 +74,14 @@ const AXIS_DEGENERATE_TOL: f64 = 1.0e-9;
 /// 的最终确认归 G0-2 RVM 对拍。）
 pub const ZERO_LENGTH_TOL_MM: f64 = 1.0;
 
-/// 隐式管身的对齐容差（度）：槽位向量（离开点 → 到达点）与离开侧 P 点方向的夹角
+/// 隐式管身的对齐容差（度）：槽位向量（离开点 → 到达点）与两端 P 点方向的夹角
 /// 超过它就不建管。
 ///
-/// E3D 只在**共线且朝前**的槽位上画隐式管身。2026-09-02 用 ams8000 九条支管 + ams7999 一条
+/// E3D 只在**两端共轴且朝前**的槽位上画隐式管身。2026-09-02 用 ams8000 九条支管 + ams7999 一条
 /// 的 TTY RVM 逐根对过（`evidence/20260902-ams8000-bran-audit/rvm-pending-items-2026-09-02.md`）：
-/// 画出来的 14 根夹角全是 0.0°；没画的里最小的偏轴是 **3.0°**（`/M-OR-1RX-3051K` 两根 20.9 mm），
-/// 再往上 4.4° / 13° / 31.6° / 47.4° 与 90° 的垂直偏置、≥170° 的反向一根都没有。真值落在
-/// (0°, 3°) 之间；取 1° 是让 P 点方向的数值噪声进得来、3° 进不来，有更细的样本再收。
+/// 画出来的 14 根两侧夹角全是 0.0°；没画的里最小的偏轴是 **3.0°**（`/M-OR-1RX-3051K` 两根 20.9 mm），
+/// 再往上 4.4° / 8.1°（到达侧）/ 13° / 31.6° / 47.4° 与 90° 的垂直偏置、≥170° 的反向一根都没有。
+/// 真值落在 (0°, 3°) 之间；取 1° 是让 P 点方向的数值噪声进得来、3° 进不来，有更细的样本再收。
 ///
 /// 反向（夹角 > 90°）单列成 [`SlotAlignment::Reversed`]：那是 E3D 数据一致性检查会报
 /// 「负管长」的形态（README §3.2 的 74 根），与偏轴分开记账才看得出各占多少。
@@ -528,44 +528,86 @@ pub fn tumat(p1: DVec3, d1: DVec3, p2: DVec3) -> Option<DMat4> {
     Some(DMat4::from_translation((p1 + p2) * 0.5) * DMat4::from_mat3(rotation))
 }
 
-/// 一条槽位相对离开侧 P 点方向的姿态（E3D 画不画隐式管身的第一道门，见
+/// 一条槽位相对两端 P 点方向的姿态（E3D 画不画隐式管身的第一道门，见
 /// [`TUBE_ALIGNMENT_TOL_DEG`]）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SlotAlignment {
-    /// 共线且朝前：夹角 ≤ [`TUBE_ALIGNMENT_TOL_DEG`]。
-    Aligned { deviation_deg: f64 },
-    /// 偏轴：夹角在容差之外但仍朝前（≤ 90°）。E3D 不画。
+    /// 共线且朝前：离开侧夹角 ≤ [`TUBE_ALIGNMENT_TOL_DEG`]，查了到达侧的话到达侧也是。
+    Aligned {
+        leave_deg: f64,
+        /// 到达侧夹角（`−to.dir` 与槽位向量），没查到达侧时为 `None`。
+        arrive_deg: Option<f64>,
+    },
+    /// 偏轴：某一侧夹角在容差之外但离开侧仍朝前（≤ 90°）。E3D 不画。
     Misaligned { deviation_deg: f64 },
-    /// 反向：到达点在离开点身后（夹角 > 90°）。E3D 不画。
+    /// 反向：到达点在离开点身后（离开侧夹角 > 90°）。E3D 不画。
     Reversed { deviation_deg: f64 },
     /// 槽位向量或离开方向退化、判不了——照旧建，不拿判不了当不合格。
     Indeterminate,
 }
 
-/// 槽位向量（`to.pos − from.pos`）与离开侧方向 `from.dir` 的夹角分档。
+/// 要不要连到达侧一起判。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArriveCheck {
+    /// 到达端是构件的目录 P 点：方向按 P 点约定朝外（逆着行进），拿 `−to.dir` 与槽位向量比。
+    Member,
+    /// 到达端是容器尾：`TDIR` 的朝向约定没在 RVM 上核过，且缺省时 [`container_point`]
+    /// 会填 `+Z`，拿它判会把好管误判成偏轴——只判离开侧。
+    Skip,
+}
+
+/// 槽位向量（`to.pos − from.pos`）与两端方向的夹角分档。
 ///
-/// 只看离开侧：容器尾的 `TDIR` 缺省时 [`container_point`] 会填 `+Z`，拿它判到达侧会把
-/// 好管误判成偏轴；E3D 侧的取证也是按离开侧夹角做的（`bran_audit` 的 `backtrack_deg`）。
-pub fn slot_alignment(from: &RoutePoint, to: &RoutePoint) -> SlotAlignment {
+/// 离开侧：`from.dir` 与槽位向量的夹角（`bran_audit` 的 `backtrack_deg`）——超过 90° 是反向。
+/// 到达侧（[`ArriveCheck::Member`]）：`−to.dir` 与槽位向量的夹角。两侧都要在容差内：
+/// `/C-GR-1RX-3020B` 的 ATTA6 → FTUB1 离开侧 0.0° 却没被 E3D 画，就是因为 FTUB1 的 P1 方向
+/// 与槽位差 8.1°——E3D 要的是两端**共轴**，不是单端对准。
+pub fn slot_alignment(from: &RoutePoint, to: &RoutePoint, arrive: ArriveCheck) -> SlotAlignment {
     let span = to.pos - from.pos;
     let span_length = span.length();
-    let dir_length = from.dir.length();
+    let Some(leave_deg) = deviation_deg(span, span_length, from.dir) else {
+        return SlotAlignment::Indeterminate;
+    };
+    if leave_deg > 90.0 {
+        return SlotAlignment::Reversed {
+            deviation_deg: leave_deg,
+        };
+    }
+    if leave_deg > TUBE_ALIGNMENT_TOL_DEG {
+        return SlotAlignment::Misaligned {
+            deviation_deg: leave_deg,
+        };
+    }
+    let arrive_deg = match arrive {
+        ArriveCheck::Skip => None,
+        // 到达方向退化就只按离开侧算——判不了不算不合格。
+        ArriveCheck::Member => deviation_deg(span, span_length, -to.dir),
+    };
+    if let Some(arrive_deg) = arrive_deg
+        && arrive_deg > TUBE_ALIGNMENT_TOL_DEG
+    {
+        return SlotAlignment::Misaligned {
+            deviation_deg: arrive_deg,
+        };
+    }
+    SlotAlignment::Aligned {
+        leave_deg,
+        arrive_deg,
+    }
+}
+
+/// `span` 与 `dir` 的夹角（度）；任一退化给 `None`。
+fn deviation_deg(span: DVec3, span_length: f64, dir: DVec3) -> Option<f64> {
+    let dir_length = dir.length();
     if !(span_length > AXIS_DEGENERATE_TOL)
         || !(dir_length > AXIS_DEGENERATE_TOL)
         || !span.is_finite()
-        || !from.dir.is_finite()
+        || !dir.is_finite()
     {
-        return SlotAlignment::Indeterminate;
+        return None;
     }
-    let cosine = (span.dot(from.dir) / (span_length * dir_length)).clamp(-1.0, 1.0);
-    let deviation_deg = cosine.acos().to_degrees();
-    if deviation_deg <= TUBE_ALIGNMENT_TOL_DEG {
-        SlotAlignment::Aligned { deviation_deg }
-    } else if deviation_deg <= 90.0 {
-        SlotAlignment::Misaligned { deviation_deg }
-    } else {
-        SlotAlignment::Reversed { deviation_deg }
-    }
+    let cosine = (span.dot(dir) / (span_length * dir_length)).clamp(-1.0, 1.0);
+    Some(cosine.acos().to_degrees())
 }
 
 /// `VDIST`：管身长度 = 两端点**直线距离**。
@@ -708,44 +750,74 @@ mod tests {
         );
     }
 
-    /// 对齐门：0° 建、3° 不建（观测边界）、90° 是偏轴、180° 是反向、退化判不了。
+    /// 对齐门：0° 建、3° 不建（观测边界）、90° 是偏轴、180° 是反向、退化判不了；
+    /// 到达侧 8° 偏轴同样不建（2944 的 ATTA6 → FTUB1），容器尾不查到达侧。
     #[test]
     fn slot_alignment_splits_aligned_misaligned_and_reversed_at_the_observed_boundary() {
         let from = point([0.0; 3], [1.0, 0.0, 0.0], Some(50.0));
+        // 到达点落在离 X 轴 `deg` 度的方向上，到达方向按 P 点约定反着行进方向。
         let aim = |deg: f64, length: f64| {
             let rad = deg.to_radians();
             point(
                 [length * rad.cos(), length * rad.sin(), 0.0],
-                [-1.0, 0.0, 0.0],
+                [-rad.cos(), -rad.sin(), 0.0],
                 Some(50.0),
             )
         };
         assert!(matches!(
-            slot_alignment(&from, &aim(0.0, 500.0)),
-            SlotAlignment::Aligned { deviation_deg } if deviation_deg.abs() < 1e-9
+            slot_alignment(&from, &aim(0.0, 500.0), ArriveCheck::Member),
+            SlotAlignment::Aligned { leave_deg, arrive_deg: Some(arrive_deg) }
+                if leave_deg.abs() < 1e-9 && arrive_deg.abs() < 1e-6
         ));
         assert!(matches!(
-            slot_alignment(&from, &aim(0.5, 500.0)),
+            slot_alignment(&from, &aim(0.5, 500.0), ArriveCheck::Member),
             SlotAlignment::Aligned { .. }
         ));
         assert!(matches!(
-            slot_alignment(&from, &aim(3.0, 20.9)),
+            slot_alignment(&from, &aim(3.0, 20.9), ArriveCheck::Member),
             SlotAlignment::Misaligned { deviation_deg } if (deviation_deg - 3.0).abs() < 1e-9
         ));
         assert!(matches!(
-            slot_alignment(&from, &aim(90.0, 538.5)),
+            slot_alignment(&from, &aim(90.0, 538.5), ArriveCheck::Member),
             SlotAlignment::Misaligned { deviation_deg } if (deviation_deg - 90.0).abs() < 1e-9
         ));
         assert!(matches!(
-            slot_alignment(&from, &aim(178.0, 2998.2)),
+            slot_alignment(&from, &aim(178.0, 2998.2), ArriveCheck::Member),
             SlotAlignment::Reversed { deviation_deg } if (deviation_deg - 178.0).abs() < 1e-9
         ));
-        assert_eq!(slot_alignment(&from, &from), SlotAlignment::Indeterminate);
-        let no_dir = point([0.0; 3], [0.0; 3], Some(50.0));
+
+        // 离开侧 0.0°、到达侧 8.1°：只查离开侧会放行，查到达侧才挡得住。
+        let skewed_arrive = point([821.0, 0.0, 0.0], [-0.99, 0.141, 0.0], Some(300.0));
+        assert!(matches!(
+            slot_alignment(&from, &skewed_arrive, ArriveCheck::Member),
+            SlotAlignment::Misaligned { deviation_deg } if (deviation_deg - 8.1).abs() < 0.1
+        ));
+        assert!(matches!(
+            slot_alignment(&from, &skewed_arrive, ArriveCheck::Skip),
+            SlotAlignment::Aligned {
+                arrive_deg: None,
+                ..
+            }
+        ));
+
         assert_eq!(
-            slot_alignment(&no_dir, &aim(0.0, 500.0)),
+            slot_alignment(&from, &from, ArriveCheck::Member),
             SlotAlignment::Indeterminate
         );
+        let no_dir = point([0.0; 3], [0.0; 3], Some(50.0));
+        assert_eq!(
+            slot_alignment(&no_dir, &aim(0.0, 500.0), ArriveCheck::Member),
+            SlotAlignment::Indeterminate
+        );
+        // 到达方向退化时只按离开侧算，不算不合格。
+        let arrive_no_dir = point([500.0, 0.0, 0.0], [0.0; 3], Some(50.0));
+        assert!(matches!(
+            slot_alignment(&from, &arrive_no_dir, ArriveCheck::Member),
+            SlotAlignment::Aligned {
+                arrive_deg: None,
+                ..
+            }
+        ));
     }
 
     fn point(pos: [f64; 3], dir: [f64; 3], bore: Option<f64>) -> RoutePoint {
