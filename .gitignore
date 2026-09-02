@@ -16,5 +16,8 @@ Cargo.lock.bak
 # `cargo run --bin gen_ams` 的输出，随每次跑批重写，不反映代码状态。
 /out
 
+# 代理会话的中间产物（对拍矩阵、临时日志），与 evidence/ 同一口径：能重造、不进历史。
+/.codex-artifacts
+
 __pycache__/
 *.pyc
