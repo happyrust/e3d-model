@@ -23,6 +23,10 @@
 //! - 只取属主显示名里的 `/名` 那一截。快照把 noun 写成全称（`CMPFITTING`），
 //!   e3d-io 给的是库里的短名（`CMPF`），拿属主 noun 当键会整族错配。
 //! - noun 取前 4 字：快照里是截断过的（`GWALL` → `GWAL`）。
+//! - **管身（`TUBI`）例外**：E3D 的 `TUBE n` 在一部分支管上不是画出来的顺序（ams8000
+//!   `/M-OR-1R323-A` 画的两根叫 TUBE 2 / 5），所以同一属主下的 TUBI 按世界 AABB 中心最近
+//!   配对（[`pair_tubes_by_centre`]），序号只用来分组与显示；两侧序号不同时 `pairs[].key`
+//!   写成 `TUBI 2 /X ↔ TUBI 1 /X`。
 //!
 //! ## 判据
 //!
@@ -454,6 +458,43 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
+    // ---- 管身按几何配对 ----
+    // E3D 的 `TUBE n` 在一部分支管上不是画出来的顺序（`/M-OR-1R323-A` 画的两根叫 TUBE 2 / 5，
+    // `/LV-CO-1R330-A` 唯一一根叫 TUBE 3），拿序号当键会把几何相同的两根判成两边各多一根。
+    // 同一属主下的 TUBI 改按世界 AABB 中心最近配对，序号只用来分组与显示。
+    let base_tubes: Vec<(&Key, [f64; 6])> = base
+        .iter()
+        .filter(|(key, _)| key.noun() == "TUBI")
+        .map(|(key, (_, _, aabb, _))| (key, *aabb))
+        .collect();
+    let our_tubes: Vec<(&Key, [f64; 6])> = ours
+        .iter()
+        .filter(|(key, _)| key.noun() == "TUBI")
+        .map(|(key, element)| {
+            (
+                key,
+                [
+                    element.aabb_min[0],
+                    element.aabb_min[1],
+                    element.aabb_min[2],
+                    element.aabb_max[0],
+                    element.aabb_max[1],
+                    element.aabb_max[2],
+                ],
+            )
+        })
+        .collect();
+    let tube_pairs = pair_tubes_by_centre(&base_tubes, &our_tubes);
+    let matched_ours: std::collections::BTreeSet<&Key> = tube_pairs.values().copied().collect();
+    let counterpart = |key: &Key| -> Option<(&Key, &Generated)> {
+        if key.noun() == "TUBI" {
+            let ours_key = tube_pairs.get(key)?;
+            ours.get(ours_key).map(|element| (*ours_key, *element))
+        } else {
+            ours.get_key_value(key).map(|(k, e)| (k, *e))
+        }
+    };
+
     // ---- 配对 ----
     let mut by_noun: BTreeMap<String, NounTally> = BTreeMap::new();
     let mut pairs = Vec::new();
@@ -462,7 +503,7 @@ fn main() -> anyhow::Result<()> {
 
     for (key, (member, facets, baseline_world_aabb, aabb_source)) in &base {
         let tally = by_noun.entry(key.noun().to_string()).or_default();
-        let Some(element) = ours.get(key) else {
+        let Some((ours_key, element)) = counterpart(key) else {
             tally.only_baseline += 1;
             only_baseline.push(member.name.clone().unwrap_or_else(|| format!("{key:?}")));
             continue;
@@ -579,7 +620,12 @@ fn main() -> anyhow::Result<()> {
         };
 
         pairs.push(Pair {
-            key: key.display(),
+            key: if ours_key == key {
+                key.display()
+            } else {
+                // 几何配对且两侧序号不同：两边的号都留下，读报告时才知道 E3D 的 n 是几。
+                format!("{} ↔ {}", key.display(), ours_key.display())
+            },
             refno: element.refno.clone(),
             noun: element.noun.clone(),
             max_axis_delta_mm,
@@ -601,7 +647,12 @@ fn main() -> anyhow::Result<()> {
         });
     }
     for (key, element) in &ours {
-        if !base.contains_key(key) {
+        let paired = if key.noun() == "TUBI" {
+            matched_ours.contains(key)
+        } else {
+            base.contains_key(key)
+        };
+        if !paired {
             by_noun
                 .entry(key.noun().to_string())
                 .or_default()
@@ -694,6 +745,63 @@ fn main() -> anyhow::Result<()> {
         bail!("{off}/{both} 件超出弦高容差，看上面的 off 明细");
     }
     Ok(())
+}
+
+/// 同一属主下的管身按世界 AABB **中心最近**贪心配对；两边的键仍是 `TUBI n of owner`，
+/// 但 n 只用来分组（`owner`）与显示，不参与配对。
+///
+/// 接受的条件：中心距不超过两者中较长的一根的半长（AABB 对角线的一半）——管身两根若不至少
+/// 首尾相接就不算同一根；一根最多配一根。返回 `基准键 → 生成键`。
+fn pair_tubes_by_centre<'a>(
+    base: &[(&'a Key, [f64; 6])],
+    ours: &[(&'a Key, [f64; 6])],
+) -> BTreeMap<&'a Key, &'a Key> {
+    fn owner(key: &Key) -> Option<&str> {
+        match key {
+            Key::OwnerOrdinal { owner, .. } => Some(owner),
+            Key::Name { .. } => None,
+        }
+    }
+    fn centre(aabb: &[f64; 6]) -> [f64; 3] {
+        std::array::from_fn(|i| (aabb[i] + aabb[3 + i]) / 2.0)
+    }
+    fn half_diagonal(aabb: &[f64; 6]) -> f64 {
+        (0..3)
+            .map(|i| (aabb[3 + i] - aabb[i]).powi(2))
+            .sum::<f64>()
+            .sqrt()
+            / 2.0
+    }
+    fn distance(a: [f64; 3], b: [f64; 3]) -> f64 {
+        (0..3).map(|i| (a[i] - b[i]).powi(2)).sum::<f64>().sqrt()
+    }
+
+    let mut candidates: Vec<(f64, usize, usize)> = Vec::new();
+    for (i, (base_key, base_aabb)) in base.iter().enumerate() {
+        for (j, (our_key, our_aabb)) in ours.iter().enumerate() {
+            if owner(base_key) != owner(our_key) {
+                continue;
+            }
+            let gap = distance(centre(base_aabb), centre(our_aabb));
+            let reach = half_diagonal(base_aabb).max(half_diagonal(our_aabb));
+            if gap <= reach {
+                candidates.push((gap, i, j));
+            }
+        }
+    }
+    candidates.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+    let mut taken_base = vec![false; base.len()];
+    let mut taken_ours = vec![false; ours.len()];
+    let mut pairs = BTreeMap::new();
+    for (_, i, j) in candidates {
+        if taken_base[i] || taken_ours[j] {
+            continue;
+        }
+        taken_base[i] = true;
+        taken_ours[j] = true;
+        pairs.insert(base[i].0, ours[j].0);
+    }
+    pairs
 }
 
 fn world_matrix(columns: [[f64; 3]; 4]) -> glam::DMat4 {
@@ -882,6 +990,49 @@ mod tests {
     fn noun_filter_uses_the_same_four_character_key_on_both_sides() {
         assert_eq!(noun4("GWALL"), noun4("GWAL"));
         assert_ne!(noun4("GWALL"), noun4("PANE"));
+    }
+
+    /// 管身按几何配对：E3D 的 `TUBE 2 / TUBE 5` 要能对上我们的 `TUBI 1 / TUBI 2`；
+    /// 隔着半根以上、或属主不同的不配；一根只配一根。
+    #[test]
+    fn tubes_pair_by_centre_regardless_of_ordinal() {
+        let tube = |owner: &str, ordinal: usize| Key::OwnerOrdinal {
+            owner: owner.to_string(),
+            noun: "TUBI".to_string(),
+            ordinal,
+        };
+        // 两根沿 X 的管：中心 (0,0,0) 长 3.5，中心 (100,0,0) 长 3.5；第三根属主不同。
+        let (e2, e5, other) = (tube("/A", 2), tube("/A", 5), tube("/B", 1));
+        let (o1, o2, o3) = (tube("/A", 1), tube("/A", 2), tube("/A", 3));
+        let around = |x: f64, half: f64| [x - half, -12.5, -12.5, x + half, 12.5, 12.5];
+        let base = vec![
+            (&e2, around(0.0, 1.75)),
+            (&e5, around(100.0, 1.75)),
+            (&other, around(0.0, 1.75)),
+        ];
+        // 我们的第三根离得远（隔 50 mm，半长只有 1.75）——不许硬配。
+        let ours = vec![
+            (&o1, around(0.0, 1.75)),
+            (&o2, around(100.0, 1.75)),
+            (&o3, around(50.0, 1.75)),
+        ];
+        let pairs = pair_tubes_by_centre(&base, &ours);
+        assert_eq!(pairs.get(&e2), Some(&&o1));
+        assert_eq!(pairs.get(&e5), Some(&&o2));
+        assert_eq!(pairs.get(&other), None, "属主不同不配");
+        assert_eq!(pairs.len(), 2);
+
+        // 中心距在半长以内才算同一根：1000 mm 的管偏 400 mm 仍配，偏 600 mm 不配。
+        let long = |x: f64| [x - 500.0, -12.5, -12.5, x + 500.0, 12.5, 12.5];
+        let (b, near, far) = (tube("/C", 1), tube("/C", 1), tube("/C", 2));
+        assert_eq!(
+            pair_tubes_by_centre(&[(&b, long(0.0))], &[(&near, long(400.0))]).len(),
+            1
+        );
+        assert_eq!(
+            pair_tubes_by_centre(&[(&b, long(0.0))], &[(&far, long(600.0))]).len(),
+            0
+        );
     }
 
     #[test]
