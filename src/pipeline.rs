@@ -42,8 +42,9 @@ use crate::category::{
 use crate::elmodl::{GeneratedElement, GeometryId, Modeled, model_element_with_cache};
 use crate::extrusion_reuse::ExtrusionReuseStats;
 use crate::route::{
-    PPointResolver, Route, TubeOutcome, bore_mismatch, build_tube, resolve_end, slot_ordinals,
-    tube_outer_diameter, walk_route,
+    PPointResolver, Route, SlotAlignment, TubeOutcome, ZERO_LENGTH_TOL_MM, bore_mismatch,
+    build_tube, resolve_end, slot_alignment, slot_ordinals, tube_length, tube_outer_diameter,
+    walk_route,
 };
 
 /// 一条有名有姓的记录。
@@ -121,6 +122,12 @@ pub struct ImpliedTubeDegenerate {
     /// 与 `missing_ppoint` 分开：那条是「还没接上」，这条是「接上了但数据坏」，
     /// 混在一起会让 P1 的进度看起来比实际好。
     pub unbuildable: usize,
+    /// 偏轴：槽位向量与离开侧方向的夹角超过 [`crate::route::TUBE_ALIGNMENT_TOL_DEG`]
+    /// 但仍朝前（≤ 90°）。E3D 不画这种管（[`SlotAlignment::Misaligned`]）。
+    pub misaligned: usize,
+    /// 反向：到达点在离开点身后（夹角 > 90°）。E3D 不画，数据一致性检查会报「负管长」
+    /// （[`SlotAlignment::Reversed`]）。
+    pub reversed: usize,
 }
 
 /// 生成总账（可直接 serde_json 落盘）。
@@ -344,6 +351,16 @@ pub fn generate_subtree_with_cache(
                 // 风管分支（属主 HVAC）与 HANG 一样只下钻成员、不补管身，见谓词文档。
                 if derives_implied_tubes(&el)? {
                     let route = walk_route(&el)?;
+                    if route.pass_through_unresolved > 0 {
+                        report.notes.push(Incident {
+                            refno: refno.clone(),
+                            noun: noun.clone(),
+                            detail: format!(
+                                "{} 只 ATTA 的目录链走不到 SCOM，按穿过处理；若是 ANCI 型支撑，管身会比 E3D 少几段",
+                                route.pass_through_unresolved
+                            ),
+                        });
+                    }
                     let tubes = route.tubes.len();
                     report.implied_tubes.count += tubes;
                     *report
@@ -597,6 +614,22 @@ fn build_route_tubes(
             ledger.degenerate.missing_ppoint += 1;
             continue;
         };
+        // E3D 的第一道门：槽位要与离开侧方向共线且朝前，否则不画（见
+        // `TUBE_ALIGNMENT_TOL_DEG`）。零长槽位先让 `build_tube` 按 zero_length 记账——
+        // 两点重合时夹角没有意义。
+        if tube_length(from.pos, to.pos) >= ZERO_LENGTH_TOL_MM {
+            match slot_alignment(&from, &to) {
+                SlotAlignment::Misaligned { .. } => {
+                    ledger.degenerate.misaligned += 1;
+                    continue;
+                }
+                SlotAlignment::Reversed { .. } => {
+                    ledger.degenerate.reversed += 1;
+                    continue;
+                }
+                SlotAlignment::Aligned { .. } | SlotAlignment::Indeterminate => {}
+            }
+        }
         if bore_mismatch(&from, &to) {
             ledger.degenerate.bore_mismatch += 1;
         }
@@ -782,6 +815,8 @@ impl Report {
         degenerate.ppoint_db_not_open += implied_tubes.degenerate.ppoint_db_not_open;
         degenerate.bore_mismatch += implied_tubes.degenerate.bore_mismatch;
         degenerate.unbuildable += implied_tubes.degenerate.unbuildable;
+        degenerate.misaligned += implied_tubes.degenerate.misaligned;
+        degenerate.reversed += implied_tubes.degenerate.reversed;
         degenerate.ppoint_target_not_found += implied_tubes.degenerate.ppoint_target_not_found;
         for (dbno, count) in implied_tubes.degenerate.ppoint_db_not_open_by_dbno {
             *degenerate
@@ -859,6 +894,7 @@ impl Report {
             "visited={} consumed={} generated={} skipped={} failed={} catalog={} \
              route_containers={} route_members={} implied_tubes={} tubes_measured={} \
              tubes_built={} tubes_catalogue_od={} tubes_bore_fallback={} tubes_no_ppoint={} \
+             tubes_misaligned={} tubes_reversed={} \
              unsupported={} unknown={} orphans={} neg_skipped={}",
             self.visited,
             self.consumed_total(),
@@ -874,6 +910,8 @@ impl Report {
             self.implied_tubes.catalogue_od,
             self.implied_tubes.bore_fallback,
             self.implied_tubes.degenerate.missing_ppoint,
+            self.implied_tubes.degenerate.misaligned,
+            self.implied_tubes.degenerate.reversed,
             self.unsupported.values().sum::<usize>(),
             self.unknown_nouns.values().sum::<usize>(),
             self.orphans.values().sum::<usize>(),

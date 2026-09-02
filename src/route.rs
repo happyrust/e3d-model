@@ -45,6 +45,7 @@ use e3d_io::db_element::{DbElement, DbElementError};
 use e3d_io::record::descriptor::DescriptorValue;
 use e3d_io::refno::RefNo;
 
+use crate::catalogue_point::catalogue_component;
 use crate::category::{Category, classify};
 use crate::primitive_instance::{PrimitiveInstance, instantiate_centered_cylinder};
 use crate::solid::SolidError;
@@ -72,6 +73,19 @@ const AXIS_DEGENERATE_TOL: f64 = 1.0e-9;
 /// （遗留 `GTTUBG` 自身无显式阈值、靠内核判退化；这道 1.0mm 门作用在可视化路上
 /// 的最终确认归 G0-2 RVM 对拍。）
 pub const ZERO_LENGTH_TOL_MM: f64 = 1.0;
+
+/// 隐式管身的对齐容差（度）：槽位向量（离开点 → 到达点）与离开侧 P 点方向的夹角
+/// 超过它就不建管。
+///
+/// E3D 只在**共线且朝前**的槽位上画隐式管身。2026-09-02 用 ams8000 九条支管 + ams7999 一条
+/// 的 TTY RVM 逐根对过（`evidence/20260902-ams8000-bran-audit/rvm-pending-items-2026-09-02.md`）：
+/// 画出来的 14 根夹角全是 0.0°；没画的里最小的偏轴是 **3.0°**（`/M-OR-1RX-3051K` 两根 20.9 mm），
+/// 再往上 4.4° / 13° / 31.6° / 47.4° 与 90° 的垂直偏置、≥170° 的反向一根都没有。真值落在
+/// (0°, 3°) 之间；取 1° 是让 P 点方向的数值噪声进得来、3° 进不来，有更细的样本再收。
+///
+/// 反向（夹角 > 90°）单列成 [`SlotAlignment::Reversed`]：那是 E3D 数据一致性检查会报
+/// 「负管长」的形态（README §3.2 的 74 根），与偏轴分开记账才看得出各占多少。
+pub const TUBE_ALIGNMENT_TOL_DEG: f64 = 1.0;
 
 /// 一个 P 点的三件套：位置、方向、通径。
 ///
@@ -151,8 +165,13 @@ pub struct Route {
     pub members: Vec<DbElement>,
     /// 不推进隐式管身链的成员。**记账、继续下钻、但不参与串接**——
     /// 它可能自带几何，却不是管身端点；算进去会凭空多出两截管身。
-    /// ATTA 属于 RouteMember、会生成自己的目录几何，但 E3D 的 TUBE 穿过它。
+    /// 目录 `GTYP=ATTA` 的附着点属于 RouteMember、会生成自己的目录几何，但 E3D 的
+    /// TUBE 穿过它（见 [`station_verdict`]）。
     pub non_route_members: Vec<DbElement>,
+    /// 设计 noun 为 ATTA、目录链却走不到 SCOM 而**按穿过处理**的成员数。
+    /// 不为零时，这条链上的 ANCI 型支撑（梯架的 RACK-REST / SPECIAL）可能被当成了穿过，
+    /// 管身会比 E3D 少几段——报告里要点名。
+    pub pass_through_unresolved: usize,
     /// 管身槽位，链序。条数恒为 `members.len() + 1`。
     pub tubes: Vec<TubeSlot>,
 }
@@ -190,14 +209,73 @@ fn station_at(index: usize, member_count: usize) -> Station {
     }
 }
 
-/// 这个成员是否是隐式管身的一个串接站点。
+/// 隐式管身链对一个成员的裁决。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StationVerdict {
+    /// 链上的一站：前一站的离开点到它的到达点是一条槽位，它的离开点开下一条。
+    Station,
+    /// 管身穿过它：记账、下钻，但不参与串接。
+    PassThrough,
+    /// 设计 noun 是 ATTA，目录链却走不到 SCOM（无 SPRE、库没开、目标不在会话）：
+    /// 按穿过处理，另计一笔（[`Route::pass_through_unresolved`]）。
+    PassThroughUnresolved,
+}
+
+/// 这个成员是不是隐式管身的一个串接站点——纯裁决，`noun` 是设计 noun，
+/// `scom_gtyp` 是它目录件 `SCOM.GTYP` 的字面（解不出给 `None`）。
 ///
 /// `Category::RouteMember` 回答的是“这件东西属于管路且要生成目录几何”；它不等于
-/// “这件东西切断管身”。ATTA 是附着在已有管身上的 occurrence，E3D RVM 会让一根
-/// TUBE 连续穿过它。若把 ATTA 的 P-arrive/P-leave 加入站点链，会把连续管拆段；当
-/// attachment 位于中心线外时还会生成一来一回的重叠假管。
-fn advances_implied_tube_chain(noun: &str) -> bool {
-    matches!(classify(noun), Category::RouteMember) && noun != "ATTA"
+/// “这件东西切断管身”。设计 noun 同为 ATTA 的成员在 E3D 里分两种：
+///
+/// - 目录 **`GTYP=ATTA`**（`/AVEVA-ATTA-SPEC/SUPP:ANY`、`/NPHS/SPEC/PIPE/BRAN` 这类管道
+///   支撑附着点）：E3D 的 TUBE 连续穿过它。ams7999 `/1RCV0101…/B1` 的 TUBE 2 = 801 mm 穿过
+///   `/R342.062`，ams8000 `24384/26229` 的 TUBE 2 = 312.1 mm 穿过三只到 VALV。把它加入站点链
+///   会把连续管拆段；附着点在中心线外时还会生成一来一回的重叠假管。
+/// - 目录 **`GTYP=ANCI`**（MDS 梯架支撑 `/RACK-REST-300`、`/SPECIAL.300`，P1/P2 通径 300）：
+///   是普通站点，管身在它两侧断开。`/C-GR-1RX-3020B`（24384/2944）的六根 TUBE 全以它为端点，
+///   `/C-GR-1RX-3000A`（24384/3277）唯一一根是 ATTA9→BEND3。
+///
+/// 所以看的是目录 GTYP，不是设计 noun。证据见
+/// `evidence/20260902-ams8000-bran-audit/rvm-pending-items-2026-09-02.md` §2。
+pub fn station_verdict(noun: &str, scom_gtyp: Option<&str>) -> StationVerdict {
+    if !matches!(classify(noun), Category::RouteMember) {
+        return StationVerdict::PassThrough;
+    }
+    if !noun.eq_ignore_ascii_case("ATTA") {
+        return StationVerdict::Station;
+    }
+    match scom_gtyp {
+        Some(gtyp) if gtyp.eq_ignore_ascii_case("ATTA") => StationVerdict::PassThrough,
+        Some(_) => StationVerdict::Station,
+        None => StationVerdict::PassThroughUnresolved,
+    }
+}
+
+/// 库上的裁决：非 ATTA 不查目录；ATTA 走 `SPRE → (CATR)* → SCOM` 读 `GTYP`。
+/// 目录库没开 / 目标不在所钉会话与「没有 SPRE」同样算解不出——那是配置或数据的事，
+/// 不该把整条链的遍历打断。
+fn member_station_verdict(member: &DbElement) -> Result<StationVerdict, DbElementError> {
+    let noun = member.element_type()?;
+    if !noun.eq_ignore_ascii_case("ATTA") {
+        return Ok(station_verdict(&noun, None));
+    }
+    let gtyp = match catalogue_component(member) {
+        Ok(Some(component)) => scom_gtyp(&component)?,
+        Ok(None) => None,
+        Err(DbElementError::DbNotRegistered { .. } | DbElementError::NotFound { .. }) => None,
+        Err(error) => return Err(error),
+    };
+    Ok(station_verdict(&noun, gtyp.as_deref()))
+}
+
+/// `SCOM.GTYP` 的字面（`Word { text }`，attlib 解不出字面时为 `None`）。
+fn scom_gtyp(component: &DbElement) -> Result<Option<String>, DbElementError> {
+    Ok(match component.attribute("GTYP") {
+        Ok(Some(DescriptorValue::Word { text, .. })) => text,
+        Ok(_) => None,
+        Err(DbElementError::UnknownAttribute { .. }) => None,
+        Err(error) => return Err(error),
+    })
 }
 
 /// 走一个路由容器（算法文档 §4 的 `RouteWalker`）。
@@ -208,11 +286,15 @@ fn advances_implied_tube_chain(noun: &str) -> bool {
 pub fn walk_route(container: &DbElement) -> Result<Route, DbElementError> {
     let mut members = Vec::new();
     let mut non_route_members = Vec::new();
+    let mut pass_through_unresolved = 0usize;
     for member in container.members()? {
-        if advances_implied_tube_chain(&member.element_type()?) {
-            members.push(member);
-        } else {
-            non_route_members.push(member);
+        match member_station_verdict(&member)? {
+            StationVerdict::Station => members.push(member),
+            StationVerdict::PassThrough => non_route_members.push(member),
+            StationVerdict::PassThroughUnresolved => {
+                pass_through_unresolved += 1;
+                non_route_members.push(member);
+            }
         }
     }
 
@@ -257,6 +339,7 @@ pub fn walk_route(container: &DbElement) -> Result<Route, DbElementError> {
     Ok(Route {
         members,
         non_route_members,
+        pass_through_unresolved,
         tubes,
     })
 }
@@ -445,6 +528,46 @@ pub fn tumat(p1: DVec3, d1: DVec3, p2: DVec3) -> Option<DMat4> {
     Some(DMat4::from_translation((p1 + p2) * 0.5) * DMat4::from_mat3(rotation))
 }
 
+/// 一条槽位相对离开侧 P 点方向的姿态（E3D 画不画隐式管身的第一道门，见
+/// [`TUBE_ALIGNMENT_TOL_DEG`]）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SlotAlignment {
+    /// 共线且朝前：夹角 ≤ [`TUBE_ALIGNMENT_TOL_DEG`]。
+    Aligned { deviation_deg: f64 },
+    /// 偏轴：夹角在容差之外但仍朝前（≤ 90°）。E3D 不画。
+    Misaligned { deviation_deg: f64 },
+    /// 反向：到达点在离开点身后（夹角 > 90°）。E3D 不画。
+    Reversed { deviation_deg: f64 },
+    /// 槽位向量或离开方向退化、判不了——照旧建，不拿判不了当不合格。
+    Indeterminate,
+}
+
+/// 槽位向量（`to.pos − from.pos`）与离开侧方向 `from.dir` 的夹角分档。
+///
+/// 只看离开侧：容器尾的 `TDIR` 缺省时 [`container_point`] 会填 `+Z`，拿它判到达侧会把
+/// 好管误判成偏轴；E3D 侧的取证也是按离开侧夹角做的（`bran_audit` 的 `backtrack_deg`）。
+pub fn slot_alignment(from: &RoutePoint, to: &RoutePoint) -> SlotAlignment {
+    let span = to.pos - from.pos;
+    let span_length = span.length();
+    let dir_length = from.dir.length();
+    if !(span_length > AXIS_DEGENERATE_TOL)
+        || !(dir_length > AXIS_DEGENERATE_TOL)
+        || !span.is_finite()
+        || !from.dir.is_finite()
+    {
+        return SlotAlignment::Indeterminate;
+    }
+    let cosine = (span.dot(from.dir) / (span_length * dir_length)).clamp(-1.0, 1.0);
+    let deviation_deg = cosine.acos().to_degrees();
+    if deviation_deg <= TUBE_ALIGNMENT_TOL_DEG {
+        SlotAlignment::Aligned { deviation_deg }
+    } else if deviation_deg <= 90.0 {
+        SlotAlignment::Misaligned { deviation_deg }
+    } else {
+        SlotAlignment::Reversed { deviation_deg }
+    }
+}
+
 /// `VDIST`：管身长度 = 两端点**直线距离**。
 ///
 /// 不扣端面、不往轴向投影。算法文档 §3.5 把这条单列，是因为「扣端面」是照着
@@ -551,16 +674,78 @@ pub fn bore_mismatch(from: &RoutePoint, to: &RoutePoint) -> bool {
 mod tests {
     use super::*;
 
-    /// ATTA is a drawable catalogue occurrence attached to a pipe, but E3D's
-    /// exported TUBE primitive continues through it.  Treating it as a route
-    /// station splits a straight tube and can even create a backtracking,
-    /// overlapping pair when the attachment position is off the centreline.
+    /// 站点裁决看的是目录 `GTYP`，不是设计 noun：`GTYP=ATTA` 的附着点被 E3D 的 TUBE 穿过，
+    /// `GTYP=ANCI` 的梯架支撑是站点；目录链走不通按穿过处理但要单列。
     #[test]
-    fn atta_does_not_advance_the_implied_tube_chain() {
-        assert!(!advances_implied_tube_chain("ATTA"));
-        for noun in ["ELBO", "TEE", "VALV", "REDU"] {
-            assert!(advances_implied_tube_chain(noun), "{noun}");
+    fn station_verdict_follows_the_catalogue_gtyp_for_atta() {
+        assert_eq!(
+            station_verdict("ATTA", Some("ATTA")),
+            StationVerdict::PassThrough
+        );
+        assert_eq!(
+            station_verdict("ATTA", Some("atta")),
+            StationVerdict::PassThrough
+        );
+        assert_eq!(
+            station_verdict("ATTA", Some("ANCI")),
+            StationVerdict::Station
+        );
+        assert_eq!(
+            station_verdict("ATTA", None),
+            StationVerdict::PassThroughUnresolved
+        );
+        for noun in ["ELBO", "TEE", "VALV", "REDU", "FTUB", "BEND"] {
+            assert_eq!(
+                station_verdict(noun, None),
+                StationVerdict::Station,
+                "{noun}"
+            );
         }
+        // 不属于管路的成员从来不是站点，GTYP 说什么都不算。
+        assert_eq!(
+            station_verdict("BOX", Some("ANCI")),
+            StationVerdict::PassThrough
+        );
+    }
+
+    /// 对齐门：0° 建、3° 不建（观测边界）、90° 是偏轴、180° 是反向、退化判不了。
+    #[test]
+    fn slot_alignment_splits_aligned_misaligned_and_reversed_at_the_observed_boundary() {
+        let from = point([0.0; 3], [1.0, 0.0, 0.0], Some(50.0));
+        let aim = |deg: f64, length: f64| {
+            let rad = deg.to_radians();
+            point(
+                [length * rad.cos(), length * rad.sin(), 0.0],
+                [-1.0, 0.0, 0.0],
+                Some(50.0),
+            )
+        };
+        assert!(matches!(
+            slot_alignment(&from, &aim(0.0, 500.0)),
+            SlotAlignment::Aligned { deviation_deg } if deviation_deg.abs() < 1e-9
+        ));
+        assert!(matches!(
+            slot_alignment(&from, &aim(0.5, 500.0)),
+            SlotAlignment::Aligned { .. }
+        ));
+        assert!(matches!(
+            slot_alignment(&from, &aim(3.0, 20.9)),
+            SlotAlignment::Misaligned { deviation_deg } if (deviation_deg - 3.0).abs() < 1e-9
+        ));
+        assert!(matches!(
+            slot_alignment(&from, &aim(90.0, 538.5)),
+            SlotAlignment::Misaligned { deviation_deg } if (deviation_deg - 90.0).abs() < 1e-9
+        ));
+        assert!(matches!(
+            slot_alignment(&from, &aim(178.0, 2998.2)),
+            SlotAlignment::Reversed { deviation_deg } if (deviation_deg - 178.0).abs() < 1e-9
+        ));
+        assert_eq!(slot_alignment(&from, &from), SlotAlignment::Indeterminate);
+        let no_dir = point([0.0; 3], [0.0; 3], Some(50.0));
+        assert_eq!(
+            slot_alignment(&no_dir, &aim(0.0, 500.0)),
+            SlotAlignment::Indeterminate
+        );
     }
 
     fn point(pos: [f64; 3], dir: [f64; 3], bore: Option<f64>) -> RoutePoint {
