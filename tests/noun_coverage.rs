@@ -17,7 +17,27 @@ use e3d_model::category::{Category, classify, is_model_unit};
 struct Matrix {
     #[serde(rename = "cascadeFamilies")]
     cascade_families: Vec<String>,
+    /// 字典里有、但不进 `GTGEOM` 级联的家族（`ICOCOM` / `IFICOM` / `IJOCOM` …）。
+    /// `category.rs` 的 MODCMP 表现级分派按家族名逐位对照，会把它们当字面量写出来。
+    #[serde(rename = "nonCascadeFamilies", default)]
+    non_cascade_families: Vec<String>,
     nouns: Vec<Row>,
+}
+
+impl Matrix {
+    /// 分类表源码里合法出现、却不是 noun 的大写字面量：两张家族名单 + 各行实际带的家族位。
+    fn family_names(&self) -> BTreeSet<&str> {
+        self.cascade_families
+            .iter()
+            .chain(self.non_cascade_families.iter())
+            .map(String::as_str)
+            .chain(
+                self.nouns
+                    .iter()
+                    .flat_map(|row| row.families.iter().map(String::as_str)),
+            )
+            .collect()
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -125,6 +145,16 @@ fn every_noun_named_in_the_classifier_actually_exists_in_the_dictionary() {
         .filter(|n| !n.is_empty())
         .collect();
 
+    let families = m.family_names();
+    // 长得像 noun、却有据可查地**不是** noun 的字面量。每一条都要写出处，
+    // 否则这张表就成了给笔误开的后门。
+    //
+    // - `IASLCO`：`build/MODCMP` 结构级分派里的 nounlib 家族位，E3D 3.1 字典没有任何 noun
+    //   带它（`category::repre_discipline` 的注释与 `data/noun-family-matrix.json` 都说了），
+    //   所以它不在两张家族名单里，只能在这儿点名。
+    // - `LEVEL`：`Q REPRE` 的关键字（`RepreDiscipline::command`），报告记账文案，不是 noun。
+    const KNOWN_NON_NOUN_LITERALS: &[&str] = &["IASLCO", "LEVEL"];
+
     let source = std::fs::read_to_string(manifest("src/category.rs")).expect("读不到 category.rs");
     let mut missing: Vec<String> = source
         .split('"')
@@ -139,7 +169,8 @@ fn every_noun_named_in_the_classifier_actually_exists_in_the_dictionary() {
                     .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
                 && lit.chars().any(|c| c.is_ascii_uppercase())
         })
-        .filter(|lit| !m.cascade_families.iter().any(|family| family == lit))
+        .filter(|lit| !families.contains(*lit))
+        .filter(|lit| !KNOWN_NON_NOUN_LITERALS.contains(lit))
         .filter(|lit| !known.contains(*lit))
         .map(str::to_string)
         .collect();
