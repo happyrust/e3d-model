@@ -1827,6 +1827,13 @@ fn evaluate_sbox(
         required_number(sbox, "PYLE", env, "catalogue SBOX")?.abs(),
         required_number(sbox, "PZLE", env, "catalogue SBOX")?.abs(),
     );
+    // 任一边长为零的 SBOX 与零高 LCYL / SEXT 是同一件事：Core 不出体，目录里拿它当「关掉这个
+    // 图元」的合法写法（HEADSTRT 的 `ZLEN=0`）。在这里按零高或退化收口；此前放行到 `box_solid`
+    // 再撞 `Degenerate`，报告上就成了「局部失败」，与真出错的图元分不开。名下的负体一并不看，
+    // Core 对不存在的正体也不会去扣。
+    if dimensions.min_element() < HEIGHT_TOL_MM {
+        return Ok(None);
+    }
     let position = DVec3::new(
         required_number(sbox, "PX", env, "catalogue SBOX position")?,
         required_number(sbox, "PY", env, "catalogue SBOX position")?,
@@ -2080,7 +2087,10 @@ fn evaluate_catalogue_cylinder(
         let centre = (bottom + top) * 0.5;
         ((bottom - top).abs(), centre, centre)
     };
-    if height < HEIGHT_TOL_MM {
+    // 零高与零径同一口径（`disc_at` / SSLC 那几条臂早就这么判）：都是 Core 不出体的合法
+    // 参数化关法，归零高或退化。零径此前漏判，放行到 `csg_cylinder_solid` 撞 `Degenerate`
+    // 被记成局部失败——ams7997 FLEX 的 40 只 `PDIA=0` LCYL 一库就是 480 条。
+    if height < HEIGHT_TOL_MM || diameter < HEIGHT_TOL_MM {
         return Ok(None);
     }
     let frame = orimat(axis.direction).ok_or_else(|| {
