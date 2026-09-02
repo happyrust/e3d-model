@@ -11,9 +11,9 @@
 //! 顶点坐标 = rvm-rs 局部顶点 × group 内 transform × 1000（RVM 存米，输出世界 mm），
 //! 与 gen-model `mesh_compare::add_local_triangulation` 同一口径。
 //!
-//! 非 FacetGroup 图元先把 rvm-rs 三角化的 Y-up 局部系转回 RVM 的 Z-up 局部系再乘
-//! transform（见 [`rvm_local_vertices`]），并逐件与 PRIM 记录自带的局部 bbox 对一次账，
-//! 对不上的件数与样例打在末尾——图元帧口径再漂就当场看得见。
+//! 非 FacetGroup 图元逐件与 PRIM 记录自带的局部 bbox 对账，按对账结果决定三角化是原样
+//! 用还是先从 rvm-rs 旧版的 Y-up 局部系转回 RVM 的 Z-up 再乘 transform（见
+//! [`rvm_local_vertices`]）；两种都对不上的件数与样例打在末尾——图元帧口径再漂就当场看得见。
 
 use std::path::PathBuf;
 
@@ -27,39 +27,53 @@ use rvm_rs::store::node::{NodeId, NodeKind};
 
 const M_TO_MM: f32 = 1000.0;
 
-/// rvm-rs（rev 45470d2）的图元三角化用的是 **Y-up** 局部系：`Cylinder` / `Pyramid` 沿 +Y 从 0
-/// 长到 height，`Snout` / 球面族 / `CircularTorus` 把轴放在 Y、扫掠面放在 X–Z。RVM 的 PRIM
+/// rvm-rs 到 rev 45470d2 为止的图元三角化用的是 **Y-up** 局部系：`Cylinder` / `Pyramid` 沿 +Y
+/// 从 0 长到 height，`Snout` / 球面族 / 两种 Torus 把轴放在 Y、扫掠面放在 X–Z。RVM 的 PRIM
 /// 记录却是 **Z-up**，且 `Cylinder` / `Pyramid` 沿 Z 居中（记录自带 bbox 就是 ±height/2）。
 /// rvm-rs 自己的 glTF / OBJ 导出直接拿 transform 乘这些顶点，圆柱与弯头整体转了 90°——
 /// 2026-09-02 用 ams7999 `/1RCV0101-60.3-VMB-R23-R342/B1` 的 `TUBE 2` 坐实：真值沿世界 Y
-/// 水平 801 mm，倒出来却沿 Z 竖直、起点在圆柱中心。`Box` 三轴各有其长、`RectangularTorus`
-/// 本来就是 Z-up，这两类不动。
-fn rvm_local_vertices(kind: &GeometryKind, tri: &rvm_rs::export::Triangulation) -> Vec<[f32; 3]> {
-    let (swap_y_z, axis_shift) = match kind {
-        GeometryKind::Box(_)
-        | GeometryKind::RectangularTorus(_)
-        | GeometryKind::FacetGroup(_)
-        | GeometryKind::Line(_) => (false, 0.0),
-        GeometryKind::Cylinder(cylinder) => (true, -cylinder.height / 2.0),
-        GeometryKind::Pyramid(pyramid) => (true, -pyramid.height / 2.0),
-        GeometryKind::CircularTorus(_)
-        | GeometryKind::Snout(_)
-        | GeometryKind::Sphere(_)
-        | GeometryKind::EllipticalDish(_)
-        | GeometryKind::SphericalDish(_) => (true, 0.0),
+/// 水平 801 mm，倒出来却沿 Z 竖直、起点在圆柱中心（happyrust/rvm-rs#3，修复 #4）。
+///
+/// 这里不写死 rev：先按 PRIM 记录 bbox 判三角化**原样**是否已在记录帧里（修复后的 rvm-rs、
+/// 以及 `Box` / `Sphere` 这类怎么放都对称的），是就原样用；不是再试 Y→Z 转换；两种都对不上
+/// 照原样倒出并计一笔口径不合。这样 rvm-rs 升到修复版时本文件一行不用改，也不会双重转换。
+fn y_up_to_record_frame(kind: &GeometryKind, tri: &rvm_rs::export::Triangulation) -> Vec<[f32; 3]> {
+    let axis_shift = match kind {
+        GeometryKind::Cylinder(cylinder) => -cylinder.height / 2.0,
+        GeometryKind::Pyramid(pyramid) => -pyramid.height / 2.0,
+        _ => 0.0,
     };
     tri.vertices
         .as_chunks::<3>()
         .0
         .iter()
-        .map(|[x, y, z]| {
-            if swap_y_z {
-                [*x, *z, *y + axis_shift]
-            } else {
-                [*x, *y, *z]
-            }
-        })
+        .map(|[x, y, z]| [*x, *z, *y + axis_shift])
         .collect()
+}
+
+fn as_is(tri: &rvm_rs::export::Triangulation) -> Vec<[f32; 3]> {
+    tri.vertices.as_chunks::<3>().0.to_vec()
+}
+
+/// 选出与记录 bbox 同口径的那份局部顶点；`Some(true)` = 原样就对，`Some(false)` = 用了 Y→Z
+/// 转换，`None` = 两种都对不上（照原样倒出）。
+fn rvm_local_vertices(
+    kind: &GeometryKind,
+    tri: &rvm_rs::export::Triangulation,
+    record: &[f32; 6],
+) -> (Vec<[f32; 3]>, Option<bool>) {
+    let identity = as_is(tri);
+    let Some(identity_aabb) = aabb_of(&identity) else {
+        return (identity, None);
+    };
+    if matches_record_bbox(&identity_aabb, record) {
+        return (identity, Some(true));
+    }
+    let converted = y_up_to_record_frame(kind, tri);
+    match aabb_of(&converted) {
+        Some(aabb) if matches_record_bbox(&aabb, record) => (converted, Some(false)),
+        _ => (identity, None),
+    }
 }
 
 fn aabb_of(points: &[[f32; 3]]) -> Option<[f32; 6]> {
@@ -124,10 +138,12 @@ struct DumpedGeometry {
     /// PRIM 记录里原样存的 24 字节 bbox（rvm-rs `bbox_local`，未变换，米）。
     bbox_record_m: [f32; 6],
     bbox_world_mm: [f32; 6],
-    /// 非 FacetGroup 图元：转回 RVM 局部系后的三角化 AABB（图元原单位），
+    /// 非 FacetGroup 图元：选定帧下的三角化局部 AABB（图元原单位），
     /// 以及它与 `bbox_record_m` 是否同一口径（见 [`matches_record_bbox`]）。
     tessellated_local_aabb: Option<[f32; 6]>,
     matches_record_bbox: Option<bool>,
+    /// 非 FacetGroup 图元：三角化是否原样就在记录帧里（`false` = 做了 Y→Z 转换）。
+    tessellation_in_record_frame: Option<bool>,
     /// FacetGroup：多边形 → 轮廓 → 顶点（**世界 mm**，已应用 transform）。
     polygons_world_mm: Option<Vec<Vec<Vec<[f32; 3]>>>>,
 }
@@ -135,6 +151,10 @@ struct DumpedGeometry {
 #[derive(Default)]
 struct RecordAudit {
     primitives: usize,
+    /// 原样就在记录帧里的件数（修复后的 rvm-rs 应等于 primitives − mismatches）。
+    in_record_frame: usize,
+    /// 靠 Y→Z 转换才对上记录 bbox 的件数（rev 45470d2 及之前的 rvm-rs）。
+    converted: usize,
     mismatches: usize,
     samples: Vec<String>,
 }
@@ -189,6 +209,7 @@ fn main() -> anyhow::Result<()> {
                     let record = [bl.min.x, bl.min.y, bl.min.z, bl.max.x, bl.max.y, bl.max.z];
                     let mut tessellated_local_aabb = None;
                     let mut record_match = None;
+                    let mut in_record_frame = None;
                     let (kind, params, polygons) = match &geometry.kind {
                         GeometryKind::FacetGroup(fg) => {
                             let polys = fg
@@ -251,13 +272,14 @@ fn main() -> anyhow::Result<()> {
                                 .next()
                                 .unwrap_or("?")
                                 .to_string();
-                            let local = rvm_local_vertices(other, &tri);
+                            let (local, frame) = rvm_local_vertices(other, &tri, &record);
                             let local_aabb = aabb_of(&local);
                             audit.primitives += 1;
-                            if let Some(local_aabb) = local_aabb {
-                                let ok = matches_record_bbox(&local_aabb, &record);
-                                record_match = Some(ok);
-                                if !ok {
+                            in_record_frame = frame;
+                            match frame {
+                                Some(true) => audit.in_record_frame += 1,
+                                Some(false) => audit.converted += 1,
+                                None => {
                                     audit.mismatches += 1;
                                     if audit.samples.len() < 8 {
                                         audit.samples.push(format!(
@@ -266,6 +288,7 @@ fn main() -> anyhow::Result<()> {
                                     }
                                 }
                             }
+                            record_match = Some(frame.is_some());
                             tessellated_local_aabb = local_aabb;
                             (
                                 kind_name,
@@ -289,6 +312,7 @@ fn main() -> anyhow::Result<()> {
                         ],
                         tessellated_local_aabb,
                         matches_record_bbox: record_match,
+                        tessellation_in_record_frame: in_record_frame,
                         polygons_world_mm: polygons,
                     });
                     link = geometry.next;
@@ -315,8 +339,8 @@ fn main() -> anyhow::Result<()> {
 
     println!("命中 {} 个 group（名字含 `{}`）", dumped.len(), contains);
     println!(
-        "图元三角化 vs PRIM 记录 bbox：{} 件，口径不合 {} 件",
-        audit.primitives, audit.mismatches
+        "图元三角化 vs PRIM 记录 bbox：{} 件——原样在记录帧 {} 件，经 Y→Z 转换 {} 件，口径不合 {} 件",
+        audit.primitives, audit.in_record_frame, audit.converted, audit.mismatches
     );
     for sample in &audit.samples {
         println!("  口径不合：{sample}");
