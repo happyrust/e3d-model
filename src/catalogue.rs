@@ -555,6 +555,25 @@ fn has_hvac_ancestor(el: &DbElement) -> bool {
     false
 }
 
+/// `REPRE OBST ON/OFF`——`csg_gml4/DR3DWA` / `DRWANT` 里 `OBST > 0 ∧ obst_on` 那一项的开关。
+///
+/// ams7997 那批 TTY 基线宏写的是 `repre obst off`；GUI / addin 导出（`C-IY-1R330-B.rvm`）开着：
+/// 每只 FTUBE 在 RVM 里多一只 `OBST=1 / TUFL=false` 的净空盒（`SBOX 13244/51888`，
+/// `PZLE = ATTRIB RPRO CLEA` = 100，坐在托盘顶上），就是它把 35 对 AABB 的 z 顶抬高 100 mm
+/// （`evidence/20260902-repre-level-tty-experiments/` §9）。环境变量 `E3D_REPRE_OBST=on|off`，
+/// 缺省 off（TTY 口径）；对拍 GUI / addin 基线时与 `E3D_REPRE_LEVEL_PIPE=6` 一起设。
+pub(crate) fn repre_obst_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("E3D_REPRE_OBST").ok().is_some_and(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "on" | "1" | "true" | "yes"
+            )
+        })
+    })
+}
+
 /// E3D 的几何集成员显示过滤（GTGEOM 侧 `sub_107149B0` 那一签：
 /// `LEVE[2]/OBST/TVIS/BVIS/CLFL/TUFL`），落到装配路上按 `REPR TUBE ON / CL OFF / OBST OFF`
 /// 这套导出口径的两条筛：
@@ -577,9 +596,11 @@ fn has_hvac_ancestor(el: &DbElement) -> bool {
 /// 有的藏掉。SDIS 233/233、LSNO 1142、SCON 128、LCYL 156、SSPH 64（`TUFL=false/CLFL=true`）
 /// 与 SCYL 100、DAMP `/RVCD-CLASH` 盒（`OBST 1/TUFL=false/CLFL=false`）在 RVM 里一件都没有。
 ///
-/// **仍未消化的反例**：`C-IY` 基准里 `OBST=1/TUFL=false` 的 RESERVED 盒被 E3D 导出。
-/// 那份是 addin 导出，导出口径（`REPR OBST`）可能与 ams7997 这批 TTY 导出不同；
-/// 对拍托盘语料时若 RESERVED 盒对不上，先查那次导出的 REPR 设置，别回头改这里。
+/// 曾经的反例已经消化：`C-IY` 基准里 `OBST=1/TUFL=false` 的净空盒被 E3D 导出，是因为那份
+/// addin 导出开着 `REPRE OBST`（TTY 基线宏是 `repre obst off`）。DR3DWA / DRWANT 的公式是
+/// `in_level ∧ (OBST>0 ∧ obst_on ∨ TUFL ∧ tube_on ∨ CLFL ∧ cl_on)`——`TUFL=false` 一律不画只是
+/// `obst off / cl off` 下的特例；[`repre_obst_on`] 打开时 OBST 1/2 的图元照画（对拍托盘语料
+/// 时设 `E3D_REPRE_OBST=on`）。
 /// HANG 24381/177986 的 HELEMENT 把 `CLFL=true` 的三个 SCYL 和一个 SEXT 全部导出——
 /// 它们 `TUFL=true`，本筛照画；"CLFL 即隐藏"仍然是错的读法。
 ///
@@ -597,14 +618,19 @@ pub(crate) fn display_filtered(
             return Ok(Some("leve"));
         }
     }
-    let hard_obstruction = matches!(
-        primitive.attribute("OBST")?,
-        Some(DescriptorValue::Word { raw: 2, .. }) | Some(DescriptorValue::Int(2))
-    );
+    let obstruction = match primitive.attribute("OBST")? {
+        Some(DescriptorValue::Word { raw, .. }) => raw,
+        Some(DescriptorValue::Int(value)) => u32::try_from(value).unwrap_or(0),
+        _ => 0,
+    };
     if primitive.get_bool("TUFL")? != Some(false) {
         return Ok(None);
     }
-    Ok(Some(if hard_obstruction {
+    // DR3DWA / DRWANT 的 `OBST>0 ∧ obst_on` 项：`REPRE OBST ON` 时障碍体（OBST 1/2）照画。
+    if obstruction > 0 && repre_obst_on() {
+        return Ok(None);
+    }
+    Ok(Some(if obstruction == 2 {
         "obst"
     } else if primitive.get_bool("CLFL")? == Some(true) {
         "centreline-only"
@@ -694,9 +720,10 @@ pub fn model_catalogue_member_with_cache(
             && let Some(reason) = display_filtered(&primitive, member_level)?
         {
             display_filter_notes.push(format!(
-                "catalogue primitive {} noun {primitive_noun} display-filtered by {reason} (repre {} {member_level})",
+                "catalogue primitive {} noun {primitive_noun} display-filtered by {reason} (repre {} {member_level}, obst {})",
                 primitive.refno(),
                 member_discipline.command(),
+                if repre_obst_on() { "on" } else { "off" },
             ));
             continue;
         }
