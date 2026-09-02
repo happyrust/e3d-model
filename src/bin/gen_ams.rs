@@ -167,8 +167,10 @@ struct ElementInvariants {
     noun: String,
     name: Option<String>,
     /// 属主的显示名（`NOUN /名`），属主无名时为 `None`。见 [`owner_keys`]。
+    /// 管身（`TUBI`）的属主是容器本身，见 [`tube_pair_key`]。
     owner_desc: Option<String>,
     /// 本元素在属主**同 noun 兄弟**里的序号，文件原序 1 起。
+    /// 管身：容器内建成管身的路由顺序，1 起。
     ordinal: usize,
     volume_mm3: f64,
     aabb_min: [f64; 3],
@@ -277,15 +279,15 @@ fn owner_display_desc(
 fn owner_keys(
     set: &std::sync::Arc<DbSet>,
     owners: &std::collections::HashSet<RefNo>,
+    desc_cache: &mut std::collections::HashMap<RefNo, Option<String>>,
 ) -> anyhow::Result<std::collections::HashMap<RefNo, (Option<String>, usize)>> {
     let mut keys = std::collections::HashMap::new();
-    let mut desc_cache = std::collections::HashMap::new();
     for owner_ref in owners {
         let owner = set.element(*owner_ref);
         let desc = owner_display_desc(
             set,
             *owner_ref,
-            &mut desc_cache,
+            desc_cache,
             &mut std::collections::HashSet::new(),
         )?;
         let mut seen: BTreeMap<String, usize> = BTreeMap::new();
@@ -297,6 +299,34 @@ fn owner_keys(
         }
     }
     Ok(keys)
+}
+
+/// 管身的对拍主键：**属主 = 容器本身**（`BRAN /名` 或无名时的递归显示名），
+/// **序号 = 该容器内建成管身的路由顺序**，1 起连续。
+///
+/// 管身没有库记录，`GeneratedElement::refno` 填的是容器；拿它去查 [`owner_keys`]
+/// 得到的是「容器在其属主里的序号」（`PIPE /1RX-345` + 支管的兄弟序），一条支管的
+/// 全部管身同键，`rvm_compare` 当场以「生成侧主键重复」退出（2026-09-01 记）。
+/// E3D 把管身导成独立容器 `TUBE n of BRANCH /X`（`rvm_verify import` 记成 noun `TUBI`），
+/// n 是**画出来的**管身沿路由的顺序；本函数按 [`e3d_model::pipeline::build_route_tubes`]
+/// 的推入序——即路由槽位顺序——发号，零长 / 未建成的槽位不占号，与之同一口径。
+/// 2026-09-02 用 ams7999 `/1RCV0101-60.3-VMB-R23-R342/B1`（`test_data/rvm/1RCV0101-B1.rvm`）
+/// 核过：E3D `TUBE 1..3` 与我们的 `TUBI 1..3` 逐根配对且局部 AABB 差 ≤ 0.24 mm。
+fn tube_pair_key(
+    set: &std::sync::Arc<DbSet>,
+    container: RefNo,
+    desc_cache: &mut std::collections::HashMap<RefNo, Option<String>>,
+    tube_ordinals: &mut std::collections::HashMap<RefNo, usize>,
+) -> anyhow::Result<(Option<String>, usize)> {
+    let desc = owner_display_desc(
+        set,
+        container,
+        desc_cache,
+        &mut std::collections::HashSet::new(),
+    )?;
+    let ordinal = tube_ordinals.entry(container).or_insert(0);
+    *ordinal += 1;
+    Ok((desc, *ordinal))
 }
 
 fn main() -> anyhow::Result<()> {
@@ -494,7 +524,11 @@ fn main() -> anyhow::Result<()> {
             .flatten()
             .map(|owner| owner.refno())
             .collect();
-        let keys = owner_keys(&set, &owners)?;
+        let mut desc_cache = std::collections::HashMap::new();
+        let keys = owner_keys(&set, &owners, &mut desc_cache)?;
+        // 管身在 `elements` 里按容器的路由槽位顺序推入（`build_route_tubes` 顺序 push、
+        // 生成物不重排），逐容器计数就是路由序。
+        let mut tube_ordinals = std::collections::HashMap::new();
         for generated in &elements {
             let mesh = generated.mesh();
             let (lo, hi) = mesh.aabb().unwrap_or(([0.0; 3], [0.0; 3]));
@@ -528,7 +562,14 @@ fn main() -> anyhow::Result<()> {
                 })
                 .collect::<Vec<_>>();
             components.sort_by(|a, b| b.volume_mm3.total_cmp(&a.volume_mm3));
-            let (owner_desc, ordinal) = keys.get(&generated.refno).cloned().unwrap_or((None, 0));
+            let (owner_desc, ordinal) = match &generated.geometry_id {
+                e3d_model::GeometryId::ImpliedTube { .. } => {
+                    tube_pair_key(&set, generated.refno, &mut desc_cache, &mut tube_ordinals)?
+                }
+                e3d_model::GeometryId::Element { .. } => {
+                    keys.get(&generated.refno).cloned().unwrap_or((None, 0))
+                }
+            };
             invariants.push(ElementInvariants {
                 geometry_id: generated.geometry_id.clone(),
                 refno: generated.refno.to_string(),
