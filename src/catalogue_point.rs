@@ -236,14 +236,21 @@ fn cartesian(point: &DbElement, env: &DbElementParamEnv) -> Option<(DVec3, DVec3
         number_of(point, "PY", env)?,
         number_of(point, "PZ", env)?,
     );
-    let words = match point.attribute("PTCD").ok()?? {
-        DescriptorValue::RawWords(words) | DescriptorValue::WordArray(words) => words,
-        DescriptorValue::IntArray(words) => words.into_iter().map(|word| word as u32).collect(),
-        _ => return None,
+    // Core3D `pplib/QPDIR` (0x103BAC30) -> `DPARAM` (0x103BF9C0): the PTCD
+    // program is authoritative when it is set, and an unset or empty PTCD reads
+    // the `DIR` real array instead (its template default is local +Y).  The
+    // YKS handwheel points P4/P5/P7 carry no PTCD at all; E3D draws their
+    // spokes and rim along DIR, so a missing PTCD must not fail the point.
+    // DIR stays a fallback rather than the authority because expression-backed
+    // PTCA directions (PCLA torus points with ASIN(PARA[...]) in PTCD) differ
+    // from it.
+    let words = match point.attribute("PTCD").ok().flatten() {
+        Some(DescriptorValue::RawWords(words) | DescriptorValue::WordArray(words)) => words,
+        Some(DescriptorValue::IntArray(words)) => {
+            words.into_iter().map(|word| word as u32).collect()
+        }
+        Some(_) | None => Vec::new(),
     };
-    // PTCD is the catalogue point definition.  DIR is only an evaluated fallback:
-    // making it authoritative breaks expression-backed PTCA directions (for example
-    // the PCLA torus points whose PTCD contains ASIN(PARA[...])).
     let dir = direction_spec::direction(&words, env)
         .map(DVec3::from_array)
         .or_else(|| {
