@@ -1686,13 +1686,14 @@ fn evaluate_srev(
         if noun.eq_ignore_ascii_case("NSCY") {
             cache.stats.source_nscy += 1;
             match evaluate_nscy(member, component, &child, env, DVec3::ZERO) {
-                Ok(cutter) => {
+                Ok(Some(cutter)) => {
                     cache.stats.evaluated_nscy += 1;
                     cutters.push(EvaluatedCatalogueCut::Cylinder(EvaluatedNscy {
                         transform: rebase * cutter.transform,
                         ..cutter
                     }));
                 }
+                Ok(None) => {}
                 Err(error) => diagnostics.push(format!(
                     "catalogue negative {} skipped by Core-style local failure: {error}",
                     child.refno()
@@ -1701,13 +1702,14 @@ fn evaluate_srev(
         } else if noun.eq_ignore_ascii_case("NLCY") {
             cache.stats.source_nlcy += 1;
             match evaluate_nlcy(member, component, &child, env, DVec3::ZERO) {
-                Ok(cutter) => {
+                Ok(Some(cutter)) => {
                     cache.stats.evaluated_nlcy += 1;
                     cutters.push(EvaluatedCatalogueCut::Cylinder(EvaluatedNscy {
                         transform: rebase * cutter.transform,
                         ..cutter
                     }));
                 }
+                Ok(None) => {}
                 Err(error) => diagnostics.push(format!(
                     "catalogue negative {} skipped by Core-style local failure: {error}",
                     child.refno()
@@ -1716,17 +1718,18 @@ fn evaluate_srev(
         } else if noun.eq_ignore_ascii_case("NSBO") {
             cache.stats.source_nsbo += 1;
             match evaluate_nsbo(&child, env, DVec3::ZERO) {
-                Ok(EvaluatedCatalogueCut::Box {
+                Ok(Some(EvaluatedCatalogueCut::Box {
                     dimensions,
                     transform: cutter_transform,
-                }) => {
+                })) => {
                     cache.stats.evaluated_nsbo += 1;
                     cutters.push(EvaluatedCatalogueCut::Box {
                         dimensions,
                         transform: rebase * cutter_transform,
                     });
                 }
-                Ok(_) => unreachable!("evaluate_nsbo returns a box cutter"),
+                Ok(Some(_)) => unreachable!("evaluate_nsbo returns a box cutter"),
+                Ok(None) => {}
                 Err(error) => diagnostics.push(format!(
                     "catalogue negative {} skipped by Core-style local failure: {error}",
                     child.refno()
@@ -1890,10 +1893,11 @@ fn evaluate_sbox(
         if noun.eq_ignore_ascii_case("NSCY") {
             cache.stats.source_nscy += 1;
             match evaluate_nscy(member, component, &child, env, position) {
-                Ok(cutter) => {
+                Ok(Some(cutter)) => {
                     cache.stats.evaluated_nscy += 1;
                     cutters.push(EvaluatedCatalogueCut::Cylinder(cutter));
                 }
+                Ok(None) => {}
                 Err(error) => diagnostics.push(format!(
                     "catalogue negative {} skipped by Core-style local failure: {error}",
                     child.refno()
@@ -1902,10 +1906,11 @@ fn evaluate_sbox(
         } else if noun.eq_ignore_ascii_case("NSBO") {
             cache.stats.source_nsbo += 1;
             match evaluate_nsbo(&child, env, position) {
-                Ok(cutter) => {
+                Ok(Some(cutter)) => {
                     cache.stats.evaluated_nsbo += 1;
                     cutters.push(cutter);
                 }
+                Ok(None) => {}
                 Err(error) => diagnostics.push(format!(
                     "catalogue negative {} skipped by Core-style local failure: {error}",
                     child.refno()
@@ -1914,10 +1919,11 @@ fn evaluate_sbox(
         } else if noun.eq_ignore_ascii_case("NLCY") {
             cache.stats.source_nlcy += 1;
             match evaluate_nlcy(member, component, &child, env, position) {
-                Ok(cutter) => {
+                Ok(Some(cutter)) => {
                     cache.stats.evaluated_nlcy += 1;
                     cutters.push(EvaluatedCatalogueCut::Cylinder(cutter));
                 }
+                Ok(None) => {}
                 Err(error) => diagnostics.push(format!(
                     "catalogue negative {} skipped by Core-style local failure: {error}",
                     child.refno()
@@ -1991,16 +1997,17 @@ fn evaluate_nlcy(
     nlcy: &DbElement,
     env: &DbElementParamEnv,
     sbox_position: DVec3,
-) -> Result<EvaluatedNscy, ModelError> {
+) -> Result<Option<EvaluatedNscy>, ModelError> {
     let diameter = required_number(nlcy, "PDIA", env, "catalogue NLCY")?.abs();
     let top = required_number(nlcy, "PTDI", env, "catalogue NLCY")?;
     let bottom = required_number(nlcy, "PBDI", env, "catalogue NLCY")?;
     let height = (bottom - top).abs();
-    if height < HEIGHT_TOL_MM {
-        return Err(ModelError::Solid(SolidError::Degenerate {
-            what: "catalogue NLCY",
-            detail: format!("PTDI/PBDI={top}/{bottom}"),
-        }));
+    // 零尺寸的刀与零尺寸的正体同一口径：Core 不出体，也就没有东西可扣——**跳过这把刀**，
+    // 正体照建。此前回 `Degenerate`（零径更是漏判、放行到 `csg_cylinder_solid` 才撞），而
+    // `build_sbox` / `build_srev` 对刀的 `?` 会把整只正体一起带走：ams8000 39 只 ATTA 的 SBOX
+    // 就是这样被一把 `XLEN=0` 的 NSBO 整只跳掉的。
+    if height < HEIGHT_TOL_MM || diameter < HEIGHT_TOL_MM {
+        return Ok(None);
     }
     let axis = catalogue_axis_or_fail(member, component, nlcy, "PAXI", "catalogue NLCY axis")?;
     let rotation = orimat(axis.direction).ok_or_else(|| {
@@ -2010,32 +2017,36 @@ fn evaluate_nlcy(
         })
     })?;
     let centre = axis.origin + axis.direction * ((bottom + top) * 0.5) - sbox_position;
-    Ok(EvaluatedNscy {
+    Ok(Some(EvaluatedNscy {
         diameter,
         height,
         transform: DMat4::from_translation(centre) * DMat4::from_mat3(rotation),
-    })
+    }))
 }
 
 fn evaluate_nsbo(
     nsbo: &DbElement,
     env: &DbElementParamEnv,
     sbox_position: DVec3,
-) -> Result<EvaluatedCatalogueCut, ModelError> {
+) -> Result<Option<EvaluatedCatalogueCut>, ModelError> {
     let dimensions = DVec3::new(
         required_number(nsbo, "PXLE", env, "catalogue NSBO")?.abs(),
         required_number(nsbo, "PYLE", env, "catalogue NSBO")?.abs(),
         required_number(nsbo, "PZLE", env, "catalogue NSBO")?.abs(),
     );
+    // 任一边长为零的刀不扣（见 `evaluate_nlcy`）。
+    if dimensions.min_element() < HEIGHT_TOL_MM {
+        return Ok(None);
+    }
     let position = DVec3::new(
         required_number(nsbo, "PX", env, "catalogue NSBO position")?,
         required_number(nsbo, "PY", env, "catalogue NSBO position")?,
         required_number(nsbo, "PZ", env, "catalogue NSBO position")?,
     );
-    Ok(EvaluatedCatalogueCut::Box {
+    Ok(Some(EvaluatedCatalogueCut::Box {
         dimensions,
         transform: DMat4::from_translation(position - sbox_position),
-    })
+    }))
 }
 
 fn evaluate_nscy(
@@ -2044,21 +2055,19 @@ fn evaluate_nscy(
     nscy: &DbElement,
     env: &DbElementParamEnv,
     sbox_position: DVec3,
-) -> Result<EvaluatedNscy, ModelError> {
+) -> Result<Option<EvaluatedNscy>, ModelError> {
     let diameter = required_number(nscy, "PDIA", env, "catalogue NSCY")?.abs();
     let mut height = required_number(nscy, "PHEI", env, "catalogue NSCY")?;
     let mut distance = required_number(nscy, "PDIS", env, "catalogue NSCY")?;
+    // 零高 / 零径的刀不扣（见 `evaluate_nlcy`）；+0.01 的轴向过切只加在真有高度的刀上。
+    if height.abs() < HEIGHT_TOL_MM || diameter < HEIGHT_TOL_MM {
+        return Ok(None);
+    }
     let mut axis = catalogue_axis_or_fail(member, component, nscy, "PAXI", "catalogue NSCY axis")?;
     if height <= 0.0 {
         height = -height;
         distance = -distance;
         axis.direction = -axis.direction;
-    }
-    if height < HEIGHT_TOL_MM {
-        return Err(ModelError::Solid(SolidError::Degenerate {
-            what: "catalogue NSCY",
-            detail: format!("PHEI={height}"),
-        }));
     }
     let rotation = orimat(axis.direction).ok_or_else(|| {
         ModelError::Solid(SolidError::Degenerate {
@@ -2069,11 +2078,11 @@ fn evaluate_nscy(
     // Core QSCYLI places the primitive at PDIS + PHEI/2 along PAXI. CRCATI
     // then adds 0.01 mm only to an NSCY's height, leaving that centre fixed.
     let centre = axis.origin + axis.direction * (distance + height * 0.5) - sbox_position;
-    Ok(EvaluatedNscy {
+    Ok(Some(EvaluatedNscy {
         diameter,
         height: height + NSCY_AXIAL_OVERCUT_MM,
         transform: DMat4::from_translation(centre) * DMat4::from_mat3(rotation),
-    })
+    }))
 }
 
 fn uses_clfl_centreline_frame(member_noun: &str, primitive_noun: &str, clfl: bool) -> bool {
