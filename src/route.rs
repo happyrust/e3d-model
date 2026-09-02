@@ -74,18 +74,20 @@ const AXIS_DEGENERATE_TOL: f64 = 1.0e-9;
 /// 的最终确认归 G0-2 RVM 对拍。）
 pub const ZERO_LENGTH_TOL_MM: f64 = 1.0;
 
-/// 隐式管身的对齐容差（度）：槽位向量（离开点 → 到达点）与两端 P 点方向的夹角
-/// 超过它就不建管。
+/// 隐式管身的共轴容差：到达点偏离离开轴线的**横向距离**必须严格小于**轴向距离的千分之一**
+/// （`tan θ < 0.001`，θ ≈ 0.0573°），两端各查一次。超过就不建管。
 ///
-/// E3D 只在**两端共轴且朝前**的槽位上画隐式管身。2026-09-02 用 ams8000 九条支管 + ams7999 一条
-/// 的 TTY RVM 逐根对过（`evidence/20260902-ams8000-bran-audit/rvm-pending-items-2026-09-02.md`）：
-/// 画出来的 14 根两侧夹角全是 0.0°；没画的里最小的偏轴是 **3.0°**（`/M-OR-1RX-3051K` 两根 20.9 mm），
-/// 再往上 4.4° / 8.1°（到达侧）/ 13° / 31.6° / 47.4° 与 90° 的垂直偏置、≥170° 的反向一根都没有。
-/// 真值落在 (0°, 3°) 之间；取 1° 是让 P 点方向的数值噪声进得来、3° 进不来，有更细的样本再收。
+/// E3D 只在**两端共轴且朝前**的槽位上画隐式管身。2026-09-02 用 ams8000 二十一条支管 + ams7999 一条
+/// 的 TTY RVM 逐根对过（`evidence/20260902-ams8000-bran-audit/rvm-pending-items-2026-09-02.md` §4）：
+/// 画出来的最斜一根是 `/M-OR-1R323-A` 的 TUBE 2（0.0563° = 0.983 mrad），没画的最正一根是
+/// `/C-CO-1RX-3AH0A` 的尾管（2000 mm 上横偏 2.0 mm，恰好 1.000 mrad）与 `/M-OR-1R313-C` 的
+/// 0.0607°（1.06 mrad）；再往上 0.36° / 0.5° / 3° / 8.1° / 13° / 31.6° / 47.4° / 90° 一根不画。
+/// 阈值只能是 1 mrad，且**恰好等于不算过**——写成横向 < 千分之一轴向而不是 `acos` 出来的角度，
+/// 是为了让 2.0 / 2000 这种整数坐标算出来正好卡在界上、不被浮点误差放进来。
 ///
-/// 反向（夹角 > 90°）单列成 [`SlotAlignment::Reversed`]：那是 E3D 数据一致性检查会报
+/// 反向（轴向分量为负）单列成 [`SlotAlignment::Reversed`]：那是 E3D 数据一致性检查会报
 /// 「负管长」的形态（README §3.2 的 74 根），与偏轴分开记账才看得出各占多少。
-pub const TUBE_ALIGNMENT_TOL_DEG: f64 = 1.0;
+pub const TUBE_ALIGNMENT_TOL: f64 = 1.0e-3;
 
 /// 一个 P 点的三件套：位置、方向、通径。
 ///
@@ -529,18 +531,18 @@ pub fn tumat(p1: DVec3, d1: DVec3, p2: DVec3) -> Option<DMat4> {
 }
 
 /// 一条槽位相对两端 P 点方向的姿态（E3D 画不画隐式管身的第一道门，见
-/// [`TUBE_ALIGNMENT_TOL_DEG`]）。
+/// [`TUBE_ALIGNMENT_TOL`]）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SlotAlignment {
-    /// 共线且朝前：离开侧夹角 ≤ [`TUBE_ALIGNMENT_TOL_DEG`]，查了到达侧的话到达侧也是。
+    /// 共轴且朝前：离开侧横偏 < 千分之一轴向，查了到达侧的话到达侧也是。
     Aligned {
         leave_deg: f64,
         /// 到达侧夹角（`−to.dir` 与槽位向量），没查到达侧时为 `None`。
         arrive_deg: Option<f64>,
     },
-    /// 偏轴：某一侧夹角在容差之外但离开侧仍朝前（≤ 90°）。E3D 不画。
+    /// 偏轴：某一侧横偏在容差之外但离开侧仍朝前。E3D 不画。
     Misaligned { deviation_deg: f64 },
-    /// 反向：到达点在离开点身后（离开侧夹角 > 90°）。E3D 不画。
+    /// 反向：到达点在离开点身后（离开侧轴向分量 ≤ 0）。E3D 不画。
     Reversed { deviation_deg: f64 },
     /// 槽位向量或离开方向退化、判不了——照旧建，不拿判不了当不合格。
     Indeterminate,
@@ -549,65 +551,91 @@ pub enum SlotAlignment {
 /// 要不要连到达侧一起判。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArriveCheck {
-    /// 到达端是构件的目录 P 点：方向按 P 点约定朝外（逆着行进），拿 `−to.dir` 与槽位向量比。
+    /// 到达端的方向按 P 点约定朝外（逆着行进），拿 `−to.dir` 与槽位向量比。构件的目录 P 点
+    /// 如此；容器尾的 `TDIR` 也如此——E3D `Q TDIR` 与库里的值都指回支管内部（`/C-CO-1RX-3AH0A`
+    /// HDIR D / TDIR U，`/M-CO-1R312-G` 同），`/M-OR-1RX-3041E` 的尾管 TDIR 偏 6° 就没被画。
     Member,
-    /// 到达端是容器尾：`TDIR` 的朝向约定没在 RVM 上核过，且缺省时 [`container_point`]
-    /// 会填 `+Z`，拿它判会把好管误判成偏轴——只判离开侧。
+    /// 到达端的方向读不到（容器尾没有 `TDIR` 时 [`container_point`] 会填 `+Z`）：只判离开侧，
+    /// 不拿填出来的方向把好管误判成偏轴。
     Skip,
 }
 
-/// 槽位向量（`to.pos − from.pos`）与两端方向的夹角分档。
+/// 槽位向量（`to.pos − from.pos`）相对两端方向的共轴分档。
 ///
-/// 离开侧：`from.dir` 与槽位向量的夹角（`bran_audit` 的 `backtrack_deg`）——超过 90° 是反向。
-/// 到达侧（[`ArriveCheck::Member`]）：`−to.dir` 与槽位向量的夹角。两侧都要在容差内：
+/// 离开侧：把槽位向量分解到 `from.dir` 上，轴向分量 ≤ 0 是反向，横向分量不小于千分之一轴向是偏轴。
+/// 到达侧（[`ArriveCheck::Member`]）：对 `−to.dir` 做同一件事。两侧都要过：
 /// `/C-GR-1RX-3020B` 的 ATTA6 → FTUB1 离开侧 0.0° 却没被 E3D 画，就是因为 FTUB1 的 P1 方向
 /// 与槽位差 8.1°——E3D 要的是两端**共轴**，不是单端对准。
 pub fn slot_alignment(from: &RoutePoint, to: &RoutePoint, arrive: ArriveCheck) -> SlotAlignment {
     let span = to.pos - from.pos;
-    let span_length = span.length();
-    let Some(leave_deg) = deviation_deg(span, span_length, from.dir) else {
+    let Some(leave) = Coaxiality::of(span, from.dir) else {
         return SlotAlignment::Indeterminate;
     };
-    if leave_deg > 90.0 {
+    if leave.axial < 0.0 {
         return SlotAlignment::Reversed {
-            deviation_deg: leave_deg,
+            deviation_deg: leave.deviation_deg(),
         };
     }
-    if leave_deg > TUBE_ALIGNMENT_TOL_DEG {
+    if !leave.within_tolerance() {
         return SlotAlignment::Misaligned {
-            deviation_deg: leave_deg,
+            deviation_deg: leave.deviation_deg(),
         };
     }
-    let arrive_deg = match arrive {
+    let arrive_side = match arrive {
         ArriveCheck::Skip => None,
         // 到达方向退化就只按离开侧算——判不了不算不合格。
-        ArriveCheck::Member => deviation_deg(span, span_length, -to.dir),
+        ArriveCheck::Member => Coaxiality::of(span, -to.dir),
     };
-    if let Some(arrive_deg) = arrive_deg
-        && arrive_deg > TUBE_ALIGNMENT_TOL_DEG
+    if let Some(arrive_side) = arrive_side
+        && !(arrive_side.axial > 0.0 && arrive_side.within_tolerance())
     {
         return SlotAlignment::Misaligned {
-            deviation_deg: arrive_deg,
+            deviation_deg: arrive_side.deviation_deg(),
         };
     }
     SlotAlignment::Aligned {
-        leave_deg,
-        arrive_deg,
+        leave_deg: leave.deviation_deg(),
+        arrive_deg: arrive_side.map(|side| side.deviation_deg()),
     }
 }
 
-/// `span` 与 `dir` 的夹角（度）；任一退化给 `None`。
-fn deviation_deg(span: DVec3, span_length: f64, dir: DVec3) -> Option<f64> {
-    let dir_length = dir.length();
-    if !(span_length > AXIS_DEGENERATE_TOL)
-        || !(dir_length > AXIS_DEGENERATE_TOL)
-        || !span.is_finite()
-        || !dir.is_finite()
-    {
-        return None;
+/// 槽位向量在某个单位方向上的分解：沿轴多少、偏离轴线多少。
+#[derive(Debug, Clone, Copy)]
+struct Coaxiality {
+    axial: f64,
+    lateral: f64,
+}
+
+impl Coaxiality {
+    /// `span` 相对 `dir` 的分解；任一退化给 `None`。
+    fn of(span: DVec3, dir: DVec3) -> Option<Self> {
+        let dir_length = dir.length();
+        if !(span.length() > AXIS_DEGENERATE_TOL)
+            || !(dir_length > AXIS_DEGENERATE_TOL)
+            || !span.is_finite()
+            || !dir.is_finite()
+        {
+            return None;
+        }
+        let unit = dir / dir_length;
+        let axial = span.dot(unit);
+        let lateral = (span - unit * axial).length();
+        Some(Self { axial, lateral })
     }
-    let cosine = (span.dot(dir) / (span_length * dir_length)).clamp(-1.0, 1.0);
-    Some(cosine.acos().to_degrees())
+
+    /// 横向 < 千分之一轴向，**严格**小于（见 [`TUBE_ALIGNMENT_TOL`]）。
+    ///
+    /// 界上再让出十亿分之一：`/C-CO-1RX-3AH0A` 的尾管是整数坐标算出来的 2.0 / 2000.0，
+    /// 经 P 点变换后落在 1 mrad 的正负几个 ulp 上，E3D 没画它；不留这一点余量，
+    /// 浮点误差会把「恰好等于」随机判到两边。
+    fn within_tolerance(&self) -> bool {
+        self.lateral < TUBE_ALIGNMENT_TOL * self.axial * (1.0 - 1.0e-9)
+    }
+
+    /// 与轴的夹角（度，0..=180），只用来记账。
+    fn deviation_deg(&self) -> f64 {
+        self.lateral.atan2(self.axial).to_degrees()
+    }
 }
 
 /// `VDIST`：管身长度 = 两端点**直线距离**。
@@ -750,8 +778,10 @@ mod tests {
         );
     }
 
-    /// 对齐门：0° 建、3° 不建（观测边界）、90° 是偏轴、180° 是反向、退化判不了；
-    /// 到达侧 8° 偏轴同样不建（2944 的 ATTA6 → FTUB1），容器尾不查到达侧。
+    /// 共轴门：横偏 < 千分之一轴向才建。观测边界照抄：0.983 mrad 建（`/M-OR-1R323-A` TUBE 2）、
+    /// 恰好 1.000 mrad 不建（`/C-CO-1RX-3AH0A` 2000 mm 上偏 2.0 mm）、1.06 mrad 不建；
+    /// 3° 是偏轴、90° 是偏轴、180° 是反向、退化判不了；到达侧 8° 偏轴同样不建
+    /// （2944 的 ATTA6 → FTUB1），容器尾不查到达侧。
     #[test]
     fn slot_alignment_splits_aligned_misaligned_and_reversed_at_the_observed_boundary() {
         let from = point([0.0; 3], [1.0, 0.0, 0.0], Some(50.0));
@@ -764,15 +794,42 @@ mod tests {
                 Some(50.0),
             )
         };
+        // 轴向 axial、横向 lateral 直接给，边界用整数坐标钉住。
+        let offset =
+            |axial: f64, lateral: f64| point([axial, lateral, 0.0], [-1.0, 0.0, 0.0], Some(50.0));
         assert!(matches!(
             slot_alignment(&from, &aim(0.0, 500.0), ArriveCheck::Member),
             SlotAlignment::Aligned { leave_deg, arrive_deg: Some(arrive_deg) }
                 if leave_deg.abs() < 1e-9 && arrive_deg.abs() < 1e-6
         ));
-        assert!(matches!(
-            slot_alignment(&from, &aim(0.5, 500.0), ArriveCheck::Member),
-            SlotAlignment::Aligned { .. }
-        ));
+        assert!(
+            matches!(
+                slot_alignment(&from, &offset(3490.0, 3.43), ArriveCheck::Member),
+                SlotAlignment::Aligned { .. }
+            ),
+            "0.983 mrad 要建"
+        );
+        assert!(
+            matches!(
+                slot_alignment(&from, &offset(2000.0, 2.0), ArriveCheck::Member),
+                SlotAlignment::Misaligned { .. }
+            ),
+            "恰好 1.000 mrad 不建"
+        );
+        assert!(
+            matches!(
+                slot_alignment(&from, &offset(1750.0, 1.855), ArriveCheck::Member),
+                SlotAlignment::Misaligned { .. }
+            ),
+            "1.06 mrad 不建"
+        );
+        assert!(
+            matches!(
+                slot_alignment(&from, &aim(0.5, 40.7), ArriveCheck::Member),
+                SlotAlignment::Misaligned { .. }
+            ),
+            "0.5° 不建（/M-CO-1RX-3051E 的头管）"
+        );
         assert!(matches!(
             slot_alignment(&from, &aim(3.0, 20.9), ArriveCheck::Member),
             SlotAlignment::Misaligned { deviation_deg } if (deviation_deg - 3.0).abs() < 1e-9

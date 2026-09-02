@@ -38,8 +38,9 @@ use e3d_model::category::{Category, classify, derives_implied_tubes};
 use e3d_model::db_discovery::DirectoryDbResolver;
 use e3d_model::pipeline::{GenerationOutcome, generate_subtree_with_cache};
 use e3d_model::route::{
-    RouteEnd, TubeOutcome, bore_mismatch, build_tube, resolve_end, slot_ordinals,
-    tube_outer_diameter, walk_route,
+    ArriveCheck, RouteEnd, SlotAlignment, TubeOutcome, ZERO_LENGTH_TOL_MM, bore_mismatch,
+    build_tube, resolve_end, slot_alignment, slot_ordinals, tube_length, tube_outer_diameter,
+    walk_route,
 };
 
 struct Args {
@@ -133,14 +134,16 @@ struct SlotRow {
     ordinal: u32,
     from: String,
     to: String,
-    /// `built` / `zero_length` / `missing_ppoint` / `no_direction` / `no_radius` /
-    /// `failed` / `db_not_open` / `target_not_found`
+    /// `built` / `zero_length` / `misaligned` / `reversed` / `missing_ppoint` / `no_direction` /
+    /// `no_radius` / `failed` / `db_not_open` / `target_not_found`
     outcome: String,
     length_mm: Option<f64>,
     radius_mm: Option<f64>,
     bore_mismatch: bool,
     /// 管身方向与离开侧 P 点方向的夹角（度，折进 0..=180）；> 90 说明管往回长（重叠假管的形状）。
     backtrack_deg: Option<f64>,
+    /// 管身方向与到达侧 P 点方向（取反）的夹角（度）；容器尾不查，为 None。
+    arrive_deg: Option<f64>,
     /// 两端解出的 P 点（世界系 pos / dir / bore），解不出为 None。
     from_point: Option<([f64; 3], [f64; 3], Option<f64>)>,
     to_point: Option<([f64; 3], [f64; 3], Option<f64>)>,
@@ -335,6 +338,7 @@ fn audit_bran(
             radius_mm: None,
             bore_mismatch: false,
             backtrack_deg: None,
+            arrive_deg: None,
             from_point: None,
             to_point: None,
         };
@@ -359,6 +363,30 @@ fn audit_bran(
                     let cos = axis.normalize().dot(from.dir.normalize()).clamp(-1.0, 1.0);
                     row.backtrack_deg = Some(cos.acos().to_degrees());
                 }
+                let arrive = match &slot.to {
+                    RouteEnd::MemberArrive { .. } | RouteEnd::MemberLeave { .. } => {
+                        ArriveCheck::Member
+                    }
+                    RouteEnd::ContainerTail(container) => {
+                        if container.get_direction("TDIR")?.is_some() {
+                            ArriveCheck::Member
+                        } else {
+                            ArriveCheck::Skip
+                        }
+                    }
+                    RouteEnd::ContainerHead(_) => ArriveCheck::Skip,
+                };
+                if axis.length() > 0.0 && to.dir.length() > 0.0 && arrive == ArriveCheck::Member {
+                    let cos = axis.normalize().dot(-to.dir.normalize()).clamp(-1.0, 1.0);
+                    row.arrive_deg = Some(cos.acos().to_degrees());
+                }
+                // 生产路径的对齐门（E3D 只画两端共轴且朝前的槽位）：这里同一把尺子先量一遍，
+                // 被门挡下的槽位是数据形态，不是缺口。
+                let gate = if tube_length(from.pos, to.pos) >= ZERO_LENGTH_TOL_MM {
+                    Some(slot_alignment(from, to, arrive))
+                } else {
+                    None
+                };
                 if let Some((length, radius)) = built_tubes.get(&key) {
                     row.outcome = "built".into();
                     row.length_mm = Some(*length);
@@ -373,6 +401,24 @@ fn audit_bran(
                     // 不派生管身的容器：槽位只记两端间距，供看风管间隙用，不算缺口。
                     row.outcome = "not_derived".into();
                     row.length_mm = Some((to.pos - from.pos).length());
+                } else if let Some(SlotAlignment::Misaligned { deviation_deg }) = gate {
+                    row.outcome = "misaligned".into();
+                    row.length_mm = Some(tube_length(from.pos, to.pos));
+                    problems.push(format!(
+                        "[data] 槽位 {} → {} 偏轴 {deviation_deg:.2}°（长 {:.1}mm）：E3D 不画",
+                        row.from,
+                        row.to,
+                        row.length_mm.unwrap_or(f64::NAN)
+                    ));
+                } else if let Some(SlotAlignment::Reversed { deviation_deg }) = gate {
+                    row.outcome = "reversed".into();
+                    row.length_mm = Some(tube_length(from.pos, to.pos));
+                    problems.push(format!(
+                        "[data] 槽位 {} → {} 反向（{deviation_deg:.0}°，长 {:.1}mm）：负管长形态，E3D 不画",
+                        row.from,
+                        row.to,
+                        row.length_mm.unwrap_or(f64::NAN)
+                    ));
                 } else {
                     match build_tube(from, to, tube_outer_diameter(None, None, to.bore)) {
                         TubeOutcome::Built(tube) => {
@@ -422,19 +468,20 @@ fn audit_bran(
                         }
                     }
                 }
-                // 与离开方向反向（> 100°）的管身：两端 P 点顺序上倒着长，是设计数据里的
-                // 「负管长」形态（E3D 数据一致性检查会报，GTTUBG 仍按无符号 VDIST 画）。
-                // 记成 data，等 RVM 坐实 E3D 到底画不画。80–100° 的垂直偏置（头尾节点
-                // 在管路侧上方）是正常的连接段，不记。
-                if let Some(deg) = row.backtrack_deg
-                    && row.outcome == "built"
-                    && deg > 100.0
+                // 生产路径已经不建偏轴 / 反向的管身；这里若还看到 built 且偏轴，说明生产与
+                // 现场的门不是同一把尺子——那是 bad。
+                if row.outcome == "built"
+                    && matches!(
+                        gate,
+                        Some(SlotAlignment::Misaligned { .. } | SlotAlignment::Reversed { .. })
+                    )
                 {
                     problems.push(format!(
-                        "[data] 槽位 {} → {} 管身与离开方向反向（{deg:.0}°，长 {:.1}mm）：负管长形态",
+                        "[bad] 槽位 {} → {} 生产建了管身，但按对齐门它该被挡下（离开侧 {:.2}°，到达侧 {:?}）",
                         row.from,
                         row.to,
-                        row.length_mm.unwrap_or(f64::NAN)
+                        row.backtrack_deg.unwrap_or(f64::NAN),
+                        row.arrive_deg
                     ));
                 }
             }

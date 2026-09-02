@@ -122,10 +122,10 @@ pub struct ImpliedTubeDegenerate {
     /// 与 `missing_ppoint` 分开：那条是「还没接上」，这条是「接上了但数据坏」，
     /// 混在一起会让 P1 的进度看起来比实际好。
     pub unbuildable: usize,
-    /// 偏轴：槽位向量与离开侧方向的夹角超过 [`crate::route::TUBE_ALIGNMENT_TOL_DEG`]
-    /// 但仍朝前（≤ 90°）。E3D 不画这种管（[`SlotAlignment::Misaligned`]）。
+    /// 偏轴：到达点偏离离开轴线（或离开点偏离到达轴线）超过 [`crate::route::TUBE_ALIGNMENT_TOL`]
+    /// 但仍朝前。E3D 不画这种管（[`SlotAlignment::Misaligned`]）。
     pub misaligned: usize,
-    /// 反向：到达点在离开点身后（夹角 > 90°）。E3D 不画，数据一致性检查会报「负管长」
+    /// 反向：到达点在离开点身后。E3D 不画，数据一致性检查会报「负管长」
     /// （[`SlotAlignment::Reversed`]）。
     pub reversed: usize,
 }
@@ -615,12 +615,19 @@ fn build_route_tubes(
             continue;
         };
         // E3D 的第一道门：槽位要与两端方向共轴且朝前，否则不画（见
-        // `TUBE_ALIGNMENT_TOL_DEG`）。零长槽位先让 `build_tube` 按 zero_length 记账——
-        // 两点重合时夹角没有意义。到达端是容器尾时只判离开侧（TDIR 约定未核）。
+        // `TUBE_ALIGNMENT_TOL`）。零长槽位先让 `build_tube` 按 zero_length 记账——
+        // 两点重合时夹角没有意义。容器尾只有真读到 TDIR 才查到达侧。
         if tube_length(from.pos, to.pos) >= ZERO_LENGTH_TOL_MM {
             let arrive = match &slot.to {
                 RouteEnd::MemberArrive { .. } | RouteEnd::MemberLeave { .. } => ArriveCheck::Member,
-                RouteEnd::ContainerHead(_) | RouteEnd::ContainerTail(_) => ArriveCheck::Skip,
+                RouteEnd::ContainerTail(container) => {
+                    if container.get_direction("TDIR")?.is_some() {
+                        ArriveCheck::Member
+                    } else {
+                        ArriveCheck::Skip
+                    }
+                }
+                RouteEnd::ContainerHead(_) => ArriveCheck::Skip,
             };
             match slot_alignment(&from, &to, arrive) {
                 SlotAlignment::Misaligned { .. } => {
