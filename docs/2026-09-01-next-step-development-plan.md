@@ -178,12 +178,16 @@ CRCATI 的圆柱/锥族负臂（SCON/NSCO、SCYL/NSCY、LSNO/NLSN、LCYL/NLCY）
     exact/chord/off 1910/1361/1600 → 1940/1395/1536，0 件变差。剩那 1 只 COUP `/ABCF331DF`
     的两片 LEVE (6,8) LSNO E3D 不画、我们画，DRWANT 闭区间 + level 6 说该画，未定案（语料里
     (7,10)/(8,10) 全是 OBST=1，分不清"level 6"与"level 9/10 + obst off"，要 E3D 侧换 level 导一次）。
-  - **COUP `/ABCF331DF` 定案**（2026-09-02 傍晚，E3D TTY 三组实验，`evidence/20260902-repre-level-tty-experiments/`）：
-    同一 BRAN 以 `representation level 6/8/10`、`repre obst on` 各导一次，两片 LEVE (6,8) LSNO 四份都不出（obst on 只多出
-    VALVE 的 OBST=1 (0,10) 盒）；两支带 LEVE (8,10)/(9,10) 图元的管道 BRAN 以 level 6/8/10 导出六份逐字节相同——**TTY 导出里
-    管道件的有效表现级是 STYSET 复位值 0，宏里的 `representation level N` 进不了 DRWANT**；HVAC 的 `representation level
-    hvac 0/6/10` 则按闭区间生效（10 级连 (7,10) OBST=1 也随 TUFL 项出来，管道全局置 0 不碰它）。所以 3074 个配对成员里最后那
-    1 只不是几何问题：`catalogue::repre_level()` 单一全局 6 对 TTY 基线应拆成管道 0 / HVAC 6（按学科），代码未改，待拍。
+  - **COUP `/ABCF331DF` 定案并修掉**（2026-09-02 傍晚，E3D TTY 四组实验 + Core3D/core.dll 反编译，
+    `evidence/20260902-repre-level-tty-experiments/`，代码 `41a550b`）：`REPRESENTATION LEVEL` 是**六个**学科全局不是一个数
+    （`Q REPRE`：`level` / `PIPE` / `NOZZ` / `STRU` / `CABLE` / `HVAC`；`build/DEDRRP` 写，`build/MODCMP` 按被建元素挑一个给
+    `ELMODL`，默认回调 `csg_gml4/DR3DWA` 闭区间判 LEVE；`IHVCOM` = noun `PRMF` 位 ∧ 属主链有 `HVAC`）。基线宏只设了
+    `LEVEL 6` 与 `LEVEL HVAC 6`，管道构件在 `PIPE 0`，(6,8) 的两片 LSNO 因此不画；同一支以 `LEVEL PIPE 6/8` 重导，E3D 画出
+    与我们同参数的两只 Snout（r 8.08 h 17、r 10.88→8.08 h 2.8），两支带 (8,10)/(9,10) 图元的管道 BRAN 在 `PIPE 8/10` 下也如期
+    出现。`catalogue::repre_level()` 拆成 `category::RepreDiscipline` 六档（`repre_level_for` / `repre_level_of`，缺省
+    通用 6 / HVAC 6 / PIPE·NOZZ·STRU·CABLE 0，`E3D_REPRE_LEVEL{,_PIPE,_HVAC,_NOZZ,_STRU,_CABLE}` 覆盖），目录成员按成员学科、
+    设计负体按宿主学科取级。ams7997 前后：`display-filtered by leve` 5564 → 5570（多滤的 6 件 = 那两片 LSNO × 3 只 COUP），
+    3074 个配对成员逐 kind 对不上 1 → **0**，AABB exact 1940 → 1941、0 件变差；`cargo test --lib` 189 绿。
   - **轴失败的报错文案拆开**（2026-09-02 下午，随 `2be5ed3` 落地；验证在 `evidence/20260902-g01c-tufl-residual/` §3.1）：
     原来 `Pn` 解不出一律报「缺属性 PAXI」，现在 `catalogue_point::CatalogueAxisFailure` 分「P5 不在 PTSET（有 P1 P2 …）」
     （E3D 也不画）、「P7（PTCA）方向解不出」、「位置求不出」等六句写进 local failure 的 detail，`缺属性` 只留给属性真不在的
