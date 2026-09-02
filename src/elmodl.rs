@@ -20,7 +20,7 @@ use e3d_io::db_element::{DbElement, DbElementError};
 use e3d_io::refno::RefNo;
 
 use crate::catalogue::{CatalogueMeshCache, model_catalogue_member_with_cache};
-use crate::category::{Category, Prim, classify};
+use crate::category::{Category, CompositeFamily, Prim, classify};
 use crate::discretise::{flatten_ring, has_core3d_skipped_link};
 use crate::extrusion_reuse::{ExtrusionVariant, cached_extrusion};
 use crate::polyhedron::{PolyhedronError, polyhedron_faces, polyhedron_solid};
@@ -271,6 +271,27 @@ pub fn model_element_with_cache(
         });
     }
     let noun = el.element_type()?;
+    // 电缆桥架托盘：与管线 `Composite(CableTray) if noun == "CTRAY"` 臂同一份目录求值。
+    // 判据在 `category::is_model_unit`（CTRAY 是单元、桥架件不是），这里只是它的执行臂
+    // ——少了它，增量上卷到 CTRAY 之后就掉进下面的设计侧正体路，对着一个没有
+    // XLEN/DIAM 的复合件读尺寸，报出来的是「属性缺失」而不是「托盘变了」。
+    if matches!(category, Category::Composite(CompositeFamily::CableTray)) {
+        if !noun.eq_ignore_ascii_case("CTRAY") {
+            return Ok(Modeled::Skipped {
+                reason: format!("{noun} 是桥架件，只算放置，几何在它下面的 CTRAY 上"),
+            });
+        }
+        let build = model_catalogue_member_with_cache(el, cache)?;
+        return Ok(match build.generated {
+            Some(generated) => Modeled::Solid(Box::new(generated)),
+            None => Modeled::Skipped {
+                reason: format!(
+                    "目录链（SPRE→…→SCOM→GMRE）没有产出可见几何（局部失败 {} 条）",
+                    build.diagnostics.len()
+                ),
+            },
+        });
+    }
     let mut notes = Vec::new();
     // Decide the instancing boundary before constructing the positive body.
     // Any boolean operand stays at real dimensions: unit scaling can differ by

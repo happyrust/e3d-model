@@ -101,10 +101,10 @@ use e3d_io::refno::RefNo;
 use e3d_io::session::DbView;
 
 use crate::catalogue::CatalogueMeshCache;
-use crate::category::{classify, is_derived_unit, is_model_unit};
+use crate::category::{classify, graphics_ignored_below, is_derived_unit, is_model_unit};
 use crate::element_diff::{ElementDiff, diff_element};
 use crate::elmodl::{GeneratedElement, GeometryId, Modeled, model_element_with_cache};
-use crate::ledger::{ChangeLedger, ChangeTally};
+use crate::ledger::{ChangeLedger, ChangeTally, Disposition};
 use crate::pipeline::{Incident, route_tubes_of};
 use crate::route::route_slot_keys;
 
@@ -196,6 +196,20 @@ pub struct IncrementReport {
     pub unchanged: usize,
     /// 折算进了某个单元动作（重建 / 移除，含被去重掉的）的候选数。
     pub rolled_up: usize,
+    /// `rolled_up` 里**只**靠变换级联折进去的候选数（自身与上方都没有单元 / 容器，
+    /// 是子树里的后代被它带动）：典型是挪了位的 ZONE / EQUI。横切计数，不是第四本账。
+    pub cascade_only: usize,
+    /// 全部级联命中的单元 / 派生容器数之和（含已在计划集里的），与 `cascades.len()`
+    /// 一起读：几处漂移、总共带动了多少件。
+    pub cascade_hits: usize,
+    /// 账本（L3）上出现过的不同 refno 数。候选除 `unchanged` 之外每个都得在账本上有一条
+    /// （读不出的记 [`crate::ledger::ChangeKind::Unresolved`]），所以它必须等于
+    /// `rolled_up + no_model + unresolved`——这是 L3 对 L4 的守恒，`accounts_for` 判。
+    pub ledger_refnos: usize,
+    /// 候选数超过 [`PlanLimits::max_candidates`]，规划器一个候选都没分类就退化成
+    /// 「整库重建」的原因。非空时候选账不成立（什么都没分类），计划集全空，
+    /// 调用方**必须**走全量生成而不是执行这份空计划。
+    pub degraded_to_full: Option<String>,
     /// 没落到任何模型单元的候选：noun → 数量（容器改名、NonGraphic、目录件……）。
     pub no_model: BTreeMap<String, usize>,
     /// 计划重算派生几何的路由容器：容器 noun → 个数（按容器去重，不按候选）。
@@ -243,12 +257,34 @@ pub struct IncrementReport {
 }
 
 impl IncrementReport {
-    /// 账要闭合：每个候选恰好落一本账；每个待重建单元恰好有一个执行结论。
+    /// 账要闭合：每个候选恰好落一本账；账本上每个 refno 恰好对应一本候选账；
+    /// 每个待重建单元恰好有一个执行结论。
+    ///
+    /// 退化成整库重建（`degraded_to_full`）的报告没有分类过任何候选：候选账不成立、
+    /// 三本账与账本都必须是空的——空计划被当成「没变」执行才是这里要拦的事。
     pub fn accounts_for(&self) -> Result<(), String> {
         let classified = self.rolled_up
             + self.unchanged
             + self.no_model.values().sum::<usize>()
             + self.unresolved.len();
+        if let Some(reason) = &self.degraded_to_full {
+            if classified != 0
+                || self.ledger_refnos != 0
+                || self.units_to_regenerate != 0
+                || self.units_to_remove != 0
+                || self.derived_to_regenerate != 0
+            {
+                return Err(format!(
+                    "退化成整库重建（{reason}）的计划不该分类过任何候选：\
+                     classified {classified} ledger {} units {}/{}/{}",
+                    self.ledger_refnos,
+                    self.units_to_regenerate,
+                    self.units_to_remove,
+                    self.derived_to_regenerate,
+                ));
+            }
+            return Ok(());
+        }
         if classified != self.candidates {
             return Err(format!(
                 "候选账不平：rolled_up {} + unchanged {} + no_model {} + unresolved {} \
@@ -258,6 +294,25 @@ impl IncrementReport {
                 self.no_model.values().sum::<usize>(),
                 self.unresolved.len(),
                 self.candidates,
+            ));
+        }
+        // L3 对 L4：除 unchanged 之外每个候选都在账本上、且只有一个去向。
+        let ledgered =
+            self.rolled_up + self.no_model.values().sum::<usize>() + self.unresolved.len();
+        if self.ledger_refnos != ledgered {
+            return Err(format!(
+                "账本不平：账本上 {} 个 refno，候选账 rolled_up {} + no_model {} + unresolved {} \
+                 = {ledgered}",
+                self.ledger_refnos,
+                self.rolled_up,
+                self.no_model.values().sum::<usize>(),
+                self.unresolved.len(),
+            ));
+        }
+        if self.cascade_only > self.rolled_up {
+            return Err(format!(
+                "cascade_only {} 是 rolled_up {} 的子集，不能比它大",
+                self.cascade_only, self.rolled_up
             ));
         }
         let executed = self.regenerated + self.regen_skipped.len() + self.regen_failed.len();
@@ -324,6 +379,7 @@ impl IncrementReport {
             members_changed,
             attributes_modified,
             opaque_record_changes,
+            unresolved,
             unchanged,
             created_subtree_roots,
             deleted_subtree_roots,
@@ -332,9 +388,24 @@ impl IncrementReport {
             "changes: created={created}（子树顶 {created_subtree_roots}） \
              deleted={deleted}（子树顶 {deleted_subtree_roots}） type_changed={type_changed} \
              reparented={reparented} members={members_changed} attrs={attributes_modified} \
-             opaque={opaque_record_changes} unchanged={unchanged}"
+             opaque={opaque_record_changes} unchanged={unchanged} unresolved={unresolved} \
+             | ledger_refnos={} cascade_only={} cascade_hits={}",
+            self.ledger_refnos, self.cascade_only, self.cascade_hits
         )
     }
+}
+
+/// [`plan_update_bounded`] 的护栏。`Default` = 不设限，即 [`plan_update`] 的行为。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PlanLimits {
+    /// 候选数**超过**它（严格大于）就不逐候选分类，直接退化成整库重建：
+    /// 一窗动了大半个库时，逐候选走 owner 链比整库重算还贵（ams1112 721→722 的
+    /// 24674 个候选 6.4 s，而全量生成本身也就这个量级），而且这种窗口多半是
+    /// 合并 / 回退 / 重建，差分结论本来就不值得信。`None` = 不设限。
+    ///
+    /// 这里只认绝对数：`WindowDiff` 不知道 target 端一共有多少键。想按比例定
+    /// （gen-model 用的是索引键数的 30%），调用方自己乘好再传进来。
+    pub max_candidates: Option<usize>,
 }
 
 /// 分类完成、还没执行的更新计划。键用 `(word0, word1)`（`RefNo` 不带 `Ord`，
@@ -360,7 +431,58 @@ pub struct UpdatePlan {
     /// L3 语义账。计数已经折进 [`IncrementReport::changes`]，这里保留逐条明细，
     /// 给探针与真库门查「这一窗到底改了什么」用。
     pub ledger: ChangeLedger,
+    /// 非空 = 这份计划**不是**增量：候选数超过 [`PlanLimits::max_candidates`]，规划器
+    /// 一个候选都没分类，四个集合全空。调用方要走整库重建；把它交给 [`execute_plan`]
+    /// 只会得到一份零动作的产出（报告带 `degraded_to_full`），不是「没变」。
+    pub full_rebuild: Option<String>,
     pub report: IncrementReport,
+}
+
+impl UpdatePlan {
+    /// 计划期能对的账：候选账（报告）+ 账本守恒（L3 每个 refno 恰好一个去向，且去向
+    /// 计数与报告的三本候选账逐项相等）。执行账要 [`execute_plan`] 之后才成立，
+    /// 那一半在 [`IncrementReport::accounts_for`] 里、由产出方的报告去对。
+    pub fn accounts_for(&self) -> Result<(), String> {
+        let classified = self.report.rolled_up
+            + self.report.unchanged
+            + self.report.no_model.values().sum::<usize>()
+            + self.report.unresolved.len();
+        if self.full_rebuild.is_none() && classified != self.report.candidates {
+            return Err(format!(
+                "候选账不平：rolled_up {} + unchanged {} + no_model {} + unresolved {} \
+                 = {classified}，候选 {}",
+                self.report.rolled_up,
+                self.report.unchanged,
+                self.report.no_model.values().sum::<usize>(),
+                self.report.unresolved.len(),
+                self.report.candidates,
+            ));
+        }
+        let tally = self.ledger.accounts_for()?;
+        let no_model = self.report.no_model.values().sum::<usize>();
+        if tally.rolled_up != self.report.rolled_up
+            || tally.no_model != no_model
+            || tally.unresolved != self.report.unresolved.len()
+        {
+            return Err(format!(
+                "账本去向与候选账不一致：账本 rolled_up {} / no_model {} / unresolved {}，\
+                 报告 {} / {no_model} / {}",
+                tally.rolled_up,
+                tally.no_model,
+                tally.unresolved,
+                self.report.rolled_up,
+                self.report.unresolved.len(),
+            ));
+        }
+        if self.report.ledger_refnos != self.ledger.distinct_refnos() {
+            return Err(format!(
+                "报告记的账本 refno 数 {} 与账本实际 {} 不一致",
+                self.report.ledger_refnos,
+                self.ledger.distinct_refnos()
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// 一次增量更新的完整产出：模型集上的动作 + 总账。
@@ -444,7 +566,14 @@ struct Rollup {
 /// SUPC 族名下挂型钢件同理）一挪位，早退让上层的 BRAN/SUPC 永远进不了
 /// `regenerate_derived`，它两侧管身的世界坐标就静默过期了。级联也救不了——
 /// [`collect_unit_subtree`] 只收候选**子树内**，不收它上方的容器。
-/// 所以命中单元后继续上爬，直到容器也有了、或到根。
+///
+/// # `graphicsBehaviour == 1` 的祖先让其下的一切都不算独立件
+///
+/// Core3D `DES_DrawList::isGraphicsIgnoredBetween`：从元素上溯，路上有一个中间祖先
+/// 带 gb==1（[`graphics_ignored_below`]），这个元素的图形就被忽略——它是那个祖先
+/// 属主几何的**数据**。所以上爬时每碰到一个 gb==1 节点，就把它**下方**找到的单元与
+/// 容器整个作废（含候选自身），从它往上重找。这决定了这条链必须**走到根**：在中途
+/// 收工，就不知道更上面还有没有一个 gb==1 把刚找到的单元打回数据。
 fn nearest_unit(set: &Arc<DbSet>, refno: RefNo) -> Result<Rollup, DbElementError> {
     let mut current = set.element(refno);
     let start_noun = current.element_type()?;
@@ -454,14 +583,16 @@ fn nearest_unit(set: &Arc<DbSet>, refno: RefNo) -> Result<Rollup, DbElementError
     let mut unit: Option<RefNo> = None;
     let mut route_container: Option<(RefNo, String)> = None;
     loop {
+        // 只看**祖先**：候选自己带 gb==1 说的是它的孩子，不是它自己。
+        if depth > 0 && graphics_ignored_below(&noun) {
+            unit = None;
+            route_container = None;
+        }
         if unit.is_none() && is_model_unit(&noun) {
             unit = Some(current.refno());
         }
         if route_container.is_none() && is_derived_unit(&noun) {
             route_container = Some((current.refno(), noun.clone()));
-        }
-        if unit.is_some() && route_container.is_some() {
-            break;
         }
         match current.owner()? {
             // owner 指向自己是 dabacon 的另一种根形态，不是环——真库门的
@@ -514,44 +645,153 @@ fn nearest_unit(set: &Arc<DbSet>, refno: RefNo) -> Result<Rollup, DbElementError
 /// 消费关系不影响收集：被消费的子树（剖面环、负体、CMPF）里本就没有单元，
 /// 走一遍只是白读几页。成员表出现回环用 visited 兜住并记 note——那是数据坏，
 /// 不该让级联把进程挂死。
+///
+/// # `visited` 是整份计划共用的（[`CascadeVisits`]）
+///
+/// 它一度每次调用新建：一窗里 ZONE 与它名下的 EQUI 都挪了位，EQUI 的子树就被读两遍；
+/// 候选按 refno 序来，谁先谁后随机，大窗口里重叠子树重复读 N 遍是常态。现在一棵子树
+/// 只走一次——后来的级联碰到**别的级联**已走过的节点就地停下，那片子树的单元早已在
+/// 计划集里，记进 [`CascadeFanout::overlapped`] 而不是白读。同一次遍历里二次到达才是
+/// 成员表回环，两者靠每次遍历的世代号分开。
+///
+/// # gb==1 节点不往下走
+///
+/// 它的成员是它属主几何的数据（[`graphics_ignored_below`]，与 `nearest_unit` 同口径），
+/// 不是独立单元；节点自己按 [`is_model_unit`] / [`is_derived_unit`] 照常判（今天恒否）。
+#[derive(Debug, Clone, Copy)]
+struct CascadeFanout {
+    /// 这次遍历新到达并命中的单元 / 派生容器数（含已在计划集里的）。
+    hits: usize,
+    /// 撞上别的级联已走过的节点数（含根自己）。非零 = 这个候选的子树（部分）
+    /// 早已被本窗更早的级联覆盖，它照样算折进了计划。
+    overlapped: usize,
+}
+
+/// 一份计划内全部级联遍历的到达记录：节点 → 第几次级联到的它。
+#[derive(Default)]
+struct CascadeVisits {
+    seen: BTreeMap<(u32, u32), usize>,
+    generation: usize,
+}
+
 fn collect_unit_subtree(
     set: &Arc<DbSet>,
     root: RefNo,
     out: &mut BTreeSet<(u32, u32)>,
     derived: &mut BTreeSet<(u32, u32)>,
     notes: &mut Vec<Incident>,
-) -> Result<usize, DbElementError> {
-    let mut hits = 0usize;
-    let mut visited: BTreeSet<(u32, u32)> = BTreeSet::new();
+    visits: &mut CascadeVisits,
+) -> Result<CascadeFanout, DbElementError> {
+    visits.generation += 1;
+    let generation = visits.generation;
+    let mut fanout = CascadeFanout {
+        hits: 0,
+        overlapped: 0,
+    };
+    // 根自己已被更早的级联走过：整棵子树都在计划里了，一页都不必再读。
+    if visits.seen.insert(key(root), generation).is_some() {
+        fanout.overlapped += 1;
+        return Ok(fanout);
+    }
     let mut stack = vec![set.element(root)];
-    visited.insert(key(root));
     while let Some(el) = stack.pop() {
         for member in el.members()? {
-            if !visited.insert(key(member.refno())) {
-                notes.push(incident(
-                    member.refno(),
-                    member.element_type().unwrap_or_else(|_| "?".into()),
-                    format!("成员表回环（{root} 子树级联遍历中二次到达），已跳过"),
-                ));
-                continue;
+            match visits.seen.insert(key(member.refno()), generation) {
+                Some(earlier) if earlier == generation => {
+                    notes.push(incident(
+                        member.refno(),
+                        member.element_type().unwrap_or_else(|_| "?".into()),
+                        format!("成员表回环（{root} 子树级联遍历中二次到达），已跳过"),
+                    ));
+                    continue;
+                }
+                Some(_) => {
+                    fanout.overlapped += 1;
+                    continue;
+                }
+                None => {}
             }
             let noun = member.element_type()?;
             if is_model_unit(&noun) {
                 out.insert(key(member.refno()));
-                hits += 1;
+                fanout.hits += 1;
             }
             if is_derived_unit(&noun) {
                 derived.insert(key(member.refno()));
-                hits += 1;
+                fanout.hits += 1;
+            }
+            if graphics_ignored_below(&noun) {
+                continue;
             }
             stack.push(member);
         }
     }
-    Ok(hits)
+    Ok(fanout)
 }
 
-/// 把索引候选折算成模型单元动作。只读两端 `DbSet`，不建任何几何。
+/// 电缆桥架分支容器的 noun：桥架件放置的全部跨元素输入都在它名下。
+const CABLE_TRAY_BRANCH_NOUN: &str = "CWBRAN";
+
+/// 候选（含自身）上溯碰到的最近 `CWBRAN`。不在任何桥架分支里 → `None`；
+/// 起点在这一端不存在也是 `None`（Inserted 在 base、Deleted 在 target 是常态）。
+///
+/// # 为什么桥架要单独一条腿
+///
+/// 桥架件（CTSTRA/CTBEND/…）的模板里没有 POS/ORI，E3D 把放置注册成伪属性现算
+/// （[`crate::cable_tray::placement`]）：输入是自己的 `POSREF/PKDI/ZDIS/ZOFF/BANG/GANGLE`、
+/// `POSREF` 链上**别的桥架件**的 `PKDI/ZDIS`、以及 `CWBRAN` 名下 `RPATH → POINTR` 那一片
+/// **兄弟**子树（`PPOS/PDIR/VERTDI/CURTYP/UBULG`）加 `CWBRAN` 自己的 `WTHICK/CLOSEF/VSHAPE`。
+/// 这些边一条都不在 owner 链上：改一个 `POINTR`，`nearest_unit` 上卷到 RPATH/CWBRAN 都不是
+/// 单元、`placement_input_changed` 只认 POS/ORI，于是落 `no_model`，而它旁边每一只
+/// `CTRAY` 的世界矩阵都已经变了（`transform.rs` 记了两个月的「已知欠账」）。
+///
+/// 判据取最保守也最便宜的一档：**候选落在某个 `CWBRAN` 子树里（且自己不是 `CTRAY`），
+/// 就把整个 `CWBRAN` 子树级联重建**。一条 `CWBRAN` 通常几十个成员，逐条依赖建图不值；
+/// Core3D 那边伪属性根本没有变更检测，重画就是整条重算，我们只是把「整条」显式写出来。
+/// `CTRAY` 自身的改动（SPRE 换目录件）只影响自己，上卷到自己就够，不触发整条。
+fn cable_tray_branch_of(set: &Arc<DbSet>, refno: RefNo) -> Result<Option<RefNo>, DbElementError> {
+    let mut current = set.element(refno);
+    match current.exists() {
+        Ok(true) => {}
+        Ok(false) | Err(DbElementError::NotFound { .. }) => return Ok(None),
+        Err(error) => return Err(error),
+    }
+    let mut depth = 0usize;
+    loop {
+        if current.element_type()? == CABLE_TRAY_BRANCH_NOUN {
+            return Ok(Some(current.refno()));
+        }
+        match current.owner()? {
+            Some(owner) if owner.refno() == current.refno() => return Ok(None),
+            Some(owner) => {
+                depth += 1;
+                if depth > MAX_ANCESTOR_DEPTH {
+                    return Err(DbElementError::OwnerCycle {
+                        start: refno,
+                        at: owner.refno(),
+                    });
+                }
+                current = owner;
+            }
+            None => return Ok(None),
+        }
+    }
+}
+
+/// 把索引候选折算成模型单元动作。只读两端 `DbSet`，不建任何几何。不设候选上限
+/// （[`PlanLimits::default`]）——真库门与探针要的就是「无论多大都逐候选给出结论」。
 pub fn plan_update(base: &Arc<DbSet>, target: &Arc<DbSet>, window: &WindowDiff) -> UpdatePlan {
+    plan_update_bounded(base, target, window, PlanLimits::default())
+}
+
+/// 带护栏的 [`plan_update`]：候选数超过 `limits.max_candidates` 就不逐候选分类，
+/// 返回一份 [`UpdatePlan::full_rebuild`] 非空的空计划，报告记 `degraded_to_full`。
+pub fn plan_update_bounded(
+    base: &Arc<DbSet>,
+    target: &Arc<DbSet>,
+    window: &WindowDiff,
+    limits: PlanLimits,
+) -> UpdatePlan {
     let mut report = IncrementReport {
         base_sesno: window.base_sesno,
         target_sesno: window.target_sesno,
@@ -562,10 +802,29 @@ pub fn plan_update(base: &Arc<DbSet>, target: &Arc<DbSet>, window: &WindowDiff) 
         flag_only_drifts: window.diff.diagnostics.flag_only_drifts,
         ..IncrementReport::default()
     };
+    if let Some(limit) = limits.max_candidates
+        && report.candidates > limit
+    {
+        let reason = format!(
+            "candidates {} > max_candidates {limit}; window {}→{} degraded to a full rebuild",
+            report.candidates, window.base_sesno, window.target_sesno
+        );
+        report.degraded_to_full = Some(reason.clone());
+        return UpdatePlan {
+            regenerate: BTreeSet::new(),
+            remove: BTreeSet::new(),
+            regenerate_derived: BTreeSet::new(),
+            derived_stale: BTreeSet::new(),
+            ledger: ChangeLedger::new(),
+            full_rebuild: Some(reason),
+            report,
+        };
+    }
     let mut ledger = ChangeLedger::new();
     let mut regenerate: BTreeSet<(u32, u32)> = BTreeSet::new();
     let mut remove: BTreeSet<(u32, u32)> = BTreeSet::new();
     let mut regenerate_derived: BTreeSet<(u32, u32)> = BTreeSet::new();
+    let mut visits = CascadeVisits::default();
     // 删除候选上卷到的属主单元。属主自己也被删时要归并进那条 Remove，
     // 所以等 remove 集收齐了再定去向。
     let mut deferred: Vec<RefNo> = Vec::new();
@@ -586,6 +845,94 @@ pub fn plan_update(base: &Arc<DbSet>, target: &Arc<DbSet>, window: &WindowDiff) 
         }
     }
 
+    /// 一个候选的收尾：去向进账本，计数进报告。`no_model` 的 noun 用候选自己的。
+    fn settle(
+        report: &mut IncrementReport,
+        ledger: &mut ChangeLedger,
+        refno: RefNo,
+        noun: &str,
+        contributed: bool,
+    ) {
+        if contributed {
+            report.rolled_up += 1;
+            ledger.dispose(refno, Disposition::RolledUp);
+        } else {
+            note_no_model(report, noun);
+            ledger.dispose(refno, Disposition::NoModel);
+        }
+    }
+
+    /// 桥架分支级联（见 [`cable_tray_branch_of`]）：候选在 `lookup` 这一端落在某个 CWBRAN
+    /// 子树里、且自己不是 CTRAY → 在 target 端把那个 CWBRAN 的子树整个收进计划。
+    /// 返回这次级联折进了什么（`None` = 与桥架无关，或 CWBRAN 在 target 端已不存在
+    /// ——那时它名下的托盘都是 Deleted 候选，各自出 Remove）。
+    #[allow(clippy::too_many_arguments)]
+    fn cascade_cable_tray_branch(
+        lookup: &Arc<DbSet>,
+        target: &Arc<DbSet>,
+        refno: RefNo,
+        noun: &str,
+        regenerate: &mut BTreeSet<(u32, u32)>,
+        regenerate_derived: &mut BTreeSet<(u32, u32)>,
+        report: &mut IncrementReport,
+        visits: &mut CascadeVisits,
+    ) -> Result<Option<CascadeFanout>, DbElementError> {
+        if noun.eq_ignore_ascii_case("CTRAY") {
+            return Ok(None);
+        }
+        let Some(branch) = cable_tray_branch_of(lookup, refno)? else {
+            return Ok(None);
+        };
+        match target.element(branch).exists() {
+            Ok(true) => {}
+            Ok(false) | Err(DbElementError::NotFound { .. }) => return Ok(None),
+            Err(error) => return Err(error),
+        }
+        let fanout = collect_unit_subtree(
+            target,
+            branch,
+            regenerate,
+            regenerate_derived,
+            &mut report.notes,
+            visits,
+        )?;
+        report.cascades.push(incident(
+            refno,
+            noun,
+            format!(
+                "桥架放置输入变了（{noun} 落在 CWBRAN {branch} 子树里），级联重建整条分支 \
+                 {} 个单元{}",
+                fanout.hits,
+                if fanout.overlapped > 0 {
+                    format!("，另 {} 处已由本窗更早的级联覆盖", fanout.overlapped)
+                } else {
+                    String::new()
+                }
+            ),
+        ));
+        report.cascade_hits += fanout.hits;
+        Ok(Some(fanout))
+    }
+
+    /// 读不出来的候选：报告与账本各记一条，去向 `Unresolved`。账本上已经有它的
+    /// 条目（L2 差分成功、L4 上卷才失败）就不再补 `Unresolved` 条目，只登记去向。
+    fn give_up(
+        report: &mut IncrementReport,
+        ledger: &mut ChangeLedger,
+        refno: RefNo,
+        noun: &str,
+        detail: String,
+        already_ledgered: bool,
+    ) {
+        report
+            .unresolved
+            .push(incident(refno, noun, detail.clone()));
+        if !already_ledgered {
+            ledger.unresolved(refno, noun, detail);
+        }
+        ledger.dispose(refno, Disposition::Unresolved);
+    }
+
     for change in &window.diff.changes {
         match *change {
             IndexCandidate::Inserted { refno, .. } => match nearest_unit(target, refno) {
@@ -596,19 +943,44 @@ pub fn plan_update(base: &Arc<DbSet>, target: &Arc<DbSet>, window: &WindowDiff) 
                         regenerate.insert(key(unit));
                         contributed = true;
                     }
-                    if contributed {
-                        report.rolled_up += 1;
-                    } else {
-                        note_no_model(&mut report, &rollup.noun);
+                    // 新插进桥架分支的路径点 / 桥架件：整条分支的放置都变了。
+                    match cascade_cable_tray_branch(
+                        target,
+                        target,
+                        refno,
+                        &rollup.noun,
+                        &mut regenerate,
+                        &mut regenerate_derived,
+                        &mut report,
+                        &mut visits,
+                    ) {
+                        Ok(fanout) => {
+                            let cascaded = fanout
+                                .is_some_and(|fanout| fanout.hits > 0 || fanout.overlapped > 0);
+                            if cascaded && !contributed {
+                                report.cascade_only += 1;
+                            }
+                            contributed |= cascaded;
+                            settle(&mut report, &mut ledger, refno, &rollup.noun, contributed);
+                        }
+                        Err(error) => give_up(
+                            &mut report,
+                            &mut ledger,
+                            refno,
+                            &rollup.noun,
+                            format!("新增候选的桥架分支级联失败：{error}"),
+                            true,
+                        ),
                     }
                 }
-                Err(error) => {
-                    report.unresolved.push(incident(
-                        refno,
-                        "?",
-                        format!("新增候选上卷失败：{error}"),
-                    ));
-                }
+                Err(error) => give_up(
+                    &mut report,
+                    &mut ledger,
+                    refno,
+                    "?",
+                    format!("新增候选上卷失败：{error}"),
+                    false,
+                ),
             },
             IndexCandidate::Deleted { refno, .. } => match nearest_unit(base, refno) {
                 Ok(rollup) => {
@@ -628,30 +1000,59 @@ pub fn plan_update(base: &Arc<DbSet>, target: &Arc<DbSet>, window: &WindowDiff) 
                         }
                         None => {}
                     }
-                    if contributed {
-                        report.rolled_up += 1;
-                    } else {
-                        note_no_model(&mut report, &rollup.noun);
+                    // 从桥架分支里删掉一个路径点 / 桥架件：分支还在的话，剩下的托盘
+                    // 全都挪了位。分支在 base 端找，级联在 target 端做。
+                    match cascade_cable_tray_branch(
+                        base,
+                        target,
+                        refno,
+                        &rollup.noun,
+                        &mut regenerate,
+                        &mut regenerate_derived,
+                        &mut report,
+                        &mut visits,
+                    ) {
+                        Ok(fanout) => {
+                            let cascaded = fanout
+                                .is_some_and(|fanout| fanout.hits > 0 || fanout.overlapped > 0);
+                            if cascaded && !contributed {
+                                report.cascade_only += 1;
+                            }
+                            contributed |= cascaded;
+                            settle(&mut report, &mut ledger, refno, &rollup.noun, contributed);
+                        }
+                        Err(error) => give_up(
+                            &mut report,
+                            &mut ledger,
+                            refno,
+                            &rollup.noun,
+                            format!("删除候选的桥架分支级联失败：{error}"),
+                            true,
+                        ),
                     }
                 }
-                Err(error) => {
-                    report.unresolved.push(incident(
-                        refno,
-                        "?",
-                        format!("删除候选上卷失败：{error}"),
-                    ));
-                }
+                Err(error) => give_up(
+                    &mut report,
+                    &mut ledger,
+                    refno,
+                    "?",
+                    format!("删除候选上卷失败：{error}"),
+                    false,
+                ),
             },
             IndexCandidate::Modified { refno, .. } => {
                 // L2：索引只说记录被重写过，这一步才回答到底哪里变了。
                 let diff = match diff_element(base, target, refno) {
                     Ok(diff) => diff,
                     Err(error) => {
-                        report.unresolved.push(incident(
+                        give_up(
+                            &mut report,
+                            &mut ledger,
                             refno,
                             "?",
                             format!("逐元素差分失败：{error}"),
-                        ));
+                            false,
+                        );
                         continue;
                     }
                 };
@@ -663,6 +1064,9 @@ pub fn plan_update(base: &Arc<DbSet>, target: &Arc<DbSet>, window: &WindowDiff) 
 
                 let mut contributed = false;
                 let mut resolved = true;
+                // 级联之外有没有折进什么：自身 / 上方的单元或容器，或改挂 / 类型变更
+                // 回 base 端找到的旧单元。级联单独记，才分得出「只靠级联」的那些。
+                let mut direct_contribution = false;
                 match nearest_unit(target, refno) {
                     Ok(rollup) => {
                         contributed = mark_derived(&mut regenerate_derived, &rollup);
@@ -670,14 +1074,18 @@ pub fn plan_update(base: &Arc<DbSet>, target: &Arc<DbSet>, window: &WindowDiff) 
                             regenerate.insert(key(unit));
                             contributed = true;
                         }
+                        direct_contribution = contributed;
                     }
                     Err(error) => {
                         resolved = false;
-                        report.unresolved.push(incident(
+                        give_up(
+                            &mut report,
+                            &mut ledger,
                             refno,
-                            "?",
+                            &diff.noun,
                             format!("修改候选上卷失败：{error}"),
-                        ));
+                            true,
+                        );
                     }
                 }
 
@@ -698,19 +1106,24 @@ pub fn plan_update(base: &Arc<DbSet>, target: &Arc<DbSet>, window: &WindowDiff) 
                                 regenerate.insert(key(unit));
                                 contributed = true;
                             }
+                            direct_contribution |= contributed;
                         }
                         Err(error) => {
                             resolved = false;
-                            report.unresolved.push(incident(
+                            give_up(
+                                &mut report,
+                                &mut ledger,
                                 refno,
-                                "?",
+                                &diff.noun,
                                 format!("改挂/类型变更后回溯 base 端失败：{error}"),
-                            ));
+                                true,
+                            );
                         }
                     }
                 }
 
                 // 变换级联（见模块文档「与 Core3D 的一处有意分歧」）。
+                let mut cascade_contributed = false;
                 if resolved && diff.placement_input_changed() {
                     match collect_unit_subtree(
                         target,
@@ -718,38 +1131,86 @@ pub fn plan_update(base: &Arc<DbSet>, target: &Arc<DbSet>, window: &WindowDiff) 
                         &mut regenerate,
                         &mut regenerate_derived,
                         &mut report.notes,
+                        &mut visits,
                     ) {
                         Ok(fanout) => {
                             report.cascades.push(incident(
                                 refno,
                                 diff.noun.clone(),
                                 format!(
-                                    "{}，级联重建子树内 {fanout} 个单元（含派生容器）",
-                                    cascade_reason(&diff)
+                                    "{}，级联重建子树内 {} 个单元（含派生容器）{}",
+                                    cascade_reason(&diff),
+                                    fanout.hits,
+                                    if fanout.overlapped > 0 {
+                                        format!(
+                                            "，另 {} 处已由本窗更早的级联覆盖",
+                                            fanout.overlapped
+                                        )
+                                    } else {
+                                        String::new()
+                                    }
                                 ),
                             ));
-                            contributed = contributed || fanout > 0;
+                            report.cascade_hits += fanout.hits;
+                            // 子树里有单元、或子树早被别的级联收进计划，这个候选都算
+                            // 折进了计划；两样都没有才是「改动落在没有模型归属的元素上」。
+                            cascade_contributed |= fanout.hits > 0 || fanout.overlapped > 0;
                         }
                         Err(error) => {
                             // 级联收集失败 = 有一片子树的世界矩阵可能已过期而我们
                             // 点不出名字——这不是 note 级别的观察，必须亮成
                             // unresolved 才对得起「静默缺件」那条宪法。
                             resolved = false;
-                            report.unresolved.push(incident(
+                            give_up(
+                                &mut report,
+                                &mut ledger,
                                 refno,
-                                diff.noun.clone(),
+                                &diff.noun,
                                 format!("世界矩阵输入变了但级联收集失败：{error}"),
-                            ));
+                                true,
+                            );
+                        }
+                    }
+                }
+
+                // 桥架分支级联：候选在 CWBRAN 子树里（RPATH/POINTR/桥架件/CWBRAN 自己）
+                // 改了任何东西，整条分支的托盘放置都可能变——这些输入不在 owner 链上，
+                // 上面那两步都够不着（见 `cable_tray_branch_of`）。
+                if resolved {
+                    match cascade_cable_tray_branch(
+                        target,
+                        target,
+                        refno,
+                        &diff.noun,
+                        &mut regenerate,
+                        &mut regenerate_derived,
+                        &mut report,
+                        &mut visits,
+                    ) {
+                        Ok(fanout) => {
+                            cascade_contributed |= fanout
+                                .is_some_and(|fanout| fanout.hits > 0 || fanout.overlapped > 0);
+                        }
+                        Err(error) => {
+                            resolved = false;
+                            give_up(
+                                &mut report,
+                                &mut ledger,
+                                refno,
+                                &diff.noun,
+                                format!("桥架分支级联失败：{error}"),
+                                true,
+                            );
                         }
                     }
                 }
 
                 if resolved {
-                    if contributed {
-                        report.rolled_up += 1;
-                    } else {
-                        note_no_model(&mut report, &diff.noun);
+                    if cascade_contributed && !direct_contribution {
+                        report.cascade_only += 1;
                     }
+                    contributed = contributed || cascade_contributed;
+                    settle(&mut report, &mut ledger, refno, &diff.noun, contributed);
                 }
             }
         }
@@ -800,6 +1261,7 @@ pub fn plan_update(base: &Arc<DbSet>, target: &Arc<DbSet>, window: &WindowDiff) 
 
     ledger.finish();
     report.changes = ledger.tally();
+    report.ledger_refnos = ledger.distinct_refnos();
     report.units_to_regenerate = regenerate.len();
     report.units_to_remove = remove.len();
     report.derived_to_regenerate = regenerate_derived.len();
@@ -809,6 +1271,7 @@ pub fn plan_update(base: &Arc<DbSet>, target: &Arc<DbSet>, window: &WindowDiff) 
         regenerate_derived,
         derived_stale,
         ledger,
+        full_rebuild: None,
         report,
     }
 }
@@ -833,6 +1296,10 @@ fn cascade_reason(diff: &ElementDiff) -> String {
 
 /// 执行计划：逐单元重建。与全量管线走同一条 [`model_element`]，产出动作集；
 /// 派生容器走 [`route_tubes_of`]（与全量同一段串接代码），旧键做差发 Remove。
+///
+/// 退化成整库重建的计划（[`UpdatePlan::full_rebuild`]）这里**不执行**：它没有任何
+/// 动作可执行，返回的产出是空的、报告带 `degraded_to_full` 与一条 note。调用方拿到它
+/// 该走全量生成，把空产出当「这一窗没变」发布出去就是静默缺件。
 pub fn execute_plan(target: &Arc<DbSet>, plan: UpdatePlan) -> IncrementOutcome {
     let UpdatePlan {
         regenerate,
@@ -840,8 +1307,21 @@ pub fn execute_plan(target: &Arc<DbSet>, plan: UpdatePlan) -> IncrementOutcome {
         regenerate_derived,
         derived_stale,
         ledger: _,
+        full_rebuild,
         mut report,
     } = plan;
+    if let Some(reason) = full_rebuild {
+        report.notes.push(Incident {
+            refno: String::new(),
+            noun: String::new(),
+            detail: format!("计划已退化成整库重建，未执行任何单元动作：{reason}"),
+        });
+        return IncrementOutcome {
+            upserts: Vec::new(),
+            removals: Vec::new(),
+            report,
+        };
+    }
     let mut upserts: Vec<GeneratedElement> = Vec::new();
     let mut removals: BTreeSet<GeometryId> = remove.into_iter().map(element_id).collect();
     // 一次执行共享一个世代网格池：级联重建（容器一挪、整片 PANE 重来）里
@@ -980,6 +1460,7 @@ mod tests {
             candidates: 5,
             rolled_up: 3,
             unresolved: incident_n(1),
+            ledger_refnos: 5,
             ..IncrementReport::default()
         };
         report.no_model.insert("ZONE".into(), 1);
@@ -1000,6 +1481,7 @@ mod tests {
             candidates: 4,
             rolled_up: 1,
             unchanged: 3,
+            ledger_refnos: 1,
             ..IncrementReport::default()
         };
         assert!(report.accounts_for().is_ok());
@@ -1007,6 +1489,67 @@ mod tests {
         report.unchanged = 2;
         let err = report.accounts_for().unwrap_err();
         assert!(err.contains("unchanged 2"), "{err}");
+    }
+
+    /// L3 对 L4 的守恒：除 unchanged 之外每个候选都在账本上——账本 refno 数必须等于
+    /// rolled_up + no_model + unresolved。少了就是有候选（多半是读不出的那些）没进账。
+    #[test]
+    fn the_ledger_must_name_every_classified_candidate() {
+        let mut report = IncrementReport {
+            candidates: 6,
+            rolled_up: 2,
+            unchanged: 2,
+            unresolved: incident_n(1),
+            ledger_refnos: 4,
+            ..IncrementReport::default()
+        };
+        report.no_model.insert("ZONE".into(), 1);
+        assert!(report.accounts_for().is_ok());
+
+        // 读不出的那个候选没进账本：候选账照样平，账本账要响。
+        report.ledger_refnos = 3;
+        let err = report.accounts_for().unwrap_err();
+        assert!(err.contains("账本不平"), "{err}");
+
+        // cascade_only 是 rolled_up 的子集。
+        report.ledger_refnos = 4;
+        report.cascade_only = 3;
+        let err = report.accounts_for().unwrap_err();
+        assert!(err.contains("cascade_only"), "{err}");
+    }
+
+    /// 退化成整库重建的报告：什么都没分类，候选账不适用，但计划集与账本必须是空的
+    /// ——一份带动作的「退化」计划是自相矛盾的，得响。
+    #[test]
+    fn a_degraded_plan_has_no_classification_and_no_actions() {
+        let report = IncrementReport {
+            candidates: 24674,
+            degraded_to_full: Some("candidates 24674 > max_candidates 1000".into()),
+            ..IncrementReport::default()
+        };
+        assert!(report.accounts_for().is_ok(), "{:?}", report.accounts_for());
+
+        let report = IncrementReport {
+            candidates: 24674,
+            degraded_to_full: Some("candidates 24674 > max_candidates 1000".into()),
+            units_to_regenerate: 1,
+            ..IncrementReport::default()
+        };
+        let err = report.accounts_for().unwrap_err();
+        assert!(err.contains("退化成整库重建"), "{err}");
+
+        // 没有退化标记，候选却一个没分类：这是普通的候选账不平。
+        let report = IncrementReport {
+            candidates: 24674,
+            ..IncrementReport::default()
+        };
+        assert!(report.accounts_for().unwrap_err().contains("候选账不平"));
+    }
+
+    /// `PlanLimits::default()` 不设限——`plan_update` 的行为一个字不变。
+    #[test]
+    fn default_limits_are_unbounded() {
+        assert_eq!(PlanLimits::default().max_candidates, None);
     }
 
     /// 派生执行账：regenerated + retired + failed 必须等于计划容器数。

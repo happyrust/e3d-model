@@ -33,7 +33,9 @@ use crate::catalogue::{
     CatalogueMeshCache, CatalogueMeshCacheStats, model_catalogue_member_with_cache,
 };
 use crate::catalogue_point::{CataloguePoints, tube_outer_diameter_from_stub};
-use crate::category::{BuildDisposition, Category, decision, is_derived_unit, is_model_unit};
+use crate::category::{
+    BuildDisposition, Category, decision, graphics_ignored_below, is_derived_unit, is_model_unit,
+};
 use crate::elmodl::{GeneratedElement, GeometryId, Modeled, model_element_with_cache};
 use crate::extrusion_reuse::ExtrusionReuseStats;
 use crate::route::{
@@ -587,6 +589,11 @@ fn build_route_tubes(
 
 /// 成员入栈。被本元素消费掉的（自己的剖面环与负体）不入栈，整棵子树计进
 /// [`Report::consumed`]——不计的话它们就从账上蒸发了。
+///
+/// 第二种消费与类别无关：本元素 `graphicsBehaviour == 1`（[`graphics_ignored_below`]）
+/// 时它的**全部**成员都是几何数据，Core3D 一件都不当独立图形项画
+/// （`isGraphicsIgnoredBetween`）。这里同样整棵计进 `consumed`、不入栈——增量那头
+/// `nearest_unit` / `collect_unit_subtree` 按同一个谓词跨过它，两边才对得上。
 fn push_members(
     el: &DbElement,
     category: Category,
@@ -594,12 +601,15 @@ fn push_members(
     report: &mut Report,
 ) -> Result<(), DbElementError> {
     let consumes = category.consumes_members();
+    let ignores_members = graphics_ignored_below(&el.element_type()?);
     let mut batch = Vec::new();
     for member in el.members()? {
         let noun = member.element_type()?;
         let member_category = decision(&noun).category;
-        let consumed = consumes
-            && (matches!(member_category, Category::ProfileData) || member_category.is_negative());
+        let consumed = ignores_members
+            || (consumes
+                && (matches!(member_category, Category::ProfileData)
+                    || member_category.is_negative()));
         if consumed {
             // 图元容器「认领」负体只是为了不让它们落进孤儿账，一刀都没扣
             // （宿主在容器之外，见 [`Category::PrimitiveContainer`]）。剪枝之后

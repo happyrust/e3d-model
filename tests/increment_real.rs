@@ -405,6 +405,9 @@ fn an_increment_says_what_two_full_generations_say() {
         // 分两步而不是 `increment_update`：改挂那条断言要查 L3 的逐条明细，
         // 而计划一旦交给 `execute_plan` 就消费掉了。
         let plan = plan_update(&base_set, &target_set, &window);
+        // 计划期的账先对：候选账 + L3 每个 refno 恰好一个去向、去向计数与报告一致。
+        plan.accounts_for()
+            .unwrap_or_else(|detail| panic!("{name}: 计划账不平：{detail}"));
         let reparented: Vec<RefNo> = plan
             .ledger
             .of_kind(ChangeKind::Reparented)

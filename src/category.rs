@@ -456,6 +456,17 @@ pub fn is_model_unit(noun: &str) -> bool {
         // 目录库一进增量门就会咬（DESI-only 门上两边都建不出，所以一直没响）。
         Category::RouteMember => true,
 
+        // 电缆桥架：托盘 `CTRAY` 的实体走目录链（SPRE→TABITE→PRTREF→GPART→CATR→SCOM→GMRE），
+        // 键是 element:refno——全量管线的 `Composite(CableTray) if noun == "CTRAY"` 臂
+        // 产出它，增量就得上卷到它、经 `model_element` 的同名臂重建。桥架**件**
+        // （CTSTRA/CTBEND/…，[`crate::cable_tray::CABLE_TRAY_ELEMENT_NOUNS`]）自己不出
+        // 实体，只是把没存的 POS/ORI 现算出来给下面的托盘用，不是单元。
+        // 这是 SBFI / RouteMember 同型缺口的第三次现身：2026-09-02 桥架落地时只写了
+        // 管线那一侧，增量对 CTRAY 的增 / 删 / 改一律 `no_model`。
+        Category::Composite(CompositeFamily::CableTray) => {
+            noun.trim().eq_ignore_ascii_case("CTRAY")
+        }
+
         // 以下都不产出挂在自己 refno 上的实体。逐条列而不是一个 `_ => false`：
         // 见上面那段——通配符会把「新变体默认不是单元」这个危险假设变成沉默的默认值。
         Category::List
@@ -627,25 +638,86 @@ struct FamilyMatrix {
 struct FamilyMatrixRow {
     noun_name: String,
     families: Vec<String>,
+    /// dabacon 字典字段 `graphicsBehaviour`（#5099119）。矩阵里没有这一列的老版本
+    /// 按 0 读——0 是「普通元素」，判 [`graphics_ignored_below`] 时不会误伤。
+    #[serde(default)]
+    gb: u8,
 }
 
-fn noun_families() -> &'static BTreeMap<String, BTreeSet<String>> {
-    static FAMILIES: OnceLock<BTreeMap<String, BTreeSet<String>>> = OnceLock::new();
-    FAMILIES.get_or_init(|| {
+/// 字典给一个 noun 的两样东西：GTGEOM 级联家族位，与 `graphicsBehaviour`。
+struct NounDictionaryRow {
+    families: BTreeSet<String>,
+    graphics_behaviour: u8,
+}
+
+fn noun_dictionary() -> &'static BTreeMap<String, NounDictionaryRow> {
+    static ROWS: OnceLock<BTreeMap<String, NounDictionaryRow>> = OnceLock::new();
+    ROWS.get_or_init(|| {
         let parsed: FamilyMatrix = serde_json::from_str(NOUN_FAMILY_MATRIX_JSON)
             .expect("内嵌的 E3D 3.1 noun-family-matrix.json 解析失败");
         parsed
             .nouns
             .into_iter()
-            .map(|row| (row.noun_name, row.families.into_iter().collect()))
+            .map(|row| {
+                (
+                    row.noun_name,
+                    NounDictionaryRow {
+                        families: row.families.into_iter().collect(),
+                        graphics_behaviour: row.gb,
+                    },
+                )
+            })
             .collect()
     })
+}
+
+/// dabacon 字典的 `graphicsBehaviour` 字段（#5099119）。字典里没有这个 noun 时 `None`。
+///
+/// 取证（`gen-model/docs/plans/2026-09-02-increment-update-audit-and-next-plan.md` §1.3，
+/// Core3D `DES_DrawList::isGraphicsIgnoredBetween` @ `0x1051c7d0`）：E3D 3.1 的 1931 个
+/// noun 里 0 = 普通元素（1652）、**1 = 几何数据容器（109）**、2 = 层级容器
+/// WORL/SITE/ZONE/…（98）、3 = 特殊画法 CABLE/HANDRA/ATTA…（72）。只有 `== 1` 的语义
+/// 已从指令级坐实（见 [`graphics_ignored_below`]）；2 / 3 的含义未读，不要拿来分派。
+pub fn graphics_behaviour(noun: &str) -> Option<u8> {
+    let noun = noun.trim().to_ascii_uppercase();
+    noun_dictionary()
+        .get(&noun)
+        .map(|row| row.graphics_behaviour)
+}
+
+/// 这个 noun **名下**的元素在 Core3D 里不作为独立图形项（`graphicsBehaviour == 1`）。
+///
+/// `isGraphicsIgnoredBetween(top, el)` 从 `el.owner()` 上溯到顶层单元，路上只要有一个
+/// 中间祖先带这一位，`el` 的图形就被忽略——它是属主几何的**数据**（LOOP 里的 PAVE、
+/// POLOOP 里的顶点引用、船体 `D*` 出图数据），不是一件可画的东西。判的是**祖先**，
+/// 所以这个谓词问的是「它下面的东西要不要当独立件」，不是「它自己画不画」：
+/// gb==1 的 noun 自己是否成件仍由 [`classify`] 说（今天 109 个没有一个是单元，见测试）。
+///
+/// 全量管线与增量上卷必须共用这一个判据：`pipeline::push_members` 据此把 gb==1 节点
+/// 的成员整棵计进 `consumed`、不入栈；`increment::nearest_unit` 跨过 gb==1 祖先时丢掉
+/// 其下找到的单元、归到上方；`collect_unit_subtree` 不进 gb==1 节点之下。少写任何一处，
+/// 表现都是「core 不画、我们画了」的静默分歧——今天不炸只是因为语料里 gb==1 只有
+/// LOOP / POLOOP / MNUM，都早已按 [`Category::ProfileData`] / [`Category::NonGraphic`] 收走。
+///
+/// 一处有意的近似：core 的上溯止于 `top`（drawlist 顶层元素）——gb==1 的元素自己被加进
+/// drawlist 时，它的孩子照画。我们的「顶」是生成根 / 库根，而 gb==1 都是数据容器、不会被
+/// 选成根，所以这里不分「它是不是顶」。
+pub fn graphics_ignored_below(noun: &str) -> bool {
+    graphics_behaviour(noun) == Some(1)
+}
+
+/// 字典里 `graphicsBehaviour == 1` 的全部 noun（给测试与报告点名用）。
+pub fn graphics_ignored_nouns() -> impl Iterator<Item = &'static str> {
+    noun_dictionary()
+        .iter()
+        .filter(|(_, row)| row.graphics_behaviour == 1)
+        .map(|(noun, _)| noun.as_str())
 }
 
 /// 用 E3D 3.1 的真实家族位认领剩余级联 NOUN。这里只决定建模路径，状态仍为
 /// `EvidencePending`；没有样本的专业族不会因此被伪报为已经建成。
 fn dictionary_composite_category(noun: &str) -> Category {
-    let Some(families) = noun_families().get(noun) else {
+    let Some(families) = noun_dictionary().get(noun).map(|row| &row.families) else {
         return Category::Unknown;
     };
     if families.contains("IGMCOM") || families.contains("IG2COM") {
@@ -1023,6 +1095,78 @@ mod tests {
             !is_derived_unit("HANG"),
             "HANG 只下钻并生成 PCLA/HELE；E3D RVM 不在二者之间补管身"
         );
+    }
+
+    /// 托盘 `CTRAY` 是模型单元（全量为它产出 element:refno 键的目录实体），桥架件不是。
+    ///
+    /// SBFI / RouteMember 同型缺口的第三次：`Composite(_) => false` 把 CTRAY 一并判了否，
+    /// 而管线的 `Composite(CableTray) if noun == "CTRAY"` 臂照常出几何——增量对 CTRAY 的
+    /// 增 / 删 / 改一律落 `no_model`，被删的托盘永远不出 Remove，账还是平的。
+    #[test]
+    fn the_cable_tray_itself_is_a_model_unit_and_its_carriers_are_not() {
+        assert_eq!(
+            classify("CTRAY"),
+            Category::Composite(CompositeFamily::CableTray)
+        );
+        assert!(is_model_unit("CTRAY"), "CTRAY 的目录实体挂在自己 refno 上");
+        assert!(!is_derived_unit("CTRAY"));
+        // 七个桥架件 noun（`cable_tray::CABLE_TRAY_ELEMENT_NOUNS` 同一份名单）。
+        for noun in [
+            "CTSTRA", "CTBEND", "CTRISE", "CTTEE", "CTCROS", "CTREDU", "CTCOUP",
+        ] {
+            assert_eq!(
+                classify(noun),
+                Category::Composite(CompositeFamily::CableTray),
+                "{noun}"
+            );
+            assert!(
+                !is_model_unit(noun),
+                "{noun} 只算放置，几何在它下面的 CTRAY 上"
+            );
+        }
+        // 别的复合族照旧不是单元：它们的 builder 还没有，全量也不为它们出实体。
+        for noun in ["NOZZ", "ELCONN", "EQUCOM"] {
+            assert!(!is_model_unit(noun), "{noun}");
+        }
+    }
+
+    /// `graphicsBehaviour == 1` 的 109 个 noun 是几何数据容器：**自己不是单元、名下不派生、
+    /// 也不能是可下钻的 List**——List 会让全量管线把它们的成员当独立件建出来，而 Core3D
+    /// 对这些成员一件都不画（`isGraphicsIgnoredBetween`，取证见 `graphics_ignored_below`）。
+    ///
+    /// 数字 109 写死是有意的：字典换版 gb 集合变了，这条先响，再去看增量上卷与
+    /// `push_members` 的消费口径要不要跟。
+    #[test]
+    fn graphics_ignored_containers_are_never_units_nor_lists() {
+        let ignored: Vec<&str> = graphics_ignored_nouns().collect();
+        assert_eq!(ignored.len(), 109, "E3D 3.1 字典里 gb==1 应当恰好 109 个");
+        for noun in &ignored {
+            assert!(graphics_ignored_below(noun), "{noun}");
+            assert!(!is_model_unit(noun), "{noun} 是数据容器，不该成件");
+            assert!(!is_derived_unit(noun), "{noun} 名下不派生几何");
+            assert_ne!(
+                classify(noun),
+                Category::List,
+                "{noun} 判成 List 会让成员被当独立件下钻"
+            );
+        }
+        // 语料里已知的三个都在集合里，且早已按数据 / 非图形收走。
+        for noun in ["LOOP", "POLOOP", "MNUM"] {
+            assert!(graphics_ignored_below(noun), "{noun} 是 gb==1");
+        }
+        assert_eq!(classify("LOOP"), Category::ProfileData);
+        assert_eq!(classify("POLOOP"), Category::ProfileData);
+        assert_eq!(classify("MNUM"), Category::NonGraphic);
+        // 反面：普通元素 0、层级容器 2、特殊画法 3，一个都不许被这条谓词吞掉。
+        for noun in ["BOX", "PANE", "BRAN", "PAVE", "PLOO"] {
+            assert_eq!(graphics_behaviour(noun), Some(0), "{noun}");
+            assert!(!graphics_ignored_below(noun), "{noun}");
+        }
+        for noun in ["WORL", "SITE", "ZONE"] {
+            assert_eq!(graphics_behaviour(noun), Some(2), "{noun}");
+        }
+        assert_eq!(graphics_behaviour("CABLE"), Some(3));
+        assert_eq!(graphics_behaviour("NOT-A-NOUN"), None);
     }
 
     /// 路由族既不产正体也不是负体，更不消费成员——成员是路由本身，必须继续下钻。

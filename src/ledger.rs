@@ -50,6 +50,12 @@ pub enum ChangeKind {
     AttributesModified,
     /// 记录字节变了，但说不出是哪一项（见 `ElementDiff::opaque`）。
     OpaqueRecordChange,
+    /// 索引点了名，L2/L4 却连它是什么都读不出来（端点读挂 / owner 链断）。
+    ///
+    /// 不对应任何 `checkEle` 回调——core 在这里会直接抛错。单列一种是为了让账闭合：
+    /// 每个候选都必须在账上有一条，读不出的也不例外，否则「候选 24674、账上 24670」
+    /// 那 4 条就没人说得出去了哪里（[`ChangeLedger::accounts_for`]）。
+    Unresolved,
 }
 
 impl ChangeKind {
@@ -62,8 +68,30 @@ impl ChangeKind {
             ChangeKind::MembersChanged => "成员表变更",
             ChangeKind::AttributesModified => "属性修改",
             ChangeKind::OpaqueRecordChange => "记录变更（未指名）",
+            ChangeKind::Unresolved => "无法分类",
         }
     }
+}
+
+/// 一个候选在 L4 的去向。与 `IncrementReport` 的三本候选账一一对应：
+/// 每个进了账本的 refno 必须恰好有一个去向，[`ChangeLedger::accounts_for`] 据此对账。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Disposition {
+    /// 折进了某个单元 / 派生容器动作（含被去重掉的，含只靠级联折进去的）。
+    RolledUp,
+    /// 改动落在没有模型归属的元素上。
+    NoModel,
+    /// 连分类都做不了。
+    Unresolved,
+}
+
+/// [`ChangeLedger::accounts_for`] 对出来的去向计数。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DispositionTally {
+    pub rolled_up: usize,
+    pub no_model: usize,
+    pub unresolved: usize,
 }
 
 /// 账上的一条。
@@ -102,6 +130,8 @@ pub struct ChangeTally {
     pub members_changed: usize,
     pub attributes_modified: usize,
     pub opaque_record_changes: usize,
+    /// 读不出来、分类不了的候选条目数（[`ChangeKind::Unresolved`]）。
+    pub unresolved: usize,
     /// 索引说记录被重写、逐字节比下来内容一个字没动的候选数。
     ///
     /// 这不是一种改动，是 L1 与 L2 的**落差**：非零说明索引候选里有多少是虚的。
@@ -120,11 +150,76 @@ pub struct ChangeLedger {
     unchanged: usize,
     /// 建账时记下的属主，`finish` 用它算祖先抢占。
     owners: Vec<(usize, RefNo)>,
+    /// 每个候选在 L4 的去向，按登记顺序；重复登记由 [`Self::accounts_for`] 判出来。
+    dispositions: Vec<((u32, u32), Disposition)>,
 }
 
 impl ChangeLedger {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 读不出来的候选也要有一条。`noun` 不知道就给 `"?"`。
+    pub fn unresolved(&mut self, refno: RefNo, noun: impl Into<String>, detail: impl Into<String>) {
+        self.entries.push(LedgerEntry {
+            refno,
+            noun: noun.into(),
+            kind: ChangeKind::Unresolved,
+            detail: detail.into(),
+            preempted_by: None,
+        });
+    }
+
+    /// 登记一个候选的去向。每个进了账本的 refno 恰好登记一次；`unchanged` 的候选
+    /// 不进账本也不登记（它们不是改动）。
+    pub fn dispose(&mut self, refno: RefNo, disposition: Disposition) {
+        self.dispositions
+            .push(((refno.word0, refno.word1), disposition));
+    }
+
+    /// 账本上出现过的**不同** refno 数。一个元素可以有多条（改挂 + 属性变），
+    /// 但候选是按 refno 来的，与候选账对齐要按 refno 数。
+    pub fn distinct_refnos(&self) -> usize {
+        self.entries
+            .iter()
+            .map(|entry| (entry.refno.word0, entry.refno.word1))
+            .collect::<BTreeSet<_>>()
+            .len()
+    }
+
+    /// L3 对 L4 的守恒：账本上每个 refno 恰好有一个去向、没有凭空的去向。
+    /// 返回去向计数，调用方再与 `IncrementReport` 的三本候选账逐项核对。
+    pub fn accounts_for(&self) -> Result<DispositionTally, String> {
+        let on_ledger: BTreeSet<(u32, u32)> = self
+            .entries
+            .iter()
+            .map(|entry| (entry.refno.word0, entry.refno.word1))
+            .collect();
+        let mut seen: BTreeSet<(u32, u32)> = BTreeSet::new();
+        let mut tally = DispositionTally::default();
+        for (key, disposition) in &self.dispositions {
+            if !on_ledger.contains(key) {
+                return Err(format!(
+                    "{}/{} 有去向 {disposition:?} 却不在账本上",
+                    key.0, key.1
+                ));
+            }
+            if !seen.insert(*key) {
+                return Err(format!("{}/{} 的去向登记了两次", key.0, key.1));
+            }
+            match disposition {
+                Disposition::RolledUp => tally.rolled_up += 1,
+                Disposition::NoModel => tally.no_model += 1,
+                Disposition::Unresolved => tally.unresolved += 1,
+            }
+        }
+        if let Some(missing) = on_ledger.difference(&seen).next() {
+            return Err(format!(
+                "{}/{} 在账本上却没有去向（rolled_up / no_model / unresolved 之一）",
+                missing.0, missing.1
+            ));
+        }
+        Ok(tally)
     }
 
     /// 新建。`owner` 取 **target** 端的属主。
@@ -262,6 +357,7 @@ impl ChangeLedger {
             members_changed: count(ChangeKind::MembersChanged),
             attributes_modified: count(ChangeKind::AttributesModified),
             opaque_record_changes: count(ChangeKind::OpaqueRecordChange),
+            unresolved: count(ChangeKind::Unresolved),
             unchanged: self.unchanged,
             created_subtree_roots: roots(ChangeKind::Created),
             deleted_subtree_roots: roots(ChangeKind::Deleted),
@@ -357,6 +453,56 @@ mod tests {
         let tally = ledger.tally();
         assert_eq!(tally.created_subtree_roots, 1, "属主在删除桶里，不抢占新建");
         assert_eq!(tally.deleted_subtree_roots, 1);
+    }
+
+    /// L3 对 L4 的守恒：账本上每个 refno 恰好一个去向，缺一个、多一个、登记两次都要响。
+    ///
+    /// 读不出的候选也得先进账本再登记去向——`unresolved` 那本账此前只在报告里有个数，
+    /// 账本上没有它们，「候选 N、账本 N−4」那 4 条去了哪里没人说得出。
+    #[test]
+    fn every_ledgered_refno_has_exactly_one_disposition() {
+        let (a, b, c) = (RefNo::new(1, 1), RefNo::new(1, 2), RefNo::new(1, 3));
+        let mut ledger = ChangeLedger::new();
+        ledger.created(a, "BOX".into(), None);
+        ledger.record(
+            b,
+            &ElementDiff {
+                owner_changed: Some((Some("1/7".into()), Some("1/8".into()))),
+                attributes: vec!["POS".into()],
+                ..diff("PANE")
+            },
+        );
+        ledger.unresolved(c, "?", "owner 链断");
+        ledger.finish();
+
+        // 少一个去向：b 有两条条目，仍只算一个 refno、要一个去向。
+        ledger.dispose(a, Disposition::RolledUp);
+        ledger.dispose(c, Disposition::Unresolved);
+        let err = ledger.accounts_for().unwrap_err();
+        assert!(err.contains("1/2") && err.contains("没有去向"), "{err}");
+
+        ledger.dispose(b, Disposition::NoModel);
+        assert_eq!(
+            ledger.accounts_for().unwrap(),
+            DispositionTally {
+                rolled_up: 1,
+                no_model: 1,
+                unresolved: 1,
+            }
+        );
+        assert_eq!(ledger.distinct_refnos(), 3);
+        assert_eq!(ledger.tally().unresolved, 1);
+
+        // 登记两次是规划器的 bug，不是数据问题。
+        ledger.dispose(a, Disposition::NoModel);
+        let err = ledger.accounts_for().unwrap_err();
+        assert!(err.contains("两次"), "{err}");
+
+        // 凭空的去向：账本上没有的 refno。
+        let mut stray = ChangeLedger::new();
+        stray.dispose(RefNo::new(9, 9), Disposition::RolledUp);
+        let err = stray.accounts_for().unwrap_err();
+        assert!(err.contains("不在账本上"), "{err}");
     }
 
     /// 成员表的三种变化各自说得出话。
