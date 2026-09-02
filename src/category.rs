@@ -808,6 +808,176 @@ pub fn route_member_nouns() -> impl Iterator<Item = &'static str> {
     route_nouns().members.iter().map(String::as_str)
 }
 
+/// 表现级按学科分档——照 Core3D `build/MODCMP`（0x10251012）给 `build/ELMODL` 挑级的那张表。
+///
+/// `REPRESENTATION LEVEL …` 不是一个数，是六个全局（`build/DEDRRP` 0x1024D019 逐条写，
+/// `Q REPRE` 逐行打印）：`LEVEL n`（通用，DrawList 键 19）、`LEVEL PIPE n`（键 20）、
+/// `LEVEL NOZZ n`（21）、`LEVEL STRU n`（22）、`LEVEL CABLE n`（48）、`LEVEL HVAC n`（86）。
+/// MODCMP 按被建元素的 noun 谓词挑一个交给 ELMODL → `build/LEVSET`，默认「画不画」回调
+/// `csg_gml4/DR3DWA`（0x1008C279）再经 `build/LEVGET` 取回，对 `LEVE=[lo,hi]` 做闭区间
+/// `lo <= L <= hi`。TTY 会话（`build/LEVINI`）六个都从 0 起；ams7997 基线宏只动了
+/// `LEVEL 6` 与 `LEVEL HVAC 6`，所以管道构件在 0 级、风管在 6 级——COUP `/ABCF331DF` 那两片
+/// LEVE (6,8) 的 LSNO 在 `LEVEL PIPE 6/8` 下 E3D 照画（`evidence/20260902-repre-level-tty-experiments/`）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RepreDiscipline {
+    /// `REPRESENTATION LEVEL n`——MODCMP 的兜底档：设计基本体、负体、面板等
+    /// （`IECOMP` / `INCOMP` 都落这里）。
+    General,
+    /// `REPRESENTATION LEVEL PIPE n`：`IPCOMP`（管道构件）与 `IHCOMP`（吊架构件）。
+    Pipe,
+    /// `REPRESENTATION LEVEL HVAC n`：`IHVCOM`。core.dll `nounlib/IHVCOM`（0x561C010）=
+    /// noun 的 `PRMF` 逻辑位 ∧ 从当前元素 `CLIMBS` 到 `HVAC` 属主——判的是**属主链**：
+    /// 风管 STRT/BEND/TRNS 在 3.1 字典里与管道构件同带 `IPCOMP`，光看 noun 分不出来。
+    Hvac,
+    /// `REPRESENTATION LEVEL NOZZ n`：`NOZZ` / `ELCONN` / `EQUCOM`。
+    Nozzle,
+    /// `REPRESENTATION LEVEL STRU n`：`IFCOMP` / `IPFCOM` / `IASLCO` / `IPLCOM` / `IG2COM` /
+    /// `IFICOM` / `IJOCOM` / `IPRCOM`。
+    Structure,
+    /// `REPRESENTATION LEVEL CABLE n`：`ICABCO`。
+    Cable,
+}
+
+impl RepreDiscipline {
+    pub const COUNT: usize = 6;
+    pub const ALL: [RepreDiscipline; Self::COUNT] = [
+        RepreDiscipline::General,
+        RepreDiscipline::Pipe,
+        RepreDiscipline::Hvac,
+        RepreDiscipline::Nozzle,
+        RepreDiscipline::Structure,
+        RepreDiscipline::Cable,
+    ];
+
+    /// 在 [`Self::ALL`] 里的位置，给按学科缓存的表当下标。
+    pub fn index(self) -> usize {
+        match self {
+            RepreDiscipline::General => 0,
+            RepreDiscipline::Pipe => 1,
+            RepreDiscipline::Hvac => 2,
+            RepreDiscipline::Nozzle => 3,
+            RepreDiscipline::Structure => 4,
+            RepreDiscipline::Cable => 5,
+        }
+    }
+
+    /// `Q REPRE` 里那一行的写法（`Representation level PIPE 0`），报告记账用。
+    pub fn command(self) -> &'static str {
+        match self {
+            RepreDiscipline::General => "LEVEL",
+            RepreDiscipline::Pipe => "LEVEL PIPE",
+            RepreDiscipline::Hvac => "LEVEL HVAC",
+            RepreDiscipline::Nozzle => "LEVEL NOZZ",
+            RepreDiscipline::Structure => "LEVEL STRU",
+            RepreDiscipline::Cable => "LEVEL CABLE",
+        }
+    }
+
+    /// 覆盖本轮进程这一档级别的环境变量。
+    pub fn env_var(self) -> &'static str {
+        match self {
+            RepreDiscipline::General => "E3D_REPRE_LEVEL",
+            RepreDiscipline::Pipe => "E3D_REPRE_LEVEL_PIPE",
+            RepreDiscipline::Hvac => "E3D_REPRE_LEVEL_HVAC",
+            RepreDiscipline::Nozzle => "E3D_REPRE_LEVEL_NOZZ",
+            RepreDiscipline::Structure => "E3D_REPRE_LEVEL_STRU",
+            RepreDiscipline::Cable => "E3D_REPRE_LEVEL_CABLE",
+        }
+    }
+
+    /// 缺省级 = ams7997 那批 TTY 基线导出时 `Q REPRE` 打出来的数：宏设了 `LEVEL 6` 与
+    /// `LEVEL HVAC 6`，其余停在 `LEVINI` 的 0。GUI / addin 会话另有一套（管道通常 6），
+    /// 对拍那类基线用 [`Self::env_var`] 覆盖。
+    pub fn default_level(self) -> u32 {
+        match self {
+            RepreDiscipline::General | RepreDiscipline::Hvac => 6,
+            RepreDiscipline::Pipe
+            | RepreDiscipline::Nozzle
+            | RepreDiscipline::Structure
+            | RepreDiscipline::Cable => 0,
+        }
+    }
+}
+
+/// MODCMP 的 noun 分派。`under_hvac` 是 `IHVCOM` 的 `CLIMBS` 那一半——属主链上有 `HVAC`。
+///
+/// 顺序照 MODCMP：NOZZ 族 → `IHVCOM` → `IPCOMP` / `IHCOMP` → 结构族 → `ICABCO` → 几何集成员
+/// （直接当元素建时按管道级）→ 兜底通用级。所以同时带 `IPFCOM` 与 `ICABCO` 的 `CTRAY` 在
+/// 这里归结构级（[`dictionary_composite_category`] 把它记在桥架账上是另一回事）。`ICOCOM`
+/// （SCOM）在 MODCMP 里给 -1 即不判级，SCOM 不会作为被建元素出现，这里落兜底。`IASLCO`
+/// 不在家族矩阵里（矩阵里没有 noun 只带它），列出来只为与 MODCMP 逐位对照。
+pub fn repre_discipline(noun: &str, under_hvac: bool) -> RepreDiscipline {
+    let noun = noun.trim().to_ascii_uppercase();
+    if matches!(noun.as_str(), "NOZZ" | "ELCONN" | "EQUCOM") {
+        return RepreDiscipline::Nozzle;
+    }
+    let families = noun_dictionary().get(&noun).map(|row| &row.families);
+    let has = |family: &str| families.is_some_and(|set| set.contains(family));
+    let is_component = has("IPCOMP") || has("IHCOMP");
+    if under_hvac && is_component {
+        return RepreDiscipline::Hvac;
+    }
+    if is_component {
+        return RepreDiscipline::Pipe;
+    }
+    if [
+        "IFCOMP", "IPFCOM", "IASLCO", "IPLCOM", "IG2COM", "IFICOM", "IJOCOM", "IPRCOM",
+    ]
+    .iter()
+    .any(|family| has(family))
+    {
+        return RepreDiscipline::Structure;
+    }
+    if has("ICABCO") {
+        return RepreDiscipline::Cable;
+    }
+    if has("IGMCOM") || has("INGCOM") {
+        return RepreDiscipline::Pipe;
+    }
+    RepreDiscipline::General
+}
+
+#[cfg(test)]
+mod repre_discipline_tests {
+    use super::{RepreDiscipline, repre_discipline};
+
+    #[test]
+    fn modcmp_dispatch_by_noun_and_hvac_ancestry() {
+        assert_eq!(repre_discipline("VALV", false), RepreDiscipline::Pipe);
+        assert_eq!(repre_discipline("COUP", false), RepreDiscipline::Pipe);
+        // 风管 STRT/BEND 与管道构件同带 IPCOMP，靠属主链分档（IHVCOM = PRMF ∧ CLIMBS HVAC）。
+        assert_eq!(repre_discipline("STRT", true), RepreDiscipline::Hvac);
+        assert_eq!(repre_discipline("BEND", true), RepreDiscipline::Hvac);
+        assert_eq!(repre_discipline("BEND", false), RepreDiscipline::Pipe);
+        // 吊架构件（IHCOMP）与管道构件同一档。
+        assert_eq!(repre_discipline("HELE", false), RepreDiscipline::Pipe);
+        assert_eq!(repre_discipline("NOZZ", false), RepreDiscipline::Nozzle);
+        assert_eq!(repre_discipline("FLOOR", false), RepreDiscipline::Structure);
+        assert_eq!(repre_discipline("SCTN", false), RepreDiscipline::Structure);
+        // MODCMP 先问 IPFCOM 再问 ICABCO：CTRAY 归结构级，只带 ICABCO 的 CWAY 才是桥架级。
+        assert_eq!(repre_discipline("CTRAY", false), RepreDiscipline::Structure);
+        assert_eq!(repre_discipline("CWAY", false), RepreDiscipline::Cable);
+        assert_eq!(repre_discipline("BOX", false), RepreDiscipline::General);
+        assert_eq!(repre_discipline("NCYL", false), RepreDiscipline::General);
+        assert_eq!(repre_discipline("EQUI", false), RepreDiscipline::General);
+        assert_eq!(repre_discipline("BOX", true), RepreDiscipline::General);
+    }
+
+    #[test]
+    fn tty_baseline_defaults_only_lift_level_and_hvac() {
+        for discipline in RepreDiscipline::ALL {
+            let lifted = matches!(discipline, RepreDiscipline::General | RepreDiscipline::Hvac);
+            assert_eq!(
+                discipline.default_level(),
+                if lifted { 6 } else { 0 },
+                "{discipline:?}"
+            );
+        }
+        let indices: Vec<usize> = RepreDiscipline::ALL.iter().map(|d| d.index()).collect();
+        assert_eq!(indices, (0..RepreDiscipline::COUNT).collect::<Vec<_>>());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

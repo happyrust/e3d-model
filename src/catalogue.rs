@@ -18,6 +18,7 @@ use e3d_io::record::catalogue_eval::AttributeNumber;
 use e3d_io::record::descriptor::DescriptorValue;
 
 use crate::catalogue_point::{CatalogueAxis, catalogue_component, resolve_catalogue_axis};
+use crate::category::{RepreDiscipline, repre_discipline};
 use crate::discretise::{FilletVertex, flatten_ring};
 use crate::elmodl::{GeneratedElement, GeometryId, ModelError};
 use crate::primitive_instance::instantiate_box;
@@ -497,23 +498,61 @@ pub struct CatalogueMemberBuild {
     pub no_shape: Option<String>,
 }
 
-/// 表现级（`REPRE LEVEL`）。几何集成员的 `LEVE=[lo,hi]` 与它比较决定画不画。
+/// 表现级（`REPRESENTATION LEVEL …`）按学科分六档，见 [`RepreDiscipline`]。
 ///
-/// 默认 6：E3D GUI 交互与 `GenModelRvmExport` addin 导出（`GENMODEL_RVM_LEVEL=6`）
-/// 都在这一级。TTY 裸会话实测在 0 级（`1RX07-LCT.rvm`：同一目录件族只出
-/// `LEVE=[0,0]` 的 CABLEWAY 盒，`[1,10]` 的 BOARD/RESERVED 全不在）。
-/// 对拍不同口径的基准时用 `E3D_REPRE_LEVEL` 覆盖本轮进程。
+/// 每档一个数，进程内缓存：环境变量 [`RepreDiscipline::env_var`] 覆盖，否则
+/// [`RepreDiscipline::default_level`]——ams7997 那批 TTY 基线的 `Q REPRE` 口径：`LEVEL 6`、
+/// `LEVEL HVAC 6`，`PIPE / NOZZ / STRU / CABLE` 停在 `LEVINI` 的 0。以前这里只有一个数
+/// （默认 6，`E3D_REPRE_LEVEL`），把管道构件也放在 6 级——COUP `/ABCF331DF` 两片 LEVE (6,8)
+/// 的 LSNO「E3D 不画、我们画」就是这么来的；同一口径下风管的 32 件 (6,10) 又必须是 6 级，
+/// 一个数管不住两边（`evidence/20260902-repre-level-tty-experiments/`）。GUI / addin 导出
+/// （`C-IY-1R330-B.rvm`，`GENMODEL_RVM_LEVEL=6`）管道在 6 级，对拍那类基线设
+/// `E3D_REPRE_LEVEL_PIPE=6`。
 ///
-/// 设计侧负体的 DRWAND 门（`elmodl::design_leve_admits`）读的也是这一个数——Core3D 里
-/// 两条路共用同一组 `rules/STYSET` 全局，这里就不许长出第二份「当前表现级」。
-pub(crate) fn repre_level() -> u32 {
-    static LEVEL: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    *LEVEL.get_or_init(|| {
-        std::env::var("E3D_REPRE_LEVEL")
-            .ok()
-            .and_then(|value| value.trim().parse().ok())
-            .unwrap_or(6)
-    })
+/// 设计侧负体的 DRWAND 门（`elmodl::design_leve_admits`）与目录成员的显示过滤读的是同一张表
+/// （[`repre_level_of`]）——Core3D 里 MODCMP 交给 ELMODL 的就是同一个数，这里不许长出第二份。
+pub(crate) fn repre_level_for(discipline: RepreDiscipline) -> u32 {
+    static LEVELS: std::sync::OnceLock<[u32; RepreDiscipline::COUNT]> = std::sync::OnceLock::new();
+    LEVELS.get_or_init(|| {
+        let mut levels = [0u32; RepreDiscipline::COUNT];
+        for discipline in RepreDiscipline::ALL {
+            levels[discipline.index()] = std::env::var(discipline.env_var())
+                .ok()
+                .and_then(|value| value.trim().parse().ok())
+                .unwrap_or_else(|| discipline.default_level());
+        }
+        levels
+    })[discipline.index()]
+}
+
+/// 被建元素按 MODCMP 落的学科：noun 分派 + 属主链上是否有 `HVAC`（`IHVCOM` 的 `CLIMBS`）。
+pub(crate) fn repre_discipline_of(el: &DbElement) -> Result<RepreDiscipline, ModelError> {
+    let noun = el.element_type()?;
+    Ok(repre_discipline(&noun, has_hvac_ancestor(el)))
+}
+
+/// 被建元素的表现级：[`repre_discipline_of`] 那一档的数。
+pub(crate) fn repre_level_of(el: &DbElement) -> Result<u32, ModelError> {
+    Ok(repre_level_for(repre_discipline_of(el)?))
+}
+
+/// `nounlib/IHVCOM` 的 `CLIMBS(HVAC)`：沿属主链找 `HVAC`。读不出属主（根、悬空、库未注册）
+/// 按「不在风管下」——那是管道库的常态形态，不能因为它把整条管道链判成风管。
+fn has_hvac_ancestor(el: &DbElement) -> bool {
+    let mut current = el.clone();
+    for _ in 0..64 {
+        let owner = match current.owner() {
+            Ok(Some(owner)) if owner.refno() != current.refno() => owner,
+            _ => return false,
+        };
+        match owner.element_type() {
+            Ok(noun) if noun.trim().eq_ignore_ascii_case("HVAC") => return true,
+            Ok(_) => {}
+            Err(_) => return false,
+        }
+        current = owner;
+    }
+    false
 }
 
 /// E3D 的几何集成员显示过滤（GTGEOM 侧 `sub_107149B0` 那一签：
@@ -543,12 +582,14 @@ pub(crate) fn repre_level() -> u32 {
 /// 对拍托盘语料时若 RESERVED 盒对不上，先查那次导出的 REPR 设置，别回头改这里。
 /// HANG 24381/177986 的 HELEMENT 把 `CLFL=true` 的三个 SCYL 和一个 SEXT 全部导出——
 /// 它们 `TUFL=true`，本筛照画；"CLFL 即隐藏"仍然是错的读法。
-fn display_filtered(primitive: &DbElement) -> Result<Option<&'static str>, ModelError> {
+///
+/// `level` 是**成员**那一档的表现级（[`repre_level_of`]）：同一 GMSE 被管道构件与风管构件
+/// 共用时，两边按各自的 `LEVEL PIPE` / `LEVEL HVAC` 筛。
+fn display_filtered(primitive: &DbElement, level: u32) -> Result<Option<&'static str>, ModelError> {
     if let Some(DescriptorValue::RawWords(words) | DescriptorValue::WordArray(words)) =
         primitive.attribute("LEVE")?
         && let (Some(&lo), Some(&hi)) = (words.first(), words.get(1))
     {
-        let level = repre_level();
         if lo > level || (hi != 0 && hi < level) {
             return Ok(Some("leve"));
         }
@@ -638,18 +679,21 @@ pub fn model_catalogue_member_with_cache(
     let mut diagnostics = Vec::new();
     let mut saw_display_primitive = false;
     let mut all_display_primitives_are_clfl = true;
+    // 表现级按成员的学科取（MODCMP：管道构件 `LEVEL PIPE`、风管 `LEVEL HVAC`…），整只成员一个数。
+    let member_discipline = repre_discipline_of(member)?;
+    let member_level = repre_level_for(member_discipline);
 
     for primitive in geometry.members()? {
         primitives += 1;
         let primitive_noun = primitive.element_type()?;
         // LINE 成员本来就只记账不建体，不进显示过滤，保住 centre_lines 的账目口径。
         if primitive_noun != "LINE"
-            && let Some(reason) = display_filtered(&primitive)?
+            && let Some(reason) = display_filtered(&primitive, member_level)?
         {
             display_filter_notes.push(format!(
-                "catalogue primitive {} noun {primitive_noun} display-filtered by {reason} (repre level {})",
+                "catalogue primitive {} noun {primitive_noun} display-filtered by {reason} (repre {} {member_level})",
                 primitive.refno(),
-                repre_level(),
+                member_discipline.command(),
             ));
             continue;
         }

@@ -20,7 +20,7 @@ use e3d_io::db_element::{DbElement, DbElementError};
 use e3d_io::record::descriptor::DescriptorValue;
 use e3d_io::refno::RefNo;
 
-use crate::catalogue::{CatalogueMeshCache, model_catalogue_member_with_cache, repre_level};
+use crate::catalogue::{CatalogueMeshCache, model_catalogue_member_with_cache, repre_level_of};
 use crate::category::{Category, CompositeFamily, Prim, classify};
 use crate::discretise::{flatten_ring, has_core3d_skipped_link};
 use crate::extrusion_reuse::{ExtrusionVariant, cached_extrusion};
@@ -309,7 +309,9 @@ pub fn model_element_with_cache(
     // 是 E3D 同样不切的刀——记进 negatives_skipped 带上区间与当前级，RVM 对拍时
     // 体积差就从这一行归因（evidence/20260902-drwant-stylset-level-rule §4–5）。
     // 门放在实例化决策之前：全部刀都被挡下的正体没有布尔参与者，照旧可以实例化。
-    let level = repre_level();
+    // 级按宿主的学科取（MODCMP 交给 ELMODL 的那一个数：设计基本体 / 负体走通用档
+    // `REPRESENTATION LEVEL n`，NOZZ 走 `LEVEL NOZZ`），与目录成员的显示过滤同一张表。
+    let level = repre_level_of(el)?;
     let mut skipped = Vec::new();
     negatives.retain(|neg| {
         let (lo, hi) = negative_leve(neg);
