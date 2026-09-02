@@ -56,12 +56,12 @@ implied_tubes 3172 中 built 334、catalogue_od 2777、bore_fallback 50、missin
 | 968617 / 643505 | **SREV / NSRE** | `sub_103B81CC`（`pplib/QSSREV`）→`sub_10715170`+`sub_10403110`+GMAMEM | 环组回转：PANG 缺省 360、钳 ±360、负角相位 +180；\|角\|>180 且 UQMODN 条件成立时劈两段回转 GMAMEM 组装 | ❌ **缺** | **SREV 425** |
 | 785962 / 1026230 | SCYL / NSCY | `sub_103BF3FC` +0.01 | 圆柱（PDIS/PHEI） | ✅（NSCY 作 SBOX 刀） | — |
 | 785955 / 1026041 | LCYL / NLCY | `sub_103C0374`（QLCYLI）+0.01 | 圆柱（两距 PTDI/PBDI） | ✅（NLCY 作 SBOX 刀） | — |
-| 837417 / 821192 | LSNO / NLSN | `sub_103BFFC4` +0.01 | 锥台管嘴（两径两距+POFF） | ✅ 正体（913583b 经 snout 求值器） | — |
+| 837417 / 821192 | LSNO / NLSN | `sub_103BFFC4` +0.01 | 锥台管嘴（两径两距+POFF） | ✅ 正体（913583b 经 snout 求值器；2026-09-02 正体分段改到 libgm 曲面口径 `cylinder_segments(大端半径)`，法兰环 16 → 48 段，RVM 逐顶点 ≤ 0.0022 mm） | — |
 | 818038 / 829400 | SCON / NSCO | `sub_103BFE40` +0.01 | 圆锥（PDIA/PDIS） | ✅ 正体（snout 求值器 dtop=0 路） | — |
 | 701101 / 860747 | SSPH / NSSP | `sub_103C2480`（QSSPHE） | 球 | ✅ 正体 | — |
-| **912106** | **SDIS**（初版漏记的第 20 臂） | `sub_103C25E0`（`pplib/QSDISC`） | 圆盘：PDIA + PAXI + 沿轴 PDIS 平移 | ❌ **缺** | 0（本库） |
-| 702883 / 908861 | **SDSH / NSDS** | `sub_103C0CBC`（`pplib/QSDISH`） | 碟形封头：带符号深度（≤0 翻轴取反）+ 两个绝对值参数 + PAXI/PDIS | ❌ **缺**（`solid::revolve_rings` 可复用） | 0（本库） |
-| 599770 / 782015 | **SSLC / NSSL** | `sub_103C0514`（7 出参，4 角） | 斜切圆柱 | ❌ **缺** | 0（本库） |
+| **912106** | **SDIS**（初版漏记的第 20 臂） | `sub_103C25E0`（`pplib/QSDISC`） | 圆盘：PDIA + PAXI + 沿轴 PDIS 平移，形体 `gm_CreateCylinder(PDIA/2, 1.0)`（`unk_10B4E108`=1.0） | ✅（2026-09-02：`evaluate_sdis`，与 SCYL 共一张 Cylinder 网格键）。**ams7997 的 233 件全是 `TUFL=false/CLFL=true` 中心线标记，E3D 一件不导出**，现由表现过滤（`TUFL=false` 一律不画，标签 `centreline-only`）收走，本库不再进臂 | ~~SDIS 233~~ → **0** |
+| 702883 / 908861 | **SDSH / NSDS** | `sub_103C0CBC`（`pplib/QSDISH`） | 碟形封头：带符号 PHEI（≤0 走 HCHECK 翻轴、PDIS 取反）+ \|PDIA\|/\|PRAD\| + PAXI/PDIS；CRCATI 三路：PRAD>0 折边碟 `CREDSH`→`gm_CreateEllipticalDish(r,h,k)`、PRAD≤0 球形碟、PHEI=0 退成 1 mm 圆盘 | ✅（2026-09-02：`evaluate_sdsh` + `solid::spherical_dish_solid/elliptical_dish_solid`，折边半径 `dish_knuckle_radius` 照 CREDSH，PRAD 只当开关）。RVM 逐顶点：15 只碟（VALV/TRAP/CAP）露在外面的 E3D 顶点到我们表面 ≤ 0.85 mm | ~~SDSH 237~~ → **0** |
+| 599770 / 782015 | **SSLC / NSSL** | `sub_103C0514`（7 出参，4 角） | 斜切圆柱：标架 `ORIMAT` 后被 **`CSRTAX` 整个覆盖**（tie-break 与 ORIMAT 不同，水平轴分道），`z_top = +h/2 + x·tan(PXTS) + y·tan(PYTS)`、`z_bot = −h/2 + x·tan(PXBS) + y·tan(PYBS)`；角度折回一次，折后 \|角\|≥90° 空面片 | ✅（2026-09-02：`evaluate_sslc` + `catalogue::csrtax` + `solid::slope_ended_cylinder_solid`）。RVM 逐顶点：33 只 HVAC BEND、157 只斜切 Snout、13816 个 E3D 顶点到我们表面 **≤ 0.0033 mm** | ~~SSLC 275~~ → **0** |
 | 841366 / 927815 | SCTO / NSCT | `sub_103C0E84` | 圆环段 | ✅ 正体 | — |
 | 841771 / 938750 | SRTO / NSRT | `sub_103C0FA0` | 矩环段 | ✅ 正体 | — |
 | 904404 / 1035518 | LPYR / NLPY | `sub_103C07B4`（QLPYRA） | 棱台 | ✅ 正体 | — |
@@ -120,12 +120,41 @@ CRCATI 的圆柱/锥族负臂（SCON/NSCO、SCYL/NSCY、LSNO/NLSN、LCYL/NLCY）
 - **G0-1b SREV/NSRE：目录回转体（实测 425 次）**。QSSREV 语义已反编译在案（§2.1）：
   PANG 缺省 360、钳 ±360、负角相位 +180、>180° 的双段劈分；`solid::revolve_rings` 与
   设计侧 REV 求值可复用，环组采集与 SEXT 同源（`sub_10715170` 同一个 profile 组装器）。
-- **G0-1c 低频缺臂**——**语料已到位，不再是"等语料"**（2026-09-01 深夜，ams7997 全量
+- ~~**G0-1c 低频缺臂**——**语料已到位，不再是"等语料"**（2026-09-01 深夜，ams7997 全量
   实测，evidence/20260901-g02-postfix-baseline）：`is not implemented` 残余
   **SSLC 275 / SDSH 237 / SDIS 233**（另 NSRT 8、SREV 4 两笔零头待 NSEX/SREV 落地方
   复核）。三臂反编译语义均在案（§2.1：QSDISH 翻轴、SSLC helper `0x103C0514` 四角、
   QSDISC `0x103C25E0` 圆盘），`solid::revolve_rings`/snout 可复用——可以排期动手了。
-  当初"本库实测 0 次"只量了 ams8000。
+  当初"本库实测 0 次"只量了 ams8000。~~
+  ✅ **已完成（2026-09-02 上午）**：ams7997 `is not implemented` 753 → **8**（只剩 NSRT
+  那 8 件顶层负体），`failed` 0、账平；三臂 275/237/233 件全部求值成功、零 local failure。
+  证据与脚本在 `evidence/20260902-g01c-sslc-sdsh-sdis/`。要点：
+  - **SSLC 标架必须用 `CSRTAX`**（`core.dll 0x560ad30`），不是 ORIMAT——两者只差副轴
+    tie-break，竖直轴同解、水平轴分道，四个斜切角是相对 CSRTAX 的 X/Y 定义的。旧 gen-model
+    在 24381/47066 上反复对不上的根子就在这。RVM 逐顶点 33 BEND / 157 Snout ≤ 0.0033 mm。
+  - **SDSH 的 PRAD 只是开关**：折边半径由 `CREDSH` 从 r/h 算出（`k = h/((r−h)/√(r²+h²)+1)`），
+    数值本身不进几何；`PHEI=0` 退成与 SDIS 同一条 1 mm 圆盘。
+  - **SDIS 在本语料一件都不该画**：233 件全是 `OBST 0 / TUFL false / CLFL true`——Paragon
+    手册 6.2/6.3 里"只在 `REPR CL ON` 下画"的中心线标记（手册 TEE 例子给中心线小球 SSPH
+    用的正是这组旗）。E3D RVM 导出（tube on / CL off）169 个配对成员里 0 只圆盘。
+  - **表现过滤改成手册字面口径：`TUFL=false` 一律不画**（2026-09-02 中午拍板），理由标签分
+    `obst`（OBST=2）/ `centreline-only`（CLFL=true）/ `tube-off`（其余，典型是 OBST=1 的
+    CLASH/预留盒）三档只为账目可读。ams7997 RVM 4871 个配对成员的 AABB：base
+    exact 1720 / chord 1281 / off 1870 → `centreline-only` 1781 / 1347 / 1743 →
+    **`TUFL=false` 一律不画 1909 / 1361 / 1601**，两步合计 269 件变好、**0 件变差**；
+    3074 个按图元导出的成员逐 kind 计数对上 E3D 的 2508 → 2972 → **3034**。DAMP 的
+    `/RVCD-CLASH` 盒收走后 77 只 DAMP 从全 off 变成 exact 62 / chord 13 / off 2，手柄碟
+    露出来逐顶点 ≤ 0.93 mm。**未消化的反例**：C-IY 基准里 `OBST=1/TUFL=false` 的 RESERVED
+    盒被导出（addin 导出，`REPR OBST` 口径可能不同）——对拍托盘语料时若对不上先查那次
+    导出的 REPR 设置。
+  - **顺手修掉的 LSNO 臂口径**（2026-09-02 中午）：目录 LSNO/SCON 正体原来借设计侧 SNOU 的
+    `snout_segments`（5 mm，RVM FacetGroup 口径），HVAC BEND 的法兰环 `LEAJ1/2`（r=215/180）
+    只剩 16 段、离 E3D 的参数化 Snout 最大 3.7 mm，`LNOT` 1 mm 圆盘看着像沿轴偏了 1 mm 也是
+    同一件事。现在走 `snout_solid_with_segments(…, cylinder_segments(大端半径))`（libgm 曲面
+    口径 0.5 mm，`SNOUT_TESSELLATION_VERSION` 2）：33 只 BEND 的 132 只 LSNO Snout、11880 个
+    E3D 顶点到我们表面 **≤ 0.0022 mm**；设计侧 SNOU/CONE 与负体刀仍用 5 mm 那条。
+  - **遗留给别的臂**：`ARRJ1` CLFL SCYL 环方向不对（CLFL 中心线标架那条，正在被并行会话重做），
+    45 只 BEND / 30 只 ELBO 成员级 AABB 剩下的 40 mm 全是它。
 - **G0-2 管道端到端 RVM 验证**：生成侧基线已刷新到 c13f836 之后
   （evidence/20260901-g02-postfix-baseline）：ams8000 库注册缺口清零、TUBI built
   **553**（acp000 目录解活一批 P 点端）、missing_ppoint 11；ams7997 failed=0、
@@ -173,7 +202,8 @@ CRCATI 的圆柱/锥族负臂（SCON/NSCO、SCYL/NSCY、LSNO/NLSN、LCYL/NLCY）
 
 - **G2-5 目录求值样板收口**：`model_catalogue_member_with_cache` 的「取网格→放置去重→
   摆放」块已手抄 8 份，抽成一个 `place_cached_part`。**排在 G0-1a/1b 落地之后**做——
-  那两条臂还要往这个 match 里加分支，先抽会撞车。
+  那两条臂还要往这个 match 里加分支，先抽会撞车。（G0-1c 落地时已把 `place_cached_part`
+  抽出来给 SSLC/SDSH/SDIS 三条新臂共用；旧的 8 份手抄还在，收口就是把它们切到这一份。）
 - **G2-6 复用面扩展**：回转体（G0-1b 落地时顺带进 `extrusion_reuse` 同款池）、隐式管身
   （TUBI 3172 根，直径×长度族，`route::build_tube` 侧）、非 BOX/CYLI 基本体的真实尺寸
   记忆化。边界纪律照抄：布尔参与者烘焙直建（枚举顺序案例见 evidence/20260901-model-reuse
@@ -199,7 +229,9 @@ CRCATI 的圆柱/锥族负臂（SCON/NSCO、SCYL/NSCY、LSNO/NLSN、LCYL/NLCY）
 5. **G0-2 / G0-3 管道端到端对拍**（核心验收）：生成侧基线已就位
    （evidence/20260901-g02-postfix-baseline），剩 ams8000 管道区 / ams7997 支撑区的
    TTY RVM 导出（人工，E3D 侧）+ `rvm_compare` 逐件裁决。
-6. P1 / P2 / P2' 按上表推进；G0-1c 低频臂等语料。
+6. ~~**G0-1c 低频臂 SSLC/SDSH/SDIS**~~ ✅ 已完成（2026-09-02 上午，§三 G0-1c；ams7997
+   `is not implemented` 753 → 8，只剩第 3 条的 NSRT 顶层负体）。
+7. P1 / P2 / P2' 按上表推进。
 
 **验收判据（每一步都必须过）**：
 
