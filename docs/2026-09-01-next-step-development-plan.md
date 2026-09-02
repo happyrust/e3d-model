@@ -193,8 +193,10 @@ CRCATI 的圆柱/锥族负臂（SCON/NSCO、SCYL/NSCY、LSNO/NLSN、LCYL/NLCY）
     GUI / addin 基线 `C-IY-1R330-B` 是 obst on 导的：每只 FTUBE 多一只 `OBST=1/TUFL=false` 的净空盒（`SBOX 13244/51888`，
     `PZLE = ATTRIB RPRO CLEA` = 100，坐在托盘顶上）——那 35 对 AABB 差的 100 mm 全是它，不是 `ATTRIB RPRO` 求不出（DTSE 18 行
     e3d-io 都读得到，盖板 `COVR × B` 因 `DESP[3]=0` 为零高与 E3D 一致）。`E3D_REPRE_LEVEL_PIPE=6 E3D_REPRE_OBST=on` 下
-    FTUB **17/17 exact**；剩 12 只 BEND（RVM 导成 3 个 FacetGroup 的那些，9 个的 6 只全 exact）局部 x 差 ±100，是
-    `/ACP1000-TBR-100` 8 只 SEXT 在非直角弯头上的求值 / 摆放，另立一臂。ams7997 缺省口径不变。
+    FTUB **17/17 exact**；剩 12 只 BEND（RVM 导成 3 个 FacetGroup 的那些，9 个的 6 只全 exact）局部 x 差 ±100——**查清是 8/4 那份
+    addin 基线缺 `/ACP1000-TBR-100` 的两片拼接板**（L/R_SPLICE_PLATE：30 mm 宽、两腿各 PARA[3]/2 = 100 的折带），不是 gen 多画：
+    今日 E3D TTY 以 `LEVEL PIPE 6 + REPRE OBST ON` 重导同一支，BEND 1 局部包围盒与 gen 逐位相同，**35/35 exact、最大差 0.003 mm**
+    （`evidence/20260902-repre-level-tty-experiments/` §9）；gen-model `test_data/rvm/C-IY-1R330-B.rvm` 该重导。ams7997 缺省口径不变。
   - **轴失败的报错文案拆开**（2026-09-02 下午，随 `2be5ed3` 落地；验证在 `evidence/20260902-g01c-tufl-residual/` §3.1）：
     原来 `Pn` 解不出一律报「缺属性 PAXI」，现在 `catalogue_point::CatalogueAxisFailure` 分「P5 不在 PTSET（有 P1 P2 …）」
     （E3D 也不画）、「P7（PTCA）方向解不出」、「位置求不出」等六句写进 local failure 的 detail，`缺属性` 只留给属性真不在的
