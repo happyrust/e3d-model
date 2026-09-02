@@ -585,4 +585,31 @@ mod tests {
         fn assert_object_safe(_: &dyn PPointResolver) {}
         assert_object_safe(&CataloguePoints);
     }
+
+    /// 账目靠这几句话分成因：「P 点不在 PTSET」（E3D 也不画）与「点在、方向 / 位置
+    /// 解不出」（我们的解码缺口）。`evidence/20260902-g01c-tufl-residual/scripts/`
+    /// 的普查脚本按字面 grep，措辞一变账就合回一类。
+    #[test]
+    fn axis_failures_name_their_cause() {
+        let missing = CatalogueAxisFailure::PointMissing {
+            number: 5,
+            available: vec![1, 2, 3, 4, 20],
+        };
+        assert_eq!(missing.to_string(), "P5 不在 PTSET（有 P1 P2 P3 P4 P20）");
+        let empty_set = CatalogueAxisFailure::PointMissing {
+            number: 5,
+            available: Vec::new(),
+        };
+        assert_eq!(empty_set.to_string(), "P5 不在 PTSET（PTSET 是空的）");
+        let direction = CatalogueAxisFailure::PointDirection {
+            number: 7,
+            noun: "PTCA".into(),
+        };
+        assert_eq!(direction.to_string(), "P7（PTCA）方向解不出");
+        let position = CatalogueAxisFailure::PointPosition {
+            number: 7,
+            noun: "PTCA".into(),
+        };
+        assert_eq!(position.to_string(), "P7（PTCA）位置求不出");
+    }
 }

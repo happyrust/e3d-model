@@ -178,6 +178,12 @@ CRCATI 的圆柱/锥族负臂（SCON/NSCO、SCYL/NSCY、LSNO/NLSN、LCYL/NLCY）
     exact/chord/off 1910/1361/1600 → 1940/1395/1536，0 件变差。剩那 1 只 COUP `/ABCF331DF`
     的两片 LEVE (6,8) LSNO E3D 不画、我们画，DRWANT 闭区间 + level 6 说该画，未定案（语料里
     (7,10)/(8,10) 全是 OBST=1，分不清"level 6"与"level 9/10 + obst off"，要 E3D 侧换 level 导一次）。
+  - **轴失败的报错文案拆开**（2026-09-02 下午，随 `2be5ed3` 落地；验证在 `evidence/20260902-g01c-tufl-residual/` §3.1）：
+    原来 `Pn` 解不出一律报「缺属性 PAXI」，现在 `catalogue_point::CatalogueAxisFailure` 分「P5 不在 PTSET（有 P1 P2 …）」
+    （E3D 也不画）、「P7（PTCA）方向解不出」、「位置求不出」等六句写进 local failure 的 detail，`缺属性` 只留给属性真不在的
+    图元；字面由单测 `axis_failures_name_their_cause` 钉住。HEAD `8b9de95` 重跑 ams7997：账未变（local failure 1157、
+    placed parts 25942），226 条轴失败全是「不在 PTSET」（PAXI 183 / PAAX 43，44 个成员），「方向解不出」0 条；
+    3253 个按图元导出成员里的 124 条与 GMSE/PTSE 转储的独立判定逐行一致。
   - **遗留给别的臂**：`ARRJ1` CLFL SCYL 环方向不对（CLFL 中心线标架那条，正在被并行会话重做），
     45 只 BEND / 30 只 ELBO 成员级 AABB 剩下的 40 mm 全是它。
 - **G0-2 管道端到端 RVM 验证**：生成侧基线已刷新到 c13f836 之后
