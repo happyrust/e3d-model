@@ -30,13 +30,13 @@ use e3d_io::db_element::{DbFilePin, DbFileResolver, DbSet, template_file_for};
 use e3d_io::engine::{ReadOnlyEngine, ScanTier};
 use e3d_io::refno::RefNo;
 use e3d_io::session::DbView;
-use e3d_model::category::is_model_unit;
+use e3d_model::category::{derives_implied_tubes, is_model_unit};
 use e3d_model::db_discovery::DirectoryDbResolver;
 use e3d_model::elmodl::{GeneratedElement, GeometryId};
 use e3d_model::increment::{collect_window, execute_plan, plan_update};
 use e3d_model::ledger::ChangeKind;
 use e3d_model::mesh::TriMesh;
-use e3d_model::pipeline::generate_subtree;
+use e3d_model::pipeline::{generate_subtree, route_tubes_of};
 use e3d_model::transform::local_placement;
 
 const AMS_DIR: &str = r"D:\AVEVA\Projects\E3D3.1\AvevaMarineSample\ams000";
@@ -919,6 +919,99 @@ fn the_affected_closure_reaches_both_owners_of_a_reparented_element() {
         BTreeSet::from([key(old_owner), key(new_owner)]),
         "两端根都要被判成受波及"
     );
+}
+
+/// **风管 BRAN 名下不派生隐式管身，管道 BRAN 照旧派生。** `BRAN` 一个 noun 两个学科共用
+/// （ams7997：HVAC 216 / PIPE 614），派生门因此不能只看 noun，得问带属主的
+/// [`derives_implied_tubes`]：`/-VES-E-4-L-2509`（`24381/30598`，属主 HVAC）在唯一一份
+/// HVAC RVM（`evidence/20260902-hvac-ctray-census/rvm-BRAN-24381-30598-primitives.json`，
+/// `repre tube on`）里只有 4 Box（STRT）+ 1 Pyramid（BRCO），没有任何圆柱；按 noun 派生会在
+/// HEAD→STRT1 与 STRT4→TAIL 各长出一根 r=580 的圆管（25.6 m + 17.5 m；全库 245 根、4.46 km，
+/// `evidence/20260902-ams7997-bran-audit`）。
+///
+/// 三处都要钉：谓词本身、增量走的 [`route_tubes_of`]、全量管线的路由容器臂——它们必须给
+/// 同一个答案，否则又是「全量说有、增量说没有」那类静默分歧。管道那一半拿同库同 noun 的
+/// `/6ZBR101MD-N310-01`（`24381/179302`，属主 PIPE）做对照：14 个槽位 10 个成管、4 个零长对接。
+#[test]
+fn hvac_owned_branches_derive_no_implied_tubes_but_pipe_branches_still_do() {
+    if !fixtures_present() {
+        return;
+    }
+    let attlib = shared_attlib();
+    let db_file = Path::new(AMS_DIR).join("ams7997_0001");
+    // 链头会话（`gen_ams` 默认钉的那一环，2026-09-02 是 106）；两条分支从建库起就没动过。
+    let sesno = *chain_of(&db_file)
+        .expect("ams7997 有会话链")
+        .first()
+        .expect("会话链非空");
+    let set = open_pinned(&attlib, &db_file, sesno);
+    let owner_noun = |refno: RefNo| {
+        set.element(refno)
+            .owner()
+            .expect("读属主")
+            .expect("有属主")
+            .element_type()
+            .expect("属主 noun")
+    };
+    let implied_tube_ids = |elements: &[GeneratedElement]| -> BTreeSet<GeometryId> {
+        elements
+            .iter()
+            .filter(|element| matches!(element.geometry_id, GeometryId::ImpliedTube { .. }))
+            .map(|element| element.geometry_id.clone())
+            .collect()
+    };
+
+    let duct = RefNo::new(24381, 30598);
+    assert_eq!(set.element(duct).element_type().unwrap(), "BRAN");
+    assert_eq!(owner_noun(duct), "HVAC", "样本前提：这条是风管分支");
+    assert!(
+        !derives_implied_tubes(&set.element(duct)).unwrap(),
+        "属主 HVAC 的 BRAN 不派生隐式管身"
+    );
+    assert!(
+        route_tubes_of(&set.element(duct)).unwrap().is_empty(),
+        "增量重算那条腿也不许给风管补管"
+    );
+    let outcome = generate_subtree(set.element(duct)).expect("风管分支全量生成");
+    assert!(
+        implied_tube_ids(&outcome.elements).is_empty(),
+        "全量管线不得为风管分支建隐式管身：{:?}",
+        implied_tube_ids(&outcome.elements)
+    );
+    assert_eq!(
+        outcome.report.implied_tubes.count, 0,
+        "风管分支的槽位不进管身账"
+    );
+    let mut by_noun: BTreeMap<&str, usize> = BTreeMap::new();
+    for element in &outcome.elements {
+        *by_noun.entry(element.noun.as_str()).or_insert(0) += 1;
+    }
+    assert_eq!(
+        by_noun,
+        BTreeMap::from([("BRCO", 1), ("STRT", 4)]),
+        "成员照常按目录件建模，与 RVM 的 4 Box + 1 Pyramid 一一对应；ATTA 无 SPRE 不出几何"
+    );
+
+    let pipe = RefNo::new(24381, 179302);
+    assert_eq!(set.element(pipe).element_type().unwrap(), "BRAN");
+    assert_eq!(owner_noun(pipe), "PIPE", "样本前提：这条是管道分支");
+    assert!(
+        derives_implied_tubes(&set.element(pipe)).unwrap(),
+        "属主 PIPE 的 BRAN 照旧派生隐式管身"
+    );
+    let incremental = route_tubes_of(&set.element(pipe)).expect("管道分支的管身");
+    assert_eq!(
+        incremental.len(),
+        10,
+        "这条支管 14 个槽位里 10 个成管、4 个零长对接"
+    );
+    let outcome = generate_subtree(set.element(pipe)).expect("管道分支全量生成");
+    assert_eq!(
+        implied_tube_ids(&outcome.elements),
+        implied_tube_ids(&incremental),
+        "全量管线与增量那条腿必须给出同一批管身键"
+    );
+    assert_eq!(outcome.report.implied_tubes.built, 10);
 }
 
 /// 在一个库的会话链上**二分**出「模型真的变过」的那一环。

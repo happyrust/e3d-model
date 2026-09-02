@@ -36,8 +36,8 @@ use crate::catalogue::{
 };
 use crate::catalogue_point::{CataloguePoints, tube_outer_diameter_from_stub};
 use crate::category::{
-    BuildDisposition, Category, CompositeFamily, decision, graphics_ignored_below, is_derived_unit,
-    is_model_unit,
+    BuildDisposition, Category, CompositeFamily, decision, derives_implied_tubes,
+    graphics_ignored_below, is_model_unit,
 };
 use crate::elmodl::{GeneratedElement, GeometryId, Modeled, model_element_with_cache};
 use crate::extrusion_reuse::ExtrusionReuseStats;
@@ -137,7 +137,8 @@ pub struct Report {
     /// 目录件记账：noun → 数量（二期 G4）。
     pub catalog_pending: BTreeMap<String, usize>,
     /// 路由容器记账：noun → 数量。BRAN/HANG/LUG/SUPC/TRUNNI 五族**都记**——
-    /// HANG 也在账上，只是它不派生管身（[`crate::category::is_derived_unit`]）。
+    /// HANG 与风管 BRAN（属主 HVAC）也在账上，只是不派生管身
+    /// （[`crate::category::derives_implied_tubes`]）。
     pub route_containers: BTreeMap<String, usize>,
     /// 图元容器记账：noun → 数量。[`Category::PrimitiveContainer`]，目前只有 `TMPL`。
     ///
@@ -340,7 +341,8 @@ pub fn generate_subtree_with_cache(
             }
             Category::RouteContainer => {
                 *report.route_containers.entry(noun.clone()).or_insert(0) += 1;
-                if is_derived_unit(&noun) {
+                // 风管分支（属主 HVAC）与 HANG 一样只下钻成员、不补管身，见谓词文档。
+                if derives_implied_tubes(&el)? {
                     let route = walk_route(&el)?;
                     let tubes = route.tubes.len();
                     report.implied_tubes.count += tubes;
@@ -532,8 +534,7 @@ fn decrement(ledger: &mut BTreeMap<String, usize>, noun: &str) {
 /// 记账用的 [`ImpliedTubes`] 在这里是**就地丢弃**的：增量报告有自己的账目口径，
 /// 这条只负责交出「该有哪几根、长什么样」。
 pub fn route_tubes_of(container: &DbElement) -> Result<Vec<GeneratedElement>, DbElementError> {
-    let noun = container.element_type()?;
-    if !is_derived_unit(&noun) {
+    if !derives_implied_tubes(container)? {
         return Ok(Vec::new());
     }
     let route = walk_route(container)?;

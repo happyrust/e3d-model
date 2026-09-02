@@ -16,6 +16,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
 
+use e3d_io::db_element::{DbElement, DbElementError};
+
 /// 一个 noun 的建模路径。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Category {
@@ -506,6 +508,12 @@ pub fn is_model_unit(noun: &str) -> bool {
 ///
 /// 理由与 [`is_model_unit`] 那段一字不差：往 [`Category`] 里加变体时，加的人必须当场
 /// 回答「它名下会不会派生出几何」。让编译器逼问，而不是指望人记得。
+///
+/// # 这只是 noun 那一半；管线与增量的门是 [`derives_implied_tubes`]
+///
+/// `BRAN` 一个 noun 两个学科共用：管道分支属主是 `PIPE`，风管分支属主是 `HVAC`，
+/// 而**风管没有隐式管身**。光看 noun 答不出来，所以真正放在派生门上的谓词是带元素的
+/// [`derives_implied_tubes`]，这里的 noun 判据是它的前半段。
 /// Route containers for which E3D actually synthesizes inter-member tube bodies.
 ///
 /// HANG deliberately stays a [`Category::RouteContainer`] so its PCLA/HELE members are
@@ -513,6 +521,40 @@ pub fn is_model_unit(noun: &str) -> bool {
 /// PCLAMP and HELEMENT groups. Treating those two support members as a pipe route creates
 /// a spurious 33.8m cylinder between otherwise independent catalogue instances.
 pub const DERIVED_ROUTE_CONTAINER_NOUNS: [&str; 4] = ["BRAN", "LUG", "SUPC", "TRUNNI"];
+
+/// 属主 noun 是它的路由容器**不派生**隐式管身：风管。
+///
+/// E3D HVAC 的直段是显式 `STRT`，构件之间的间隙只在数据一致性检查里报错、不补画；
+/// `GTTUBE` 的管身语义只属于管道那一支。唯一一份 HVAC RVM 参照
+/// （`evidence/20260902-hvac-ctray-census/rvm-BRAN-24381-30598-primitives.json`，导出时
+/// `repre tube on` + `export implied tube into separate containers`）里 `/-VES-E-4-L-2509`
+/// 只有 4 Box（STRT）+ 1 Pyramid（BRCO），没有任何圆柱；按 noun 派生的话，同一条分支会在
+/// HEAD→STRT1 与 STRT4→TAIL 各长出一根 r=580 的圆管（25.6 m + 17.5 m），ams7997 全库是
+/// 245 根、4.46 km（`evidence/20260902-ams7997-bran-audit`）。
+pub const NO_IMPLIED_TUBE_OWNER_NOUNS: [&str; 1] = ["HVAC"];
+
+/// 这个容器名下会不会派生隐式管身——管线的路由容器臂、增量的三处上卷 / 级联 / 重算
+/// **都问这一个**，两边各写一份门的下场见 [`is_model_unit`] 文档里那次 `SBFI` 漏件。
+///
+/// 两半：noun 在 [`DERIVED_ROUTE_CONTAINER_NOUNS`] 里（[`is_derived_unit`]），且属主不在
+/// [`NO_IMPLIED_TUBE_OWNER_NOUNS`] 里。属主读不出（根、悬空）按「不是风管」处理——
+/// 那是管道库的常态形态，不能因为它让管身整条链消失。
+pub fn derives_implied_tubes(container: &DbElement) -> Result<bool, DbElementError> {
+    if !is_derived_unit(&container.element_type()?) {
+        return Ok(false);
+    }
+    let owner_noun = match container.owner()? {
+        Some(owner) if owner.refno() != container.refno() => match owner.element_type() {
+            Ok(noun) => noun,
+            Err(DbElementError::NotFound { .. } | DbElementError::DbNotRegistered { .. }) => {
+                return Ok(true);
+            }
+            Err(error) => return Err(error),
+        },
+        _ => return Ok(true),
+    };
+    Ok(!NO_IMPLIED_TUBE_OWNER_NOUNS.contains(&owner_noun.trim().to_ascii_uppercase().as_str()))
+}
 
 pub fn is_derived_unit(noun: &str) -> bool {
     let noun = noun.trim().to_ascii_uppercase();

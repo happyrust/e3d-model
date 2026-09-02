@@ -7,11 +7,13 @@
 //! 与 BRAN 逐点同构，走法上**不要**为 HANG 另起分支（`task_plan.md` §2.6）。
 //!
 //! 但「槽位上补不补管身」不归这里管，归
-//! [`crate::category::DERIVED_ROUTE_CONTAINER_NOUNS`]：E3D 只为 BRAN/LUG/SUPC/
-//! TRUNNI 四族在成员间补管，**HANG 不补**（RVM 24381/177986 只导出 PCLAMP 与
-//! HELEMENT 两组几何；把两个独立支撑件当管路串起来会凭空得到一根 33.8m 的假管）。
-//! 管线与增量都按 [`crate::category::is_derived_unit`] 收口：HANG 不进本模块，
-//! 它的成员照常由通用遍历下钻、按目录件建模。
+//! [`crate::category::derives_implied_tubes`]：E3D 只为 BRAN/LUG/SUPC/TRUNNI 四族
+//! （[`crate::category::DERIVED_ROUTE_CONTAINER_NOUNS`]）在成员间补管，**HANG 不补**
+//! （RVM 24381/177986 只导出 PCLAMP 与 HELEMENT 两组几何；把两个独立支撑件当管路串
+//! 起来会凭空得到一根 33.8m 的假管），**属主是 HVAC 的风管 BRAN 也不补**（风管直段是
+//! 显式 STRT；RVM 24381/30598 只有 4 Box + 1 Pyramid，按 noun 补管会多出两根 r=580 的
+//! 20 多米圆管）。管线与增量都按那一个谓词收口：HANG 与风管 BRAN 不进本模块，
+//! 它们的成员照常由通用遍历下钻、按目录件建模。
 //!
 //! # 两端点有两种来源，可得性完全不同
 //!

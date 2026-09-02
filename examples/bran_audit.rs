@@ -11,8 +11,11 @@
 //!   有名有姓，算「有依据地没出」；其余没出几何的成员算缺口。
 //! - **槽位**（`walk_route` 的串接，ATTA 不推进链）：两端 P 点都解得出且长度 ≥ 1 mm 的
 //!   必须建成；`ZeroLength` 是正常的对接（FTUB↔FTUB）；`missing_ppoint` / `NoDirection` /
-//!   `NoRadius` / 头尾点解不出是缺口；两端通径不一致留痕。
+//!   `NoRadius` / 头尾点解不出是缺口（尾点未设导致的 `NoRadius` 归数据）；两端通径不一致留痕。
+//!   **属主是 `HVAC` 的分支反过来**：风管没有隐式管身，建出来的每一根都是缺陷。
 //! - **几何**：每件实体体积 > 0、AABB 有限、分量数 1（多分量记 warn）。
+//!
+//! 结论按属主 noun（PIPE / HVAC）分开汇总——`BRAN` 一个 noun 两个学科共用。
 //!
 //! ```text
 //! cargo run --release --example bran_audit -- --attlib <attlib.dat> --db <ams8000_0001> \
@@ -31,7 +34,7 @@ use e3d_io::refno::RefNo;
 use e3d_model::GeometryId;
 use e3d_model::catalogue::CatalogueMeshCache;
 use e3d_model::catalogue_point::CataloguePoints;
-use e3d_model::category::{Category, classify};
+use e3d_model::category::{Category, classify, derives_implied_tubes};
 use e3d_model::db_discovery::DirectoryDbResolver;
 use e3d_model::pipeline::{GenerationOutcome, generate_subtree_with_cache};
 use e3d_model::route::{
@@ -147,6 +150,9 @@ struct SlotRow {
 struct BranRow {
     refno: String,
     name: Option<String>,
+    /// 属主 noun（`PIPE` / `HVAC` / …）：同一个 `BRAN` noun 两个学科共用，ams7997 里
+    /// 管道与风管各占一半，不分开看数字就是两本账搅在一起。
+    owner_noun: String,
     head: bool,
     tail: bool,
     members: Vec<MemberRow>,
@@ -185,6 +191,15 @@ fn audit_bran(
 ) -> anyhow::Result<BranRow> {
     let bran = set.element(refno);
     let name = bran.stored_name()?;
+    let owner_noun = match bran.owner()? {
+        Some(owner) => owner.element_type()?,
+        None => "<none>".to_string(),
+    };
+    // 与生产同一个谓词：风管分支（属主 HVAC）没有隐式管身——直段是显式 STRT，E3D 对间隙
+    // 只报数据一致性错误、不补画（`evidence/20260902-hvac-ctray-census/
+    // rvm-BRAN-24381-30598-primitives.json` 只有 4 Box + 1 Pyramid）。这类容器的槽位只
+    // 列出来看间隙、不建；生产若建了任何一根就是缺陷。
+    let derives_tubes = derives_implied_tubes(&bran)?;
     let GenerationOutcome { elements, report } = generate_subtree_with_cache(bran.clone(), cache)?;
 
     // 成员 → 生成结果。
@@ -348,6 +363,16 @@ fn audit_bran(
                     row.outcome = "built".into();
                     row.length_mm = Some(*length);
                     row.radius_mm = Some(*radius);
+                    if !derives_tubes {
+                        problems.push(format!(
+                            "[bad] 槽位 {} → {} 不派生管身的容器（属主 {owner_noun}）却建了隐式管身（长 {length:.1}mm，r={radius:.1}）：E3D 对 HVAC 不画管身（rvm-BRAN-24381-30598 参照）",
+                            row.from, row.to
+                        ));
+                    }
+                } else if !derives_tubes {
+                    // 不派生管身的容器：槽位只记两端间距，供看风管间隙用，不算缺口。
+                    row.outcome = "not_derived".into();
+                    row.length_mm = Some((to.pos - from.pos).length());
                 } else {
                     match build_tube(from, to, tube_outer_diameter(None, None, to.bore)) {
                         TubeOutcome::Built(tube) => {
@@ -371,8 +396,22 @@ fn audit_bran(
                         }
                         TubeOutcome::NoRadius => {
                             row.outcome = "no_radius".into();
-                            problems
-                                .push(format!("[bad] 槽位 {} → {} 取不到半径", row.from, row.to));
+                            // 外径先取离开侧管子目录件、取不到回落到达侧通径；两边都没有只在
+                            // 到达端是通径 0 的容器尾点时出现——尾点没设（TPOS 原点、TBOR 0），
+                            // E3D 同样画不出零径管，是数据缺不是我们的账。
+                            let tail_unset = matches!(slot.to, RouteEnd::ContainerTail(_))
+                                && !to.bore.is_some_and(|bore| bore > 0.0);
+                            if tail_unset {
+                                problems.push(format!(
+                                    "[data] 槽位 {} → {} 尾点未设（TBOR 0 / 未设），两侧都没有外径来源",
+                                    row.from, row.to
+                                ));
+                            } else {
+                                problems.push(format!(
+                                    "[bad] 槽位 {} → {} 取不到半径",
+                                    row.from, row.to
+                                ));
+                            }
                         }
                         TubeOutcome::Failed(error) => {
                             row.outcome = format!("failed: {error}");
@@ -468,6 +507,7 @@ fn audit_bran(
     Ok(BranRow {
         refno: refno.to_string(),
         name,
+        owner_noun,
         head,
         tail,
         members,
@@ -582,6 +622,42 @@ fn main() -> anyhow::Result<()> {
         "路由成员 {members_total}（生成 {members_generated}，无依据缺口 {members_unexplained}）\n"
     ));
     summary.push_str(&format!("槽位结论 {outcome_counts:?}\n"));
+    // 按属主学科各记一行：同一库里 PIPE 与 HVAC 的 BRAN 对「隐式管身」的期待相反。
+    let mut owners: BTreeMap<&str, Vec<&BranRow>> = BTreeMap::new();
+    for row in &rows {
+        owners.entry(row.owner_noun.as_str()).or_default().push(row);
+    }
+    summary.push_str("按属主 noun：\n");
+    for (owner, group) in &owners {
+        let mut group_verdicts: BTreeMap<&str, usize> = BTreeMap::new();
+        let mut group_outcomes: BTreeMap<&str, usize> = BTreeMap::new();
+        let (mut total, mut generated, mut unexplained) = (0usize, 0usize, 0usize);
+        let mut built_length_mm = 0.0f64;
+        for row in group {
+            *group_verdicts.entry(row.verdict.as_str()).or_insert(0) += 1;
+            for slot in &row.slots {
+                *group_outcomes.entry(slot.outcome.as_str()).or_insert(0) += 1;
+                if slot.outcome == "built" {
+                    built_length_mm += slot.length_mm.unwrap_or(0.0);
+                }
+            }
+            for member in &row.members {
+                if member.station || member.noun == "ATTA" {
+                    total += 1;
+                    if member.generated {
+                        generated += 1;
+                    } else if member.reasons.is_empty() {
+                        unexplained += 1;
+                    }
+                }
+            }
+        }
+        summary.push_str(&format!(
+            "  {owner:<6} BRAN {:>4}  结论 {group_verdicts:?}  成员 {total}（生成 {generated}，无依据缺口 {unexplained}）  槽位 {group_outcomes:?}  建成管身合计 {:.1} m\n",
+            group.len(),
+            built_length_mm / 1000.0
+        ));
+    }
     summary.push_str("问题种类：\n");
     for (kind, count) in &problem_kinds {
         summary.push_str(&format!("  {count:>5}  {kind}\n"));
