@@ -14,6 +14,7 @@ use manifold_csg::Manifold;
 
 use e3d_io::db_element::DbElement;
 use e3d_io::db_param_env::DbElementParamEnv;
+use e3d_io::record::catalogue_eval::AttributeNumber;
 use e3d_io::record::descriptor::DescriptorValue;
 
 use crate::catalogue_point::{catalogue_axis, catalogue_component};
@@ -22,8 +23,10 @@ use crate::elmodl::{GeneratedElement, GeometryId, ModelError};
 use crate::primitive_instance::instantiate_box;
 use crate::route::orimat;
 use crate::solid::{
-    SolidError, box_solid, circ_torus_solid, csg_cylinder_solid, cylinder_segments, extrude_rings,
-    placed, pyramid_solid, rect_torus_solid, snout_solid, unit_sphere_solid,
+    SolidError, box_solid, circ_torus_solid, csg_cylinder_solid, cylinder_segments,
+    dish_knuckle_radius, elliptical_dish_solid, extrude_rings, placed, pyramid_solid,
+    rect_torus_solid, slope_ended_cylinder_solid, snout_solid_with_segments,
+    spherical_dish_solid, unit_sphere_solid,
 };
 use crate::transform::world_matrix;
 
@@ -37,6 +40,14 @@ const CYLINDER_TESSELLATION_VERSION: u32 = 1;
 const TORUS_TESSELLATION_VERSION: u32 = 1;
 const SPHERE_TESSELLATION_VERSION: u32 = 1;
 const PYRAMID_TESSELLATION_VERSION: u32 = 1;
+/// 2：目录 LSNO/SCON 正体从设计侧 SNOU 的 5 mm FacetGroup 口径改到 libgm 曲面口径
+/// （`cylinder_segments(大端半径)`），HVAC BEND 法兰环 16 段 → 48 段。
+const SNOUT_TESSELLATION_VERSION: u32 = 2;
+const SLOPE_CYLINDER_TESSELLATION_VERSION: u32 = 1;
+const DISH_TESSELLATION_VERSION: u32 = 1;
+/// CRCATI 给圆盘臂的厚度（`unk_10B4E108` = 1.0）：SDIS 本体，以及 `PHEI = 0` 的 SDSH
+/// 退化路，都是 `gm_CreateCylinder(PDIA / 2, 1.0)`。
+const DISC_THICKNESS_MM: f64 = 1.0;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 pub struct CatalogueMeshCacheStats {
@@ -64,6 +75,12 @@ pub struct CatalogueMeshCacheStats {
     pub evaluated_srto: usize,
     pub source_ssph: usize,
     pub evaluated_ssph: usize,
+    pub source_sslc: usize,
+    pub evaluated_sslc: usize,
+    pub source_sdsh: usize,
+    pub evaluated_sdsh: usize,
+    pub source_sdis: usize,
+    pub evaluated_sdis: usize,
     pub local_mesh_hits: usize,
     pub local_mesh_misses: usize,
     pub unique_placed_parts: usize,
@@ -127,6 +144,12 @@ impl CatalogueMeshCacheStats {
             evaluated_srto: delta!(evaluated_srto),
             source_ssph: delta!(source_ssph),
             evaluated_ssph: delta!(evaluated_ssph),
+            source_sslc: delta!(source_sslc),
+            evaluated_sslc: delta!(evaluated_sslc),
+            source_sdsh: delta!(source_sdsh),
+            evaluated_sdsh: delta!(evaluated_sdsh),
+            source_sdis: delta!(source_sdis),
+            evaluated_sdis: delta!(evaluated_sdis),
             local_mesh_hits: delta!(local_mesh_hits),
             local_mesh_misses: delta!(local_mesh_misses),
             unique_placed_parts: delta!(unique_placed_parts),
@@ -165,6 +188,12 @@ impl CatalogueMeshCacheStats {
         add!(evaluated_srto);
         add!(source_ssph);
         add!(evaluated_ssph);
+        add!(source_sslc);
+        add!(evaluated_sslc);
+        add!(source_sdsh);
+        add!(evaluated_sdsh);
+        add!(source_sdis);
+        add!(evaluated_sdis);
         add!(local_mesh_hits);
         add!(local_mesh_misses);
         add!(unique_placed_parts);
@@ -213,6 +242,19 @@ enum CatalogueMeshKey {
     Sphere {
         tessellation_version: u32,
         segments: i32,
+    },
+    /// SSLC：半径、高度、四个斜切角（度，已按 CRCATI 折回 (−90°, 90°)）。
+    SlopeCylinder {
+        tessellation_version: u32,
+        parameter_bits: [u64; 6],
+    },
+    /// SDSH：球形碟 / 折边碟。`PRAD` 只当开关，折边半径由 `CREDSH` 从 r/h 算出，
+    /// 所以键里只有 r、h 与开关本身。
+    Dish {
+        tessellation_version: u32,
+        knuckled: bool,
+        radius_bits: u64,
+        height_bits: u64,
     },
 }
 
@@ -301,6 +343,37 @@ struct EvaluatedSphere {
     transform: DMat4,
 }
 
+struct EvaluatedSlopeCylinder {
+    mesh_key: CatalogueMeshKey,
+    radius: f64,
+    height: f64,
+    /// `[xtop, ytop, xbot, ybot]`，度；相对 [`csrtax`] 标架的 X/Y。
+    shear_deg: [f64; 4],
+    transform: DMat4,
+}
+
+#[derive(Clone, Copy)]
+enum EvaluatedDishBody {
+    /// `gm_CreateSphericalDish(r, h)`。
+    Spherical,
+    /// `CREDSH` → `gm_CreateEllipticalDish(r, h, k)`，k 由 r/h 算出。
+    Knuckled,
+}
+
+struct EvaluatedDish {
+    mesh_key: CatalogueMeshKey,
+    body: EvaluatedDishBody,
+    radius: f64,
+    height: f64,
+    transform: DMat4,
+}
+
+/// QSDISH 的两条出路：有高度是碟，`PHEI = 0` 时 CRCATI 退到和 SDIS 同一条 1 mm 圆盘。
+enum EvaluatedSdsh {
+    Dish(EvaluatedDish),
+    Disc(EvaluatedCylinder),
+}
+
 enum EvaluatedTorusKind {
     Circular,
     Rectangular { height: f64 },
@@ -359,23 +432,32 @@ fn repre_level() -> u32 {
 }
 
 /// E3D 的几何集成员显示过滤（GTGEOM 侧 `sub_107149B0` 那一签：
-/// `LEVE[2]/OBST/TVIS/BVIS/CLFL/TUFL`），落到装配路上按 E3D RVM 已坐实的两条筛：
+/// `LEVE[2]/OBST/TVIS/BVIS/CLFL/TUFL`），落到装配路上按 `REPR TUBE ON / CL OFF / OBST OFF`
+/// 这套导出口径的两条筛：
 ///
 /// - **LEVE 区间**：`lo <= level` 且（`hi == 0` 视为不设上限，否则 `level <= hi`）。
 ///   证据：`C-IY-1R330-B.rvm`（addin 导出，level 6）里 `LEVE=[0,0]` 的 CABLEWAY、
 ///   `[1,10]` 的 BOARD/RESERVED 同时在场——`[0,0]` 若按闭区间读在 6 级必被排掉，
 ///   所以上限 0 只能读作「不设限」；`1RX07-LCT.rvm`（TTY 裸会话，level 0）里
 ///   `[1,10]` 全不在而 `[0,0]` 在，钉住下限按闭区间读。
-/// - **OBST == 2 且 TUFL == false**（硬障碍体）：`repre obst off` 口径下
-///   ACP1000 托盘的 OBSTRUCTION 盒（OBST=2/TUFL=false）不导出、RESERVED
-///   （OBST=1/TUFL=false）导出。但**管道目录的实体成员也顶着 OBST=2**
-///   （AAEA 弯头的 SCTO、CNPE 阀体的 LSNO 都是 OBST=2/TUFL=true），显然照画——
-///   单看 OBST 会把整个管件族误杀，两旗联判是现有四份语料唯一都能过的读法。
+/// - **TUFL == false 一律不画**（Paragon 参考手册 6.2/6.3 的字面口径：`REPRESENTATION`
+///   的 ON 项与置 TRUE 的旗一致才画；`TUBE ON` 只放行 `TUFL=true`，`CL OFF` 把
+///   `CLFL=true` 那一路关死，`OBST OFF` 不给 OBST 1/2 开后门）。理由标签按成因分三档，
+///   只为账目可读：`obst`（OBST=2 硬障碍体）、`centreline-only`（CLFL=true 的中心线标记，
+///   手册 TEE 例子给中心线小球 SSPH 用的正是 `OBST 0 TUFLA FALSE CLFL TRUE`）、
+///   `tube-off`（其余，典型是 OBST=1 的 CLASH/预留盒）。
 ///
-/// `TUFL` 与 `CLFL` **单独都不是装配路的隐藏条件**：`C-IY` 基准里
-/// `TUFL=false` 的 RESERVED 盒被 E3D 导出；HANG 24381/177986 的 HELEMENT
-/// 则把 `CLFL=true` 的三个 SCYL 和一个 SEXT 全部导出。后者也是把 CLFL 当作
-/// “中心线即隐藏”会整件漏掉 HELE 的直接反例。
+/// 证据（evidence/20260902-g01c-sslc-sdsh-sdis，ams7997 RVM，4871 个配对成员）：3074 个按
+/// 图元导出的成员逐 kind 计数对上 E3D 的，原两旗联判（`OBST=2 ∧ TUFL=false`）2508、
+/// 加 `centreline-only` 2972、`TUFL=false` 一律不画 **3034**；三档合起来没有一件是把 RVM 里
+/// 有的藏掉。SDIS 233/233、LSNO 1142、SCON 128、LCYL 156、SSPH 64（`TUFL=false/CLFL=true`）
+/// 与 SCYL 100、DAMP `/RVCD-CLASH` 盒（`OBST 1/TUFL=false/CLFL=false`）在 RVM 里一件都没有。
+///
+/// **仍未消化的反例**：`C-IY` 基准里 `OBST=1/TUFL=false` 的 RESERVED 盒被 E3D 导出。
+/// 那份是 addin 导出，导出口径（`REPR OBST`）可能与 ams7997 这批 TTY 导出不同；
+/// 对拍托盘语料时若 RESERVED 盒对不上，先查那次导出的 REPR 设置，别回头改这里。
+/// HANG 24381/177986 的 HELEMENT 把 `CLFL=true` 的三个 SCYL 和一个 SEXT 全部导出——
+/// 它们 `TUFL=true`，本筛照画；"CLFL 即隐藏"仍然是错的读法。
 fn display_filtered(primitive: &DbElement) -> Result<Option<&'static str>, ModelError> {
     if let Some(DescriptorValue::RawWords(words) | DescriptorValue::WordArray(words)) =
         primitive.attribute("LEVE")?
@@ -390,10 +472,16 @@ fn display_filtered(primitive: &DbElement) -> Result<Option<&'static str>, Model
         primitive.attribute("OBST")?,
         Some(DescriptorValue::Word { raw: 2, .. }) | Some(DescriptorValue::Int(2))
     );
-    if hard_obstruction && primitive.get_bool("TUFL")? == Some(false) {
-        return Ok(Some("obst"));
+    if primitive.get_bool("TUFL")? != Some(false) {
+        return Ok(None);
     }
-    Ok(None)
+    Ok(Some(if hard_obstruction {
+        "obst"
+    } else if primitive.get_bool("CLFL")? == Some(true) {
+        "centreline-only"
+    } else {
+        "tube-off"
+    }))
 }
 
 /// Build the visible catalogue geometry carried by one design route member.
@@ -592,7 +680,16 @@ pub fn model_catalogue_member_with_cache(
                     Ok(Some(evaluated)) => {
                         let mesh_id = match cached_mesh_id(cache, &evaluated.mesh_key, || {
                             let [dbot, dtop, height, xoff, yoff] = evaluated.parameters;
-                            Ok(snout_solid(dbot, dtop, height, xoff, yoff)?)
+                            // libgm `GM_Snout` 走曲面口径（与 GM_Cylinder 同一条 0.5 mm 规则，
+                            // 喂大端半径），不是设计侧 SNOU FacetGroup 那条 5 mm。
+                            Ok(snout_solid_with_segments(
+                                dbot,
+                                dtop,
+                                height,
+                                xoff,
+                                yoff,
+                                cylinder_segments(dbot.max(dtop) * 0.5),
+                            )?)
                         }) {
                             Ok(mesh_id) => mesh_id,
                             Err(error) => {
@@ -783,6 +880,95 @@ pub fn model_catalogue_member_with_cache(
                         "catalogue primitive {} skipped by Core-style local failure: {error}",
                         primitive.refno()
                     )),
+                }
+            }
+            "SSLC" => {
+                cache.stats.source_sslc += 1;
+                match evaluate_sslc(member, &component, &primitive, &env) {
+                    Ok(Some(evaluated)) => {
+                        cache.stats.evaluated_sslc += 1;
+                        let [xtop, ytop, xbot, ybot] = evaluated.shear_deg;
+                        let outcome = place_cached_part(
+                            cache,
+                            &mut placed_parts,
+                            &mut solids,
+                            &evaluated.mesh_key,
+                            evaluated.transform,
+                            || {
+                                Ok(slope_ended_cylinder_solid(
+                                    evaluated.radius,
+                                    evaluated.height,
+                                    xtop,
+                                    ytop,
+                                    xbot,
+                                    ybot,
+                                )?)
+                            },
+                        );
+                        match outcome {
+                            Ok(true) => {}
+                            Ok(false) => member_duplicates += 1,
+                            Err(error) => diagnostics.push(local_failure(&primitive, &error)),
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => diagnostics.push(local_failure(&primitive, &error)),
+                }
+            }
+            "SDSH" => {
+                cache.stats.source_sdsh += 1;
+                match evaluate_sdsh(member, &component, &primitive, &env) {
+                    Ok(Some(evaluated)) => {
+                        cache.stats.evaluated_sdsh += 1;
+                        let outcome = match &evaluated {
+                            EvaluatedSdsh::Dish(dish) => place_cached_part(
+                                cache,
+                                &mut placed_parts,
+                                &mut solids,
+                                &dish.mesh_key,
+                                dish.transform,
+                                || Ok(build_dish(dish)?),
+                            ),
+                            EvaluatedSdsh::Disc(disc) => place_cached_part(
+                                cache,
+                                &mut placed_parts,
+                                &mut solids,
+                                &disc.mesh_key,
+                                disc.transform,
+                                || Ok(csg_cylinder_solid(disc.diameter, disc.height)?),
+                            ),
+                        };
+                        match outcome {
+                            Ok(true) => {}
+                            Ok(false) => member_duplicates += 1,
+                            Err(error) => diagnostics.push(local_failure(&primitive, &error)),
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => diagnostics.push(local_failure(&primitive, &error)),
+                }
+            }
+            "SDIS" => {
+                cache.stats.source_sdis += 1;
+                match evaluate_sdis(member, &component, &primitive, &env) {
+                    Ok(Some(disc)) => {
+                        cache.stats.evaluated_sdis += 1;
+                        let outcome = place_cached_part(
+                            cache,
+                            &mut placed_parts,
+                            &mut solids,
+                            &disc.mesh_key,
+                            disc.transform,
+                            || Ok(csg_cylinder_solid(disc.diameter, disc.height)?),
+                        );
+                        match outcome {
+                            Ok(true) => {}
+                            Ok(false) => member_duplicates += 1,
+                            Err(error) => diagnostics.push(local_failure(&primitive, &error)),
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => diagnostics.push(local_failure(&primitive, &error)),
                 }
             }
             // GMRE LINE entries are centreline metadata, not visible solids.
@@ -1041,7 +1227,7 @@ fn evaluate_catalogue_snout(
     let parameters = [dbot, dtop, height, xoff, 0.0];
     Ok(Some(EvaluatedSnout {
         mesh_key: CatalogueMeshKey::Snout {
-            tessellation_version: 1,
+            tessellation_version: SNOUT_TESSELLATION_VERSION,
             parameter_bits: parameters.map(|value| value.to_bits()),
         },
         parameters,
@@ -1575,6 +1761,319 @@ fn evaluate_catalogue_sphere(
     }))
 }
 
+// ---------------------------------------------------------------------------
+// G0-1c 低频臂：SSLC 斜切圆柱 / SDSH 碟形封头 / SDIS 圆盘。
+//
+// 三条 pplib 求值器（QSSLCY / QSDISH / QSDISC）与 CRCATI 对应的 case 臂都反编译在案，
+// 属性名从 `unk_10B6F5xx/6xx/8xx` 的 27 进制哈希反查（PDIS/PHEI/PDIA/PRAD/PAXI/
+// PXTS/PYTS/PXBS/PYBS），不是按形参猜的。形体本身见 `solid.rs` 同名 builder。
+// ---------------------------------------------------------------------------
+
+/// 取网格 → 放置去重 → 摆放。G0-1c 三条臂共用这一份；其余臂的手抄版见计划 G2-5。
+fn place_cached_part(
+    cache: &mut CatalogueMeshCache,
+    placed_parts: &mut HashSet<PlacedPartKey>,
+    solids: &mut Vec<Manifold>,
+    mesh_key: &CatalogueMeshKey,
+    transform: DMat4,
+    build: impl FnOnce() -> Result<Manifold, ModelError>,
+) -> Result<bool, ModelError> {
+    let mesh_id = cached_mesh_id(cache, mesh_key, build)?;
+    let placed_key = PlacedPartKey {
+        mesh_id,
+        transform_bits: matrix_bits(transform),
+    };
+    if !placed_parts.insert(placed_key) {
+        cache.stats.duplicate_placed_parts += 1;
+        return Ok(false);
+    }
+    cache.stats.unique_placed_parts += 1;
+    let local_mesh = &cache
+        .local_meshes
+        .get(mesh_key)
+        .expect("catalogue mesh inserted above")
+        .solid;
+    solids.push(placed(local_mesh, transform));
+    Ok(true)
+}
+
+fn local_failure(primitive: &DbElement, error: &ModelError) -> String {
+    format!(
+        "catalogue primitive {} skipped by Core-style local failure: {error}",
+        primitive.refno()
+    )
+}
+
+/// `CSRTAX`（core.dll mathlib，`0x560ad30`）：轴向量 → 标架，CRCATI 只在 SSLC/NSSL 臂上
+/// 用它**整个覆盖**前一步 `ORIMAT` 的结果（`CSRTAX(a2, dir, &3)`：轴放进第 3 列）。
+///
+/// ```text
+/// Z = normalize(dir)                       退化 → None
+/// d = Z · Ẑ
+/// | |d| − 1 | ≥ 1e-5 :  X = normalize(Z × Ẑ),  Y = normalize(Z × X)
+/// 否则 d < 0          :  X = −X̂,  Y = Ŷ         （Z 仍是 normalize(dir)）
+/// 否则                 :  X = X̂,   Y = Ŷ
+/// ```
+///
+/// 与 [`orimat`] 只差副轴的 tie-break：ORIMAT 先试 `Z × X̂`，CSRTAX 一律 `Z × Ẑ`。
+/// 竖直轴两者一致，**水平轴不同**（`+X̂` 轴：ORIMAT 给 X=Ẑ/Y=−Ŷ，CSRTAX 给 X=−Ŷ/Y=−Ẑ），
+/// 而 `PXTS/PYTS/PXBS/PYBS` 四个斜切角正是相对这套 X/Y 定义的——拿 ORIMAT 摆 SSLC，
+/// 端面就歪到别的方向去（旧 gen-model 在 `24381/47066` 上反复对不上的根子）。
+pub(crate) fn csrtax(dir: DVec3) -> Option<DMat3> {
+    let length = dir.length();
+    if !(length > AXIS_TOL) || !dir.is_finite() {
+        return None;
+    }
+    let z = dir / length;
+    let along_world_z = z.dot(DVec3::Z);
+    if (along_world_z.abs() - 1.0).abs() >= 1.0e-5 {
+        let x = z.cross(DVec3::Z).normalize();
+        let y = z.cross(x).normalize();
+        Some(DMat3::from_cols(x, y, z))
+    } else if along_world_z < 0.0 {
+        Some(DMat3::from_cols(-DVec3::X, DVec3::Y, z))
+    } else {
+        Some(DMat3::from_cols(DVec3::X, DVec3::Y, z))
+    }
+}
+
+/// CRCATI 599770 臂的角度折回：`> 90 → −180`，`< −90 → +180`，各只折一次；
+/// 折后仍 `|角| ≥ 90` 的，`GM_SlopeEndCyl::calcFacets` 交空面片组。
+fn fold_shear_angle(deg: f64) -> f64 {
+    if deg > 90.0 {
+        deg - 180.0
+    } else if deg < -90.0 {
+        deg + 180.0
+    } else {
+        deg
+    }
+}
+
+/// 开关 / 角度一类的槽位：Core 的 `DGETI` 对 unset 给 0（`APARAM` 的整数回落、
+/// `DECARG` 同款），照抄；能解的公式照解，解不出仍按 [`required_number`] 报错。
+fn number_or_zero_when_unset(
+    element: &DbElement,
+    name: &'static str,
+    env: &DbElementParamEnv,
+    what: &'static str,
+) -> Result<f64, ModelError> {
+    if matches!(element.get_number(name, env)?, AttributeNumber::Unset) {
+        return Ok(0.0);
+    }
+    required_number(element, name, env, what)
+}
+
+fn unit_axis(
+    axis: &crate::catalogue_point::CatalogueAxis,
+    what: &'static str,
+) -> Result<DVec3, ModelError> {
+    let direction = axis.direction.normalize_or_zero();
+    if direction.length_squared() <= AXIS_TOL {
+        return Err(ModelError::Solid(SolidError::Degenerate {
+            what,
+            detail: format!("PAXI={:?}", axis.direction),
+        }));
+    }
+    Ok(direction)
+}
+
+/// CRCATI 的圆盘：`gm_CreateCylinder(PDIA / 2, 1.0)`，`ORIMAT(轴)` 标架，对中放在 `centre`。
+/// 与 SCYL 同一张 [`CatalogueMeshKey::Cylinder`] 网格，直径相同的圆盘只三角化一次。
+fn disc_at(
+    centre: DVec3,
+    direction: DVec3,
+    diameter: f64,
+    what: &'static str,
+) -> Result<Option<EvaluatedCylinder>, ModelError> {
+    if diameter < HEIGHT_TOL_MM {
+        return Ok(None);
+    }
+    let rotation = orimat(direction).ok_or_else(|| {
+        ModelError::Solid(SolidError::Degenerate {
+            what,
+            detail: format!("PAXI={direction:?}"),
+        })
+    })?;
+    Ok(Some(EvaluatedCylinder {
+        mesh_key: CatalogueMeshKey::Cylinder {
+            tessellation_version: CYLINDER_TESSELLATION_VERSION,
+            diameter_bits: finite_bits(diameter, "catalogue disc diameter")?,
+            height_bits: canonical_bits(DISC_THICKNESS_MM),
+        },
+        diameter,
+        height: DISC_THICKNESS_MM,
+        transform: DMat4::from_translation(centre) * DMat4::from_mat3(rotation),
+    }))
+}
+
+/// Core3D `QSDISC`（`pplib`，`0x103C25E0`）+ CRCATI 912106 臂：读 `PDIS`、`|PDIA|`、`PAXI`，
+/// 轴原点沿单位轴平移 `PDIS`，标架 `ORIMAT`，形体是 1 mm 厚的圆盘（见 [`disc_at`]）。
+fn evaluate_sdis(
+    member: &DbElement,
+    component: &DbElement,
+    disc: &DbElement,
+    env: &DbElementParamEnv,
+) -> Result<Option<EvaluatedCylinder>, ModelError> {
+    let distance = required_number(disc, "PDIS", env, "catalogue SDIS")?;
+    let diameter = required_number(disc, "PDIA", env, "catalogue SDIS")?.abs();
+    let axis = catalogue_axis(member, component, &required_words(disc, "PAXI")?)?
+        .ok_or_else(|| missing(disc, "PAXI", "catalogue SDIS axis"))?;
+    let direction = unit_axis(&axis, "catalogue SDIS axis")?;
+    disc_at(
+        axis.origin + direction * distance,
+        direction,
+        diameter,
+        "catalogue SDIS axis",
+    )
+}
+
+/// Core3D `QSDISH`（`pplib`，`0x103C0CBC`）+ CRCATI 702883/908861 臂。
+///
+/// 读 `PDIS`、带符号 `PHEI`、`|PDIA|`、`|PRAD|`、`PAXI`。`PHEI ≤ 0` 走 `HCHECK`：高度取反、
+/// 轴取反、`PDIS` 取反——底面圆心因此**始终**落在 `origin + PDIS·PAXI`，碟只是改朝
+/// `sign(PHEI)·PAXI` 鼓起。标架 `ORIMAT(轴)`，libgm 的碟底在 z = 0、顶点在 z = +h。
+///
+/// CRCATI 再分三路：`PDIA ≤ 0` 无形体；`PHEI > 0` 且 `PRAD > 0` → `CREDSH` 折边碟
+/// （折边半径由 r/h 算出，`PRAD` 的数值不进几何）；`PRAD ≤ 0` → 球形碟；
+/// `PHEI = 0` → 1 mm 圆盘，与 SDIS 同一条 `gm_CreateCylinder`。
+/// 负臂 NSDS 与正臂同一条路，**没有** NSCY/NLCY/NSCO 那道 +0.01 过切。
+fn evaluate_sdsh(
+    member: &DbElement,
+    component: &DbElement,
+    dish: &DbElement,
+    env: &DbElementParamEnv,
+) -> Result<Option<EvaluatedSdsh>, ModelError> {
+    let mut distance = required_number(dish, "PDIS", env, "catalogue SDSH")?;
+    let mut height = required_number(dish, "PHEI", env, "catalogue SDSH")?;
+    let diameter = required_number(dish, "PDIA", env, "catalogue SDSH")?.abs();
+    let knuckle_switch = number_or_zero_when_unset(dish, "PRAD", env, "catalogue SDSH")?.abs();
+    let axis = catalogue_axis(member, component, &required_words(dish, "PAXI")?)?
+        .ok_or_else(|| missing(dish, "PAXI", "catalogue SDSH axis"))?;
+    let mut direction = unit_axis(&axis, "catalogue SDSH axis")?;
+    if height <= 0.0 {
+        height = -height;
+        direction = -direction;
+        distance = -distance;
+    }
+    let base_centre = axis.origin + direction * distance;
+    if !(diameter > 0.0) {
+        return Ok(None);
+    }
+    if height <= 0.0 {
+        return Ok(disc_at(base_centre, direction, diameter, "catalogue SDSH axis")?
+            .map(EvaluatedSdsh::Disc));
+    }
+    let rotation = orimat(direction).ok_or_else(|| {
+        ModelError::Solid(SolidError::Degenerate {
+            what: "catalogue SDSH axis",
+            detail: format!("PAXI={direction:?}"),
+        })
+    })?;
+    let radius = diameter * 0.5;
+    let body = if knuckle_switch > 0.0 {
+        EvaluatedDishBody::Knuckled
+    } else {
+        EvaluatedDishBody::Spherical
+    };
+    Ok(Some(EvaluatedSdsh::Dish(EvaluatedDish {
+        mesh_key: CatalogueMeshKey::Dish {
+            tessellation_version: DISH_TESSELLATION_VERSION,
+            knuckled: matches!(body, EvaluatedDishBody::Knuckled),
+            radius_bits: finite_bits(radius, "catalogue SDSH radius")?,
+            height_bits: finite_bits(height, "catalogue SDSH height")?,
+        },
+        body,
+        radius,
+        height,
+        transform: DMat4::from_translation(base_centre) * DMat4::from_mat3(rotation),
+    })))
+}
+
+fn build_dish(dish: &EvaluatedDish) -> Result<Manifold, SolidError> {
+    match dish.body {
+        EvaluatedDishBody::Spherical => spherical_dish_solid(dish.radius, dish.height),
+        EvaluatedDishBody::Knuckled => elliptical_dish_solid(
+            dish.radius,
+            dish.height,
+            dish_knuckle_radius(dish.radius, dish.height),
+        ),
+    }
+}
+
+/// Core3D `QSSLCY`（`pplib`，`0x103C0514`）+ CRCATI 599770/782015 臂。
+///
+/// 读 `PDIS`、带符号 `PHEI`、`|PDIA|`、四个斜切角 `PXTS/PYTS/PXBS/PYBS`（`APARAM`：度→弧度，
+/// CRCATI 再乘回 57.2958，净值就是**度**；字典把这四个槽标成角度型，整数槽是百分度，
+/// e3d-io 解码时已除 100）、`PAXI`。`PHEI ≤ 0` 走 `HCHECK`：高度、轴、`PDIS`、
+/// **四个角一起取反**；圆柱中心在 `origin + (PDIS + h/2)·轴`，与 SCYL 同款。
+///
+/// 标架先 `ORIMAT` 后被 [`csrtax`] **整个覆盖**，四个角相对那套 X/Y：
+/// `z_top = +h/2 + x·tan(PXTS) + y·tan(PYTS)`，`z_bot = −h/2 + x·tan(PXBS) + y·tan(PYBS)`。
+/// 角度按 [`fold_shear_angle`] 折回一次；折后仍 `|角| ≥ 90°` 的，libgm 交空面片组，
+/// 这里同样不出形体。形体是 `gm_CreateSlopeEndedCylinder(r, h, PXBS, PYBS, PXTS, PYTS)`。
+fn evaluate_sslc(
+    member: &DbElement,
+    component: &DbElement,
+    cylinder: &DbElement,
+    env: &DbElementParamEnv,
+) -> Result<Option<EvaluatedSlopeCylinder>, ModelError> {
+    let mut distance = required_number(cylinder, "PDIS", env, "catalogue SSLC")?;
+    let mut height = required_number(cylinder, "PHEI", env, "catalogue SSLC")?;
+    let diameter = required_number(cylinder, "PDIA", env, "catalogue SSLC")?.abs();
+    let mut shear_deg = [
+        number_or_zero_when_unset(cylinder, "PXTS", env, "catalogue SSLC")?,
+        number_or_zero_when_unset(cylinder, "PYTS", env, "catalogue SSLC")?,
+        number_or_zero_when_unset(cylinder, "PXBS", env, "catalogue SSLC")?,
+        number_or_zero_when_unset(cylinder, "PYBS", env, "catalogue SSLC")?,
+    ];
+    let axis = catalogue_axis(member, component, &required_words(cylinder, "PAXI")?)?
+        .ok_or_else(|| missing(cylinder, "PAXI", "catalogue SSLC axis"))?;
+    let mut direction = unit_axis(&axis, "catalogue SSLC axis")?;
+    if height <= 0.0 {
+        height = -height;
+        direction = -direction;
+        distance = -distance;
+        shear_deg = shear_deg.map(|angle| -angle);
+    }
+    let centre = axis.origin + direction * (distance + height * 0.5);
+    let shear_deg = shear_deg.map(fold_shear_angle);
+    if height < HEIGHT_TOL_MM || diameter < HEIGHT_TOL_MM {
+        return Ok(None);
+    }
+    if shear_deg.iter().any(|angle| !angle.is_finite() || angle.abs() >= 90.0) {
+        return Ok(None);
+    }
+    let rotation = csrtax(direction).ok_or_else(|| {
+        ModelError::Solid(SolidError::Degenerate {
+            what: "catalogue SSLC axis",
+            detail: format!("PAXI={direction:?}"),
+        })
+    })?;
+    let radius = diameter * 0.5;
+    let parameters = [
+        radius,
+        height,
+        shear_deg[0],
+        shear_deg[1],
+        shear_deg[2],
+        shear_deg[3],
+    ];
+    let mut parameter_bits = [0u64; 6];
+    for (bits, value) in parameter_bits.iter_mut().zip(parameters) {
+        *bits = finite_bits(value, "catalogue SSLC parameter")?;
+    }
+    Ok(Some(EvaluatedSlopeCylinder {
+        mesh_key: CatalogueMeshKey::SlopeCylinder {
+            tessellation_version: SLOPE_CYLINDER_TESSELLATION_VERSION,
+            parameter_bits,
+        },
+        radius,
+        height,
+        shear_deg,
+        transform: DMat4::from_translation(centre) * DMat4::from_mat3(rotation),
+    }))
+}
+
 fn evaluate_catalogue_torus(
     member: &DbElement,
     component: &DbElement,
@@ -1943,6 +2442,12 @@ mod tests {
                 evaluated_srto: value,
                 source_ssph: value,
                 evaluated_ssph: value,
+                source_sslc: value,
+                evaluated_sslc: value,
+                source_sdsh: value,
+                evaluated_sdsh: value,
+                source_sdis: value,
+                evaluated_sdis: value,
                 local_mesh_hits: value,
                 local_mesh_misses: value,
                 unique_placed_parts: value,
@@ -1969,6 +2474,84 @@ mod tests {
         assert_eq!(x, DVec3::X);
         assert!((x.dot(y)).abs() < 1.0e-12);
         assert!(x.cross(y).dot(z) > 1.0 - 1.0e-12);
+    }
+
+    /// CSRTAX 与 ORIMAT 竖直轴同解、水平轴分道：SSLC 的四个斜切角认的是 CSRTAX 那套 X/Y。
+    #[test]
+    fn csrtax_puts_the_axis_in_z_and_breaks_ties_against_world_z() {
+        let up = csrtax(DVec3::Z).unwrap();
+        assert_eq!(up, DMat3::IDENTITY);
+        let down = csrtax(DVec3::NEG_Z).unwrap();
+        assert_eq!(down.x_axis, -DVec3::X);
+        assert_eq!(down.y_axis, DVec3::Y);
+        assert_eq!(down.z_axis, -DVec3::Z);
+
+        // 水平 +X 轴：CSRTAX 的 X = Z × Ẑ = −Ŷ、Y = Z × X = −Ẑ；ORIMAT 给的是 X = Ẑ、Y = −Ŷ。
+        let east = csrtax(DVec3::X * 3.0).unwrap();
+        assert!((east.x_axis - (-DVec3::Y)).length() < 1e-12);
+        assert!((east.y_axis - (-DVec3::Z)).length() < 1e-12);
+        assert!((east.z_axis - DVec3::X).length() < 1e-12);
+        let east_orimat = orimat(DVec3::X).unwrap();
+        assert!((east_orimat.x_axis - DVec3::Z).length() < 1e-12);
+        assert!((east_orimat.y_axis - (-DVec3::Y)).length() < 1e-12);
+
+        for dir in [
+            DVec3::new(1.0, 2.0, 3.0),
+            DVec3::new(-0.3, 0.9, -0.1),
+            DVec3::new(0.0, 1.0, 0.0),
+            DVec3::new(1.0e-7, 0.0, 1.0),
+        ] {
+            let frame = csrtax(dir).unwrap();
+            assert!((frame.z_axis - dir.normalize()).length() < 1e-12);
+            assert!(frame.x_axis.dot(frame.y_axis).abs() < 1e-12);
+            assert!(frame.x_axis.cross(frame.y_axis).dot(frame.z_axis) > 1.0 - 1e-9);
+        }
+        assert!(csrtax(DVec3::ZERO).is_none());
+    }
+
+    #[test]
+    fn sslc_shear_angles_fold_once_into_the_signed_ninety_degree_band() {
+        assert_eq!(fold_shear_angle(135.0), -45.0);
+        assert_eq!(fold_shear_angle(-135.0), 45.0);
+        assert_eq!(fold_shear_angle(45.0), 45.0);
+        assert_eq!(fold_shear_angle(-89.9), -89.9);
+        // 边界照 CRCATI 原样：恰好 ±90 不折，折一次仍 ≥ 90 的也不再折——两者都由
+        // `|角| ≥ 90 → 无形体` 那一道收走。
+        assert_eq!(fold_shear_angle(90.0), 90.0);
+        assert_eq!(fold_shear_angle(270.0), 90.0);
+    }
+
+    /// SDSH 的开关语义：`PRAD` 只决定走折边碟还是球形碟，折边半径本身来自 r/h。
+    #[test]
+    fn dish_bodies_key_on_the_switch_not_on_the_requested_knuckle() {
+        let knuckled = EvaluatedDish {
+            mesh_key: CatalogueMeshKey::Dish {
+                tessellation_version: DISH_TESSELLATION_VERSION,
+                knuckled: true,
+                radius_bits: 0,
+                height_bits: 0,
+            },
+            body: EvaluatedDishBody::Knuckled,
+            radius: 500.0,
+            height: 200.0,
+            transform: DMat4::IDENTITY,
+        };
+        let spherical = EvaluatedDish {
+            body: EvaluatedDishBody::Spherical,
+            mesh_key: CatalogueMeshKey::Dish {
+                tessellation_version: DISH_TESSELLATION_VERSION,
+                knuckled: false,
+                radius_bits: 0,
+                height_bits: 0,
+            },
+            ..knuckled
+        };
+        let a = build_dish(&knuckled).unwrap();
+        let b = build_dish(&spherical).unwrap();
+        assert_ne!(knuckled.mesh_key, spherical.mesh_key);
+        assert!(a.volume() > b.volume(), "折边碟比同底同高的球形碟装得更多");
+        let bb = a.bounding_box().unwrap();
+        assert!(bb.min()[2].abs() < 1e-9 && (bb.max()[2] - 200.0).abs() < 1e-9, "底在 z=0、顶在 z=h");
     }
 
     #[test]

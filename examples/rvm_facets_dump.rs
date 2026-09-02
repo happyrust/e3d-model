@@ -139,6 +139,10 @@ fn main() -> anyhow::Result<()> {
                                 .collect::<Vec<_>>();
                             ("FacetGroup".to_string(), None, Some(polys))
                         }
+                        // 中心线不是体，没有面片可转；留一条空记录让对拍脚本按 kind 跳过。
+                        GeometryKind::Line(line) => {
+                            ("Line".to_string(), Some(format!("{line:?}")), None)
+                        }
                         other => {
                             // PRIM 记录自带 bbox 已被实测证明不可信；非 FacetGroup 也必须
                             // 从实际图元三角化顶点重算 AABB，不能让对拍退回该字段。

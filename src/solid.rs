@@ -309,12 +309,28 @@ pub fn pyramid_solid(
 
 /// `GM_Snout`：两端直径 DBOT/DTOP，高 HEIG，局部 Z 轴且原点居中。
 /// XOFF/YOFF 是顶面中心相对底面中心的偏移；线性剪切自然把偏移上下各摊一半。
+///
+/// 段数走 [`snout_segments`]（设计侧 SNOU 的 RVM FacetGroup 口径，5 mm）；目录 LSNO/SCON
+/// 正体要 libgm 曲面口径的，用 [`snout_solid_with_segments`] 自己喂段数。
 pub fn snout_solid(
     dbot: f64,
     dtop: f64,
     height: f64,
     xoff: f64,
     yoff: f64,
+) -> Result<Manifold, SolidError> {
+    snout_solid_with_segments(dbot, dtop, height, xoff, yoff, snout_segments(dbot / 2.0, dtop / 2.0))
+}
+
+/// [`snout_solid`] 的定段数版：`segments` 由调用方按自己的口径算好（见
+/// [`snout_segments`] / [`cylinder_segments`]），形体定义不变。
+pub fn snout_solid_with_segments(
+    dbot: f64,
+    dtop: f64,
+    height: f64,
+    xoff: f64,
+    yoff: f64,
+    segments: i32,
 ) -> Result<Manifold, SolidError> {
     const WHAT: &str = "snout";
     if !(height > f64::EPSILON) {
@@ -327,7 +343,7 @@ pub fn snout_solid(
         });
     }
     let (rb, rt) = (dbot / 2.0, dtop / 2.0);
-    let body = Manifold::cylinder(height, rb, rt, snout_segments(rb, rt), true);
+    let body = Manifold::cylinder(height, rb, rt, segments.max(3), true);
     let shear = DMat4::from_cols_array(&[
         1.0,
         0.0,
@@ -497,7 +513,7 @@ fn revolve_rings_grown(
         }
     }
 
-    let solid = swept_solid_grown(rings, max_radius, angle_deg, grow, WHAT)?;
+    let solid = swept_solid_grown(rings, max_radius, angle_deg, grow, None, WHAT)?;
     // manifold 交回来的是「轴在 +Z、半径铺在 XY」。摆回局部系：
     // +X → 局部 +Y（半径方向），+Y → 出平面，+Z → 局部 +X（回转轴）。
     let frame = DMat4::from_cols(
@@ -519,7 +535,16 @@ fn swept_solid(
     angle_deg: f64,
     what: &'static str,
 ) -> Result<Manifold, SolidError> {
-    swept_solid_grown(section, radius_for_segments, angle_deg, 0.0, what)
+    swept_solid_grown(section, radius_for_segments, angle_deg, 0.0, None, what)
+}
+
+fn swept_solid_with_segments(
+    section: Vec<Vec<[f64; 2]>>,
+    angle_deg: f64,
+    segments: i32,
+    what: &'static str,
+) -> Result<Manifold, SolidError> {
+    swept_solid_grown(section, 0.0, angle_deg, 0.0, Some(segments), what)
 }
 
 fn swept_solid_grown(
@@ -527,6 +552,7 @@ fn swept_solid_grown(
     radius_for_segments: f64,
     angle_deg: f64,
     grow: f64,
+    segments_override: Option<i32>,
     what: &'static str,
 ) -> Result<Manifold, SolidError> {
     if !angle_deg.is_finite() || angle_deg == 0.0 {
@@ -545,7 +571,8 @@ fn swept_solid_grown(
     if cross.is_empty() {
         return Err(SolidError::EmptySection { what });
     }
-    let segments = part_rev_segments(radius_for_segments, sweep);
+    let segments =
+        segments_override.unwrap_or_else(|| part_rev_segments(radius_for_segments, sweep));
     // Manifold::Revolve treats values <= 2 as "use the global default" and
     // then truncates `default * sweep / 360`. A valid narrow E3D sweep can
     // therefore become zero divisions (AMS7997 BEND 24381/104871). Three is
@@ -574,6 +601,12 @@ pub fn cylinder_segments(radius: f64) -> i32 {
 
 /// E3D RVM 的 SNOU FacetGroup 使用粗粒度 baked facet；`24381/130759,130763`
 /// 的 R=27.5mm 外圈及其中心孔均为 8 段。SNOU 直接按唯一外部基准定形。
+///
+/// **只给设计侧 SNOU/CONE 与负体刀用。** 目录 LSNO/SCON 正体是 libgm `GM_Snout` 按
+/// 曲面口径（0.5 mm）画的，E3D RVM 把它们导成参数化 Snout 图元：ams7997 HVAC BEND
+/// `/C5SEGB-LEAJ1/2`（r=215/180 的法兰环）用这条 5 mm 口径只剩 16 段，环面离解析面
+/// 最大 3.7 mm，48 段（[`cylinder_segments`]）才对得上——见
+/// evidence/20260902-g01c-sslc-sdsh-sdis README §3.1。
 pub fn snout_segments(r_bottom: f64, r_top: f64) -> i32 {
     circle_segments_uncapped(r_bottom.max(r_top), 5.0).min(MAX_SEGMENTS)
 }
@@ -596,6 +629,212 @@ pub fn part_rev_segments(radius: f64, sweep_deg: f64) -> i32 {
 /// `GM_CircTorus` 管截面方向的段数：喂 `(ROUT − RINS) / 2`，**不是**外半径。
 pub fn circular_torus_tube_segments(rins: f64, rout: f64) -> i32 {
     circle_segments_uncapped((rout - rins) * 0.5, FACET_TOL_MM).min(MAX_SEGMENTS)
+}
+
+// ---------------------------------------------------------------------------
+// 低频目录臂：斜切圆柱 / 碟形封头（G0-1c）。
+//
+// 三条都按 libgm 的 calcFacets 逐顶点复刻，段数规则与上面的圆柱/回转同源；
+// 放置（PAXI/PDIS/翻轴）不在这里，见 `catalogue.rs` 的 QSSLCY / QSDISH / QSDISC 求值器。
+// ---------------------------------------------------------------------------
+
+/// `GM_SlopeEndCyl::calcFacetsWithoutSurfaces`（libgm `0x1009dfc0`，
+/// `gm_CreateSlopeEndedCylinder(r, h, xbot, ybot, xtop, ytop)`）：两端斜切的圆柱。
+///
+/// 轴在局部 Z，高度对中；周向 n = `d2_numberOfSegmentsForCircle(r)`，θᵢ = 2πi/n，
+/// 顶点 x = r·cosθ、y = r·sinθ，两端面按
+///
+/// ```text
+/// z_bot = −h/2 + x·tan(xbot) + y·tan(ybot)
+/// z_top = +h/2 + x·tan(xtop) + y·tan(ytop)
+/// ```
+///
+/// 倾斜（角度为度，正角把端面在 +x/+y 一侧抬高）。任一角 |角| ≥ 90° 时 libgm 交空面片组，
+/// 这里报 [`SolidError::Degenerate`]。两端面在圆柱内相交
+/// （h ≤ r·√((tan xt − tan xb)² + (tan yt − tan yb)²)）时 libgm 走另一条拼合路
+/// （`GM_SlopeEndCyl.cxx:250`）；本仓先按逐顶点 `max(z_top, z_bot)` 收口，现有语料无此例。
+///
+/// 侧面四点共面（同一条弦上的竖直条带），端面各在一张平面上，所以凸包就是 libgm 的面片。
+pub fn slope_ended_cylinder_solid(
+    radius: f64,
+    height: f64,
+    xtop_deg: f64,
+    ytop_deg: f64,
+    xbot_deg: f64,
+    ybot_deg: f64,
+) -> Result<Manifold, SolidError> {
+    const WHAT: &str = "slope-ended cylinder";
+    if !(radius > 0.0 && height > 0.0) || !radius.is_finite() || !height.is_finite() {
+        return Err(SolidError::Degenerate {
+            what: WHAT,
+            detail: format!("radius/height = {radius}/{height}"),
+        });
+    }
+    let angles = [xtop_deg, ytop_deg, xbot_deg, ybot_deg];
+    if angles.iter().any(|a| !a.is_finite() || a.abs() >= 90.0) {
+        return Err(SolidError::Degenerate {
+            what: WHAT,
+            detail: format!("shear angles {angles:?} must lie inside (−90°, 90°)"),
+        });
+    }
+    let [tan_xt, tan_yt, tan_xb, tan_yb] = angles.map(|a| a.to_radians().tan());
+    let n = cylinder_segments(radius).max(3);
+    let mut points = Vec::with_capacity(2 * n as usize);
+    for i in 0..n {
+        let theta = std::f64::consts::TAU * f64::from(i) / f64::from(n);
+        let (sin, cos) = theta.sin_cos();
+        let (x, y) = (radius * cos, radius * sin);
+        let z_bot = -height * 0.5 + x * tan_xb + y * tan_yb;
+        let z_top = height * 0.5 + x * tan_xt + y * tan_yt;
+        points.push([x, y, z_bot]);
+        points.push([x, y, z_top.max(z_bot)]);
+    }
+    ensure_solid(Manifold::hull_pts(&points), WHAT)
+}
+
+/// CRCATI 碟形臂（Core3D `0x10345ACC` case 702883, `gml_bkend/CREDSH 0x1034AB41`）
+/// 算给 `GM_EDish` 的折边半径：`k = h / ((r − h)/√(r² + h²) + 1)`。
+///
+/// 目录属性 PRAD 只当开关用（> 0 走折边碟，否则走球形碟），数值本身不进几何。
+pub fn dish_knuckle_radius(radius: f64, height: f64) -> f64 {
+    height / ((radius - height) / (radius * radius + height * height).sqrt() + 1.0)
+}
+
+/// `GM_SDish::calcFacetsWithoutSurfaces`（libgm `0x10099cf0`，`gm_CreateSphericalDish(r, h)`）：
+/// 球形碟。底圆半径 r 在 z = 0，顶点在 z = h，球半径 R = (r²/h + h)/2，球心 (0, 0, h − R)。
+///
+/// 周向 n = `d2_numberOfSegmentsForCircle(r > h ? r : R)`；纬向 m = ⌈φmax / (2π/n)⌉，
+/// φmax = acos(1 − h/R)，纬线均分 φmax；底面封平。
+pub fn spherical_dish_solid(radius: f64, height: f64) -> Result<Manifold, SolidError> {
+    const WHAT: &str = "spherical dish";
+    if !(radius > 0.0 && height > 0.0) || !radius.is_finite() || !height.is_finite() {
+        return Err(SolidError::Degenerate {
+            what: WHAT,
+            detail: format!("radius/height = {radius}/{height}"),
+        });
+    }
+    let sphere_radius = (radius * radius / height + height) * 0.5;
+    let n = circle_segments_uncapped(
+        if radius > height { radius } else { sphere_radius },
+        FACET_TOL_MM,
+    )
+    .min(MAX_SEGMENTS);
+    let ratio = height / sphere_radius;
+    let phi_max = if ratio.abs() > 1e-6 {
+        (1.0 - ratio).clamp(-1.0, 1.0).acos()
+    } else {
+        (ratio + ratio).sqrt()
+    };
+    let rings = (phi_max / (std::f64::consts::TAU / f64::from(n))).ceil().max(1.0) as i32;
+    let mut profile = Vec::with_capacity(rings as usize + 2);
+    profile.push([0.0, height]);
+    for j in 1..=rings {
+        let phi = phi_max * f64::from(j) / f64::from(rings);
+        let (sin, cos) = phi.sin_cos();
+        profile.push([sphere_radius * sin, sphere_radius * cos - (sphere_radius - height)]);
+    }
+    profile.push([0.0, 0.0]);
+    swept_solid_with_segments(vec![profile], 360.0, n, WHAT)
+}
+
+/// `GM_EDish::calcFacetsWithoutSurfaces`（libgm `0x10054ab0`，`gm_CreateEllipticalDish(r, h, k)`）：
+/// 带折边的碟（E3D 所谓 elliptical dish 其实是冠球 + 折边环的 torispherical 近似）。
+///
+/// 折边半径先过 `knuckleRadiusToUse`（`0x100556a0`）的夹取，冠球半径
+/// Rc = (r² + h² − 2rk) / (2(h − k))（`radiusOfHub 0x10055750`），切点极角
+/// φt = acos((Rc − h)/(Rc − k))；冠 m₁ = partRev(Rc, 0..φt)、折边 m₂ = partRev(k, φt..90°)
+/// 各自均分，周向 n = `d2_numberOfSegmentsForCircle(r)`。r == h（1e-6 内）退化为半球，
+/// 与 libgm 的 `isSpherical` 同口径。
+pub fn elliptical_dish_solid(radius: f64, height: f64, knuckle: f64) -> Result<Manifold, SolidError> {
+    const WHAT: &str = "elliptical dish";
+    if !(radius > 0.0 && height > 0.0)
+        || !radius.is_finite()
+        || !height.is_finite()
+        || !knuckle.is_finite()
+    {
+        return Err(SolidError::Degenerate {
+            what: WHAT,
+            detail: format!("radius/height/knuckle = {radius}/{height}/{knuckle}"),
+        });
+    }
+    let n = circle_segments_uncapped(radius, FACET_TOL_MM).min(MAX_SEGMENTS);
+    if (radius - height).abs() <= 1e-6 {
+        // isSpherical：一整个半球，冠与折边各占 45°。
+        let quarter = std::f64::consts::FRAC_PI_4;
+        let m = part_rev_segments(radius, 45.0);
+        let mut profile = Vec::with_capacity(2 * m as usize + 3);
+        profile.push([0.0, height]);
+        for j in 1..=(2 * m) {
+            let phi = quarter * f64::from(j) / f64::from(m);
+            let (sin, cos) = phi.sin_cos();
+            profile.push([radius * sin, radius * cos]);
+        }
+        profile.push([0.0, 0.0]);
+        return swept_solid_with_segments(vec![profile], 360.0, n, WHAT);
+    }
+    let knuckle = edish_knuckle_to_use(radius, height, knuckle);
+    let hub = edish_radius_of_hub(radius, height, knuckle);
+    let split = hub - knuckle;
+    if split.abs() <= f64::EPSILON || (height - knuckle).abs() <= f64::EPSILON || !hub.is_finite() {
+        return Err(SolidError::Degenerate {
+            what: WHAT,
+            detail: format!("hub {hub} / knuckle {knuckle} leave no crown"),
+        });
+    }
+    let ratio = (height - knuckle) / split;
+    let phi_t = if ratio.abs() > 1e-6 {
+        (1.0 - ratio).clamp(-1.0, 1.0).acos()
+    } else {
+        (ratio + ratio).sqrt()
+    };
+    let phi_t_deg = phi_t.to_degrees();
+    let mut crown_steps = part_rev_segments(hub, phi_t_deg);
+    let mut knuckle_steps = part_rev_segments(knuckle, 90.0 - phi_t_deg);
+    if 2 * (crown_steps + knuckle_steps) > MAX_SEGMENTS {
+        if 4 * knuckle_steps > MAX_SEGMENTS {
+            knuckle_steps = 250;
+        }
+        if 4 * crown_steps > MAX_SEGMENTS {
+            crown_steps = 250;
+        }
+    }
+    let mut profile = Vec::with_capacity((crown_steps + knuckle_steps) as usize + 3);
+    profile.push([0.0, height]);
+    for j in 1..=crown_steps {
+        let phi = phi_t * f64::from(j) / f64::from(crown_steps);
+        let (sin, cos) = phi.sin_cos();
+        profile.push([hub * sin, hub * cos - (hub - height)]);
+    }
+    let knuckle_step = (std::f64::consts::FRAC_PI_2 - phi_t) / f64::from(knuckle_steps);
+    for j in 1..=knuckle_steps {
+        let phi = phi_t + knuckle_step * f64::from(j);
+        let (sin, cos) = phi.sin_cos();
+        profile.push([(radius - knuckle) + knuckle * sin, knuckle * cos]);
+    }
+    profile.push([0.0, 0.0]);
+    swept_solid_with_segments(vec![profile], 360.0, n, WHAT)
+}
+
+/// `GM_EDish::knuckleRadiusToUse`（`0x100556a0`）：请求的折边半径与几何上限之间的取舍，
+/// 分支照抄（含 r ≤ h 那条看着反直觉的臂）。
+fn edish_knuckle_to_use(radius: f64, height: f64, requested: f64) -> f64 {
+    let limit = dish_knuckle_radius(radius, height);
+    if (radius - height).abs() <= 1e-6 {
+        return height;
+    }
+    if radius <= height {
+        if radius - requested > 1e-6 {
+            return limit;
+        }
+    } else if requested - height >= -1e-6 {
+        return limit;
+    }
+    requested
+}
+
+/// `GM_EDish::radiusOfHub`（`0x10055750`）：冠球半径 (r² + h² − 2rk) / (2(h − k))。
+fn edish_radius_of_hub(radius: f64, height: f64, knuckle: f64) -> f64 {
+    (radius * radius + height * height - 2.0 * radius * knuckle) * (0.5 / (height - knuckle))
 }
 
 /// 回转轮廓的轴心吸附阈值（mm），`GM_User::normtol_`。
@@ -735,6 +974,111 @@ mod tests {
         assert!((bb.max()[2] - height / 2.0).abs() < 1e-9);
         assert!((bb.min()[0] - (-dbot / 2.0 - xoff / 2.0)).abs() < 1e-9);
         assert!((bb.max()[0] - (dbot / 2.0 - xoff / 2.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn slope_ended_cylinder_with_flat_ends_is_the_plain_cylinder() {
+        let (radius, height) = (150.0, 400.0);
+        let sloped = slope_ended_cylinder_solid(radius, height, 0.0, 0.0, 0.0, 0.0).unwrap();
+        let plain = csg_cylinder_solid(2.0 * radius, height).unwrap();
+        assert_eq!(sloped.genus(), 0);
+        assert!((sloped.volume() - plain.volume()).abs() / plain.volume() < 1e-12);
+        let bb = sloped.bounding_box().unwrap();
+        assert!((bb.min()[2] + height / 2.0).abs() < 1e-9);
+        assert!((bb.max()[2] - height / 2.0).abs() < 1e-9);
+        assert!((bb.max()[0] - radius).abs() < 1e-9, "θ₀ = 0 的顶点落在 +X");
+    }
+
+    #[test]
+    fn slope_ended_cylinder_shear_keeps_volume_and_tilts_the_end_planes() {
+        let (radius, height) = (150.0, 400.0);
+        let (xt, yt, xb, yb) = (20.0_f64, -10.0_f64, 5.0_f64, 15.0_f64);
+        let sloped = slope_ended_cylinder_solid(radius, height, xt, yt, xb, yb).unwrap();
+        let plain = csg_cylinder_solid(2.0 * radius, height).unwrap();
+        assert_eq!(sloped.genus(), 0);
+        // 端面绕圆心倾斜，正负抬升在整圈上抵消：体积与直圆柱逐位一致。
+        assert!(
+            (sloped.volume() - plain.volume()).abs() / plain.volume() < 1e-9,
+            "{} vs {}",
+            sloped.volume(),
+            plain.volume()
+        );
+        let mesh = crate::mesh::TriMesh::from_manifold(&sloped);
+        let (tan_xt, tan_yt) = (xt.to_radians().tan(), yt.to_radians().tan());
+        let (tan_xb, tan_yb) = (xb.to_radians().tan(), yb.to_radians().tan());
+        for v in &mesh.vertices {
+            let top = height / 2.0 + v[0] * tan_xt + v[1] * tan_yt;
+            let bottom = -height / 2.0 + v[0] * tan_xb + v[1] * tan_yb;
+            assert!(
+                (v[2] - top).abs() < 1e-9 || (v[2] - bottom).abs() < 1e-9,
+                "每个顶点都在两张端面之一上: {v:?}"
+            );
+        }
+        // +X 一侧（θ = 0）顶面按 tan(xtop) 抬高。
+        let top_at_plus_x = mesh
+            .vertices
+            .iter()
+            .filter(|v| (v[0] - radius).abs() < 1e-9 && v[1].abs() < 1e-9)
+            .map(|v| v[2])
+            .fold(f64::NEG_INFINITY, f64::max);
+        assert!((top_at_plus_x - (height / 2.0 + radius * tan_xt)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn slope_ended_cylinder_rejects_end_planes_at_ninety_degrees() {
+        assert!(slope_ended_cylinder_solid(100.0, 200.0, 90.0, 0.0, 0.0, 0.0).is_err());
+        assert!(slope_ended_cylinder_solid(100.0, 200.0, 0.0, 0.0, 0.0, -95.0).is_err());
+        assert!(slope_ended_cylinder_solid(100.0, 0.0, 0.0, 0.0, 0.0, 0.0).is_err());
+    }
+
+    #[test]
+    fn spherical_dish_is_a_closed_cap_on_a_flat_base() {
+        let (radius, height) = (500.0, 200.0);
+        let dish = spherical_dish_solid(radius, height).unwrap();
+        assert_eq!(dish.genus(), 0);
+        let sphere_radius = (radius * radius / height + height) * 0.5;
+        assert!((sphere_radius - 725.0).abs() < 1e-9);
+        let cap = std::f64::consts::PI * height * height * (3.0 * sphere_radius - height) / 3.0;
+        assert!(dish.volume() < cap, "内接多面体必须小于真球冠");
+        assert!((cap - dish.volume()) / cap < 0.01, "{} vs {cap}", dish.volume());
+        let bb = dish.bounding_box().unwrap();
+        assert!(bb.min()[2].abs() < 1e-9 && (bb.max()[2] - height).abs() < 1e-9);
+        assert!((bb.max()[0] - radius).abs() < 1e-9 && (bb.min()[1] + radius).abs() < 1e-9);
+    }
+
+    #[test]
+    fn elliptical_dish_with_equal_radius_and_height_is_a_hemisphere() {
+        let radius = 300.0;
+        let dish = elliptical_dish_solid(radius, radius, dish_knuckle_radius(radius, radius)).unwrap();
+        assert_eq!(dish.genus(), 0);
+        let hemisphere = 2.0 / 3.0 * std::f64::consts::PI * radius.powi(3);
+        assert!(dish.volume() < hemisphere);
+        assert!((hemisphere - dish.volume()) / hemisphere < 0.01);
+    }
+
+    #[test]
+    fn elliptical_dish_crown_and_knuckle_meet_tangentially() {
+        // 冠球与折边环在切点极角 φt 上必须落在同一点，否则 Rc / φt 的公式抄错了。
+        let (radius, height) = (500.0, 200.0);
+        let knuckle = edish_knuckle_to_use(radius, height, dish_knuckle_radius(radius, height));
+        let hub = edish_radius_of_hub(radius, height, knuckle);
+        assert!(hub > knuckle && knuckle > 0.0 && knuckle < height);
+        let phi_t = (1.0 - (height - knuckle) / (hub - knuckle)).acos();
+        let crown = [hub * phi_t.sin(), hub * phi_t.cos() - (hub - height)];
+        let bend = [(radius - knuckle) + knuckle * phi_t.sin(), knuckle * phi_t.cos()];
+        assert!((crown[0] - bend[0]).abs() < 1e-9 && (crown[1] - bend[1]).abs() < 1e-9);
+
+        let dish = elliptical_dish_solid(radius, height, knuckle).unwrap();
+        assert_eq!(dish.genus(), 0);
+        let bb = dish.bounding_box().unwrap();
+        assert!(bb.min()[2].abs() < 1e-9 && (bb.max()[2] - height).abs() < 1e-9);
+        assert!((bb.max()[0] - radius).abs() < 1e-9);
+        // 冠球比同底同高的球形碟平（Rc 1128 vs R 725），中段抬得更高，折边才在
+        // 靠近底缘处陡降：整体比球形碟装得**更多**，但仍装不满同底同高的圆柱。
+        let spherical = spherical_dish_solid(radius, height).unwrap();
+        let cylinder = std::f64::consts::PI * radius * radius * height;
+        assert!(dish.volume() > spherical.volume());
+        assert!(dish.volume() < cylinder);
     }
 
     #[test]
