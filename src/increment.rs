@@ -672,6 +672,10 @@ struct CascadeFanout {
 struct CascadeVisits {
     seen: BTreeMap<(u32, u32), usize>,
     generation: usize,
+    /// 本窗已经整条重建过的桥架分支（CWBRAN）：同一条分支里第二个候选起不再遍历、
+    /// 也不再记一条 incident——一次导入 948 个桥架元素只该有一条「分支 X 级联」，
+    /// 不是 812 条。
+    tray_branches: BTreeSet<(u32, u32)>,
 }
 
 fn collect_unit_subtree(
@@ -887,6 +891,13 @@ pub fn plan_update_bounded(
             Ok(true) => {}
             Ok(false) | Err(DbElementError::NotFound { .. }) => return Ok(None),
             Err(error) => return Err(error),
+        }
+        // 同一条分支本窗已经整条收过：这个候选照样算折进了计划，但不再遍历、不再记账。
+        if !visits.tray_branches.insert(key(branch)) {
+            return Ok(Some(CascadeFanout {
+                hits: 0,
+                overlapped: 1,
+            }));
         }
         let fanout = collect_unit_subtree(
             target,

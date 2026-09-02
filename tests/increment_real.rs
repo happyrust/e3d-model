@@ -21,16 +21,17 @@
 //! 确属无语料环境，显式设 `E3D_SKIP_REAL_GATES=1` 换回跳过。
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::path::Path;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use e3d_attlib::AttlibData;
-use e3d_io::db_element::{DbFilePin, DbSet, template_file_for};
+use e3d_io::db_element::{DbFilePin, DbFileResolver, DbSet, template_file_for};
 use e3d_io::engine::{ReadOnlyEngine, ScanTier};
 use e3d_io::refno::RefNo;
 use e3d_io::session::DbView;
 use e3d_model::category::is_model_unit;
+use e3d_model::db_discovery::DirectoryDbResolver;
 use e3d_model::elmodl::{GeneratedElement, GeometryId};
 use e3d_model::increment::{collect_window, execute_plan, plan_update};
 use e3d_model::ledger::ChangeKind;
@@ -39,6 +40,11 @@ use e3d_model::pipeline::generate_subtree;
 use e3d_model::transform::local_placement;
 
 const AMS_DIR: &str = r"D:\AVEVA\Projects\E3D3.1\AvevaMarineSample\ams000";
+/// 跨项目目录库（7002 / 7320 在这里，见 `docs/2026-09-01-next-step-development-plan.md` G0-5）。
+const ACP_DIR: &str = r"D:\AVEVA\Projects\E3D3.1\AvevaCatalogue\acp000";
+/// 库 7000 在 ams000 与 acp000 各有一份常规命名的主文件，扫目录的 resolver 按设计拒仲裁；
+/// 本项目那份要显式钉（与 `gen_ams --catalogue ams7000` 同一口径）。
+const PROJECT_CATALOGUE: &str = "ams7000_0001";
 const ATTLIB: &str = r"E:\reverse\e3d\shadow_e3d31_aps_all\attlib.dat";
 const TEMPLATE_DIR: &str = r"E:\reverse\e3d\shadow_e3d31_aps_all";
 const DB_TYPE: &str = "DESI";
@@ -73,6 +79,14 @@ enum Shape {
     /// 老判据看不见的那个形状」。真正会漏几何的形状（改挂一个自己不是单元、
     /// 底下却挂着单元的容器）在这份语料里一次都没发生过。
     Reparented,
+    /// 电缆桥架：托盘 `CTRAY` 的几何在两端全量里变了（新增 / 变化 / 消失任一）。
+    ///
+    /// 它压的是两条别的样本压不到的腿：① `CTRAY` 是模型单元（`is_model_unit`，
+    /// 2026-09-02 之前是 false，增量对它一律 `no_model`）；② 桥架件的放置不读自己的
+    /// POS/ORI，读 `CWBRAN` 名下 RPATH/POINTR 与 POSREF 链——不在 owner 链上的输入，
+    /// 靠 `cable_tray_branch_of` 的整条分支级联才够得着。目录库不进门这条腿无从验证：
+    /// 托盘几何全走目录链（SPRE→TABITE→PRTREF→GPART→CATR→SCOM→GMRE）。
+    CableTray,
 }
 
 impl Shape {
@@ -83,6 +97,7 @@ impl Shape {
             Shape::Deleted => "删除",
             Shape::Cascaded => "级联",
             Shape::Reparented => "改挂",
+            Shape::CableTray => "桥架",
         }
     }
 }
@@ -109,6 +124,10 @@ struct Sample {
 /// | `ams8000_0001` | 255→256 | 153 → 153 | 修改：件数不动、内容变了，最能看出有没有在整库重建 |
 /// | `ams1112_0001` | 721→722 | 7824 → 4476 | 删除：3348 件正体一次性没掉，删除要跟着上卷 |
 /// | `ams8000_0001` | 195→196 | 153 → 153 | 级联：索引里只有一个 EQUI 候选，变的却是它子树里的后代 |
+/// | `ams251142_0001` | 2→9 | 0 → 全库（CTRAY 128） | 桥架：托盘经目录链成件，每只都得自己成为单元（目录库进门后才看得见；样本随 `cable_tray` 模块入库，见 `SAMPLES` 末尾） |
+///
+/// 件数是 DESI-only 时代的读数；目录库进门（2026-09-02）后裁判还看见路由成员与管身，
+/// ams7999 是 13283 件、ams8000 是 2853 件，窗口两端的差集不变。
 const SAMPLES: &[Sample] = &[
     Sample {
         db: "ams7999_0001",
@@ -146,6 +165,17 @@ const SAMPLES: &[Sample] = &[
         target: 46,
         shape: Shape::Reparented,
     },
+    // 电缆桥架库 ams251142（`ZONE → CWAY → CWBRAN → {RPATH→POINTR, CTMTRL→CTSTRA/CTBEND/…→CTRAY}`）
+    // 链上只有 4 环（1, 2, 9, 10）：128 只托盘全部在 2→9 这一环里出现，之后再没动过
+    // （`PROBE_NOUN=CTRAY probe_chain_for_model_change` 扫过 20 本 CWAY 库，形状全一样：
+    // 一次性导入，没有一本有「改一个路径点」那种窗口）。它压的是**托盘的插入路径**：
+    // 128 个 CTRAY 每个都得自己成为单元被重建——`is_model_unit(CTRAY)` 为 false 时它们
+    // 全落 `no_model`，全量说新增 128 件、增量一件不建。分支级联那条腿（改 RPATH/POINTR）
+    // 本语料没有窗口可压，留待有桥架编辑历史的库。
+    //
+    // 样本本身随 `cable_tray` 模块（桥架件放置 + CTRAY 目录臂）一起入库：没有它，
+    // 两端全量都建不出托盘，这道门会按「空窗口」当场喊。届时只需加：
+    // `Sample { db: "ams251142_0001", base: 2, target: 9, shape: Shape::CableTray }`。
 ];
 
 /// 缺语料默认**红**，不再静默变绿。
@@ -193,9 +223,46 @@ fn shared_attlib() -> Arc<AttlibData> {
     Arc::new(AttlibData::parse_file(ATTLIB).expect("attlib 解析得开"))
 }
 
-/// 把库钉在某个会话上开一个读取池（与 `update_ams` 同款）。
+/// 目录库按需补开：同一份扫描表交给每个端点池（与 `update_ams --project-dir` 同款）。
+///
+/// 这道门此前只钉 DESI 一个库：路由成员 / 托盘经 SPRE 走目录求值，目录库不在池里
+/// 就 `DbNotRegistered` → 两端全量都建不出、增量也建不出，账平门绿，**派生腿与
+/// 目录实体在门上没有判别力**（模块文档「派生单元」那段的自述）。目录库进门之后，
+/// 五个老窗口的裁判会多看见管件 / 管身，桥架窗口才可能被看见。
+struct SharedResolver(Arc<DirectoryDbResolver>);
+
+impl DbFileResolver for SharedResolver {
+    fn resolve(&self, dbno: u32) -> Option<DbFilePin> {
+        self.0.resolve(dbno)
+    }
+}
+
+/// 扫 ams000（+ acp000，存在才扫）一次，整个测试进程复用。
+fn shared_resolver() -> Arc<DirectoryDbResolver> {
+    static RESOLVER: OnceLock<Arc<DirectoryDbResolver>> = OnceLock::new();
+    RESOLVER
+        .get_or_init(|| {
+            let mut dirs = vec![PathBuf::from(AMS_DIR)];
+            if Path::new(ACP_DIR).is_dir() {
+                dirs.push(PathBuf::from(ACP_DIR));
+            } else {
+                eprintln!("目录库目录 {ACP_DIR} 不在：跨项目目录（7002/7320）不进门，引用它们的单元两端都建不出");
+            }
+            let resolver = DirectoryDbResolver::scan(&dirs, Path::new(TEMPLATE_DIR))
+                .expect("扫库目录建 dbno → 文件表");
+            println!("{}", resolver.summary());
+            Arc::new(resolver)
+        })
+        .clone()
+}
+
+/// 把库钉在某个会话上开一个读取池（与 `update_ams` 同款）：DESI 钉会话，目录库
+/// 不钉（两端读同一时点的目录，目录变化不在窗口射程内——那是跨库失效通道的活）。
 fn open_pinned(attlib: &Arc<AttlibData>, db_file: &Path, sesno: u32) -> Arc<DbSet> {
-    let set = Arc::new(DbSet::new(attlib.clone()));
+    let set = Arc::new(DbSet::with_resolver(
+        attlib.clone(),
+        Box::new(SharedResolver(shared_resolver())),
+    ));
     let template = template_file_for(Path::new(TEMPLATE_DIR), DB_TYPE).expect("模板文件找得到");
     set.add_db(DbFilePin {
         file: db_file.to_path_buf(),
@@ -204,6 +271,17 @@ fn open_pinned(attlib: &Arc<AttlibData>, db_file: &Path, sesno: u32) -> Arc<DbSe
         sesno: Some(sesno),
     })
     .unwrap_or_else(|error| panic!("{} 钉在会话 {sesno}：{error}", db_file.display()));
+    // 本项目那份 7000：先于任何按需解析登记，resolver 就不会再为 7000 拒仲裁。
+    let catalogue = Path::new(AMS_DIR).join(PROJECT_CATALOGUE);
+    if catalogue.is_file() {
+        set.add_db(DbFilePin {
+            file: catalogue.clone(),
+            template: template_file_for(Path::new(TEMPLATE_DIR), "CATA").expect("CATA 模板"),
+            db_type: Some("CATA".to_string()),
+            sesno: None,
+        })
+        .unwrap_or_else(|error| panic!("{} 作目录库登记：{error}", catalogue.display()));
+    }
     set
 }
 
@@ -382,10 +460,22 @@ fn an_increment_says_what_two_full_generations_say() {
         // 空窗口自检：这道门此前挑窗口挑的是索引候选数，三个样本折算到模型单元
         // 之后全是空的，全绿了几轮什么都没验。样本声明压哪条路径，裁判就必须真的
         // 在那条路径上看见东西。
+        let trays_touched = || {
+            let is_tray = |id: &GeometryId, judge: &Snapshot| {
+                judge.get(id).is_some_and(|inv| inv.noun == "CTRAY")
+            };
+            appeared
+                .iter()
+                .chain(changed.iter())
+                .filter(|id| is_tray(id, &target_full))
+                .count()
+                + vanished.iter().filter(|id| is_tray(id, &base_full)).count()
+        };
         let exercised = match shape {
             Shape::Inserted => appeared.len(),
             Shape::Modified | Shape::Cascaded | Shape::Reparented => changed.len(),
             Shape::Deleted => vanished.len(),
+            Shape::CableTray => trays_touched(),
         };
         assert!(
             exercised > 0,
@@ -491,12 +581,18 @@ fn an_increment_says_what_two_full_generations_say() {
         }
 
         // 覆盖断言是单边的，所以还得有人拦住「整库重建」这种作弊解。
-        assert!(
-            upserts.len() < target_full.len(),
-            "{name}: 目标端一共 {} 件，增量重建了 {} 件——这不叫增量",
-            target_full.len(),
-            upserts.len(),
-        );
+        // 例外只有一种：base 端本来就一件几何都没有（库在这一环里被整体导入，
+        // 桥架库 ams251142 的 2→9 就是这样），那时「全建」就是正确答案，不是作弊。
+        if base_full.is_empty() {
+            println!("  base 端零件（整体导入窗口），不查「增量 < 全量」这条");
+        } else {
+            assert!(
+                upserts.len() < target_full.len(),
+                "{name}: 目标端一共 {} 件，增量重建了 {} 件——这不叫增量",
+                target_full.len(),
+                upserts.len(),
+            );
+        }
 
         // 级联样本还要再证一件事：上面那条「一件都不许漏」分不清后代是**被级联捞回来的**
         // 还是**它自己也在候选里**。差分只点了容器的名字，后代的索引记录一个字节没动，
@@ -527,6 +623,27 @@ fn an_increment_says_what_two_full_generations_say() {
                 outcome.report.cascades.len(),
                 silent.len(),
             );
+        }
+
+        // 桥架样本：裁判看见的每一只托盘都得由增量亲手重建——不是被别的单元顺带。
+        // 上面的覆盖断言已经保证了这一点；这里把数字打出来，让「128 只托盘、128 条
+        // CTRAY upsert」在日志里能对上号，并钉住计划把它们记成了 rolled_up 而不是 no_model。
+        if shape == Shape::CableTray {
+            let tray_upserts = upserts
+                .iter()
+                .filter(|(_, inv)| inv.noun == "CTRAY")
+                .count();
+            println!(
+                "  桥架：裁判 {} 只托盘变了，增量重建 {tray_upserts} 只；no_model 里 CTRAY = {}",
+                trays_touched(),
+                outcome.report.no_model.get("CTRAY").copied().unwrap_or(0),
+            );
+            assert_eq!(
+                outcome.report.no_model.get("CTRAY").copied().unwrap_or(0),
+                0,
+                "{name}: 有 CTRAY 候选落进了 no_model——托盘不再是模型单元了？"
+            );
+            assert!(tray_upserts > 0, "{name}: 一只托盘都没重建");
         }
 
         // 改挂样本要再证一件事：L2 真的看见了这条改挂，而且它正是老判据看不见的
@@ -603,14 +720,28 @@ fn probe_chain_for_model_change() {
             chain[oldest],
         );
 
-        let (mut newer_full, cost) = timed_full_generation(&attlib, &db_file, chain[0]);
+        // `PROBE_NOUN=CTRAY` 之类：只拿这一种 noun 的件做裁判，二分收敛到的就是
+        // 「这种件变了」的那一环，而不是库里随便哪件（桥架库里多半是支架 TMPL 的盒子）。
+        let noun_filter = probe_noun_filter();
+        let timed_full_generation = |sesno: u32| {
+            let (mut snapshot, cost) = timed_full_generation(&attlib, &db_file, sesno);
+            if let Some(noun) = &noun_filter {
+                snapshot.retain(|_, inv| inv.noun == *noun);
+            }
+            (snapshot, cost)
+        };
+        let (mut newer_full, cost) = timed_full_generation(chain[0]);
         println!(
-            "  链头 {}：全量 {} 件，{:.1}s",
+            "  链头 {}：全量 {} 件{}，{:.1}s",
             chain[0],
             newer_full.len(),
+            noun_filter
+                .as_ref()
+                .map(|noun| format!("（只看 {noun}）"))
+                .unwrap_or_default(),
             cost.as_secs_f64(),
         );
-        let (oldest_full, cost) = timed_full_generation(&attlib, &db_file, chain[oldest]);
+        let (oldest_full, cost) = timed_full_generation(chain[oldest]);
         println!(
             "  链尾 {}：全量 {} 件，{:.1}s",
             chain[oldest],
@@ -626,7 +757,7 @@ fn probe_chain_for_model_change() {
         let (mut newer, mut older) = (0usize, oldest);
         while older - newer > 1 {
             let mid = newer + (older - newer) / 2;
-            let (mid_full, cost) = timed_full_generation(&attlib, &db_file, chain[mid]);
+            let (mid_full, cost) = timed_full_generation(chain[mid]);
             let agrees = snapshots_agree(&newer_full, &mid_full);
             println!(
                 "    链位 {mid}（会话 {}）：全量 {} 件，{:.1}s，与 {} {}",
@@ -915,6 +1046,14 @@ fn probe_libs() -> Vec<String> {
             .collect(),
         Err(_) => PROBE_LIBS.iter().map(|name| (*name).to_owned()).collect(),
     }
+}
+
+/// [`probe_chain_for_model_change`] 的裁判只看这一种 noun（`PROBE_NOUN=CTRAY`）；不设就全看。
+fn probe_noun_filter() -> Option<String> {
+    std::env::var("PROBE_NOUN")
+        .ok()
+        .map(|noun| noun.trim().to_ascii_uppercase())
+        .filter(|noun| !noun.is_empty())
 }
 
 /// [`probe_chain_for_cascade`] 跳过大窗口的阈值。逐候选走 owner 链是随机读，
