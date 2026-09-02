@@ -153,6 +153,18 @@ CRCATI 的圆柱/锥族负臂（SCON/NSCO、SCYL/NSCY、LSNO/NLSN、LCYL/NLCY）
     同一件事。现在走 `snout_solid_with_segments(…, cylinder_segments(大端半径))`（libgm 曲面
     口径 0.5 mm，`SNOUT_TESSELLATION_VERSION` 2）：33 只 BEND 的 132 只 LSNO Snout、11880 个
     E3D 顶点到我们表面 **≤ 0.0022 mm**；设计侧 SNOU/CONE 与负体刀仍用 5 mm 那条。
+  - **"`TUFL=true` 却在 RVM 缺席"那 318 件查清并修掉**（2026-09-02 下午，
+    `evidence/20260902-g01c-tufl-residual/`）：数字是按旗普查的假象——多出来的 LCYL/SCTO 引的
+    P 点不在 PTSET，E3D 与 gen_ams 都不画；按 gen_ams 实际跳过重算，那 40 个成员全对上，却翻出
+    56 个成员 E3D 画、我们没画，根子是两条求值规则与 Core3D 不一致：① `pplib/DECARG` 负操作数
+    `|n|>5` 一律是常数 n/10（-95 = 9.5，不限于 10 的倍数），`-1/-2` 是 0/1，`-3/-4/-5` 才是
+    DDRADIUS/DDANGLE/DDHEIGHT——e3d-io 原来把非 10 倍数当 `DD#n` 未解析（e3d-io `c800627`）；
+    ② PTCA 没有 PTCD 时 `pplib/DPARAM` 退回读 `DIR`（模板缺省局部 +Y），`catalogue_point.rs`
+    原来直接判解不出（`eb1ea98`）。ams7997：local failure 1640 → 1157，unique placed parts
+    25460 → 25942；3074 个按图元导出的配对成员逐 kind 对不上 56 → **1**；成员级 AABB
+    exact/chord/off 1910/1361/1600 → 1940/1395/1536，0 件变差。剩那 1 只 COUP `/ABCF331DF`
+    的两片 LEVE (6,8) LSNO E3D 不画、我们画，DRWANT 闭区间 + level 6 说该画，未定案（语料里
+    (7,10)/(8,10) 全是 OBST=1，分不清"level 6"与"level 9/10 + obst off"，要 E3D 侧换 level 导一次）。
   - **遗留给别的臂**：`ARRJ1` CLFL SCYL 环方向不对（CLFL 中心线标架那条，正在被并行会话重做），
     45 只 BEND / 30 只 ELBO 成员级 AABB 剩下的 40 mm 全是它。
 - **G0-2 管道端到端 RVM 验证**：生成侧基线已刷新到 c13f836 之后
