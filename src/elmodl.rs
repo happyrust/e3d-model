@@ -17,9 +17,10 @@ use glam::{DMat4, DVec3};
 use manifold_csg::Manifold;
 
 use e3d_io::db_element::{DbElement, DbElementError};
+use e3d_io::record::descriptor::DescriptorValue;
 use e3d_io::refno::RefNo;
 
-use crate::catalogue::{CatalogueMeshCache, model_catalogue_member_with_cache};
+use crate::catalogue::{CatalogueMeshCache, model_catalogue_member_with_cache, repre_level};
 use crate::category::{Category, CompositeFamily, Prim, classify};
 use crate::discretise::{flatten_ring, has_core3d_skipped_link};
 use crate::extrusion_reuse::{ExtrusionVariant, cached_extrusion};
@@ -298,6 +299,25 @@ pub fn model_element_with_cache(
     // a few ulps and coincident-face CSG may amplify that into another topology.
     let mut negatives = Vec::new();
     collect_negatives(el, &mut negatives)?;
+    // DRWAND 的表现级门先过（Core3D `csg_gml4/DRWAND` 0x1008BEE0：对负体自己跑
+    // `rules/STYSET` 后判 `LEVE.lo <= level <= LEVE.hi`）。被门挡下的负体不是失败，
+    // 是 E3D 同样不切的刀——记进 negatives_skipped 带上区间与当前级，RVM 对拍时
+    // 体积差就从这一行归因（evidence/20260902-drwant-stylset-level-rule §4–5）。
+    // 门放在实例化决策之前：全部刀都被挡下的正体没有布尔参与者，照旧可以实例化。
+    let level = repre_level();
+    let mut skipped = Vec::new();
+    negatives.retain(|neg| {
+        let (lo, hi) = negative_leve(neg);
+        if design_leve_admits(lo, hi, level) {
+            return true;
+        }
+        skipped.push(SkippedNegative {
+            refno: neg.refno(),
+            noun: neg.element_type().unwrap_or_else(|_| "?".into()),
+            reason: format!("LEVE=[{lo},{hi}] 不含表现级 {level}（DRWAND 门，E3D 同样不切）"),
+        });
+        false
+    });
     let had_negative_members = !negatives.is_empty();
 
     let (local, primitive_instance) = match category {
@@ -369,10 +389,13 @@ pub fn model_element_with_cache(
     let pos_world = placed(&local, world);
 
     // 负几何（LNEGIT）：直属负体 + 直属 CMPF 里的深层负体。
+    // 刀的线性尺寸以宿主尺度封顶（E3D 拿 3.2e14 mm 当「无限长」哨兵，Manifold 的
+    // epsilon 跟运算数包围盒走，一把哨兵刀会让整组布尔在 320 mm 精度下失稳）。
+    let extent_cap = negative_extent_cap(&pos_world);
     let mut applied = Vec::new();
-    let mut skipped = Vec::new();
     for neg in negatives {
-        let reason = match negative_world_solid(&neg, noun == "SNOU", cache) {
+        let reason = match negative_world_solid(&neg, noun == "SNOU", cache, extent_cap, &mut notes)
+        {
             Ok(NegativeSolid::Solid(solid)) => {
                 applied.push(solid);
                 continue;
@@ -1101,16 +1124,93 @@ enum NegativeSolid {
     Skipped(String),
 }
 
+/// 负体线性尺寸上限 = 宿主正体世界包围盒对角线 × 本因子，且不低于
+/// [`NEGATIVE_EXTENT_CAP_FLOOR_MM`]。
+///
+/// 取值依据 `evidence/20260902-floor-72959-giant-ncyl` §3：把哨兵高度钳到 2e4–1e11 mm
+/// 之间任何一个值，FLOOR 72959 的体积、分量数、genus 都稳定一致；因子 8 让一把合法地
+/// 贯穿宿主、长出宿主几倍的刀不会被碰到，只有 E3D 的「无限长」哨兵（3.2e14）落进来。
+const NEGATIVE_EXTENT_CAP_FACTOR: f64 = 8.0;
+const NEGATIVE_EXTENT_CAP_FLOOR_MM: f64 = 1.0e4;
+
+fn negative_extent_cap(host_world: &Manifold) -> f64 {
+    let Some(bb) = host_world.bounding_box() else {
+        return NEGATIVE_EXTENT_CAP_FLOOR_MM;
+    };
+    let (lo, hi) = (bb.min(), bb.max());
+    let diagonal = DVec3::new(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]).length();
+    if diagonal.is_finite() {
+        (diagonal * NEGATIVE_EXTENT_CAP_FACTOR).max(NEGATIVE_EXTENT_CAP_FLOOR_MM)
+    } else {
+        NEGATIVE_EXTENT_CAP_FLOOR_MM
+    }
+}
+
+/// 负体的一个线性参数（HEIG 一类）超过宿主尺度上限时钳到上限，符号照旧，并把这一刀
+/// 记进宿主的 notes——基本体以自身原点为中心，钳高度不改变它贯穿宿主这件事。
+fn clamp_negative_extent(
+    neg: &DbElement,
+    noun: &str,
+    attr: &str,
+    value: f64,
+    cap: f64,
+    host_notes: &mut Vec<String>,
+) -> f64 {
+    if value.is_finite() && value.abs() <= cap {
+        return value;
+    }
+    host_notes.push(format!(
+        "负体 {} {noun} {attr}={value:.3e} 超过宿主尺度上限 {cap:.0} mm，已钳到上限\
+         （E3D 的「无限长」哨兵；不钳会让 Manifold epsilon 涨到宿主尺度的量级、整组布尔失稳）",
+        neg.refno()
+    ));
+    if value.is_finite() {
+        cap.copysign(value)
+    } else {
+        cap
+    }
+}
+
+/// 设计侧负体的 `LEVE=[lo,hi]`；未设 / 缺 / 形状不对按 `gml_bkend/CRDESI` 对
+/// `DGTERR == 18` 的处置给 `[0,10]`。负值按 0 读（level 是无符号的表现级）。
+fn negative_leve(neg: &DbElement) -> (u32, u32) {
+    let pair = match neg.attribute("LEVE") {
+        Ok(Some(DescriptorValue::IntArray(v))) if v.len() >= 2 => {
+            Some((i64::from(v[0]), i64::from(v[1])))
+        }
+        Ok(Some(DescriptorValue::RawWords(v) | DescriptorValue::WordArray(v))) if v.len() >= 2 => {
+            Some((i64::from(v[0]), i64::from(v[1])))
+        }
+        _ => None,
+    };
+    let as_level = |value: i64| value.clamp(0, i64::from(u32::MAX)) as u32;
+    pair.map_or((0, 10), |(lo, hi)| (as_level(lo), as_level(hi)))
+}
+
+/// `csg_gml4/DRWAND`（0x1008BEE0）对负体的门：闭区间 `lo <= level <= hi`，逐字照抄。
+///
+/// 与目录成员那条 [`crate::catalogue`] 的筛有意不同：那边 `hi == 0` 读作「不设上限」是
+/// 对 addin 导出（`C-IY-1R330-B.rvm`）拟合出来的经验口径；设计侧负体只有 DRWAND 一条
+/// 反编译在案的规则，语料里也没有 `[x,0]` 的刀，不先验地把那条例外带过来。
+pub(crate) fn design_leve_admits(lo: u32, hi: u32, level: u32) -> bool {
+    lo <= level && level <= hi
+}
+
 /// 负体建体 + 让刀（都在负体自己的局部系）+ 世界放置。
 ///
 /// 让刀口径：挤出/回转 = 截面 miter offset（斜边也精确外移
 /// [`MANIFOLD_NUDGE_MM`]）；
 /// 基本体 = 局部系逐轴放大——box/cylinder 的面在局部系轴对齐，精确；
 /// pyramid 斜面 / torus 径向面的外移量略小于 restol，出现共壁案例再按面法向补。
+///
+/// `extent_cap`：宿主尺度上限（[`negative_extent_cap`]）。NCYL 的 HEIG 在建体前钳到它；
+/// 其余形状建完后若任一局部尺寸仍超上限，整刀跳过并记账（语料里只有 NCYL 带哨兵）。
 fn negative_world_solid(
     neg: &DbElement,
     snout_rvm_facets: bool,
     cache: &mut CatalogueMeshCache,
+    extent_cap: f64,
+    host_notes: &mut Vec<String>,
 ) -> Result<NegativeSolid, ModelError> {
     let noun = neg.element_type()?;
     let mut notes = Vec::new();
@@ -1134,14 +1234,38 @@ fn negative_world_solid(
                 }
             }
         }
-        Category::NegPrimitive(Prim::Cylinder) if snout_rvm_facets => inflate_about_center(
-            &csg_cylinder_solid_with_segments(
-                require_double(neg, &noun, "DIAM", "cylinder")?,
+        Category::NegPrimitive(Prim::Cylinder) if snout_rvm_facets => {
+            let diameter = require_double(neg, &noun, "DIAM", "cylinder")?;
+            let height = clamp_negative_extent(
+                neg,
+                &noun,
+                "HEIG",
                 require_double(neg, &noun, "HEIG", "cylinder")?,
-                snout_segments(0.0, require_double(neg, &noun, "DIAM", "cylinder")? / 2.0),
-            )?,
-            MANIFOLD_NUDGE_MM,
-        ),
+                extent_cap,
+                host_notes,
+            );
+            inflate_about_center(
+                &csg_cylinder_solid_with_segments(
+                    diameter,
+                    height,
+                    snout_segments(0.0, diameter / 2.0),
+                )?,
+                MANIFOLD_NUDGE_MM,
+            )
+        }
+        Category::NegPrimitive(Prim::Cylinder) => {
+            // 与 `primitive_local_solid` 的圆柱臂同一个 builder；单独拆出来只为在建体前钳 HEIG。
+            let diameter = require_double(neg, &noun, "DIAM", "cylinder")?;
+            let height = clamp_negative_extent(
+                neg,
+                &noun,
+                "HEIG",
+                require_double(neg, &noun, "HEIG", "cylinder")?,
+                extent_cap,
+                host_notes,
+            );
+            inflate_about_center(&csg_cylinder_solid(diameter, height)?, MANIFOLD_NUDGE_MM)
+        }
         Category::NegPrimitive(prim) => inflate_about_center(
             &primitive_local_solid(neg, &noun, prim, false)?.solid,
             MANIFOLD_NUDGE_MM,
@@ -1170,6 +1294,18 @@ fn negative_world_solid(
             unreachable!("负体收集给了非负类别 {other:?}（noun={noun}）");
         }
     };
+    // 钳法只接了 NCYL 的 HEIG；别的形状若仍带哨兵尺寸，宁可少一刀并记账，也不把它
+    // 送进布尔去毒化整组（让刀后的 NCYL 比上限多两个 nudge，放 1% 余量）。
+    if let Some(bb) = local.bounding_box() {
+        let (lo, hi) = (bb.min(), bb.max());
+        let extent = (0..3).fold(0.0_f64, |acc, axis| acc.max(hi[axis] - lo[axis]));
+        if !extent.is_finite() || extent > extent_cap * 1.01 {
+            return Ok(NegativeSolid::Skipped(format!(
+                "{noun} 局部尺寸 {extent:.3e} mm 超过宿主尺度上限 {extent_cap:.0} mm\
+                 （哨兵尺寸；只有 NCYL 接了钳法，其余先跳过并记账，避免整组布尔失稳）"
+            )));
+        }
+    }
     let world = world_matrix(neg)?;
     Ok(NegativeSolid::Solid(placed(&local, world)))
 }
@@ -1182,6 +1318,34 @@ pub fn world_with_sjus(world: DMat4, sjus_drop: f64) -> DMat4 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_design_negative_level_gate_is_drwand_closed_interval() {
+        // FLOOR 17496/72959 的两类刀：[0,10] 在 0 级过、[2,10] 在 0 级被拒（RVM 逐把吻合）。
+        assert!(design_leve_admits(0, 10, 0));
+        assert!(!design_leve_admits(2, 10, 0));
+        assert!(!design_leve_admits(2, 10, 1));
+        assert!(design_leve_admits(2, 10, 2));
+        assert!(design_leve_admits(2, 10, 10));
+        assert!(!design_leve_admits(2, 10, 11));
+        // 与目录侧「hi == 0 不设上限」有意不同：DRWAND 是逐字的闭区间。
+        assert!(design_leve_admits(0, 0, 0));
+        assert!(!design_leve_admits(0, 0, 6));
+    }
+
+    #[test]
+    fn the_negative_extent_cap_follows_the_host_diagonal_with_a_floor() {
+        // 10.2 m × 10.2 m × 1.535 m 的 FLOOR：对角线 ≈ 14.5 m，上限 ≈ 116 m——落在
+        // evidence/20260902-floor-72959-giant-ncyl §3 实测稳定的 2e4–1e11 mm 区间里。
+        let floor = crate::solid::box_solid(10200.0, 10200.0, 1535.0).unwrap();
+        let cap = negative_extent_cap(&floor);
+        let diagonal = DVec3::new(10200.0, 10200.0, 1535.0).length();
+        assert!((cap - diagonal * NEGATIVE_EXTENT_CAP_FACTOR).abs() < 1e-6);
+        assert!(cap > 2.0e4 && cap < 1.0e11);
+        // 小宿主不把上限压到比 1e4 mm 还低：一把贯穿 100 mm 小盒的 5 m 合法长刀不该被钳。
+        let small = crate::solid::box_solid(100.0, 100.0, 100.0).unwrap();
+        assert_eq!(negative_extent_cap(&small), NEGATIVE_EXTENT_CAP_FLOOR_MM);
+    }
 
     #[test]
     fn implied_tube_v2_identity_includes_route_ordinal() {

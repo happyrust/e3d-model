@@ -88,6 +88,11 @@ ams8000 实测残余只有两族：**NSEX 1593（GMRE 内负挤出刀）与 SREV
 - 遍历分支成员，对 noun 码 `631901`/`726491`/`640317` 逐个建目录几何（离开侧 stub），
   再在无成员时走**默认头段圆柱（631901）+ 尾段盒（813891）**。这比 Rust 当前「每槽位一根
   圆柱」更细：Core 的管身是**成员的目录 stub 几何**串起来的。
+  > **纠正（2026-09-02 下午，fable-5-1-6，evidence/20260902-drwant-stylset-level-rule §2/§5.3）**：
+  > `813891` 不在 1931 个 noun 里，base-27 反查是 **`CLIN`**——默认路那两次 `sub_107149B0` 是**同一跨度的
+  > 两种表现**：`TUBE`（631901，flags `0,0,0,0,-1`）→ `sub_10402E10(半长 v60*0.5, 半径)` 圆柱 + `GMCTRA`
+  > 居中；`CLIN`（813891，flags `0,0,0,-1,0`）→ `sub_10402D00` + `GFX_Box::getType()` 的**中心线表现盒**，
+  > 只在 `REPR CL ON` 下要。不是「头段 + 尾段」。tube on / CL off 的导出只出圆柱，与 Rust「每槽位一圆柱」同形。
 - **没有看到显式 `if (length < eps)` 零长判据**——Core 依赖几何内核（GMCTRA/GMAMEM）
   拒绝退化体。~~故 `route::ZERO_LENGTH_TOL_MM`（现占位 = 0.051mm）是 Rust 侧的安全阀~~
   **（2026-09-01 晚已钉死为 1.0mm）**：`FAB_PipePieceManager::isValidTubeLength`
@@ -177,6 +182,11 @@ CRCATI 的圆柱/锥族负臂（SCON/NSCO、SCYL/NSCY、LSNO/NLSN、LCYL/NLCY）
 - **G0-3 隐式管身对齐 GTTUBG**：核对头/尾 stub 语义（§2.2；TUBE/NTUB/BOXI/NBXI 四个
   stub noun 已定名），确认 Rust「每槽位一圆柱」与 Core「成员 stub 串接」在真库上产物
   一致。~~顺带钉死或文档化 `ZERO_LENGTH_TOL_MM`~~ ✅ 已钉 1.0mm（§2.2 修订注）。
+  **2026-09-02 下午收窄**：默认路已按 §2.2 纠正注收口——`813891` 是 `CLIN` 中心线表现盒不是尾段，
+  tube on / CL off 下 Core 的默认管身就是一根居中圆柱，与 Rust 同形；**剩下只有成员 stub 三 case**
+  （`631901 TUBE / 726491 BOXI / 640317 LINE`，GTTUBG `:137–:201`）待对拍。另：管身的「画不画」也走
+  DRWANT（`TUBI/TUBE/BOXI` 臂：`in_level ∧ (a8∧cl_on → GATLG1 ∣ a7∧tube_on ∨ OBST>0∧obst_on)`），
+  见 evidence/20260902-drwant-stylset-level-rule §3。
 - **G0-4 重做 ams8000 基线**：✅ **已完成**（evidence/20260901-model-reuse）：
   generated 153→**2803**，unknown 只剩 HVAC 2 / TEXT 24，orphans 0，账平。
 - **G0-5 目录库注册收口**：✅ 机制已落（`db_discovery` + `--project-dir`，c13f836）。
@@ -202,6 +212,13 @@ CRCATI 的圆柱/锥族负臂（SCON/NSCO、SCYL/NSCY、LSNO/NLSN、LCYL/NLCY）
 - **G2-1 宿主负体机制**：`TMPL` 名下 1559 件负体扣的是容器外宿主（墙/梁），现只记
   `host_negatives`、一刀未扣。要先能从负体定位宿主（`NAPP`？连接关系？core.dll 另有机制？），
   是 `TMPL` 之外的独立课题。
+  **2026-09-02 下午改题（evidence/20260902-template-holes-napp）**：Core3D 里没有「扣容器外宿主」这条路。
+  唯一读 `ATT_NAPP` 的是 `CSG_PrimitiveUtilities::addHolesBelowTemplate`（0x107263A0），由
+  `CSG_TreeBuilderPrimitive::getCSGTree`（0x10726890）在建正体 `P` 且 `P.owner == TMPL` 时调用（`TMPL.owner`
+  是 `FIXING` 时扫该 FIXING 下全部 TMPL），掩码 **4**：成员 noun 字典旗 `HOLC`(599651) ∧ `NAPP > 0 ∧ NAPP & 4`
+  ∧ `isWanted` → 从 `P` 上扣。`NAPP = -1`（凹龛 NXTR、梁廓 NBOX）在 `> 0` 处被拒，E3D 显示模型里**不切任何
+  东西**——今天的「一刀不扣」对它们是忠实的。要补的是 `NAPP&4` 的模板孔（螺栓孔 NCYL `NAPP=7` 扣同模板的端板
+  PANE），账目改成 `template_holes_applied / template_hole_definitions`。`NAPP` bit 1/2 无 Core3D 出处，不猜。
 - **G2-2 未实现正基本体**：CONE/DISH/SLCY（+ 负体 NCON/NDIS/NSLC）。「ams8000 有
   CONE×4」出自 07-24 备份快照的旧账；**当前活库（会话 264）实测三者均零出现**
   （evidence/20260901-model-reuse），与 G0-1c 同列「等语料」，别再当对拍 8000 的前置。

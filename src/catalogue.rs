@@ -421,7 +421,10 @@ pub struct CatalogueMemberBuild {
 /// 都在这一级。TTY 裸会话实测在 0 级（`1RX07-LCT.rvm`：同一目录件族只出
 /// `LEVE=[0,0]` 的 CABLEWAY 盒，`[1,10]` 的 BOARD/RESERVED 全不在）。
 /// 对拍不同口径的基准时用 `E3D_REPRE_LEVEL` 覆盖本轮进程。
-fn repre_level() -> u32 {
+///
+/// 设计侧负体的 DRWAND 门（`elmodl::design_leve_admits`）读的也是这一个数——Core3D 里
+/// 两条路共用同一组 `rules/STYSET` 全局，这里就不许长出第二份「当前表现级」。
+pub(crate) fn repre_level() -> u32 {
     static LEVEL: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     *LEVEL.get_or_init(|| {
         std::env::var("E3D_REPRE_LEVEL")
