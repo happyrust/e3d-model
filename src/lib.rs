@@ -17,6 +17,7 @@
 //! | [`polyhedron`] | `CSG_BasicPOL::getPrimGeom` → `sub_1071DCF0` | POLYHE/POHE/NPOLYH 显式 B-rep 建体 |
 //! | [`discretise`] | libgm `GM_Profile` 折线化 | 带 FRAD 倒圆的环离散 |
 //! | [`transform`] | `MAT16/CONCAT/GLSMAT` | POS/ORI 折叠出世界矩阵 |
+//! | [`cable_tray`] | `CAB_DB_PseudoPOS/ORIonCTELE::getAtt` | 桥架件（CTSTRA/CTBEND/…）没存 POS/ORI，按 `POSREF→POINTR + ZDIS/PKDI` 现算 |
 //! | [`mesh`] | `gm_CreateFacetStructure` | 三角网格产物 + OBJ 导出 |
 //!
 //! CSG 内核用 manifold-csg（与 gen-model ADR-029 同款），对标 libgm 的
@@ -28,6 +29,7 @@
 // 变成整块吞掉的坏网格。取反式让 NaN 落进拒绝分支，是刻意的，不是笔误。
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
+pub mod cable_tray;
 pub mod catalogue;
 pub mod catalogue_point;
 pub mod category;
@@ -47,6 +49,7 @@ pub mod route;
 pub mod solid;
 pub mod transform;
 
+pub use cable_tray::{CABLE_TRAY_ELEMENT_NOUNS, CableTrayPlacement, is_cable_tray_element};
 pub use catalogue::{
     CatalogueMeshCache, CatalogueMeshCacheStats, model_catalogue_member,
     model_catalogue_member_with_cache,
@@ -61,7 +64,8 @@ pub use element_diff::{ElementDiff, MemberDelta, diff_element};
 pub use elmodl::{GeneratedElement, GeometryId, ModelError};
 pub use extrusion_reuse::ExtrusionReuseStats;
 pub use increment::{
-    IncrementError, IncrementOutcome, IncrementReport, WindowDiff, collect_window, increment_update,
+    AffectedClosure, IncrementError, IncrementOutcome, IncrementReport, UpdatePlan, WindowDiff,
+    collect_window, increment_update,
 };
 pub use ledger::{ChangeKind, ChangeLedger, ChangeTally, LedgerEntry};
 pub use mesh::TriMesh;

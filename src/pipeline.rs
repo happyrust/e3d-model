@@ -10,6 +10,7 @@
 //! | `RouteContainer` | 记账，并按 `RouteWalker` 的串接方式数出隐式管身 |
 //! | `RouteMember` | 记账 |
 //! | `PrimitiveContainer` | 记账；负体成员认领进 [`Report::host_negatives`]，本期不扣 |
+//! | `Composite(CableTray)` | `CTSTRA/CTBEND/…` 现算放置（[`crate::cable_tray`]）；`CTRAY` 走目录链建体；其余（CWAY/CWBRAN）记账 |
 //! | `NonGraphic` | 记账（判「无三维表示」的放行要留名，见 [`Report::non_graphic`]） |
 //! | `Neg*` / `ProfileData` | 属主消费掉了就不会走到这里；走到了就是孤儿，记账 |
 //!
@@ -29,12 +30,14 @@ use std::collections::BTreeMap;
 
 use e3d_io::db_element::{DbElement, DbElementError};
 
+use crate::cable_tray::{self, is_cable_tray_element};
 use crate::catalogue::{
     CatalogueMeshCache, CatalogueMeshCacheStats, model_catalogue_member_with_cache,
 };
 use crate::catalogue_point::{CataloguePoints, tube_outer_diameter_from_stub};
 use crate::category::{
-    BuildDisposition, Category, decision, graphics_ignored_below, is_derived_unit, is_model_unit,
+    BuildDisposition, Category, CompositeFamily, decision, graphics_ignored_below, is_derived_unit,
+    is_model_unit,
 };
 use crate::elmodl::{GeneratedElement, GeometryId, Modeled, model_element_with_cache};
 use crate::extrusion_reuse::ExtrusionReuseStats;
@@ -198,6 +201,10 @@ pub struct Report {
     /// 已有明确建模路径、但 builder 或目标语料证据尚未闭环：noun → 数量。
     pub evidence_pending: BTreeMap<String, usize>,
     /// 已实际完成成员聚合并产出实体的复合构件：noun → 数量。
+    ///
+    /// 桥架族两种口径：`CTRAY` 计入是目录几何真建出来了；`CTSTRA`/`CTBEND`/… 计入是
+    /// 它没存的 POS/ORI 现算成功（[`crate::cable_tray::placement`]）——那七个 noun 自己
+    /// 不出实体，实体在下面的 `CTRAY` 上。
     pub composites_built: BTreeMap<String, usize>,
     /// 每个实际出现 NOUN 的分类依据；同一 NOUN 只保留稳定的一条依据。
     pub noun_evidence: BTreeMap<String, String>,
@@ -384,6 +391,64 @@ pub fn generate_subtree_with_cache(
             }
             Category::PrimitiveContainer => {
                 *report.primitive_containers.entry(noun.clone()).or_insert(0) += 1;
+            }
+            // 电缆桥架：CTSTRA/CTBEND/… 自己不出实体，它们的「建」是把没存的 POS/ORI
+            // 现算出来（`cable_tray::placement`），几何在它们下面的 CTRAY 上经目录链
+            // （SPRE→TABITE→PRTREF→GPART→CATR→SCOM→GMRE）建。放置解不出来就记 failed——
+            // 那一只 CTRAY 随后也会在 world_matrix 里撞上同一条错，两处都响是刻意的：
+            // 一处指出病灶（CTELE），一处指出后果（CTRAY 没建）。
+            Category::Composite(CompositeFamily::CableTray) if is_cable_tray_element(&noun) => {
+                match cable_tray::placement(&el) {
+                    Ok(_) => {
+                        decrement(&mut report.evidence_pending, &noun);
+                        *report.composites_built.entry(noun.clone()).or_insert(0) += 1;
+                    }
+                    Err(error) => report.failed.push(Incident {
+                        refno,
+                        noun,
+                        detail: error.to_string(),
+                    }),
+                }
+            }
+            Category::Composite(CompositeFamily::CableTray) if noun == "CTRAY" => {
+                match model_catalogue_member_with_cache(&el, catalogue_mesh_cache) {
+                    Ok(build) => {
+                        for detail in &build.diagnostics {
+                            report.notes.push(Incident {
+                                refno: refno.clone(),
+                                noun: noun.clone(),
+                                detail: detail.clone(),
+                            });
+                        }
+                        match build.generated {
+                            Some(generated) => {
+                                for note in &generated.notes {
+                                    report.notes.push(Incident {
+                                        refno: refno.clone(),
+                                        noun: noun.clone(),
+                                        detail: note.clone(),
+                                    });
+                                }
+                                report.generated += 1;
+                                decrement(&mut report.evidence_pending, &noun);
+                                *report.composites_built.entry(noun.clone()).or_insert(0) += 1;
+                                elements.push(generated);
+                            }
+                            // 路由成员没形状是常态（隐式管身补），托盘没形状不是：
+                            // 目录链断在哪一环要留名，不能让它静默留在 evidence_pending 里。
+                            None => report.skipped.push(Incident {
+                                refno,
+                                noun,
+                                detail: "目录链（SPRE→…→SCOM→GMRE）没有产出可见几何".to_string(),
+                            }),
+                        }
+                    }
+                    Err(error) => report.failed.push(Incident {
+                        refno,
+                        noun,
+                        detail: error.to_string(),
+                    }),
+                }
             }
             Category::Composite(_) => {
                 // 类 28 与其余复合族必须经真实成员聚合 builder 才能转入 composites_built。

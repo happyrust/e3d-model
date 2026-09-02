@@ -147,8 +147,9 @@ impl TubeSlot {
 pub struct Route {
     /// 链上的路由成员，文件原序。
     pub members: Vec<DbElement>,
-    /// 不在 104 个路由 noun 里的成员。**记账、继续下钻、但不参与串接**——
-    /// 它可能自带几何，却不在管路链上；算进去会凭空多出两截管身。
+    /// 不推进隐式管身链的成员。**记账、继续下钻、但不参与串接**——
+    /// 它可能自带几何，却不是管身端点；算进去会凭空多出两截管身。
+    /// ATTA 属于 RouteMember、会生成自己的目录几何，但 E3D 的 TUBE 穿过它。
     pub non_route_members: Vec<DbElement>,
     /// 管身槽位，链序。条数恒为 `members.len() + 1`。
     pub tubes: Vec<TubeSlot>,
@@ -187,6 +188,16 @@ fn station_at(index: usize, member_count: usize) -> Station {
     }
 }
 
+/// 这个成员是否是隐式管身的一个串接站点。
+///
+/// `Category::RouteMember` 回答的是“这件东西属于管路且要生成目录几何”；它不等于
+/// “这件东西切断管身”。ATTA 是附着在已有管身上的 occurrence，E3D RVM 会让一根
+/// TUBE 连续穿过它。若把 ATTA 的 P-arrive/P-leave 加入站点链，会把连续管拆段；当
+/// attachment 位于中心线外时还会生成一来一回的重叠假管。
+fn advances_implied_tube_chain(noun: &str) -> bool {
+    matches!(classify(noun), Category::RouteMember) && noun != "ATTA"
+}
+
 /// 走一个路由容器（算法文档 §4 的 `RouteWalker`）。
 ///
 /// `prev` 从容器 `HPOS` 起步，每遇到一个路由成员就产出一条 `prev → 成员到达点`
@@ -196,7 +207,7 @@ pub fn walk_route(container: &DbElement) -> Result<Route, DbElementError> {
     let mut members = Vec::new();
     let mut non_route_members = Vec::new();
     for member in container.members()? {
-        if matches!(classify(&member.element_type()?), Category::RouteMember) {
+        if advances_implied_tube_chain(&member.element_type()?) {
             members.push(member);
         } else {
             non_route_members.push(member);
@@ -537,6 +548,18 @@ pub fn bore_mismatch(from: &RoutePoint, to: &RoutePoint) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ATTA is a drawable catalogue occurrence attached to a pipe, but E3D's
+    /// exported TUBE primitive continues through it.  Treating it as a route
+    /// station splits a straight tube and can even create a backtracking,
+    /// overlapping pair when the attachment position is off the centreline.
+    #[test]
+    fn atta_does_not_advance_the_implied_tube_chain() {
+        assert!(!advances_implied_tube_chain("ATTA"));
+        for noun in ["ELBO", "TEE", "VALV", "REDU"] {
+            assert!(advances_implied_tube_chain(noun), "{noun}");
+        }
+    }
 
     fn point(pos: [f64; 3], dir: [f64; 3], bore: Option<f64>) -> RoutePoint {
         RoutePoint {

@@ -40,6 +40,29 @@
 //!    Core 的次序是先擦后画，画不出来那一行就该保持擦掉的状态，绝不留陈旧网格。
 //!    派生容器同款走 [`route_tubes_of`]，旧槽位键做差发 Remove。
 //!
+//! ## 生产定位：谁消费这三段（gen-model ADR-057）
+//!
+//! 本 crate 是模型面的**纯函数层**：输入只有 `(库文件, sesno)` 与显式传入的配置 /
+//! 缓存，不持 DB 句柄、不认识凭证 / 队列 / 水位。三段里**前两段是生产路**，
+//! **第三段不是**：
+//!
+//! - gen-model 生产只消费 [`collect_window`] → [`plan_update`] →
+//!   [`UpdatePlan`] / [`AffectedClosure`]（回答「S→T 之间哪些单元变了、哪些根被
+//!   触到」），然后按**根**整根重算——走全量管线
+//!   [`crate::pipeline::generate_subtree_with_cache`]，由 gen-model 侧做根级 CAS 发布、
+//!   `ModelTarget` 指纹、manifest 去重、scoped delete，再写凭证（ADR-056 D3）。
+//! - [`execute_plan`] / [`increment_update`] 是 L4 上卷「先擦后画」语义的**可执行规格**
+//!   与离线工具（`update_ams` bin、`tests/increment_real.rs` 真库门、gen-model
+//!   `increment_planner_parity` 对拍）。它产出的单元级 Upsert / Remove 在 gen-model
+//!   持久层里**没有对应物**——凭证、cohort CAS、scoped delete 全是根级——所以不在
+//!   生产接线。要把执行下沉到单元级，先另立 ADR 给这三样造出单元级对应物，
+//!   不要绕过这一步直接接。
+//!
+//! 反过来，「谁是根」（MDU / significant owner 枚举）与「哪些根被触到」
+//! （`touches_roots`）按 ADR-057 D4 / D5 都归本 crate：它们对 `DbSet` 是纯遍历，
+//! 与 [`is_model_unit`] 是同一棵树上的两层粒度（`BOX` 是单元不是根，`EQUI` 是根不是
+//! 单元），并存、不互相替换。
+//!
 //! ## 与 Core3D 的一处有意分歧：变换级联
 //!
 //! 我们的产物是**世界系网格**（世界矩阵烘进顶点），Core3D 的图形段树在绘制时
@@ -482,6 +505,162 @@ impl UpdatePlan {
             ));
         }
         Ok(())
+    }
+}
+
+/// 这一窗的改动**波及了哪些元素**：每个受影响单元 / 派生容器 / 改挂・类型变更
+/// 条目，自身连同它在两端图里的全部祖先（含自身，向上直到根）。
+///
+/// 它回答的是消费端的问题「根 r 名下的模型这一窗有没有可能变了」，而不是
+/// `regenerate` 那个「重建哪一件」——两者粒度不同：gen-model 的生成根是 MDU
+/// 交付单元（BRAN / EQUI / …），比网格单元粗一层；同一份闭包对任意一层的根都能
+/// 直接查 `refnos.contains(r)`，不必各自再走一遍 owner 链。
+///
+/// **闭包是按祖先封闭的**：一件在里面，它上方的每一个属主都在里面。所以「根 r
+/// 不在闭包里」＝「r 子树里没有任何一件受影响的东西」，正是凭证前移要的判据
+/// （gen-model ADR-056 D3：`plan_update` 只用来选根与未变根凭证前移）。
+///
+/// # 为什么两端图都走
+///
+/// - `regenerate` 里的单元在 target 端活着，但**改挂**把它从旧根挪到了新根：
+///   旧根的 manifest 里还留着它的一件，旧根也得重算。旧根只有 base 图认得。
+/// - `remove` 里的单元 target 端已经没有了，只有 base 图能说出它曾挂在哪条链上。
+/// - `Reparented` / `TypeChanged` 条目本身未必是单元（一根挪了位的 FTUB），
+///   两端的链一起收，宁多勿漏。
+///
+/// 某一端不存在（新建的在 base 没有、删掉的在 target 没有）是正常形态，静默跳过；
+/// 链走到一半读挂才进 [`AffectedClosure::unreadable`]——那是数据或读层问题，
+/// 闭包可能不完整，消费端不得据此前移任何凭证。
+#[derive(Debug, Default)]
+pub struct AffectedClosure {
+    /// 受影响元素及其全部祖先（含自身），`(word0, word1)` 键。
+    pub refnos: BTreeSet<(u32, u32)>,
+    /// 走 owner 链中途读挂的起点。非空 = 闭包可能不完整。
+    pub unreadable: Vec<Incident>,
+}
+
+impl AffectedClosure {
+    pub fn contains(&self, refno: RefNo) -> bool {
+        self.refnos.contains(&key(refno))
+    }
+
+    /// 闭包是否完整可信：没有一条链是读挂的。
+    pub fn is_complete(&self) -> bool {
+        self.unreadable.is_empty()
+    }
+}
+
+impl UpdatePlan {
+    /// 受影响元素的祖先闭包，见 [`AffectedClosure`]。只读两端 `DbSet`，不建几何。
+    ///
+    /// 种子 = 计划集里的每个单元 / 派生容器 **∪ 账本上的每个候选**（除 L2 判没变的）。
+    /// 后一半是 2026-09-02 加的：闭包服务的是凭证前移——「根 r 不在闭包里」要能推出
+    /// 「r 子树里**什么都没动**」。只拿单元做种子时，落进 `no_model` 的改动（挪了位的
+    /// RPATH/POINTR、改了 PKDI 的桥架件、任何我们**今天**不认识但**明天**会消费的数据）
+    /// 不在闭包里，它上方的根就会被前移，几何却已经过期。多收的代价只是根级重算，
+    /// 少收的代价是静默陈旧——按「宁多勿漏」取前者。
+    pub fn affected_closure(&self, base: &Arc<DbSet>, target: &Arc<DbSet>) -> AffectedClosure {
+        let mut closure = AffectedClosure::default();
+        let mut seeds: BTreeSet<(u32, u32)> = BTreeSet::new();
+        seeds.extend(self.regenerate.iter().copied());
+        seeds.extend(self.remove.iter().copied());
+        seeds.extend(self.regenerate_derived.iter().copied());
+        for entry in self.ledger.entries() {
+            seeds.insert(key(entry.refno));
+        }
+        // 「已收过就早退」的捷径只在**同一端图**内成立：同一个 refno 在 base 与 target
+        // 上的祖先不是同一条链（改挂正是这样），所以每端各记一份 visited，闭包本身共享。
+        // 曾经两端共用 `closure.refnos` 当 visited：先走 target 把元素收进去，再走 base 时
+        // 第一步就早退，旧属主链整条丢掉——ams8000 45→46 的旧根 `24384/25801` 就这么漏的
+        // （真库门 `the_affected_closure_reaches_both_owners_of_a_reparented_element`）。
+        let mut visited_target: BTreeSet<(u32, u32)> = BTreeSet::new();
+        let mut visited_base: BTreeSet<(u32, u32)> = BTreeSet::new();
+        for seed in seeds {
+            let refno = refno_of(seed);
+            collect_ancestors_inclusive(target, refno, &mut visited_target, &mut closure);
+            collect_ancestors_inclusive(base, refno, &mut visited_base, &mut closure);
+        }
+        closure
+    }
+
+    /// `roots` 里哪些根的子树这一窗被波及了。判据就是 [`AffectedClosure::contains`]。
+    pub fn touches_roots(
+        &self,
+        roots: &[RefNo],
+        base: &Arc<DbSet>,
+        target: &Arc<DbSet>,
+    ) -> BTreeSet<(u32, u32)> {
+        let closure = self.affected_closure(base, target);
+        roots
+            .iter()
+            .copied()
+            .filter(|root| closure.contains(*root))
+            .map(key)
+            .collect()
+    }
+}
+
+/// 把 `refno` 自身与它在 `set` 这一端的全部祖先并进闭包。
+///
+/// 起点不存在于这一端是正常形态（新建的在 base 没有、删掉的在 target 没有），
+/// 静默返回；链中途读挂记进 `unreadable`。owner 指向自己是 dabacon 的根形态，
+/// 与 [`nearest_unit`] 同口径；真正的环由 `MAX_ANCESTOR_DEPTH` 兜住。
+///
+/// `visited` 是**这一端图**的已走集：一件在这一端走过，它上方的链在这一端就收全了
+/// （闭包按祖先封闭），不必再爬。它不能拿 `closure.refnos` 代替——那是两端合一的。
+fn collect_ancestors_inclusive(
+    set: &Arc<DbSet>,
+    refno: RefNo,
+    visited: &mut BTreeSet<(u32, u32)>,
+    closure: &mut AffectedClosure,
+) {
+    let mut current = set.element(refno);
+    match current.exists() {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(DbElementError::NotFound { .. }) => return,
+        Err(error) => {
+            closure
+                .unreadable
+                .push(incident(refno, "?", format!("起点存在性读不出：{error}")));
+            return;
+        }
+    }
+    let mut depth = 0usize;
+    loop {
+        if !visited.insert(key(current.refno())) {
+            return;
+        }
+        closure.refnos.insert(key(current.refno()));
+        match current.owner() {
+            Ok(Some(owner)) if owner.refno() == current.refno() => return,
+            Ok(Some(owner)) => {
+                depth += 1;
+                if depth > MAX_ANCESTOR_DEPTH {
+                    closure.unreadable.push(incident(
+                        refno,
+                        "?",
+                        format!(
+                            "owner 链超过 {MAX_ANCESTOR_DEPTH} 层，疑似成环，闭包截断在 {}",
+                            owner.refno()
+                        ),
+                    ));
+                    return;
+                }
+                current = owner;
+            }
+            Ok(None) => return,
+            // 属主不在本库索引里（跨库 / 顶层根的另一种形态）：链在这里合法地结束。
+            Err(DbElementError::NotFound { .. }) => return,
+            Err(error) => {
+                closure.unreadable.push(incident(
+                    refno,
+                    "?",
+                    format!("owner 链在 {} 处读挂：{error}", current.refno()),
+                ));
+                return;
+            }
+        }
     }
 }
 

@@ -28,7 +28,7 @@
 | 目录 P 点 `catalogue_point.rs` | `SPRE→SCOM→PTSE` 链；PTAX（轴+距离）/PTCA（坐标+PTCD 方向码）；目录轴 `Pn`/取负；经 e3d-io `DbElementParamEnv` 求目录表达式 | ams8000 516 个 PTCA 端点 100% 解出 |
 | 目录件几何 `catalogue.rs` | GMRE 程序求值：SEXT/SBOX/LPYR/**LSNO/SCON**/SCYL/LCYL/SCTO/SRTO/SSPH（+SBOX 刀 NSCY/NSBO/NLCY）+ HVAC 矩形快路；成员局部网格缓存 | 与 CRCATI 各臂逐个对上（见 §二，反查修订版） |
 | 设计侧网格复用 `extrusion_reuse.rs` | 环拉伸世代池（键=变体+grow+高度+环组位模式）；布尔参与者按 `baked` 边界直建；增量执行共享池 | 两库改动前后 model.obj/elements.json 逐字节一致；TTY RVM 九行 0 off（evidence/20260901-model-reuse） |
-| 增量 `increment.rs`/`element_diff.rs` | 会话窗口差分 → 单元级重建；模型单元/派生单元两条正交判据；**RouteMember 已入射程**（is_model_unit=true，委托 model_catalogue_member_with_cache）。**2026-09-02 下午追记**：① `graphicsBehaviour==1` 守卫（`category::graphics_ignored_below`，109 noun；`push_members` 消费其成员、`nearest_unit` 跨过它重找、`collect_unit_subtree` 不下钻）；② 账本闭合——`ChangeKind::Unresolved` + `ledger::Disposition`，`accounts_for` 多一条 `ledger_refnos == rolled_up+no_model+unresolved`，`UpdatePlan::accounts_for` 对去向计数；③ `plan_update_bounded(PlanLimits{max_candidates})` 超限退化 `full_rebuild`，`execute_plan` 对它零动作只记 note；④ 级联 `visited` 提到计划作用域（重叠子树只走一次）；⑤ **CTRAY 成为模型单元**（`is_model_unit` + `model_element` 臂，SBFI/RouteMember 同型缺口第三次）；⑥ **桥架分支级联**：候选落在 `CWBRAN` 子树里（RPATH/POINTR/桥架件伪放置输入）就整条分支重建（`cable_tray_branch_of`） | `tests/increment_real.rs` 五窗 totals 与 09-02 基线逐字相同 + `plan.accounts_for()` 新门；`graphics_ignored_containers_are_never_units_nor_lists`；`the_cable_tray_itself_is_a_model_unit_…`。**真库门已带目录库**（2026-09-02 下午）：`DirectoryDbResolver` 扫 ams000 + acp000、显式钉 ams7000，裁判从 DESI-only 的 153 / 2198 件变成 2853 / 13283 件（路由成员与管身进门），五个老窗口照旧绿；`Shape::CableTray` 与桥架断言已就位，样本 `ams251142 2→9`（128 只托盘整体导入，在带 `cable_tray` 的工作树上实测 `no_model` 里 CTRAY=0、128/128 重建）随 `cable_tray` 模块入库时加进 `SAMPLES`。`PROBE_NOUN=CTRAY` 扫过 20 本 CWAY 库：全是「一次导入、此后不动」的 4 环链，**没有一本有改 RPATH/POINTR 的窗口**，分支级联那条腿仍无真库样本 |
+| 增量 `increment.rs`/`element_diff.rs` | 会话窗口差分 → 单元级重建；模型单元/派生单元两条正交判据；**RouteMember 已入射程**（is_model_unit=true，委托 model_catalogue_member_with_cache）。**2026-09-02 下午追记**：① `graphicsBehaviour==1` 守卫（`category::graphics_ignored_below`，109 noun；`push_members` 消费其成员、`nearest_unit` 跨过它重找、`collect_unit_subtree` 不下钻）；② 账本闭合——`ChangeKind::Unresolved` + `ledger::Disposition`，`accounts_for` 多一条 `ledger_refnos == rolled_up+no_model+unresolved`，`UpdatePlan::accounts_for` 对去向计数；③ `plan_update_bounded(PlanLimits{max_candidates})` 超限退化 `full_rebuild`，`execute_plan` 对它零动作只记 note；④ 级联 `visited` 提到计划作用域（重叠子树只走一次）；⑤ **CTRAY 成为模型单元**（`is_model_unit` + `model_element` 臂，SBFI/RouteMember 同型缺口第三次）；⑥ **桥架分支级联**：候选落在 `CWBRAN` 子树里（RPATH/POINTR/桥架件伪放置输入）就整条分支重建（`cable_tray_branch_of`），`transform.rs` 那条「已知欠账」由此收掉；⑦ `affected_closure` 以账本上全部候选为种子——凭证前移的「根未被波及」= 子树里什么都没动 | `tests/increment_real.rs` 五窗 totals 与 09-02 基线逐字相同 + `plan.accounts_for()` 新门；`graphics_ignored_containers_are_never_units_nor_lists`；`the_cable_tray_itself_is_a_model_unit_…`；gen-model `window_root_plan` 四窗 regen 3/1/2/0 不变。**真库门已带目录库**（2026-09-02 下午）：`DirectoryDbResolver` 扫 ams000 + acp000、显式钉 ams7000，裁判从 DESI-only 的 153 / 2198 件变成 2853 / 13283 件（路由成员与管身进门），五个老窗口照旧绿；`Shape::CableTray` 与桥架断言已就位，样本 `ams251142 2→9`（128 只托盘整体导入，在带 `cable_tray` 的工作树上实测 `no_model` 里 CTRAY=0、128/128 重建）随 `cable_tray` 模块入库时加进 `SAMPLES`。`PROBE_NOUN=CTRAY` 扫过 20 本 CWAY 库：全是「一次导入、此后不动」的 4 环链，**没有一本有改 RPATH/POINTR 的窗口**，分支级联那条腿仍无真库样本 |
 
 **工作树定性（修订）**：上述整摊已在 **913583b** 落地为一个提交（含 G4 目录几何线、
 两站点管身键、CGETOD 真外径、WALL/SBFI、复用池与 RouteMember 增量修复）。
@@ -53,7 +53,7 @@ implied_tubes 3172 中 built 334、catalogue_od 2777、bore_fallback 50、missin
 |---|---|---|---|---|---:|
 | 1014841 / 828671 | SBOX / NSBO | `sub_103BFCEC` | 盒 | ✅ | — |
 | 942751 / 1008005 | **SEXT / NSEX** | `sub_103B7FCC`→`sub_10715170`+`sub_104030F0` | 环组挤出（高度≥1e-6 才建；**无 +0.01 过切**） | ✅ 正体 / ❌ **负体 NSEX 缺** | **NSEX 1593** |
-| 968617 / 643505 | **SREV / NSRE** | `sub_103B81CC`（`pplib/QSSREV`）→`sub_10715170`+`sub_10403110`+GMAMEM | 环组回转：PANG 缺省 360、钳 ±360、负角相位 +180；\|角\|>180 且 UQMODN 条件成立时劈两段回转 GMAMEM 组装 | ❌ **缺** | **SREV 425** |
+| 968617 / 643505 | **SREV / NSRE** | `sub_103B81CC`（`pplib/QSSREV`）→`sub_10715170`+`sub_10403110`+GMAMEM | 环组回转：PANG 缺省 360、钳 ±360、负角相位 +180；\|角\|>180 且 UQMODN 条件成立时劈两段回转 GMAMEM 组装 | ✅（2026-09-01 晚：正体走 `revolve_rings`，名下 NSRT/NLSN/NSRE/NLPY/NSEX/NSBO/NLCY/NSCY 成员级刀集复用各正体求值器；NSRE 兼作刀） | ~~SREV 425~~ → **0** |
 | 785962 / 1026230 | SCYL / NSCY | `sub_103BF3FC` +0.01 | 圆柱（PDIS/PHEI） | ✅（NSCY 作 SBOX 刀） | — |
 | 785955 / 1026041 | LCYL / NLCY | `sub_103C0374`（QLCYLI）+0.01 | 圆柱（两距 PTDI/PBDI） | ✅（NLCY 作 SBOX 刀） | — |
 | 837417 / 821192 | LSNO / NLSN | `sub_103BFFC4` +0.01 | 锥台管嘴（两径两距+POFF） | ✅ 正体（913583b 经 snout 求值器；2026-09-02 正体分段改到 libgm 曲面口径 `cylinder_segments(大端半径)`，法兰环 16 → 48 段，RVM 逐顶点 ≤ 0.0022 mm） | — |
@@ -122,9 +122,17 @@ CRCATI 的圆柱/锥族负臂（SCON/NSCO、SCYL/NSCY、LSNO/NLSN、LCYL/NLCY）
   compose 完成后统一扣减成员级负体（对标 Core 的 GMRE CSG 树），NSEX 走与 SEXT 同一
   求值器（环组+高度，§2.1 已核实无 +0.01 过切）；顺带把 NSCY/NSBO/NLCY 从「SBOX 专用
   刀」升级进同一负体集（行为对拍不变则保留现状亦可，以 RVM 裁决）。
-- **G0-1b SREV/NSRE：目录回转体（实测 425 次）**。QSSREV 语义已反编译在案（§2.1）：
+- ~~**G0-1b SREV/NSRE：目录回转体（实测 425 次）**。QSSREV 语义已反编译在案（§2.1）：
   PANG 缺省 360、钳 ±360、负角相位 +180、>180° 的双段劈分；`solid::revolve_rings` 与
-  设计侧 REV 求值可复用，环组采集与 SEXT 同源（`sub_10715170` 同一个 profile 组装器）。
+  设计侧 REV 求值可复用，环组采集与 SEXT 同源（`sub_10715170` 同一个 profile 组装器）。~~
+  ✅ **已完成（2026-09-01 晚）**：`SREV is not implemented` 340 → 0，本语料 CRCATI
+  未实现臂**清零**；轮廓采集（`profile_rings`）与标架（`profile_frame`）和 SEXT 共用
+  一份；**位置语义与 SEXT 不同**（QSSREV 把 PX/PY/PZ 不旋转地加在轴原点上，QSSEXT
+  走 TRAVEC 旋进标架，两段反编译都在案）；ams5052 实测 SREV 名下挂成员级负体
+  （NSRT 48/NLSN 13/NSRE 9/NLPY 8/NSEX 4/NSBO 3/NLCY 1/NSCY 1），已按 SBOX 刀集
+  同款接线（NLSN/NSCO 负臂 +0.01 轴向过切照 §2.3，环面/回转/挤出刀无过切）。
+  账目见 `evidence/20260901-ams8000-g04-baseline/README.md` 的 SREV 追记；
+  39 件 SREV 轮廓折线化退化与 SEXT 的 83 件同账（下表排名 5），一并等逐件定性。
 - ~~**G0-1c 低频缺臂**——**语料已到位，不再是"等语料"**（2026-09-01 深夜，ams7997 全量
   实测，evidence/20260901-g02-postfix-baseline）：`is not implemented` 残余
   **SSLC 275 / SDSH 237 / SDIS 233**（另 NSRT 8、SREV 4 两笔零头待 NSEX/SREV 落地方
@@ -179,6 +187,13 @@ CRCATI 的圆柱/锥族负臂（SCON/NSCO、SCYL/NSCY、LSNO/NLSN、LCYL/NLCY）
   支撑区 TTY RVM（含 facets，WFxx 同款口径）后 `rvm_compare` 逐件裁决——
   `MDR_BranchVisualisationManager::getCSGTree` 语义的落地验收。本机无可编程
   E3D 会话，导出待人工执行。
+  **生成侧逐条体检已做（2026-09-02 16:10，`evidence/20260902-ams8000-bran-audit`，探针
+  `examples/bran_audit.rs`）**：ams8000 560 条 BRAN → ok 471 / data 59 / account 30 / **bad 0**；
+  路由成员 2612 中 2364 出几何，248 未出全部有归因（143 表现过滤、101 MDS `…/SREF` ATTA 目录无 GMRE、
+  3 无 SPRE FTUB、1 零长 FTUB）；槽位 2886 = built 336 / zero_length 2544 / missing_ppoint 6（全来自那 3 只
+  无 SPRE FTUB）。与 09-01 基线差的 240 根管（273 m）**全部**是 ATTA 摘出站点的结果（`route.rs`
+  `advances_implied_tube_chain`），非管身几何除 ATTA 4→43 外逐位持平。留给 RVM 的三件：ATTA 处 TUBE 连续性、
+  74 根反向（负管长）管 E3D 画不画、托架路由上 CGETOD 读出的 r=12.5 细管。记账缺口两处（无 GMRE / 零高 LCYL 无 note）。
 - **G0-3 隐式管身对齐 GTTUBG**：核对头/尾 stub 语义（§2.2；TUBE/NTUB/BOXI/NBXI 四个
   stub noun 已定名），确认 Rust「每槽位一圆柱」与 Core「成员 stub 串接」在真库上产物
   一致。~~顺带钉死或文档化 `ZERO_LENGTH_TOL_MM`~~ ✅ 已钉 1.0mm（§2.2 修订注）。
@@ -252,9 +267,11 @@ CRCATI 的圆柱/锥族负臂（SCON/NSCO、SCYL/NSCY、LSNO/NLSN、LCYL/NLCY）
    其余 0；252 failed 全是目录库未注册）。
 2. ~~G0-5 目录库注册收口~~ ✅ 已完成（c13f836 + 基线刷新，见上）：failed 只剩 2 件
    数据侧悬空引用。
-3. **G0-1a NSEX 成员级负体集**（1-2 天）：最大单项；架构对标 GMRE CSG 树，RVM 对拍裁决
-   让刀策略（§2.3：不许照抄 +0.01）。
-4. **G0-1b SREV 回转臂**（1 天）：QSSREV 语义在案，builder 现成。
+3. ~~**G0-1a NSEX 成员级负体集**~~ ✅ 已完成（g04 基线 README 追记：1593 → 0，
+   48 刀全落账，其余为合法零高）。**遗留一角**：ams7997 有 8 件 NSRT 挂在 GMRE
+   顶层、不在任何正体名下（负体扣装配而非扣兄弟），这一形态仍未接。
+4. ~~**G0-1b SREV 回转臂**~~ ✅ 已完成（2026-09-01 晚，§三 G0-1b；账目见
+   g02-postfix 基线 README 的 SREV 追记：ams8000 340→0、ams7997 4→0）。
 5. **G0-2 / G0-3 管道端到端对拍**（核心验收）：生成侧基线已就位
    （evidence/20260901-g02-postfix-baseline），剩 ams8000 管道区 / ams7997 支撑区的
    TTY RVM 导出（人工，E3D 侧）+ `rvm_compare` 逐件裁决。

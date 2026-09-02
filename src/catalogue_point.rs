@@ -43,6 +43,8 @@
 //! `PTCA` 端点 100% 解得出，其中 323 个是裸轴（opcode 21）、193 个带一次转角（22）。
 //! 用 `examples/ppoint_probe` 的「PTCD 解码结局」一节复算。
 
+use std::fmt;
+
 use glam::DVec3;
 
 use e3d_io::db_element::{DbElement, DbElementError};
@@ -58,6 +60,8 @@ use crate::transform::world_matrix;
 const SPEC_REF: &str = "SPRE";
 /// 规格件指向目录件。
 const CATALOGUE_REF: &str = "CATR";
+/// 表驱动规格项（`TABITE`）到目录零件（`GPART`）的那一跳。
+const PART_REF: &str = "PRTREF";
 /// 目录件指向 P 点集 `PTSE`。
 const POINT_SET_REF: &str = "PTRE";
 /// 直接给三个坐标的那种 P 点；其余（`PTAX`）是「轴 + 距离」。
@@ -87,6 +91,57 @@ pub(crate) struct CatalogueAxis {
     /// the component origin.
     pub origin: DVec3,
     pub direction: DVec3,
+}
+
+/// Why a catalogue axis (or the `Pn` point behind it) did not resolve.
+///
+/// The text is what the local-failure note carries, so the account can tell
+/// "the PTSE has no such point" (E3D draws nothing either) from "the point is
+/// there but its direction or position did not evaluate" (our decoder gap).
+/// Both used to surface as the same `缺属性 PAXI`.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum CatalogueAxisFailure {
+    /// Neither a named axis nor a `Pn` reference.
+    NotAnAxis { words: Vec<u32> },
+    /// The component has no `PTRE` / `PTSE` to look a `Pn` up in.
+    NoPointSet,
+    /// `Pn` names a point the PTSE does not have.
+    PointMissing { number: u32, available: Vec<u32> },
+    /// The point's `PX`/`PY`/`PZ` (or `PDIS`) did not evaluate.
+    PointPosition { number: u32, noun: String },
+    /// The point's direction did not evaluate: `PTCD` program failed with no
+    /// `DIR` behind it, `PAXI` unresolved, or a zero / non-finite vector.
+    PointDirection { number: u32, noun: String },
+    /// A named axis that came out zero or non-finite.
+    Degenerate { words: Vec<u32> },
+}
+
+impl fmt::Display for CatalogueAxisFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotAnAxis { words } => write!(f, "轴规格 {words:?} 既不是具名轴也不是 Pn"),
+            Self::NoPointSet => write!(f, "目录件没有 PTRE/PTSE，Pn 无处可解"),
+            Self::PointMissing { number, available } if available.is_empty() => {
+                write!(f, "P{number} 不在 PTSET（PTSET 是空的）")
+            }
+            Self::PointMissing { number, available } => {
+                write!(f, "P{number} 不在 PTSET（有")?;
+                for n in available {
+                    write!(f, " P{n}")?;
+                }
+                write!(f, "）")
+            }
+            Self::PointPosition { number, noun } => write!(f, "P{number}（{noun}）位置求不出"),
+            Self::PointDirection { number, noun } => write!(f, "P{number}（{noun}）方向解不出"),
+            Self::Degenerate { words } => write!(f, "轴 {words:?} 解出零向量或非有限方向"),
+        }
+    }
+}
+
+/// Which half of a P point failed to evaluate.
+enum PointPart {
+    Position,
+    Direction,
 }
 
 impl PPointResolver for CataloguePoints {
@@ -206,23 +261,43 @@ pub(crate) fn catalogue_point_local(
     component: &DbElement,
     number: u32,
 ) -> Result<Option<RoutePoint>, DbElementError> {
-    let Some(point) = point_numbered(component, number)? else {
-        return Ok(None);
+    Ok(catalogue_point_local_checked(member, component, number)?.ok())
+}
+
+/// [`catalogue_point_local`] with the reason for an unresolved point kept.
+fn catalogue_point_local_checked(
+    member: &DbElement,
+    component: &DbElement,
+    number: u32,
+) -> Result<Result<RoutePoint, CatalogueAxisFailure>, DbElementError> {
+    let point = match point_numbered(component, number)? {
+        Ok(point) => point,
+        Err(failure) => return Ok(Err(failure)),
     };
     let env =
         DbElementParamEnv::new(Some(member.clone()), Some(component.clone())).without_insulation();
-    let local = match point.element_type()?.as_str() {
+    let noun = point.element_type()?;
+    let local = match noun.as_str() {
         CARTESIAN_POINT => cartesian(&point, &env),
         "PTMI" => mixed(&point, &env),
         _ => axial(&point, &env),
     };
-    let Some((pos, dir)) = local else {
-        return Ok(None);
+    let (pos, dir) = match local {
+        Ok(local) => local,
+        Err(PointPart::Position) => {
+            return Ok(Err(CatalogueAxisFailure::PointPosition { number, noun }));
+        }
+        Err(PointPart::Direction) => {
+            return Ok(Err(CatalogueAxisFailure::PointDirection { number, noun }));
+        }
     };
-    if !pos.is_finite() || !dir.is_finite() || !(dir.length() > DIRECTION_TOL) {
-        return Ok(None);
+    if !pos.is_finite() {
+        return Ok(Err(CatalogueAxisFailure::PointPosition { number, noun }));
     }
-    Ok(Some(RoutePoint {
+    if !dir.is_finite() || !(dir.length() > DIRECTION_TOL) {
+        return Ok(Err(CatalogueAxisFailure::PointDirection { number, noun }));
+    }
+    Ok(Ok(RoutePoint {
         pos,
         dir: dir.normalize(),
         bore: number_of(&point, "PBOR", &env),
@@ -230,11 +305,11 @@ pub(crate) fn catalogue_point_local(
 }
 
 /// `PTCA`：三个坐标表达式 + PTCD 方向规格。
-fn cartesian(point: &DbElement, env: &DbElementParamEnv) -> Option<(DVec3, DVec3)> {
+fn cartesian(point: &DbElement, env: &DbElementParamEnv) -> Result<(DVec3, DVec3), PointPart> {
     let pos = DVec3::new(
-        number_of(point, "PX", env)?,
-        number_of(point, "PY", env)?,
-        number_of(point, "PZ", env)?,
+        number_of(point, "PX", env).ok_or(PointPart::Position)?,
+        number_of(point, "PY", env).ok_or(PointPart::Position)?,
+        number_of(point, "PZ", env).ok_or(PointPart::Position)?,
     );
     // Core3D `pplib/QPDIR` (0x103BAC30) -> `DPARAM` (0x103BF9C0): the PTCD
     // program is authoritative when it is set, and an unset or empty PTCD reads
@@ -259,18 +334,20 @@ fn cartesian(point: &DbElement, env: &DbElementParamEnv) -> Option<(DVec3, DVec3
                 .ok()
                 .flatten()
                 .map(DVec3::from_array)
-        })?;
-    Some((pos, dir))
+        })
+        .ok_or(PointPart::Direction)?;
+    Ok((pos, dir))
 }
 
-fn mixed(point: &DbElement, env: &DbElementParamEnv) -> Option<(DVec3, DVec3)> {
+fn mixed(point: &DbElement, env: &DbElementParamEnv) -> Result<(DVec3, DVec3), PointPart> {
     let pos = DVec3::new(
-        number_of(point, "PX", env)?,
-        number_of(point, "PY", env)?,
-        number_of(point, "PZ", env)?,
+        number_of(point, "PX", env).ok_or(PointPart::Position)?,
+        number_of(point, "PY", env).ok_or(PointPart::Position)?,
+        number_of(point, "PZ", env).ok_or(PointPart::Position)?,
     );
-    let dir = DVec3::from_array(axis_spec::direction(&axis_words(point)?, env)?);
-    Some((pos, dir))
+    let words = axis_words(point).ok_or(PointPart::Direction)?;
+    let dir = axis_spec::direction(&words, env).ok_or(PointPart::Direction)?;
+    Ok((pos, DVec3::from_array(dir)))
 }
 
 /// `SPRE`（→ `CATR`）→ 目录件。
@@ -286,22 +363,29 @@ pub(crate) fn catalogue_component(member: &DbElement) -> Result<Option<DbElement
 /// Plain/named axes stay delegated to e3d-io's single axis decoder.  Only the
 /// form that necessarily needs the surrounding PTSE (`[3,n]`, optionally
 /// count-prefixed as `[2,3,n]`) is completed here from the shared P-point
-/// resolver.
-/// Resolve both the direction and datum of a catalogue axis.
-pub(crate) fn catalogue_axis(
+/// resolver. Both the direction and the datum come back; when the axis does
+/// not resolve, the reason does, so the caller's local-failure note can say
+/// which of the two things happened.
+pub(crate) fn resolve_catalogue_axis(
     member: &DbElement,
     component: &DbElement,
     words: &[u32],
-) -> Result<Option<CatalogueAxis>, DbElementError> {
+) -> Result<Result<CatalogueAxis, CatalogueAxisFailure>, DbElementError> {
     let env =
         DbElementParamEnv::new(Some(member.clone()), Some(component.clone())).without_insulation();
     if let Some(direction) = axis_spec::direction(words, &env) {
         let direction = DVec3::from_array(direction);
         return Ok(
-            (direction.length() > DIRECTION_TOL && direction.is_finite()).then(|| CatalogueAxis {
-                origin: DVec3::ZERO,
-                direction: direction.normalize(),
-            }),
+            if direction.length() > DIRECTION_TOL && direction.is_finite() {
+                Ok(CatalogueAxis {
+                    origin: DVec3::ZERO,
+                    direction: direction.normalize(),
+                })
+            } else {
+                Err(CatalogueAxisFailure::Degenerate {
+                    words: words.to_vec(),
+                })
+            },
         );
     }
     let payload = match words {
@@ -313,7 +397,9 @@ pub(crate) fn catalogue_axis(
         _ => None,
     };
     let Some([encoded_number]) = payload else {
-        return Ok(None);
+        return Ok(Err(CatalogueAxisFailure::NotAnAxis {
+            words: words.to_vec(),
+        }));
     };
     let (number, negated) = if encoded_number >= NEGATED_POINT_BASE {
         (encoded_number - NEGATED_POINT_BASE, true)
@@ -321,7 +407,7 @@ pub(crate) fn catalogue_axis(
         (encoded_number, false)
     };
     Ok(
-        catalogue_point_local(member, component, number)?.map(|point| CatalogueAxis {
+        catalogue_point_local_checked(member, component, number)?.map(|point| CatalogueAxis {
             origin: point.pos,
             direction: if negated { -point.dir } else { point.dir },
         }),
@@ -380,10 +466,19 @@ fn follow_catalogue_component(mut current: DbElement) -> Result<Option<DbElement
             return Ok(Some(current));
         }
         let next = match current.get_element(CATALOGUE_REF) {
-            Ok(next) => next,
+            Ok(Some(next)) => Some(next),
             // SELE 等选择节点可能出现在规格引用链中，但它们没有 CATR；这是链到此
             // 无法继续，不是模板或文件损坏。
-            Err(DbElementError::UnknownAttribute { .. }) => None,
+            //
+            // E3D 3.1 的表驱动规格（电缆桥架 `CTRAY.SPRE`）多一跳：`TABITE` 没有 CATR，
+            // 经 `PRTREF` 到 `GPART`，`GPART.CATR` 才到 SCOM（`catalogue_probe` 已跟到底）。
+            Ok(None) | Err(DbElementError::UnknownAttribute { .. }) => {
+                match current.get_element(PART_REF) {
+                    Ok(next) => next,
+                    Err(DbElementError::UnknownAttribute { .. }) => None,
+                    Err(error) => return Err(error),
+                }
+            }
             Err(error) => return Err(error),
         };
         let Some(next) = next else {
@@ -394,17 +489,28 @@ fn follow_catalogue_component(mut current: DbElement) -> Result<Option<DbElement
     Ok(None)
 }
 
-/// 目录件的 `PTSE` 里编号为 `number` 的那个 P 点。
-fn point_numbered(component: &DbElement, number: u32) -> Result<Option<DbElement>, DbElementError> {
+/// 目录件的 `PTSE` 里编号为 `number` 的那个 P 点；没有就把有的编号一并交出去，
+/// 记账时能看出是"P 点根本不存在"而不是"解不出"。
+fn point_numbered(
+    component: &DbElement,
+    number: u32,
+) -> Result<Result<DbElement, CatalogueAxisFailure>, DbElementError> {
     let Some(set) = component.get_element(POINT_SET_REF)? else {
-        return Ok(None);
+        return Ok(Err(CatalogueAxisFailure::NoPointSet));
     };
+    let mut available = Vec::new();
     for point in set.members()? {
-        if point_number(&point) == Some(number) {
-            return Ok(Some(point));
+        match point_number(&point) {
+            Some(found) if found == number => return Ok(Ok(point)),
+            Some(found) => available.push(found),
+            None => {}
         }
     }
-    Ok(None)
+    available.sort_unstable();
+    Ok(Err(CatalogueAxisFailure::PointMissing {
+        number,
+        available,
+    }))
 }
 
 /// P 点自己的 `NUMB`。
@@ -420,11 +526,11 @@ fn point_number(point: &DbElement) -> Option<u32> {
 ///
 /// 两样缺一不可。轴解不出（`Pn` 那种指向另一个 P 点的形式，或未钉死的形状）
 /// 就整条弃掉——只有距离没有方向，落不成一个点。
-fn axial(point: &DbElement, env: &DbElementParamEnv) -> Option<(DVec3, DVec3)> {
-    let axis = axis_words(point)?;
-    let dir = DVec3::from_array(axis_spec::direction(&axis, env)?);
-    let distance = number_of(point, "PDIS", env)?;
-    Some((dir * distance, dir))
+fn axial(point: &DbElement, env: &DbElementParamEnv) -> Result<(DVec3, DVec3), PointPart> {
+    let axis = axis_words(point).ok_or(PointPart::Direction)?;
+    let dir = DVec3::from_array(axis_spec::direction(&axis, env).ok_or(PointPart::Direction)?);
+    let distance = number_of(point, "PDIS", env).ok_or(PointPart::Position)?;
+    Ok((dir * distance, dir))
 }
 
 /// `PAXI` 的原始词。实现里两种数组形状都出现过，都收。

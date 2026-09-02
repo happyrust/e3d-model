@@ -39,7 +39,7 @@ pub enum Category {
     Primitive(Prim),
     /// 负基本体，见 [`Prim`]。
     NegPrimitive(Prim),
-    /// 是负几何，但本期建不出来（NCON/NDIS/NSNO…）。
+    /// 是负几何，但本期建不出来（NDIS/NSLC…）。
     ///
     /// 它必须留在负几何家族里而不是丢进 [`Category::Unsupported`]：负体的账要记在
     /// **属主**头上。落进 unsupported 只会得到一行「NCON: 15」，看不出是哪 15 个
@@ -247,6 +247,8 @@ pub enum Prim {
     Box,
     /// DIAM/HEIG，轴向局部 Z，POS 居中（`gm_CreateCylinder`）。
     Cylinder,
+    /// DBOT/DTOP/HEIG，局部 Z 轴、原点居中的同轴圆锥台。
+    Cone,
     /// XBOT/YBOT/XTOP/YTOP/HEIG + XOFF/YOFF 的棱台（`gm_CreatePyramid`）。
     Pyramid,
     /// RINS/ROUT/HEIG/ANGL，矩形截面绕局部 Z 扫（`GM_RectTorus`）。
@@ -339,11 +341,11 @@ pub fn classify(noun: &str) -> Category {
         "ACTOR" => Primitive(Prim::CircTorus),
         "ASNOU" => Primitive(Prim::Snout),
 
-        "SLCY" | "CONE" | "DISH" => {
-            Unsupported("positive primitive not implemented in milestone 1")
-        }
+        "CONE" => Primitive(Prim::Cone),
+        "SLCY" | "DISH" => Unsupported("positive primitive not implemented in milestone 1"),
         // 正体自己就没实现，孪生体同理——等正体做出来这四个一起接。
-        "ASLCY" | "ACONE" | "ADISH" => {
+        "ACONE" => Primitive(Prim::Cone),
+        "ASLCY" | "ADISH" => {
             Unsupported("A* twin of a positive primitive not implemented in milestone 1")
         }
         // 这两个的标量属性同样与 POLYHE / REVO 全同，但它们的几何来自**成员结构**
@@ -351,9 +353,8 @@ pub fn classify(noun: &str) -> Category {
         // 取一个真元素看成员 noun，取证前留在这里显式挂着，别按「看着像」就接。
         "APOLYH" | "AREVO" => Unsupported("A* twin whose member structure is not yet evidenced"),
 
-        "NCON" | "NDIS" | "NSLC" => {
-            NegUnimplemented("negative primitive not implemented in milestone 1")
-        }
+        "NCON" => NegPrimitive(Prim::Cone),
+        "NDIS" | "NSLC" => NegUnimplemented("negative primitive not implemented in milestone 1"),
 
         // ---- 几何集（core.dll 的另一条建模路，见 Category::GeometrySet） ----
         //
@@ -830,7 +831,8 @@ mod tests {
         assert_eq!(classify("ASNOU"), Category::Primitive(Prim::Snout));
         assert_eq!(classify("AEXTR"), Category::LoopExtrusion);
         // 正体没实现的、以及几何来自成员结构还没取证的，一律显式记账，不许落 Unknown。
-        for noun in ["ASLCY", "ACONE", "ADISH", "APOLYH", "AREVO"] {
+        assert_eq!(classify("ACONE"), Category::Primitive(Prim::Cone));
+        for noun in ["ASLCY", "ADISH", "APOLYH", "AREVO"] {
             assert!(
                 matches!(classify(noun), Category::Unsupported(_)),
                 "{noun} 应当显式记账，实得 {:?}",
@@ -901,7 +903,7 @@ mod tests {
     /// 建不出来的负体也算负体：它的账要记在属主头上，不能滑进 unsupported
     /// 变成一行「NCON: 15」——那样就看不出是哪些 FLOOR 少挖了刀。
     ///
-    /// 两类都在这条里：设计负图元（`NCON`/`NDIS`/`NSNO`/`NSLC`，正体也没实现）
+    /// 两类都在这条里：设计负图元（`NDIS`/`NSLC`，正体也没实现）
     /// 与几何集负体（`NSBO`/`NSCY`/`NLCY`…，属 INGCOM 的另一条建模路）。
     #[test]
     fn unimplemented_negatives_stay_in_the_negative_family() {

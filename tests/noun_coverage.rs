@@ -74,8 +74,8 @@ fn cascade_coverage_matches_the_recorded_baseline() {
     }
 
     assert_eq!(rows.len(), 327, "级联内 noun 总数（覆盖率的分母）变了");
-    assert_eq!(built, 30, "会建几何的 noun 数变了");
-    assert_eq!(ledgered, 297, "记账不建的 noun 数变了");
+    assert_eq!(built, 33, "会建几何的 noun 数变了");
+    assert_eq!(ledgered, 294, "记账不建的 noun 数变了");
     assert_eq!(
         unknown.len(),
         0,
@@ -172,14 +172,15 @@ fn negative_primitives_and_their_positive_twins_agree() {
         ("NPOLYH", "POLYHE"),
         ("NXTR", "EXTR"),
         ("NSNO", "SNOU"),
+        ("NCON", "CONE"),
     ] {
         assert!(
             classify(negative).builds_geometry() && classify(positive).builds_geometry(),
             "{negative}/{positive} 必须同时可建"
         );
     }
-    // 这四对是成对的「本期不做」，同样不许一半一半。
-    for (negative, positive) in [("NCON", "CONE"), ("NDIS", "DISH"), ("NSLC", "SLCY")] {
+    // 剩余两对是成对的「本期不做」，同样不许一半一半。
+    for (negative, positive) in [("NDIS", "DISH"), ("NSLC", "SLCY")] {
         assert!(
             !classify(negative).builds_geometry() && !classify(positive).builds_geometry(),
             "{negative}/{positive} 必须同时不建"

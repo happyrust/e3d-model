@@ -8,6 +8,11 @@
 //!
 //! 本期不做的（记账在此，免得后人以为是漏）：GENSEC 的 BANG 隐藏方位、
 //! SPINE/ZDIR 样条路径特判——1112 首里程碑的结构件不吃这两条。
+//!
+//! 唯一一处不读存储属性的局部矩阵：电缆桥架件（[`crate::cable_tray`] 那七个 noun）
+//! 的模板里没有 POS/ORI，E3D 把它们注册成伪属性现算。[`local_matrix`] 对这些 noun
+//! 改走 [`crate::cable_tray::placement_matrix`]，解不出来就带原因报错——托盘落在
+//! 属主原点是静默缺件，不能用单位阵兜。
 
 use e3d_io::db_element::{DbElement, DbElementError};
 use e3d_io::refno::RefNo;
@@ -38,6 +43,11 @@ pub type LocalPlacement = (Option<[f64; 3]>, Option<[f64; 3]>);
 /// 世界矩阵的输入不止这两个属性——还有 **owner 链本身**（[`world_matrix`] 逐级
 /// 上溯右乘）。改挂属主同样让世界矩阵变，那一条不是属性名能表达的，由
 /// [`crate::element_diff::ElementDiff::placement_input_changed`] 一并判。
+///
+/// **桥架件是例外**（[`crate::cable_tray`]）：它们的局部矩阵不读这两个名字，读的是
+/// `POSREF/ZDIS/PKDI/ZOFF/BANG/GANGLE` 加 `CWBRAN`/`RPATH`/`POINTR` 那一片兄弟子树——
+/// 跨元素的依赖，这张表表达不了。增量对它们另有一条腿：候选落在 `CWBRAN` 子树里就把
+/// 整条分支级联重建（`increment::cable_tray_branch_of`），不靠这张表。
 pub const PLACEMENT_ATTRIBUTES: [&str; 2] = ["POS", "ORI"];
 
 /// 一个元素进 [`local_matrix`] 的全部输入：`(POS, ORI)` 原样三元组。
@@ -54,7 +64,12 @@ pub fn ori_matrix(ori_deg: [f64; 3]) -> DMat3 {
 }
 
 /// 单个元素相对属主的局部矩阵：`T(POS) * R(ORI)`。两者都缺省时是单位阵。
+///
+/// 桥架件例外：走 [`crate::cable_tray::placement_matrix`] 现算（见模块注释）。
 pub fn local_matrix(el: &DbElement) -> Result<DMat4, DbElementError> {
+    if crate::cable_tray::is_cable_tray_element(&el.element_type()?) {
+        return crate::cable_tray::placement_matrix(el);
+    }
     let (pos, ori) = local_placement(el)?;
     let rot = ori_matrix(ori.unwrap_or([0.0; 3]));
     Ok(DMat4::from_translation(DVec3::from_array(pos.unwrap_or([0.0; 3]))) * DMat4::from_mat3(rot))

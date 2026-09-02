@@ -8,7 +8,7 @@
 //!   由管线记进 `failed`，响亮。
 //! - **E3D 也不出几何**（高度 ≈ 0，`loop_model` 的既有跳过口径）→
 //!   [`Modeled::Skipped`]，记进 `skipped`，有数可查。
-//! - **本期不做**（NCON/NDIS 一族曲面基本体）→ 同样 `Skipped`，reason 说清是
+//! - **本期不做**（NDIS/NSLC 一族曲面基本体）→ 同样 `Skipped`，reason 说清是
 //!   里程碑边界。
 //! - 负几何单个失败**不拖垮正体**：记进 [`GeneratedElement::negatives_skipped`]，
 //!   正体照出——RVM 对拍时这类元素会以体积偏大暴露，报告里有对应记录。
@@ -31,9 +31,10 @@ use crate::primitive_instance::{
 use crate::profile::{LoopProfile, ProfileError, loop_profile};
 use crate::solid::{
     MANIFOLD_NUDGE_MM, SolidError, circ_torus_solid, cleanup_floor_boolean_components,
-    csg_cylinder_solid, csg_cylinder_solid_with_segments, extrude_rings, inflate_about_center,
-    placed, pyramid_solid, rect_torus_solid, revolve_rings_inflated, snout_segments, snout_solid,
-    subtract_negatives,
+    csg_cylinder_solid_with_segments, extrude_rings, inflate_about_center,
+    negative_cylinder_segments, negative_part_rev_segments, placed, pyramid_solid,
+    rect_torus_solid, rect_torus_solid_with_segments, revolve_rings_inflated, snout_segments,
+    snout_solid, subtract_negatives,
 };
 use crate::transform::world_matrix;
 
@@ -565,8 +566,7 @@ fn wall_local_solid(el: &DbElement, notes: &mut Vec<String>) -> Result<Manifold,
     }
     let torus = rect_torus_solid(inner, radius, height, sweep.to_degrees())?;
     let local = DMat4::from_translation(DVec3::new(center.x, center.y, height * 0.5))
-        * DMat4::from_rotation_z(a0)
-        * DMat4::from_rotation_x(-std::f64::consts::FRAC_PI_2);
+        * DMat4::from_rotation_z(a0);
     notes.push(format!(
         "WALL circular SPINE center=({:.6},{:.6}) radius={radius:.6} sweep={:.6}deg",
         center.x,
@@ -926,6 +926,12 @@ fn flatten_profile_rings(
                         ring_notes.degenerate_corners
                     ));
                 }
+                if !ring_notes.consumed_fillets.is_empty() {
+                    notes.push(format!(
+                        "环 {index} 倒圆两侧 line span 均不超过 0.1mm（顶点 {:?}），保留理论切点圆弧",
+                        ring_notes.consumed_fillets
+                    ));
+                }
                 rings.push(poly);
             }
             None if index == 0 => {
@@ -980,11 +986,29 @@ fn primitive_local_solid(
                 Ok(instantiate_cylinder(d, h, true)?)
             } else {
                 Ok(PrimitiveBuild {
-                    solid: csg_cylinder_solid(d, h)?,
+                    // E3D emits the final LNEGIT result as a coarse FacetGroup.
+                    // The positive CYLI must use the same circle grid as its
+                    // negative operands; otherwise the hole is topologically
+                    // right but the outer wall remains a different polygon.
+                    solid: csg_cylinder_solid_with_segments(
+                        d,
+                        h,
+                        negative_cylinder_segments(d * 0.5),
+                    )?,
                     instance: None,
                 })
             }
         }
+        Prim::Cone => Ok(PrimitiveBuild {
+            solid: snout_solid(
+                require_double(el, noun, "DBOT", "cone")?,
+                require_double(el, noun, "DTOP", "cone")?,
+                require_double(el, noun, "HEIG", "cone")?,
+                0.0,
+                0.0,
+            )?,
+            instance: None,
+        }),
         Prim::Pyramid => {
             let xbot = require_double(el, noun, "XBOT", "pyramid")?;
             let ybot = require_double(el, noun, "YBOT", "pyramid")?;
@@ -1003,11 +1027,12 @@ fn primitive_local_solid(
             })
         }
         Prim::RectTorus => {
+            let rins = default_zero(el, "RINS")?;
             let rout = require_double(el, noun, "ROUT", "rectangular torus")?;
             let h = require_double(el, noun, "HEIG", "rectangular torus")?;
             let angle = require_double(el, noun, "ANGL", "rectangular torus")?;
             Ok(PrimitiveBuild {
-                solid: rect_torus_solid(default_zero(el, "RINS")?, rout, h, angle)?,
+                solid: rect_torus_solid(rins, rout, h, angle)?,
                 instance: None,
             })
         }
@@ -1124,14 +1149,29 @@ enum NegativeSolid {
     Skipped(String),
 }
 
-/// 负体线性尺寸上限 = 宿主正体世界包围盒对角线 × 本因子，且不低于
+/// 负体线性尺寸**被判为哨兵**的门槛。E3D 拿 3.2037e14 mm 当「无限长」（FLOOR 72959 的两把
+/// NCYL）；Manifold 的 epsilon = 1e-12 × 包围盒尺度，到 1e9 mm 才涨到 1e-3 mm——仍在
+/// [`crate::solid::RES_TOL_MM`] 之下，而工厂模型里没有任何合法尺寸接近它。
+///
+/// **触发门槛与钳到的值是两回事。** 2026-09-02 WF03 复跑抓到的教训：一开始拿宿主尺度
+/// （8×对角线）同时当触发门槛，GWALL `17496/116569` 那把 92 m 长的 NXTR 修边刀被当成哨兵
+/// 整刀跳过，墙末端多出 147.5 mm、体积 2.79e9 → 6.26e9（07:56 基线 exact → off）。
+/// 长出宿主几倍甚至几十倍的刀是合法的（整层楼的修边刀、跨房间的开槛刀），只有量级离谱的才是哨兵。
+const NEGATIVE_EXTENT_SENTINEL_MM: f64 = 1.0e9;
+
+/// 哨兵尺寸钳到的目标 = 宿主正体世界包围盒对角线 × 本因子，且不低于
 /// [`NEGATIVE_EXTENT_CAP_FLOOR_MM`]。
 ///
 /// 取值依据 `evidence/20260902-floor-72959-giant-ncyl` §3：把哨兵高度钳到 2e4–1e11 mm
-/// 之间任何一个值，FLOOR 72959 的体积、分量数、genus 都稳定一致；因子 8 让一把合法地
-/// 贯穿宿主、长出宿主几倍的刀不会被碰到，只有 E3D 的「无限长」哨兵（3.2e14）落进来。
+/// 之间任何一个值，FLOOR 72959 的体积、分量数、genus 都稳定一致；因子 8 保证钳过的刀
+/// 仍贯穿宿主并留有余量。
 const NEGATIVE_EXTENT_CAP_FACTOR: f64 = 8.0;
 const NEGATIVE_EXTENT_CAP_FLOOR_MM: f64 = 1.0e4;
+
+/// 这个线性尺寸是不是 E3D 的「无限长」哨兵（或干脆不是有限数）。
+fn is_sentinel_extent(value: f64) -> bool {
+    !value.is_finite() || value.abs() >= NEGATIVE_EXTENT_SENTINEL_MM
+}
 
 fn negative_extent_cap(host_world: &Manifold) -> f64 {
     let Some(bb) = host_world.bounding_box() else {
@@ -1146,8 +1186,9 @@ fn negative_extent_cap(host_world: &Manifold) -> f64 {
     }
 }
 
-/// 负体的一个线性参数（HEIG 一类）超过宿主尺度上限时钳到上限，符号照旧，并把这一刀
-/// 记进宿主的 notes——基本体以自身原点为中心，钳高度不改变它贯穿宿主这件事。
+/// 负体的一个线性参数（HEIG 一类）是哨兵尺寸（[`is_sentinel_extent`]）时钳到宿主尺度
+/// 上限 `cap`，符号照旧，并把这一刀记进宿主的 notes——基本体以自身原点为中心，钳高度
+/// 不改变它贯穿宿主这件事。低于门槛的一律原样放行，哪怕它比宿主长几十倍。
 fn clamp_negative_extent(
     neg: &DbElement,
     noun: &str,
@@ -1156,12 +1197,12 @@ fn clamp_negative_extent(
     cap: f64,
     host_notes: &mut Vec<String>,
 ) -> f64 {
-    if value.is_finite() && value.abs() <= cap {
+    if !is_sentinel_extent(value) {
         return value;
     }
     host_notes.push(format!(
-        "负体 {} {noun} {attr}={value:.3e} 超过宿主尺度上限 {cap:.0} mm，已钳到上限\
-         （E3D 的「无限长」哨兵；不钳会让 Manifold epsilon 涨到宿主尺度的量级、整组布尔失稳）",
+        "负体 {} {noun} {attr}={value:.3e} 是 E3D 的「无限长」哨兵（≥ {NEGATIVE_EXTENT_SENTINEL_MM:.0e} mm），\
+         已钳到宿主尺度上限 {cap:.0} mm（不钳会让 Manifold epsilon 涨到宿主尺度的量级、整组布尔失稳）",
         neg.refno()
     ));
     if value.is_finite() {
@@ -1254,7 +1295,6 @@ fn negative_world_solid(
             )
         }
         Category::NegPrimitive(Prim::Cylinder) => {
-            // 与 `primitive_local_solid` 的圆柱臂同一个 builder；单独拆出来只为在建体前钳 HEIG。
             let diameter = require_double(neg, &noun, "DIAM", "cylinder")?;
             let height = clamp_negative_extent(
                 neg,
@@ -1264,7 +1304,26 @@ fn negative_world_solid(
                 extent_cap,
                 host_notes,
             );
-            inflate_about_center(&csg_cylinder_solid(diameter, height)?, MANIFOLD_NUDGE_MM)
+            let cutter = csg_cylinder_solid_with_segments(
+                diameter,
+                height,
+                negative_cylinder_segments(diameter * 0.5),
+            )?;
+            inflate_about_center(&cutter, MANIFOLD_NUDGE_MM)
+        }
+        Category::NegPrimitive(Prim::RectTorus) => {
+            let rins = default_zero(neg, "RINS")?;
+            let rout = require_double(neg, &noun, "ROUT", "rectangular torus")?;
+            let height = require_double(neg, &noun, "HEIG", "rectangular torus")?;
+            let angle = require_double(neg, &noun, "ANGL", "rectangular torus")?;
+            let cutter = rect_torus_solid_with_segments(
+                rins,
+                rout,
+                height,
+                angle,
+                negative_part_rev_segments(rout, angle),
+            )?;
+            inflate_about_center(&cutter, MANIFOLD_NUDGE_MM)
         }
         Category::NegPrimitive(prim) => inflate_about_center(
             &primitive_local_solid(neg, &noun, prim, false)?.solid,
@@ -1294,15 +1353,16 @@ fn negative_world_solid(
             unreachable!("负体收集给了非负类别 {other:?}（noun={noun}）");
         }
     };
-    // 钳法只接了 NCYL 的 HEIG；别的形状若仍带哨兵尺寸，宁可少一刀并记账，也不把它
-    // 送进布尔去毒化整组（让刀后的 NCYL 比上限多两个 nudge，放 1% 余量）。
+    // 钳法只接了 NCYL 的 HEIG；别的形状若仍带哨兵尺寸（[`is_sentinel_extent`]，不是
+    // 「比宿主大」——92 m 的 NXTR 修边刀是合法的），宁可少一刀并记账，也不把它送进
+    // 布尔去毒化整组。
     if let Some(bb) = local.bounding_box() {
         let (lo, hi) = (bb.min(), bb.max());
         let extent = (0..3).fold(0.0_f64, |acc, axis| acc.max(hi[axis] - lo[axis]));
-        if !extent.is_finite() || extent > extent_cap * 1.01 {
+        if is_sentinel_extent(extent) {
             return Ok(NegativeSolid::Skipped(format!(
-                "{noun} 局部尺寸 {extent:.3e} mm 超过宿主尺度上限 {extent_cap:.0} mm\
-                 （哨兵尺寸；只有 NCYL 接了钳法，其余先跳过并记账，避免整组布尔失稳）"
+                "{noun} 局部尺寸 {extent:.3e} mm 是 E3D 的「无限长」哨兵（≥ {NEGATIVE_EXTENT_SENTINEL_MM:.0e} mm，\
+                 宿主尺度上限 {extent_cap:.0} mm）；只有 NCYL 接了钳法，其余先跳过并记账，避免整组布尔失稳"
             )));
         }
     }
@@ -1345,6 +1405,25 @@ mod tests {
         // 小宿主不把上限压到比 1e4 mm 还低：一把贯穿 100 mm 小盒的 5 m 合法长刀不该被钳。
         let small = crate::solid::box_solid(100.0, 100.0, 100.0).unwrap();
         assert_eq!(negative_extent_cap(&small), NEGATIVE_EXTENT_CAP_FLOOR_MM);
+    }
+
+    /// 触发门槛是哨兵量级，不是「比宿主大」。
+    ///
+    /// WF03 GWALL `17496/116569` 名下那把 NXTR `17496/116587` 局部尺寸 9.2e4 mm，是整层楼的
+    /// 修边刀；宿主上限 38 780 mm。拿上限当门槛会把它整刀跳过，墙末端多出 147.5 mm
+    /// （07:56 基线 exact → off）。FLOOR 72959 的 3.2037e14 才是哨兵，钳到宿主上限。
+    #[test]
+    fn only_sentinel_extents_are_clamped_or_skipped() {
+        assert!(!is_sentinel_extent(9.2e4));
+        assert!(!is_sentinel_extent(-9.2e4));
+        assert!(!is_sentinel_extent(5.0e8));
+        assert!(is_sentinel_extent(3.2037e14));
+        assert!(is_sentinel_extent(NEGATIVE_EXTENT_SENTINEL_MM));
+        assert!(is_sentinel_extent(f64::INFINITY));
+        assert!(is_sentinel_extent(f64::NAN));
+        // 门槛必须远高于任何宿主尺度上限能到的值，否则又退回「比宿主大就是哨兵」。
+        let floor = crate::solid::box_solid(10200.0, 10200.0, 1535.0).unwrap();
+        assert!(negative_extent_cap(&floor) * 1000.0 < NEGATIVE_EXTENT_SENTINEL_MM);
     }
 
     #[test]

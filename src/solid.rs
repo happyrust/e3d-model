@@ -319,7 +319,14 @@ pub fn snout_solid(
     xoff: f64,
     yoff: f64,
 ) -> Result<Manifold, SolidError> {
-    snout_solid_with_segments(dbot, dtop, height, xoff, yoff, snout_segments(dbot / 2.0, dtop / 2.0))
+    snout_solid_with_segments(
+        dbot,
+        dtop,
+        height,
+        xoff,
+        yoff,
+        snout_segments(dbot / 2.0, dtop / 2.0),
+    )
 }
 
 /// [`snout_solid`] 的定段数版：`segments` 由调用方按自己的口径算好（见
@@ -365,8 +372,8 @@ pub fn snout_solid_with_segments(
     ensure_solid(placed(&body, shear), WHAT)
 }
 
-/// `GM_RectTorus`：矩形截面（径向 RINS→ROUT，轴向 ±HEIG/2）绕局部 **Y** 轴，
-/// 从 +X 扫向 +Z，扫角 ANGL 度。ANGL 为负时反向扫。
+/// `GM_RectTorus`：矩形截面（径向 RINS→ROUT，轴向 ±HEIG/2）绕局部 **Z** 轴，
+/// 在 XY 平面从 +X 扫向 +Y，扫角 ANGL 度。ANGL 为负时反向扫。
 pub fn rect_torus_solid(
     rins: f64,
     rout: f64,
@@ -388,14 +395,36 @@ pub fn rect_torus_solid(
     }
     let h2 = height / 2.0;
     let section = vec![vec![[rins, -h2], [rout, -h2], [rout, h2], [rins, h2]]];
-    let solid = swept_solid(section, rout, angle_deg, WHAT)?;
-    Ok(placed(
-        &solid,
-        DMat4::from_rotation_x(std::f64::consts::FRAC_PI_2),
-    ))
+    swept_solid(section, rout, angle_deg, WHAT)
 }
 
-/// `GM_CircTorus`：圆管截面绕局部 **Y** 轴，从 +X 扫向 +Z，扫角 ANGL 度。
+/// Final-boolean NRTO facets use the coarse RVM FacetGroup circle policy.
+/// The caller supplies the evidenced sweep segment count; positive RTOR keeps
+/// [`rect_torus_solid`]'s normal curved-primitive tessellation.
+pub fn rect_torus_solid_with_segments(
+    rins: f64,
+    rout: f64,
+    height: f64,
+    angle_deg: f64,
+    segments: i32,
+) -> Result<Manifold, SolidError> {
+    const WHAT: &str = "negative rectangular torus";
+    if !(height > 0.0) {
+        return Err(SolidError::BadHeight { what: WHAT, height });
+    }
+    let rins = rins.max(0.0);
+    if !(rout - rins > f64::EPSILON) {
+        return Err(SolidError::Degenerate {
+            what: WHAT,
+            detail: format!("RINS/ROUT = {rins}/{rout}，截面无宽度"),
+        });
+    }
+    let h2 = height / 2.0;
+    let section = vec![vec![[rins, -h2], [rout, -h2], [rout, h2], [rins, h2]]];
+    swept_solid_with_segments(section, angle_deg, segments, WHAT)
+}
+
+/// `GM_CircTorus`：圆管截面绕局部 **Z** 轴，在 XY 平面从 +X 扫向 +Y，扫角 ANGL 度。
 /// 管半径 (ROUT−RINS)/2，中心线半径 (ROUT+RINS)/2。
 ///
 /// 两个方向喂**两个不同的半径**（libgm §7.9.1 点名最容易照抄错的一条）：
@@ -420,11 +449,7 @@ pub fn circ_torus_solid(rins: f64, rout: f64, angle_deg: f64) -> Result<Manifold
             [(center_r + tube_r * a.cos()).max(0.0), tube_r * a.sin()]
         })
         .collect();
-    let solid = swept_solid(vec![tube], rout, angle_deg, WHAT)?;
-    Ok(placed(
-        &solid,
-        DMat4::from_rotation_x(std::f64::consts::FRAC_PI_2),
-    ))
+    swept_solid(vec![tube], rout, angle_deg, WHAT)
 }
 
 /// `gm_CreateRevolution`：环剖面绕**局部 X 轴**（过原点）回转 ANGL 度
@@ -599,6 +624,24 @@ pub fn cylinder_segments(radius: f64) -> i32 {
     circle_segments_uncapped(radius, FACET_TOL_MM).min(MAX_SEGMENTS)
 }
 
+/// 进入最终布尔的负圆柱按 E3D FacetGroup 轮廓口径离散。
+/// `17496/100202` 的 RVM 中央 NCYL（R=2726mm）实测为 40 段；使用正 CYLI 的
+/// 0.5mm 曲面口径会变成约 168 段，并在与 NXTR 相交处产生 32mm 的错误边界。
+pub fn negative_cylinder_segments(radius: f64) -> i32 {
+    circle_segments_uncapped(radius, PROFILE_CHORD_TOL_MM).min(MAX_SEGMENTS)
+}
+
+/// A partial negative torus uses the same coarse full-circle grid as other
+/// final-boolean FacetGroup operands, scaled to its sweep angle.
+pub fn negative_part_rev_segments(radius: f64, sweep_deg: f64) -> i32 {
+    let full = negative_cylinder_segments(radius);
+    let sweep = sweep_deg.abs();
+    if sweep <= 1e-6 || (sweep - 360.0).abs() <= 1e-6 || sweep > 360.0 {
+        return full;
+    }
+    ((f64::from(full) * sweep / 360.0).ceil() as i32).max(2)
+}
+
 /// E3D RVM 的 SNOU FacetGroup 使用粗粒度 baked facet；`24381/130759,130763`
 /// 的 R=27.5mm 外圈及其中心孔均为 8 段。SNOU 直接按唯一外部基准定形。
 ///
@@ -715,7 +758,11 @@ pub fn spherical_dish_solid(radius: f64, height: f64) -> Result<Manifold, SolidE
     }
     let sphere_radius = (radius * radius / height + height) * 0.5;
     let n = circle_segments_uncapped(
-        if radius > height { radius } else { sphere_radius },
+        if radius > height {
+            radius
+        } else {
+            sphere_radius
+        },
         FACET_TOL_MM,
     )
     .min(MAX_SEGMENTS);
@@ -725,13 +772,18 @@ pub fn spherical_dish_solid(radius: f64, height: f64) -> Result<Manifold, SolidE
     } else {
         (ratio + ratio).sqrt()
     };
-    let rings = (phi_max / (std::f64::consts::TAU / f64::from(n))).ceil().max(1.0) as i32;
+    let rings = (phi_max / (std::f64::consts::TAU / f64::from(n)))
+        .ceil()
+        .max(1.0) as i32;
     let mut profile = Vec::with_capacity(rings as usize + 2);
     profile.push([0.0, height]);
     for j in 1..=rings {
         let phi = phi_max * f64::from(j) / f64::from(rings);
         let (sin, cos) = phi.sin_cos();
-        profile.push([sphere_radius * sin, sphere_radius * cos - (sphere_radius - height)]);
+        profile.push([
+            sphere_radius * sin,
+            sphere_radius * cos - (sphere_radius - height),
+        ]);
     }
     profile.push([0.0, 0.0]);
     swept_solid_with_segments(vec![profile], 360.0, n, WHAT)
@@ -745,7 +797,11 @@ pub fn spherical_dish_solid(radius: f64, height: f64) -> Result<Manifold, SolidE
 /// φt = acos((Rc − h)/(Rc − k))；冠 m₁ = partRev(Rc, 0..φt)、折边 m₂ = partRev(k, φt..90°)
 /// 各自均分，周向 n = `d2_numberOfSegmentsForCircle(r)`。r == h（1e-6 内）退化为半球，
 /// 与 libgm 的 `isSpherical` 同口径。
-pub fn elliptical_dish_solid(radius: f64, height: f64, knuckle: f64) -> Result<Manifold, SolidError> {
+pub fn elliptical_dish_solid(
+    radius: f64,
+    height: f64,
+    knuckle: f64,
+) -> Result<Manifold, SolidError> {
     const WHAT: &str = "elliptical dish";
     if !(radius > 0.0 && height > 0.0)
         || !radius.is_finite()
@@ -905,11 +961,14 @@ pub fn subtract_negatives(pos: Manifold, negs: Vec<Manifold>) -> Manifold {
     })
 }
 
-/// 清掉 FLOOR 密集/单刀布尔产生的亚 facet 卫星碎片。
+/// 修复或清掉 FLOOR 密集/单刀布尔产生的亚 facet 卫星碎片。
 ///
 /// 判据用 `volume / FLOOR轴向高度` 作为投影面积代理；低于一个
-/// `PROFILE_CHORD_TOL_MM²` 单元的独立分量不可能贡献一个完整 RVM facet。主分量
-/// 永远保留。只对单刀或至少 10 刀的结果启用：少量多刀产生的细长独立片在
+/// `PROFILE_CHORD_TOL_MM²` 单元的独立分量不可能贡献一个完整 RVM facet。面积刚
+/// 超过一个单元、但最小平面宽度仍小于一个弦高单元的薄片先按 Core3D
+/// [`RES_TOL_MM`] 尝试并回主分量；仍不相交时才视为布尔残片删除。
+/// 最小宽度从三角边法向求得，不依赖 FLOOR 在 XY 中的旋转。主分量永远保留。
+/// 只对单刀或至少 10 刀的结果启用：少量多刀产生的细长独立片在
 /// AMS1112 确有合法 RVM 对应（例如 17496/79729），不可笼统删除。
 pub fn cleanup_floor_boolean_components(solid: Manifold, negative_count: usize) -> Manifold {
     if negative_count != 1 && negative_count < 10 {
@@ -932,15 +991,95 @@ pub fn cleanup_floor_boolean_components(solid: Manifold, negative_count: usize) 
         .max_by(|(_, a), (_, b)| a.volume().abs().total_cmp(&b.volume().abs()))
         .map(|(index, _)| index)
         .unwrap_or(0);
-    let min_volume = PROFILE_CHORD_TOL_MM * PROFILE_CHORD_TOL_MM * height;
-    let kept = components
-        .into_iter()
-        .enumerate()
-        .filter_map(|(index, component)| {
-            (index == main || component.volume().abs() >= min_volume).then_some(component)
-        })
-        .collect::<Vec<_>>();
+    let facet_area = PROFILE_CHORD_TOL_MM * PROFILE_CHORD_TOL_MM;
+    let mut components = components.into_iter().map(Some).collect::<Vec<_>>();
+    let mut merged = components[main].take().unwrap();
+    let mut kept = Vec::new();
+    for component in components.into_iter().flatten() {
+        let projected_area = component.volume().abs() / height;
+        let narrow_subfacet_sliver = projected_area < 2.0 * facet_area
+            && minimum_planar_width(&component).is_some_and(|width| width < PROFILE_CHORD_TOL_MM);
+        if narrow_subfacet_sliver {
+            let joined = merged.union(&inflate_planar_about_center(&component, RES_TOL_MM));
+            if joined.decompose().len() == 1 {
+                merged = joined;
+            }
+        } else if projected_area >= facet_area {
+            kept.push(component);
+        }
+    }
+    kept.push(merged);
     Manifold::compose(&kept)
+}
+
+fn inflate_planar_about_center(solid: &Manifold, grow: f64) -> Manifold {
+    let Some(bb) = solid.bounding_box() else {
+        return solid.clone();
+    };
+    let (lo, hi) = (bb.min(), bb.max());
+    let center = glam::DVec3::new(
+        (lo[0] + hi[0]) * 0.5,
+        (lo[1] + hi[1]) * 0.5,
+        (lo[2] + hi[2]) * 0.5,
+    );
+    let scale = |min: f64, max: f64| {
+        let extent = max - min;
+        if extent > f64::EPSILON {
+            (extent + 2.0 * grow) / extent
+        } else {
+            1.0
+        }
+    };
+    placed(
+        solid,
+        DMat4::from_translation(center)
+            * DMat4::from_scale(glam::DVec3::new(
+                scale(lo[0], hi[0]),
+                scale(lo[1], hi[1]),
+                1.0,
+            ))
+            * DMat4::from_translation(-center),
+    )
+}
+
+/// Minimum XY width sampled at every mesh-edge normal.  A polygon's minimum
+/// caliper width occurs at a convex-hull edge, which is also present in the
+/// triangulated extrusion, so this remains rotation independent without a
+/// second polygon/hull implementation.
+fn minimum_planar_width(component: &Manifold) -> Option<f64> {
+    let (properties, property_count, triangles) = component.to_mesh_f64();
+    if property_count < 2 || properties.len() < property_count {
+        return None;
+    }
+    let points = properties
+        .chunks_exact(property_count)
+        .map(|p| [p[0], p[1]])
+        .collect::<Vec<_>>();
+    let mut width = f64::INFINITY;
+    for triangle in triangles.chunks_exact(3) {
+        for (a, b) in [
+            (triangle[0], triangle[1]),
+            (triangle[1], triangle[2]),
+            (triangle[2], triangle[0]),
+        ] {
+            let (a, b) = (points[a as usize], points[b as usize]);
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            let length = dx.hypot(dy);
+            if length <= f64::EPSILON {
+                continue;
+            }
+            let (nx, ny) = (-dy / length, dx / length);
+            let mut lo = f64::INFINITY;
+            let mut hi = f64::NEG_INFINITY;
+            for point in &points {
+                let projection = point[0] * nx + point[1] * ny;
+                lo = lo.min(projection);
+                hi = hi.max(projection);
+            }
+            width = width.min(hi - lo);
+        }
+    }
+    width.is_finite().then_some(width)
 }
 
 pub(crate) fn ensure_solid(solid: Manifold, what: &'static str) -> Result<Manifold, SolidError> {
@@ -1040,7 +1179,11 @@ mod tests {
         assert!((sphere_radius - 725.0).abs() < 1e-9);
         let cap = std::f64::consts::PI * height * height * (3.0 * sphere_radius - height) / 3.0;
         assert!(dish.volume() < cap, "内接多面体必须小于真球冠");
-        assert!((cap - dish.volume()) / cap < 0.01, "{} vs {cap}", dish.volume());
+        assert!(
+            (cap - dish.volume()) / cap < 0.01,
+            "{} vs {cap}",
+            dish.volume()
+        );
         let bb = dish.bounding_box().unwrap();
         assert!(bb.min()[2].abs() < 1e-9 && (bb.max()[2] - height).abs() < 1e-9);
         assert!((bb.max()[0] - radius).abs() < 1e-9 && (bb.min()[1] + radius).abs() < 1e-9);
@@ -1049,7 +1192,8 @@ mod tests {
     #[test]
     fn elliptical_dish_with_equal_radius_and_height_is_a_hemisphere() {
         let radius = 300.0;
-        let dish = elliptical_dish_solid(radius, radius, dish_knuckle_radius(radius, radius)).unwrap();
+        let dish =
+            elliptical_dish_solid(radius, radius, dish_knuckle_radius(radius, radius)).unwrap();
         assert_eq!(dish.genus(), 0);
         let hemisphere = 2.0 / 3.0 * std::f64::consts::PI * radius.powi(3);
         assert!(dish.volume() < hemisphere);
@@ -1065,7 +1209,10 @@ mod tests {
         assert!(hub > knuckle && knuckle > 0.0 && knuckle < height);
         let phi_t = (1.0 - (height - knuckle) / (hub - knuckle)).acos();
         let crown = [hub * phi_t.sin(), hub * phi_t.cos() - (hub - height)];
-        let bend = [(radius - knuckle) + knuckle * phi_t.sin(), knuckle * phi_t.cos()];
+        let bend = [
+            (radius - knuckle) + knuckle * phi_t.sin(),
+            knuckle * phi_t.cos(),
+        ];
         assert!((crown[0] - bend[0]).abs() < 1e-9 && (crown[1] - bend[1]).abs() < 1e-9);
 
         let dish = elliptical_dish_solid(radius, height, knuckle).unwrap();
@@ -1161,6 +1308,36 @@ mod tests {
         assert_eq!(cleaned.decompose().len(), 1);
         let bounds = cleaned.bounding_box().unwrap();
         assert!(bounds.max()[0] <= 50.0 + 1e-9);
+    }
+
+    #[test]
+    fn floor_boolean_cleanup_keeps_a_complete_facet_cell() {
+        let main = Manifold::cube(100.0, 100.0, 100.0, true);
+        let satellite = Manifold::cube(10.5, 10.5, 100.0, true).translate(1000.0, 0.0, 0.0);
+        let cleaned = cleanup_floor_boolean_components(Manifold::compose(&[main, satellite]), 25);
+        assert_eq!(cleaned.decompose().len(), 2);
+    }
+
+    #[test]
+    fn floor_boolean_cleanup_drops_a_narrow_subfacet_sliver() {
+        let main = Manifold::cube(100.0, 100.0, 100.0, true);
+        // Mirrors the 17496/100202 boolean satellite: its footprint is just over
+        // one 10mm facet cell in area, but one direction is still sub-facet.
+        let sliver = extrude_rings(vec![vec![[-2.1, -26.6], [2.1, -26.6], [-2.1, 26.6]]], 100.0)
+            .unwrap()
+            .rotate(0.0, 0.0, 37.0)
+            .translate(1000.0, 0.0, 0.0);
+        let cleaned = cleanup_floor_boolean_components(Manifold::compose(&[main, sliver]), 25);
+        assert_eq!(cleaned.decompose().len(), 1);
+    }
+
+    #[test]
+    fn floor_boolean_cleanup_joins_a_restol_close_sliver() {
+        let main = Manifold::cube(100.0, 100.0, 100.0, true);
+        let sliver = Manifold::cube(1.0, 10.0, 100.0, true).translate(50.51, 0.0, 0.0);
+        let cleaned = cleanup_floor_boolean_components(Manifold::compose(&[main, sliver]), 25);
+        assert_eq!(cleaned.decompose().len(), 1);
+        assert!(cleaned.volume() > 1_000_000.0);
     }
 
     #[test]
@@ -1312,19 +1489,19 @@ mod tests {
         assert!(solid.volume() < exact, "内接体必须小于真环面");
     }
 
-    /// 环面扫掠从 +X 起、朝 +Z 转；ANGL 为负就是朝 −Z 转。
+    /// 环面扫掠在 XY 平面从 +X 起、朝 +Y 转；ANGL 为负就是朝 −Y 转。
     #[test]
     fn a_negative_sweep_mirrors_the_quadrant_but_not_the_volume() {
         let ccw = rect_torus_solid(300.0, 500.0, 200.0, 90.0).unwrap();
         let cw = rect_torus_solid(300.0, 500.0, 200.0, -90.0).unwrap();
         assert!((ccw.volume() - cw.volume()).abs() / ccw.volume() < 1e-12);
         assert!(
-            ccw.bounding_box().unwrap().min()[2] > -1e-9,
-            "正扫应落在 z ≥ 0"
+            ccw.bounding_box().unwrap().min()[1] > -1e-9,
+            "正扫应落在 y ≥ 0"
         );
         assert!(
-            cw.bounding_box().unwrap().max()[2] < 1e-9,
-            "负扫应落在 z ≤ 0"
+            cw.bounding_box().unwrap().max()[1] < 1e-9,
+            "负扫应落在 y ≤ 0"
         );
     }
 
@@ -1354,8 +1531,8 @@ mod tests {
         let tube_r = (rout - rins) / 2.0;
         let bb = solid.bounding_box().unwrap();
         assert!((bb.max()[0] - rout).abs() < 1e-9, "{:?}", bb.max());
-        assert!((bb.max()[1] - tube_r).abs() < 1e-9, "{:?}", bb.max());
-        assert!((bb.min()[1] + tube_r).abs() < 1e-9, "{:?}", bb.min());
+        assert!((bb.max()[2] - tube_r).abs() < 1e-9, "{:?}", bb.max());
+        assert!((bb.min()[2] + tube_r).abs() < 1e-9, "{:?}", bb.min());
         assert_eq!(solid.genus(), 1, "整圈圆管环面是亏格 1");
 
         // 帕普斯：V = 2π·R中心 · πr²。两个方向都内接 ⇒ 必小于它，且缺口在 1% 内。
@@ -1508,6 +1685,18 @@ mod tests {
             let got = cylinder_segments(radius);
             assert_eq!(got, expect, "R={radius} 应当是 {expect} 段，实得 {got}");
         }
+    }
+
+    #[test]
+    fn negative_cylinder_matches_the_floor_rvm_boolean_facets() {
+        assert_eq!(negative_cylinder_segments(2726.0), 40);
+        assert!(negative_cylinder_segments(2726.0) < cylinder_segments(2726.0));
+    }
+
+    #[test]
+    fn negative_half_torus_matches_the_ncon_sample_rvm_grid() {
+        assert_eq!(negative_cylinder_segments(75.0), 8);
+        assert_eq!(negative_part_rev_segments(75.0, 180.0), 4);
     }
 
     #[test]

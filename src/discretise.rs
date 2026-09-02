@@ -17,6 +17,9 @@
 //!    组装器会把**两端都越界**的弧重新接到相邻 PAVE，但仍保留原圆心、半径和
 //!    弧内相位点；单端越界仍保留原弧。
 //!    两条路径都在 [`FlattenNotes::overshoot_fillets`] 记账。
+//! 3. 若一个孤立**凸**倒圆的两个理论切点都只给相邻直线留下 `<= 0.1mm`，
+//!    Core3D 仍保留按理论切点构造的原圆弧；不能把整段弧当成 consumed 删除，也不能
+//!    把端点强吸到相邻 PAVE。凹角和真正越界仍走第 2 条。
 
 /// 曲面基本体的弦高容差（mm），绝对量。
 ///
@@ -50,6 +53,8 @@ pub struct FlattenNotes {
     pub overshoot_fillets: Vec<usize>,
     /// 三点共线或边退化、倒圆被忽略的角。
     pub degenerate_corners: Vec<usize>,
+    /// 两侧剩余直线都不超过 Core3D 门槛、但仍按理论切点保留的孤立倒圆。
+    pub consumed_fillets: Vec<usize>,
 }
 
 /// 原始 PAVE 环是否含 Core3D `sub_106200B0` 不会发出的退化 line span。
@@ -71,6 +76,14 @@ pub fn flatten_ring(ring: &[FilletVertex]) -> Option<(Vec<[f64; 2]>, FlattenNote
         return None;
     }
     let n = ring.len();
+    let raw_area = (0..n)
+        .map(|i| {
+            let a = ring[i];
+            let b = ring[(i + 1) % n];
+            a.x * b.y - b.x * a.y
+        })
+        .sum::<f64>()
+        * 0.5;
     let mut out: Vec<[f64; 2]> = Vec::with_capacity(n * 4);
     let mut notes = FlattenNotes::default();
     // Core3D 在相邻端点距离 <= 0.1mm 时不发该直线 span。这样的原始链由后续
@@ -112,6 +125,22 @@ pub fn flatten_ring(ring: &[FilletVertex]) -> Option<(Vec<[f64; 2]>, FlattenNote
         // 会跳过的退化 line span，组装层则重接两端都越界的弧，但不改圆心/半径。
         let tan_alpha = alpha.tan();
         let requested_t = requested_radius / tan_alpha;
+        let incoming = [p.x - prev.x, p.y - prev.y];
+        let outgoing = [next.x - p.x, next.y - p.y];
+        let turn = incoming[0] * outgoing[1] - incoming[1] * outgoing[0];
+        let convex = turn * raw_area > 0.0;
+        let consumes_prev = (len_prev - requested_t).abs() <= PROFILE_LINK_TOL_MM;
+        let consumes_next = (len_next - requested_t).abs() <= PROFILE_LINK_TOL_MM;
+        let reconnect_consumed = prev.frad.abs() <= EDGE_EPS
+            && next.frad.abs() <= EDGE_EPS
+            && convex
+            && requested_t <= len_prev
+            && requested_t <= len_next
+            && consumes_prev
+            && consumes_next;
+        if reconnect_consumed {
+            notes.consumed_fillets.push(i);
+        }
         let overshoots_prev = requested_t > len_prev;
         let overshoots_next = requested_t > len_next;
         let reconnect_both_ends = has_skipped_link && overshoots_prev && overshoots_next;
@@ -452,5 +481,66 @@ mod tests {
             max_x > 1050.0,
             "原半径圆弧的 +X 极值必须保留，max_x={max_x}"
         );
+    }
+
+    #[test]
+    fn isolated_fillet_that_consumes_both_line_spans_keeps_theoretical_arc() {
+        // AMS1112 FLOOR 17496/100202 -> NXTR 17496/100327。FRAD 的两个理论切点
+        // 距相邻 PAVE 都不到 0.001mm；Core3D 的 0.1mm line-span 门禁不发这两段
+        // 短线，但 RVM 仍保留原半径圆弧和理论切点。
+        let ring = [
+            v(0.0, 0.0),
+            v(0.0, 986.872314),
+            v(0.0, 1181.872314),
+            v(390.0, 1181.872314),
+            v(390.0, 986.872314),
+            v(390.0, 0.001953),
+            v(433.926574, -76.082763),
+            v(419.318847, -50.781982),
+            FilletVertex {
+                x: 194.999816,
+                y: -75.548339,
+                frad: 2044.089965,
+            },
+            v(-29.319198, -50.781982),
+        ];
+        let (poly, notes) = flatten_ring(&ring).unwrap();
+        assert_eq!(notes.consumed_fillets, vec![8]);
+        assert!(
+            poly.iter()
+                .any(|p| { (p[0] - 195.0).abs() < 5.0 && p[1] < -55.0 }),
+            "被门禁吸附的原半径圆弧必须留下中部弧点: {poly:?}"
+        );
+        assert!(poly.contains(&[419.318847, -50.781982]));
+        assert!(poly.contains(&[-29.319198, -50.781982]));
+        assert!(poly.iter().any(|p| {
+            (p[0] - 419.318847).abs() < 0.001
+                && p[0] != 419.318847
+                && (p[1] + 50.781982).abs() < 0.001
+        }));
+    }
+
+    #[test]
+    fn concave_near_linear_fillet_is_kept() {
+        // 同一 FLOOR 的 NXTR 17496/100363 也是近共线且两侧只剩亚毫米 span，
+        // 但它在顺时针外环上是凹角；E3D RVM 保留该弧，不能套用凸角门禁。
+        let ring = [
+            v(0.0, 0.0),
+            v(1453.391601, 30.21289),
+            v(1647.533203, 29.314697),
+            v(1647.533203, -358.9729),
+            v(1453.391601, -359.871215),
+            v(397.920654, -381.812377),
+            v(375.148925, -466.802246),
+            FilletVertex {
+                x: 168.901611,
+                y: -220.386962,
+                frad: 3036.120117,
+            },
+            v(-84.358764, -22.605224),
+        ];
+        let (poly, notes) = flatten_ring(&ring).unwrap();
+        assert!(notes.consumed_fillets.is_empty(), "{notes:?}");
+        assert!(poly.len() > ring.len(), "凹角圆弧必须离散保留: {poly:?}");
     }
 }

@@ -17,7 +17,7 @@ use e3d_io::db_param_env::DbElementParamEnv;
 use e3d_io::record::catalogue_eval::AttributeNumber;
 use e3d_io::record::descriptor::DescriptorValue;
 
-use crate::catalogue_point::{catalogue_axis, catalogue_component};
+use crate::catalogue_point::{CatalogueAxis, catalogue_component, resolve_catalogue_axis};
 use crate::discretise::{FilletVertex, flatten_ring};
 use crate::elmodl::{GeneratedElement, GeometryId, ModelError};
 use crate::primitive_instance::instantiate_box;
@@ -25,8 +25,8 @@ use crate::route::orimat;
 use crate::solid::{
     SolidError, box_solid, circ_torus_solid, csg_cylinder_solid, cylinder_segments,
     dish_knuckle_radius, elliptical_dish_solid, extrude_rings, placed, pyramid_solid,
-    rect_torus_solid, slope_ended_cylinder_solid, snout_solid_with_segments,
-    spherical_dish_solid, unit_sphere_solid,
+    rect_torus_solid, revolve_rings, slope_ended_cylinder_solid, snout_solid,
+    snout_solid_with_segments, spherical_dish_solid, unit_sphere_solid,
 };
 use crate::transform::world_matrix;
 
@@ -34,6 +34,7 @@ const GEOMETRY_REF: &str = "GMRE";
 const AXIS_TOL: f64 = 1.0e-9;
 const HEIGHT_TOL_MM: f64 = 1.0e-6;
 const SEXT_TESSELLATION_VERSION: u32 = 1;
+const SREV_TESSELLATION_VERSION: u32 = 1;
 const SBOX_TESSELLATION_VERSION: u32 = 1;
 const NSCY_AXIAL_OVERCUT_MM: f64 = 0.01;
 const CYLINDER_TESSELLATION_VERSION: u32 = 1;
@@ -63,6 +64,8 @@ pub struct CatalogueMeshCacheStats {
     pub evaluated_nlcy: usize,
     pub source_nsex: usize,
     pub evaluated_nsex: usize,
+    pub source_srev: usize,
+    pub evaluated_srev: usize,
     pub source_scyl: usize,
     pub evaluated_scyl: usize,
     pub source_lcyl: usize,
@@ -132,6 +135,8 @@ impl CatalogueMeshCacheStats {
             evaluated_nlcy: delta!(evaluated_nlcy),
             source_nsex: delta!(source_nsex),
             evaluated_nsex: delta!(evaluated_nsex),
+            source_srev: delta!(source_srev),
+            evaluated_srev: delta!(evaluated_srev),
             source_scyl: delta!(source_scyl),
             evaluated_scyl: delta!(evaluated_scyl),
             source_lcyl: delta!(source_lcyl),
@@ -176,6 +181,8 @@ impl CatalogueMeshCacheStats {
         add!(evaluated_nlcy);
         add!(source_nsex);
         add!(evaluated_nsex);
+        add!(source_srev);
+        add!(evaluated_srev);
         add!(source_scyl);
         add!(evaluated_scyl);
         add!(source_lcyl);
@@ -209,9 +216,21 @@ struct SextMeshKey {
     coordinate_bits: Vec<u64>,
 }
 
+/// SREV 的网格键：轮廓（与 SEXT 同一份采集）+ 扫角 + 名下负体。
+/// 负体进键与 [`SboxMeshKey`] 同理：同轮廓不同刀的两个 SREV 不是同一张网格。
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct SrevMeshKey {
+    tessellation_version: u32,
+    angle_bits: u64,
+    ring_lengths: Vec<usize>,
+    coordinate_bits: Vec<u64>,
+    cutters: Vec<CatalogueCutKey>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum CatalogueMeshKey {
     Sext(SextMeshKey),
+    Srev(SrevMeshKey),
     Sbox(SboxMeshKey),
     Cylinder {
         tessellation_version: u32,
@@ -285,6 +304,33 @@ enum CatalogueCutKey {
         profile: SextMeshKey,
         transform_bits: [u64; 16],
     },
+    /// NLSN / NSCO：与正体 LSNO / SCON 同一组参数（含负臂 +0.01 轴向过切后的高度）。
+    Snout {
+        parameter_bits: [u64; 5],
+        transform_bits: [u64; 16],
+    },
+    /// NSCT：与正体 SCTO 同一组半径与扫角。
+    CircularTorus {
+        inner_bits: u64,
+        outer_bits: u64,
+        angle_bits: u64,
+        transform_bits: [u64; 16],
+    },
+    /// NSRT：与正体 SRTO 同一组半径、高度与扫角。
+    RectangularTorus {
+        inner_bits: u64,
+        outer_bits: u64,
+        height_bits: u64,
+        angle_bits: u64,
+        transform_bits: [u64; 16],
+    },
+    /// NSRE：与正体 SREV 同一份轮廓与扫角（CRCATI 968617/643505 正负同臂）。
+    Revolution {
+        angle_bits: u64,
+        ring_lengths: Vec<usize>,
+        coordinate_bits: Vec<u64>,
+        transform_bits: [u64; 16],
+    },
 }
 
 struct CachedCatalogueMesh {
@@ -303,6 +349,15 @@ struct EvaluatedSext {
     rings: Vec<Vec<[f64; 2]>>,
     height: f64,
     transform: DMat4,
+}
+
+struct EvaluatedSrev {
+    mesh_key: CatalogueMeshKey,
+    rings: Vec<Vec<[f64; 2]>>,
+    angle_deg: f64,
+    cutters: Vec<EvaluatedCatalogueCut>,
+    transform: DMat4,
+    diagnostics: Vec<String>,
 }
 
 struct EvaluatedSbox {
@@ -402,6 +457,26 @@ enum EvaluatedCatalogueCut {
     Extrusion {
         rings: Vec<Vec<[f64; 2]>>,
         height: f64,
+        transform: DMat4,
+    },
+    /// NLSN / NSCO 负锥台：参数与放置和正体 LSNO / SCON 同一个求值器给出，
+    /// 高度已带负臂的 +0.01 轴向过切（§2.3 圆柱/锥族）。
+    Snout {
+        parameters: [f64; 5],
+        transform: DMat4,
+    },
+    /// NSCT / NSRT 负环面段：与正体 SCTO / SRTO 同一个求值器给出。
+    Torus {
+        kind: EvaluatedTorusKind,
+        inner: f64,
+        outer: f64,
+        angle_deg: f64,
+        transform: DMat4,
+    },
+    /// NSRE 负回转：轮廓、扫角与放置和正体 SREV 同一个求值器给出。
+    Revolution {
+        rings: Vec<Vec<[f64; 2]>>,
+        angle_deg: f64,
         transform: DMat4,
     },
 }
@@ -587,6 +662,48 @@ pub fn model_catalogue_member_with_cache(
                         solids.push(placed(local_mesh, evaluated.transform));
                     }
                     Ok(None) => zero_height += 1,
+                    Err(error) => diagnostics.push(format!(
+                        "catalogue primitive {} skipped by Core-style local failure: {error}",
+                        primitive.refno()
+                    )),
+                }
+            }
+            "SREV" => {
+                cache.stats.source_srev += 1;
+                match evaluate_srev(member, &component, &primitive, &env, cache) {
+                    Ok(mut evaluated) => {
+                        cache.stats.evaluated_srev += 1;
+                        catalogue_negatives += evaluated.cutters.len();
+                        diagnostics.append(&mut evaluated.diagnostics);
+                        let mesh_id = match cached_mesh_id(cache, &evaluated.mesh_key, || {
+                            build_srev(&evaluated)
+                        }) {
+                            Ok(mesh_id) => mesh_id,
+                            Err(error) => {
+                                diagnostics.push(format!(
+                                    "catalogue primitive {} skipped by Core-style local failure: {error}",
+                                    primitive.refno()
+                                ));
+                                continue;
+                            }
+                        };
+                        let placed_key = PlacedPartKey {
+                            mesh_id,
+                            transform_bits: matrix_bits(evaluated.transform),
+                        };
+                        if !placed_parts.insert(placed_key) {
+                            member_duplicates += 1;
+                            cache.stats.duplicate_placed_parts += 1;
+                            continue;
+                        }
+                        cache.stats.unique_placed_parts += 1;
+                        let local_mesh = &cache
+                            .local_meshes
+                            .get(&evaluated.mesh_key)
+                            .expect("catalogue mesh inserted above")
+                            .solid;
+                        solids.push(placed(local_mesh, evaluated.transform));
+                    }
                     Err(error) => diagnostics.push(format!(
                         "catalogue primitive {} skipped by Core-style local failure: {error}",
                         primitive.refno()
@@ -1126,12 +1243,9 @@ fn evaluate_lpyr(
     let xoff = required_number(pyramid, "PTDI", env, "catalogue LPYR")?;
     let mut yoff = required_number(pyramid, "PBDI", env, "catalogue LPYR")?;
 
-    let mut pa = catalogue_axis(member, component, &required_words(pyramid, "PAAX")?)?
-        .ok_or_else(|| missing(pyramid, "PAAX", "catalogue LPYR axis"))?;
-    let pb = catalogue_axis(member, component, &required_words(pyramid, "PBAX")?)?
-        .ok_or_else(|| missing(pyramid, "PBAX", "catalogue LPYR axis"))?;
-    let pc = catalogue_axis(member, component, &required_words(pyramid, "PCAX")?)?
-        .ok_or_else(|| missing(pyramid, "PCAX", "catalogue LPYR axis"))?;
+    let mut pa = catalogue_axis_or_fail(member, component, pyramid, "PAAX", "catalogue LPYR axis")?;
+    let pb = catalogue_axis_or_fail(member, component, pyramid, "PBAX", "catalogue LPYR axis")?;
+    let pc = catalogue_axis_or_fail(member, component, pyramid, "PCAX", "catalogue LPYR axis")?;
 
     let mut height = top_distance - bottom_distance;
     if height <= 0.0 {
@@ -1190,8 +1304,8 @@ fn evaluate_catalogue_snout(
     let (dbot, dtop, height, xoff, centre, rotation) = if noun == "SCON" {
         let diameter = required_number(snout, "PDIA", env, "catalogue SCON")?.abs();
         let distance = required_number(snout, "PDIS", env, "catalogue SCON")?;
-        let mut axis = catalogue_axis(member, component, &required_words(snout, "PAXI")?)?
-            .ok_or_else(|| missing(snout, "PAXI", "catalogue SCON axis"))?;
+        let mut axis =
+            catalogue_axis_or_fail(member, component, snout, "PAXI", "catalogue SCON axis")?;
         if distance < 0.0 {
             axis.direction = -axis.direction;
         }
@@ -1216,10 +1330,14 @@ fn evaluate_catalogue_snout(
         let bottom = required_number(snout, "PBDI", env, "catalogue LSNO")?;
         let top = required_number(snout, "PTDI", env, "catalogue LSNO")?;
         let offset = required_number(snout, "POFF", env, "catalogue LSNO")?;
-        let pa = catalogue_axis(member, component, &required_words(snout, "PAAX")?)?
-            .ok_or_else(|| missing(snout, "PAAX", "catalogue LSNO axis"))?;
-        let pb = catalogue_axis(member, component, &required_words(snout, "PBAX")?)?
-            .ok_or_else(|| missing(snout, "PBAX", "catalogue LSNO offset axis"))?;
+        let pa = catalogue_axis_or_fail(member, component, snout, "PAAX", "catalogue LSNO axis")?;
+        let pb = catalogue_axis_or_fail(
+            member,
+            component,
+            snout,
+            "PBAX",
+            "catalogue LSNO offset axis",
+        )?;
         let (dbot, dtop, height, offset) = normalize_lsnout_span(dbot, dtop, bottom, top, offset);
         let (centre, rotation) = lsnout_frame(pa, pb, bottom, top, offset)?;
         (dbot, dtop, height, offset, centre, rotation)
@@ -1299,8 +1417,8 @@ fn evaluate_nlpy(
     let bottom = required_number(pyramid, "PBDI", env, "catalogue NLPY")?;
     let xoff = required_number(pyramid, "PBOF", env, "catalogue NLPY")?;
     let yoff = required_number(pyramid, "PCOF", env, "catalogue NLPY")?;
-    let mut axis = catalogue_axis(member, component, &required_words(pyramid, "PAAX")?)?
-        .ok_or_else(|| missing(pyramid, "PAAX", "catalogue NLPY axis"))?;
+    let mut axis =
+        catalogue_axis_or_fail(member, component, pyramid, "PAAX", "catalogue NLPY axis")?;
     let mut height = top - bottom;
     if height < 0.0 {
         height = -height;
@@ -1329,6 +1447,69 @@ fn evaluate_nlpy(
     }))
 }
 
+/// SEXT / SREV 共用的轮廓采集（Core 侧同为环组装配器 `sub_10715170`）：
+/// `SLOO → SVER` 的 PX/PY/PRAD，圆角折线化后成环组。两臂各写一份就是两份
+/// 轮廓规则，键与几何都会静默分叉——纪律同 `route.rs` 只许有一份串接规则。
+fn profile_rings(
+    primitive: &DbElement,
+    env: &DbElementParamEnv,
+    noun: &'static str,
+) -> Result<Vec<Vec<[f64; 2]>>, ModelError> {
+    let mut rings = Vec::new();
+    for loop_element in primitive.members()? {
+        if !loop_element.element_type()?.eq_ignore_ascii_case("SLOO") {
+            continue;
+        }
+        let mut vertices = Vec::new();
+        for vertex in loop_element.members()? {
+            if !vertex.element_type()?.eq_ignore_ascii_case("SVER") {
+                continue;
+            }
+            vertices.push(FilletVertex {
+                x: required_number(&vertex, "PX", env, "catalogue profile vertex")?,
+                y: required_number(&vertex, "PY", env, "catalogue profile vertex")?,
+                frad: optional_number(&vertex, "PRAD", env).unwrap_or(0.0).abs(),
+            });
+        }
+        let Some((ring, _notes)) = flatten_ring(&vertices) else {
+            return Err(ModelError::OuterRingCollapsed {
+                refno: primitive.refno().to_string(),
+                noun: noun.into(),
+            });
+        };
+        rings.push(ring);
+    }
+    if rings.is_empty() {
+        return Err(ModelError::OuterRingCollapsed {
+            refno: primitive.refno().to_string(),
+            noun: noun.into(),
+        });
+    }
+    Ok(rings)
+}
+
+/// PAAX/PBAX → 右手标架（Core `ORTHOG`：保第一根轴，第二根由补全的第三根反求）。
+/// SEXT 与 SREV 同一份：轮廓平面都是 (PAAX, PBAX 正交化) 张成的 XY。
+fn profile_frame(
+    member: &DbElement,
+    component: &DbElement,
+    primitive: &DbElement,
+    what: &'static str,
+) -> Result<(crate::catalogue_point::CatalogueAxis, DMat3), ModelError> {
+    let pa = catalogue_axis_or_fail(member, component, primitive, "PAAX", what)?;
+    let pb = catalogue_axis_or_fail(member, component, primitive, "PBAX", what)?;
+    let x = pa.direction.normalize_or_zero();
+    let z = x.cross(pb.direction).normalize_or_zero();
+    if x.length_squared() <= AXIS_TOL || z.length_squared() <= AXIS_TOL {
+        return Err(ModelError::Solid(SolidError::Degenerate {
+            what,
+            detail: format!("PAAX={:?}, PBAX={:?}", pa.direction, pb.direction),
+        }));
+    }
+    let y = z.cross(x).normalize();
+    Ok((pa, DMat3::from_cols(x, y, z)))
+}
+
 fn evaluate_sext(
     member: &DbElement,
     component: &DbElement,
@@ -1340,58 +1521,14 @@ fn evaluate_sext(
         return Ok(None);
     }
 
-    let mut rings = Vec::new();
-    for loop_element in sext.members()? {
-        if !loop_element.element_type()?.eq_ignore_ascii_case("SLOO") {
-            continue;
-        }
-        let mut vertices = Vec::new();
-        for vertex in loop_element.members()? {
-            if !vertex.element_type()?.eq_ignore_ascii_case("SVER") {
-                continue;
-            }
-            vertices.push(FilletVertex {
-                x: required_number(&vertex, "PX", env, "catalogue SEXT vertex")?,
-                y: required_number(&vertex, "PY", env, "catalogue SEXT vertex")?,
-                frad: optional_number(&vertex, "PRAD", env).unwrap_or(0.0).abs(),
-            });
-        }
-        let Some((ring, _notes)) = flatten_ring(&vertices) else {
-            return Err(ModelError::OuterRingCollapsed {
-                refno: sext.refno().to_string(),
-                noun: "SEXT".into(),
-            });
-        };
-        rings.push(ring);
-    }
-    if rings.is_empty() {
-        return Err(ModelError::OuterRingCollapsed {
-            refno: sext.refno().to_string(),
-            noun: "SEXT".into(),
-        });
-    }
-
-    let pa = catalogue_axis(member, component, &required_words(sext, "PAAX")?)?
-        .ok_or_else(|| missing(sext, "PAAX", "catalogue SEXT axis"))?;
-    let pb = catalogue_axis(member, component, &required_words(sext, "PBAX")?)?
-        .ok_or_else(|| missing(sext, "PBAX", "catalogue SEXT axis"))?;
-    let x = pa.direction.normalize_or_zero();
-    let z = x.cross(pb.direction).normalize_or_zero();
-    if x.length_squared() <= AXIS_TOL || z.length_squared() <= AXIS_TOL {
-        return Err(ModelError::Solid(SolidError::Degenerate {
-            what: "catalogue SEXT axes",
-            detail: format!("PAAX={:?}, PBAX={:?}", pa.direction, pb.direction),
-        }));
-    }
-    // Core ORTHOG keeps the first axis and recomputes the second from the
-    // completed right-handed third axis.
-    let y = z.cross(x).normalize();
-    let rotation = DMat3::from_cols(x, y, z);
+    let rings = profile_rings(sext, env, "SEXT")?;
+    let (pa, rotation) = profile_frame(member, component, sext, "catalogue SEXT axes")?;
     let raw_position = DVec3::new(
         required_number(sext, "PX", env, "catalogue SEXT position")?,
         required_number(sext, "PY", env, "catalogue SEXT position")?,
         required_number(sext, "PZ", env, "catalogue SEXT position")?,
     );
+    // QSSEXT（0x103B7FCC）：位置 = 标架 · (PX,PY,PZ)（TRAVEC 旋进标架）。
     let transform =
         DMat4::from_translation(pa.origin + rotation * raw_position) * DMat4::from_mat3(rotation);
     let mesh_key = CatalogueMeshKey::Sext(sext_mesh_key(&rings, height)?);
@@ -1401,6 +1538,236 @@ fn evaluate_sext(
         height,
         transform,
     }))
+}
+
+/// QSSREV（`0x103B81CC`）的扫角归一：`|PANG| < 0.001` 缺省成整圈 360，
+/// `|PANG| > 360` 带符号钳到 ±360。与设计侧 REV「≈360 一律当整圈」不同——
+/// 目录臂对 -359.9 这类近整圈**保留部分扫角**，别把两条归一互相抄。
+fn qssrev_angle(raw: f64) -> f64 {
+    if raw.abs() < 0.001 {
+        return 360.0;
+    }
+    raw.clamp(-360.0, 360.0)
+}
+
+/// 目录回转体（CRCATI 968617/643505 → `pplib/QSSREV` + `gm_CreateRevolution`）。
+///
+/// 轮廓与 SEXT 同一个组装器（[`profile_rings`]），标架同一份 ORTHOG
+/// （[`profile_frame`]），回转轴 = 标架局部 X（`gm_CreateRevolution` 的
+/// rot_dir=X / rot_pt=0，与设计侧 [`crate::solid::revolve_rings`] 同一约定）。
+///
+/// **位置与 SEXT 不同**：QSSREV 把 PX/PY/PZ **不旋转**地加在 PAAX 轴原点上
+/// （`*a3 += PX; …`），而 QSSEXT 先 TRAVEC 旋进标架——两段反编译都在案，
+/// 别顺手「统一」成同一种。
+///
+/// 负角语义：Core 走起始相位 +180（`v90 = 180.0`）扫 |PANG|；本仓沿用
+/// `revolve_rings` 文档记载的镜像等价实现，partial 负回转的相位约定
+/// 等 RVM 语料坐实（`solid.rs` 的既有挂账，两条路同一笔账）。
+///
+/// 名下负体与 SBOX 同款成员级刀集：ams5052 实测 SREV 名下挂着
+/// NSRT/NLSN/NSRE/NLPY/NSEX/NSBO/NLCY/NSCY，全部复用各自正体的求值器。
+fn evaluate_srev(
+    member: &DbElement,
+    component: &DbElement,
+    srev: &DbElement,
+    env: &DbElementParamEnv,
+    cache: &mut CatalogueMeshCache,
+) -> Result<EvaluatedSrev, ModelError> {
+    let angle_deg = qssrev_angle(required_number(srev, "PANG", env, "catalogue SREV")?);
+    let rings = profile_rings(srev, env, "SREV")?;
+    let (pa, rotation) = profile_frame(member, component, srev, "catalogue SREV axes")?;
+    let raw_position = DVec3::new(
+        required_number(srev, "PX", env, "catalogue SREV position")?,
+        required_number(srev, "PY", env, "catalogue SREV position")?,
+        required_number(srev, "PZ", env, "catalogue SREV position")?,
+    );
+    // QSSREV：位置 = 轴原点 + 原始 (PX,PY,PZ)，不旋转（见函数文档）。
+    let transform = DMat4::from_translation(pa.origin + raw_position) * DMat4::from_mat3(rotation);
+    // 刀的求值都在部件局部系；SREV 的放置带旋转，回到 SREV 局部系要走逆矩阵
+    // （SBOX 是纯平移，减 position 就够，这里不够）。
+    let rebase = transform.inverse();
+
+    let mut cutters = Vec::new();
+    let mut diagnostics = Vec::new();
+    for child in srev.members()? {
+        let noun = child.element_type()?;
+        if noun.eq_ignore_ascii_case("SLOO") {
+            continue;
+        }
+        if noun.eq_ignore_ascii_case("NSCY") {
+            cache.stats.source_nscy += 1;
+            match evaluate_nscy(member, component, &child, env, DVec3::ZERO) {
+                Ok(cutter) => {
+                    cache.stats.evaluated_nscy += 1;
+                    cutters.push(EvaluatedCatalogueCut::Cylinder(EvaluatedNscy {
+                        transform: rebase * cutter.transform,
+                        ..cutter
+                    }));
+                }
+                Err(error) => diagnostics.push(format!(
+                    "catalogue negative {} skipped by Core-style local failure: {error}",
+                    child.refno()
+                )),
+            }
+        } else if noun.eq_ignore_ascii_case("NLCY") {
+            cache.stats.source_nlcy += 1;
+            match evaluate_nlcy(member, component, &child, env, DVec3::ZERO) {
+                Ok(cutter) => {
+                    cache.stats.evaluated_nlcy += 1;
+                    cutters.push(EvaluatedCatalogueCut::Cylinder(EvaluatedNscy {
+                        transform: rebase * cutter.transform,
+                        ..cutter
+                    }));
+                }
+                Err(error) => diagnostics.push(format!(
+                    "catalogue negative {} skipped by Core-style local failure: {error}",
+                    child.refno()
+                )),
+            }
+        } else if noun.eq_ignore_ascii_case("NSBO") {
+            cache.stats.source_nsbo += 1;
+            match evaluate_nsbo(&child, env, DVec3::ZERO) {
+                Ok(EvaluatedCatalogueCut::Box {
+                    dimensions,
+                    transform: cutter_transform,
+                }) => {
+                    cache.stats.evaluated_nsbo += 1;
+                    cutters.push(EvaluatedCatalogueCut::Box {
+                        dimensions,
+                        transform: rebase * cutter_transform,
+                    });
+                }
+                Ok(_) => unreachable!("evaluate_nsbo returns a box cutter"),
+                Err(error) => diagnostics.push(format!(
+                    "catalogue negative {} skipped by Core-style local failure: {error}",
+                    child.refno()
+                )),
+            }
+        } else if noun.eq_ignore_ascii_case("NLPY") {
+            match evaluate_nlpy(member, component, &child, env) {
+                Ok(Some(cutter)) => cutters.push(EvaluatedCatalogueCut::Pyramid {
+                    parameters: cutter.parameters,
+                    transform: rebase * cutter.transform,
+                }),
+                Ok(None) => {}
+                Err(error) => diagnostics.push(format!(
+                    "catalogue negative {} skipped by Core-style local failure: {error}",
+                    child.refno()
+                )),
+            }
+        } else if noun.eq_ignore_ascii_case("NSEX") {
+            cache.stats.source_nsex += 1;
+            match evaluate_sext(member, component, &child, env) {
+                Ok(Some(cutter)) => {
+                    cache.stats.evaluated_nsex += 1;
+                    cutters.push(EvaluatedCatalogueCut::Extrusion {
+                        rings: cutter.rings,
+                        height: cutter.height,
+                        transform: rebase * cutter.transform,
+                    });
+                }
+                Ok(None) => {}
+                Err(error) => diagnostics.push(format!(
+                    "catalogue negative {} skipped by Core-style local failure: {error}",
+                    child.refno()
+                )),
+            }
+        } else if noun.eq_ignore_ascii_case("NLSN") || noun.eq_ignore_ascii_case("NSCO") {
+            let twin = if noun.eq_ignore_ascii_case("NLSN") {
+                "LSNO"
+            } else {
+                "SCON"
+            };
+            match evaluate_catalogue_snout(member, component, &child, env, twin) {
+                Ok(Some(cutter)) => {
+                    let mut parameters = cutter.parameters;
+                    // §2.3：+0.01 轴向过切只属于圆柱/锥族的负臂；锥台居中建体，
+                    // 加在高度上中心不动（与 NSCY 同款）。
+                    parameters[2] += NSCY_AXIAL_OVERCUT_MM;
+                    cutters.push(EvaluatedCatalogueCut::Snout {
+                        parameters,
+                        transform: rebase * cutter.transform,
+                    });
+                }
+                Ok(None) => {}
+                Err(error) => diagnostics.push(format!(
+                    "catalogue negative {} skipped by Core-style local failure: {error}",
+                    child.refno()
+                )),
+            }
+        } else if noun.eq_ignore_ascii_case("NSCT") || noun.eq_ignore_ascii_case("NSRT") {
+            let twin = if noun.eq_ignore_ascii_case("NSCT") {
+                "SCTO"
+            } else {
+                "SRTO"
+            };
+            match evaluate_catalogue_torus(member, component, &child, env, twin) {
+                Ok(Some(cutter)) => cutters.push(EvaluatedCatalogueCut::Torus {
+                    kind: cutter.kind,
+                    inner: cutter.inner,
+                    outer: cutter.outer,
+                    angle_deg: cutter.angle_deg,
+                    transform: rebase * cutter.transform,
+                }),
+                Ok(None) => {}
+                Err(error) => diagnostics.push(format!(
+                    "catalogue negative {} skipped by Core-style local failure: {error}",
+                    child.refno()
+                )),
+            }
+        } else if noun.eq_ignore_ascii_case("NSRE") {
+            // 嵌套负回转只取轮廓 + 扫角 + 放置（与 NSEX 刀不再下钻负体同款）。
+            let nested = (|| -> Result<EvaluatedCatalogueCut, ModelError> {
+                let angle_deg =
+                    qssrev_angle(required_number(&child, "PANG", env, "catalogue NSRE")?);
+                let rings = profile_rings(&child, env, "NSRE")?;
+                let (child_pa, child_rotation) =
+                    profile_frame(member, component, &child, "catalogue NSRE axes")?;
+                let child_position = DVec3::new(
+                    required_number(&child, "PX", env, "catalogue NSRE position")?,
+                    required_number(&child, "PY", env, "catalogue NSRE position")?,
+                    required_number(&child, "PZ", env, "catalogue NSRE position")?,
+                );
+                let child_transform = DMat4::from_translation(child_pa.origin + child_position)
+                    * DMat4::from_mat3(child_rotation);
+                Ok(EvaluatedCatalogueCut::Revolution {
+                    rings,
+                    angle_deg,
+                    transform: rebase * child_transform,
+                })
+            })();
+            match nested {
+                Ok(cutter) => cutters.push(cutter),
+                Err(error) => diagnostics.push(format!(
+                    "catalogue negative {} skipped by Core-style local failure: {error}",
+                    child.refno()
+                )),
+            }
+        } else {
+            diagnostics.push(format!(
+                "catalogue negative {} noun {noun} is not implemented",
+                child.refno()
+            ));
+        }
+    }
+
+    let cutter_keys = catalogue_cut_keys(&cutters)?;
+    let (ring_lengths, coordinate_bits) = profile_key_bits(&rings, "catalogue SREV profile")?;
+    let mesh_key = CatalogueMeshKey::Srev(SrevMeshKey {
+        tessellation_version: SREV_TESSELLATION_VERSION,
+        angle_bits: finite_bits(angle_deg, "catalogue SREV angle")?,
+        ring_lengths,
+        coordinate_bits,
+        cutters: cutter_keys,
+    });
+    Ok(EvaluatedSrev {
+        mesh_key,
+        rings,
+        angle_deg,
+        cutters,
+        transform,
+        diagnostics,
+    })
 }
 
 fn evaluate_sbox(
@@ -1500,42 +1867,7 @@ fn evaluate_sbox(
             ));
         }
     }
-    let cutter_keys = cutters
-        .iter()
-        .map(|cutter| match cutter {
-            EvaluatedCatalogueCut::Cylinder(cutter) => Ok(CatalogueCutKey::Cylinder {
-                diameter_bits: finite_bits(cutter.diameter, "catalogue NSCY diameter")?,
-                height_bits: finite_bits(cutter.height, "catalogue NSCY height")?,
-                transform_bits: matrix_bits(cutter.transform),
-            }),
-            EvaluatedCatalogueCut::Box {
-                dimensions,
-                transform,
-            } => Ok(CatalogueCutKey::Box {
-                dimension_bits: [
-                    finite_bits(dimensions.x, "catalogue NSBO dimensions")?,
-                    finite_bits(dimensions.y, "catalogue NSBO dimensions")?,
-                    finite_bits(dimensions.z, "catalogue NSBO dimensions")?,
-                ],
-                transform_bits: matrix_bits(*transform),
-            }),
-            EvaluatedCatalogueCut::Pyramid {
-                parameters,
-                transform,
-            } => Ok(CatalogueCutKey::Pyramid {
-                parameter_bits: parameters.map(|value| value.to_bits()),
-                transform_bits: matrix_bits(*transform),
-            }),
-            EvaluatedCatalogueCut::Extrusion {
-                rings,
-                height,
-                transform,
-            } => Ok(CatalogueCutKey::Extrusion {
-                profile: sext_mesh_key(rings, *height)?,
-                transform_bits: matrix_bits(*transform),
-            }),
-        })
-        .collect::<Result<Vec<_>, ModelError>>()?;
+    let cutter_keys = catalogue_cut_keys(&cutters)?;
     let mesh_key = CatalogueMeshKey::Sbox(SboxMeshKey {
         tessellation_version: SBOX_TESSELLATION_VERSION,
         dimension_bits: [
@@ -1574,8 +1906,7 @@ fn evaluate_nlcy(
             detail: format!("PTDI/PBDI={top}/{bottom}"),
         }));
     }
-    let axis = catalogue_axis(member, component, &required_words(nlcy, "PAXI")?)?
-        .ok_or_else(|| missing(nlcy, "PAXI", "catalogue NLCY axis"))?;
+    let axis = catalogue_axis_or_fail(member, component, nlcy, "PAXI", "catalogue NLCY axis")?;
     let rotation = orimat(axis.direction).ok_or_else(|| {
         ModelError::Solid(SolidError::Degenerate {
             what: "catalogue NLCY axis",
@@ -1621,8 +1952,7 @@ fn evaluate_nscy(
     let diameter = required_number(nscy, "PDIA", env, "catalogue NSCY")?.abs();
     let mut height = required_number(nscy, "PHEI", env, "catalogue NSCY")?;
     let mut distance = required_number(nscy, "PDIS", env, "catalogue NSCY")?;
-    let mut axis = catalogue_axis(member, component, &required_words(nscy, "PAXI")?)?
-        .ok_or_else(|| missing(nscy, "PAXI", "catalogue NSCY axis"))?;
+    let mut axis = catalogue_axis_or_fail(member, component, nscy, "PAXI", "catalogue NSCY axis")?;
     if height <= 0.0 {
         height = -height;
         distance = -distance;
@@ -1650,6 +1980,31 @@ fn evaluate_nscy(
     })
 }
 
+fn uses_clfl_centreline_frame(member_noun: &str, primitive_noun: &str, clfl: bool) -> bool {
+    clfl && primitive_noun.eq_ignore_ascii_case("SCYL") && !member_noun.eq_ignore_ascii_case("ATTA")
+}
+
+fn atta_clfl_roll(
+    member_noun: &str,
+    primitive_noun: &str,
+    clfl: bool,
+    orientation: Option<&[f64]>,
+) -> Option<f64> {
+    (clfl
+        && primitive_noun.eq_ignore_ascii_case("SCYL")
+        && member_noun.eq_ignore_ascii_case("ATTA"))
+    .then(|| {
+        if orientation
+            .and_then(|values| values.first())
+            .is_some_and(|angle| *angle < 0.0)
+        {
+            std::f64::consts::FRAC_PI_2
+        } else {
+            -std::f64::consts::FRAC_PI_2
+        }
+    })
+}
+
 fn evaluate_catalogue_cylinder(
     member: &DbElement,
     component: &DbElement,
@@ -1658,9 +2013,14 @@ fn evaluate_catalogue_cylinder(
     noun: &str,
 ) -> Result<Option<EvaluatedCylinder>, ModelError> {
     let diameter = required_number(cylinder, "PDIA", env, "catalogue cylinder")?.abs();
-    let mut axis = catalogue_axis(member, component, &required_words(cylinder, "PAXI")?)?
-        .ok_or_else(|| missing(cylinder, "PAXI", "catalogue cylinder axis"))?;
-    let (height, centre_distance) = if noun == "SCYL" {
+    let mut axis = catalogue_axis_or_fail(
+        member,
+        component,
+        cylinder,
+        "PAXI",
+        "catalogue cylinder axis",
+    )?;
+    let (height, start_distance, centre_distance) = if noun == "SCYL" {
         let mut height = required_number(cylinder, "PHEI", env, "catalogue SCYL")?;
         let mut distance = required_number(cylinder, "PDIS", env, "catalogue SCYL")?;
         if height <= 0.0 {
@@ -1668,11 +2028,12 @@ fn evaluate_catalogue_cylinder(
             distance = -distance;
             axis.direction = -axis.direction;
         }
-        (height, distance + height * 0.5)
+        (height, distance, distance + height * 0.5)
     } else {
         let top = required_number(cylinder, "PTDI", env, "catalogue LCYL")?;
         let bottom = required_number(cylinder, "PBDI", env, "catalogue LCYL")?;
-        ((bottom - top).abs(), (bottom + top) * 0.5)
+        let centre = (bottom + top) * 0.5;
+        ((bottom - top).abs(), centre, centre)
     };
     if height < HEIGHT_TOL_MM {
         return Ok(None);
@@ -1683,15 +2044,29 @@ fn evaluate_catalogue_cylinder(
             detail: format!("PAXI={:?}", axis.direction),
         })
     })?;
-    // CLFL cylinders are exported by E3D as centre-line primitives: PAXI is
-    // the frame Z/datum direction, while the RVM Cylinder's longitudinal axis
-    // is that frame's Y.  Ordinary catalogue solids keep the historical
-    // QSCYLI convention where PAXI is the solid axis itself.
-    let (rotation, centre) = if cylinder.get_bool("CLFL")? == Some(true) && noun == "SCYL" {
+    // CLFL display programs use the RVM centre-line frame: PAXI is their datum
+    // direction while the cylinder runs along frame Y.  NPPIPE ATTA is the
+    // proven exception: RVM 24383/73952 and /73953 keep PDIS on PAXI but use
+    // the member's signed orientation to choose which half-axis the attachment
+    // occupies.  Applying the generic CLFL centre offset moves both by 100 mm.
+    let member_noun = member.element_type()?;
+    let clfl = cylinder.get_bool("CLFL")? == Some(true);
+    let (rotation, centre) = if uses_clfl_centreline_frame(&member_noun, noun, clfl) {
         let rotation = frame * DMat3::from_rotation_x(-std::f64::consts::FRAC_PI_2);
         (
             rotation,
             axis.origin + axis.direction * centre_distance + rotation.z_axis * (height * 0.5),
+        )
+    } else if let Some(roll) = atta_clfl_roll(
+        &member_noun,
+        noun,
+        clfl,
+        member.get_double_array("ORI")?.as_deref(),
+    ) {
+        let rotation = frame * DMat3::from_rotation_x(roll);
+        (
+            rotation,
+            axis.origin + axis.direction * start_distance + rotation.z_axis * (height * 0.5),
         )
     } else {
         (frame, axis.origin + axis.direction * centre_distance)
@@ -1743,8 +2118,7 @@ fn evaluate_catalogue_sphere(
     if !(radius > f64::EPSILON) {
         return Ok(None);
     }
-    let axis = catalogue_axis(member, component, &required_words(sphere, "PAXI")?)?
-        .ok_or_else(|| missing(sphere, "PAXI", "catalogue sphere axis"))?;
+    let axis = catalogue_axis_or_fail(member, component, sphere, "PAXI", "catalogue sphere axis")?;
     let direction = axis.direction.normalize_or_zero();
     if direction.length_squared() <= AXIS_TOL {
         return Err(ModelError::Solid(SolidError::Degenerate {
@@ -1919,8 +2293,7 @@ fn evaluate_sdis(
 ) -> Result<Option<EvaluatedCylinder>, ModelError> {
     let distance = required_number(disc, "PDIS", env, "catalogue SDIS")?;
     let diameter = required_number(disc, "PDIA", env, "catalogue SDIS")?.abs();
-    let axis = catalogue_axis(member, component, &required_words(disc, "PAXI")?)?
-        .ok_or_else(|| missing(disc, "PAXI", "catalogue SDIS axis"))?;
+    let axis = catalogue_axis_or_fail(member, component, disc, "PAXI", "catalogue SDIS axis")?;
     let direction = unit_axis(&axis, "catalogue SDIS axis")?;
     disc_at(
         axis.origin + direction * distance,
@@ -1950,8 +2323,7 @@ fn evaluate_sdsh(
     let mut height = required_number(dish, "PHEI", env, "catalogue SDSH")?;
     let diameter = required_number(dish, "PDIA", env, "catalogue SDSH")?.abs();
     let knuckle_switch = number_or_zero_when_unset(dish, "PRAD", env, "catalogue SDSH")?.abs();
-    let axis = catalogue_axis(member, component, &required_words(dish, "PAXI")?)?
-        .ok_or_else(|| missing(dish, "PAXI", "catalogue SDSH axis"))?;
+    let axis = catalogue_axis_or_fail(member, component, dish, "PAXI", "catalogue SDSH axis")?;
     let mut direction = unit_axis(&axis, "catalogue SDSH axis")?;
     if height <= 0.0 {
         height = -height;
@@ -1963,8 +2335,10 @@ fn evaluate_sdsh(
         return Ok(None);
     }
     if height <= 0.0 {
-        return Ok(disc_at(base_centre, direction, diameter, "catalogue SDSH axis")?
-            .map(EvaluatedSdsh::Disc));
+        return Ok(
+            disc_at(base_centre, direction, diameter, "catalogue SDSH axis")?
+                .map(EvaluatedSdsh::Disc),
+        );
     }
     let rotation = orimat(direction).ok_or_else(|| {
         ModelError::Solid(SolidError::Degenerate {
@@ -2029,8 +2403,7 @@ fn evaluate_sslc(
         number_or_zero_when_unset(cylinder, "PXBS", env, "catalogue SSLC")?,
         number_or_zero_when_unset(cylinder, "PYBS", env, "catalogue SSLC")?,
     ];
-    let axis = catalogue_axis(member, component, &required_words(cylinder, "PAXI")?)?
-        .ok_or_else(|| missing(cylinder, "PAXI", "catalogue SSLC axis"))?;
+    let axis = catalogue_axis_or_fail(member, component, cylinder, "PAXI", "catalogue SSLC axis")?;
     let mut direction = unit_axis(&axis, "catalogue SSLC axis")?;
     if height <= 0.0 {
         height = -height;
@@ -2043,7 +2416,10 @@ fn evaluate_sslc(
     if height < HEIGHT_TOL_MM || diameter < HEIGHT_TOL_MM {
         return Ok(None);
     }
-    if shear_deg.iter().any(|angle| !angle.is_finite() || angle.abs() >= 90.0) {
+    if shear_deg
+        .iter()
+        .any(|angle| !angle.is_finite() || angle.abs() >= 90.0)
+    {
         return Ok(None);
     }
     let rotation = csrtax(direction).ok_or_else(|| {
@@ -2084,10 +2460,8 @@ fn evaluate_catalogue_torus(
     env: &DbElementParamEnv,
     noun: &str,
 ) -> Result<Option<EvaluatedTorus>, ModelError> {
-    let pa = catalogue_axis(member, component, &required_words(torus, "PAAX")?)?
-        .ok_or_else(|| missing(torus, "PAAX", "catalogue torus axis"))?;
-    let pb = catalogue_axis(member, component, &required_words(torus, "PBAX")?)?
-        .ok_or_else(|| missing(torus, "PBAX", "catalogue torus axis"))?;
+    let pa = catalogue_axis_or_fail(member, component, torus, "PAAX", "catalogue torus axis")?;
+    let pb = catalogue_axis_or_fail(member, component, torus, "PBAX", "catalogue torus axis")?;
     let (rotation, centre, centre_radius, angle_deg) = torus_frame(pa, pb)?;
     if angle_deg.abs() <= 1.0e-6 {
         return Ok(None);
@@ -2123,14 +2497,9 @@ fn evaluate_catalogue_torus(
         inner,
         outer,
         angle_deg,
-        // The shared torus builders rotate Manifold's native Z-axis revolve
-        // into their public local-Y convention. Core's catalogue frame is the
-        // native primitive frame, so cancel that adapter before placement.
-        // AMS7997 24381/104871 otherwise lands one centre-radius away from its
-        // RVM CircularTorus despite having identical radius and sweep.
-        transform: DMat4::from_translation(centre)
-            * DMat4::from_mat3(rotation)
-            * DMat4::from_rotation_x(-std::f64::consts::FRAC_PI_2),
+        // The shared builders retain libgm's native XY-sweep/Z-height frame,
+        // which is the same frame completed by PAAX/PBAX here.
+        transform: DMat4::from_translation(centre) * DMat4::from_mat3(rotation),
     }))
 }
 
@@ -2187,6 +2556,152 @@ fn torus_frame(
     ))
 }
 
+/// 一把刀的键。SBOX 与 SREV 的刀集共用这一份——键的口径分叉，缓存就会把
+/// 两把不同的刀当同一把用。
+fn catalogue_cut_keys(
+    cutters: &[EvaluatedCatalogueCut],
+) -> Result<Vec<CatalogueCutKey>, ModelError> {
+    cutters
+        .iter()
+        .map(|cutter| match cutter {
+            EvaluatedCatalogueCut::Cylinder(cutter) => Ok(CatalogueCutKey::Cylinder {
+                diameter_bits: finite_bits(cutter.diameter, "catalogue NSCY diameter")?,
+                height_bits: finite_bits(cutter.height, "catalogue NSCY height")?,
+                transform_bits: matrix_bits(cutter.transform),
+            }),
+            EvaluatedCatalogueCut::Box {
+                dimensions,
+                transform,
+            } => Ok(CatalogueCutKey::Box {
+                dimension_bits: [
+                    finite_bits(dimensions.x, "catalogue NSBO dimensions")?,
+                    finite_bits(dimensions.y, "catalogue NSBO dimensions")?,
+                    finite_bits(dimensions.z, "catalogue NSBO dimensions")?,
+                ],
+                transform_bits: matrix_bits(*transform),
+            }),
+            EvaluatedCatalogueCut::Pyramid {
+                parameters,
+                transform,
+            } => Ok(CatalogueCutKey::Pyramid {
+                parameter_bits: parameters.map(|value| value.to_bits()),
+                transform_bits: matrix_bits(*transform),
+            }),
+            EvaluatedCatalogueCut::Extrusion {
+                rings,
+                height,
+                transform,
+            } => Ok(CatalogueCutKey::Extrusion {
+                profile: sext_mesh_key(rings, *height)?,
+                transform_bits: matrix_bits(*transform),
+            }),
+            EvaluatedCatalogueCut::Snout {
+                parameters,
+                transform,
+            } => Ok(CatalogueCutKey::Snout {
+                parameter_bits: parameters.map(|value| value.to_bits()),
+                transform_bits: matrix_bits(*transform),
+            }),
+            EvaluatedCatalogueCut::Torus {
+                kind,
+                inner,
+                outer,
+                angle_deg,
+                transform,
+            } => Ok(match kind {
+                EvaluatedTorusKind::Circular => CatalogueCutKey::CircularTorus {
+                    inner_bits: finite_bits(*inner, "catalogue NSCT inner radius")?,
+                    outer_bits: finite_bits(*outer, "catalogue NSCT outer radius")?,
+                    angle_bits: finite_bits(*angle_deg, "catalogue NSCT angle")?,
+                    transform_bits: matrix_bits(*transform),
+                },
+                EvaluatedTorusKind::Rectangular { height } => CatalogueCutKey::RectangularTorus {
+                    inner_bits: finite_bits(*inner, "catalogue NSRT inner radius")?,
+                    outer_bits: finite_bits(*outer, "catalogue NSRT outer radius")?,
+                    height_bits: finite_bits(*height, "catalogue NSRT height")?,
+                    angle_bits: finite_bits(*angle_deg, "catalogue NSRT angle")?,
+                    transform_bits: matrix_bits(*transform),
+                },
+            }),
+            EvaluatedCatalogueCut::Revolution {
+                rings,
+                angle_deg,
+                transform,
+            } => {
+                let (ring_lengths, coordinate_bits) =
+                    profile_key_bits(rings, "catalogue NSRE profile")?;
+                Ok(CatalogueCutKey::Revolution {
+                    angle_bits: finite_bits(*angle_deg, "catalogue NSRE angle")?,
+                    ring_lengths,
+                    coordinate_bits,
+                    transform_bits: matrix_bits(*transform),
+                })
+            }
+        })
+        .collect()
+}
+
+/// 一把刀的局部实体与放置。SBOX 与 SREV 的扣减共用这一份建刀路。
+fn cutter_solid(cutter: &EvaluatedCatalogueCut) -> Result<(Manifold, DMat4), ModelError> {
+    Ok(match cutter {
+        EvaluatedCatalogueCut::Cylinder(cutter) => (
+            csg_cylinder_solid(cutter.diameter, cutter.height)?,
+            cutter.transform,
+        ),
+        EvaluatedCatalogueCut::Box {
+            dimensions,
+            transform,
+        } => (
+            box_solid(dimensions.x, dimensions.y, dimensions.z)?,
+            *transform,
+        ),
+        EvaluatedCatalogueCut::Pyramid {
+            parameters,
+            transform,
+        } => {
+            let [xbot, ybot, xtop, ytop, height, xoff, yoff] = *parameters;
+            (
+                pyramid_solid(xbot, ybot, xtop, ytop, height, xoff, yoff)?,
+                *transform,
+            )
+        }
+        // NSEX 与正体 SEXT 同一条建体路（extrude_rings），无过切。
+        EvaluatedCatalogueCut::Extrusion {
+            rings,
+            height,
+            transform,
+        } => (extrude_rings(rings.clone(), *height)?, *transform),
+        EvaluatedCatalogueCut::Snout {
+            parameters,
+            transform,
+        } => {
+            let [dbot, dtop, height, xoff, yoff] = *parameters;
+            (snout_solid(dbot, dtop, height, xoff, yoff)?, *transform)
+        }
+        EvaluatedCatalogueCut::Torus {
+            kind,
+            inner,
+            outer,
+            angle_deg,
+            transform,
+        } => (
+            match kind {
+                EvaluatedTorusKind::Circular => circ_torus_solid(*inner, *outer, *angle_deg)?,
+                EvaluatedTorusKind::Rectangular { height } => {
+                    rect_torus_solid(*inner, *outer, *height, *angle_deg)?
+                }
+            },
+            *transform,
+        ),
+        // NSRE 与正体 SREV 同一条建体路（revolve_rings），无过切（§2.3）。
+        EvaluatedCatalogueCut::Revolution {
+            rings,
+            angle_deg,
+            transform,
+        } => (revolve_rings(rings.clone(), *angle_deg)?, *transform),
+    })
+}
+
 fn build_sbox(evaluated: &EvaluatedSbox) -> Result<Manifold, ModelError> {
     let mut body = box_solid(
         evaluated.dimensions.x,
@@ -2194,35 +2709,7 @@ fn build_sbox(evaluated: &EvaluatedSbox) -> Result<Manifold, ModelError> {
         evaluated.dimensions.z,
     )?;
     for cutter in &evaluated.cutters {
-        let (local, transform) = match cutter {
-            EvaluatedCatalogueCut::Cylinder(cutter) => (
-                csg_cylinder_solid(cutter.diameter, cutter.height)?,
-                cutter.transform,
-            ),
-            EvaluatedCatalogueCut::Box {
-                dimensions,
-                transform,
-            } => (
-                box_solid(dimensions.x, dimensions.y, dimensions.z)?,
-                *transform,
-            ),
-            EvaluatedCatalogueCut::Pyramid {
-                parameters,
-                transform,
-            } => {
-                let [xbot, ybot, xtop, ytop, height, xoff, yoff] = *parameters;
-                (
-                    pyramid_solid(xbot, ybot, xtop, ytop, height, xoff, yoff)?,
-                    *transform,
-                )
-            }
-            // NSEX 与正体 SEXT 同一条建体路（extrude_rings），无过切。
-            EvaluatedCatalogueCut::Extrusion {
-                rings,
-                height,
-                transform,
-            } => (extrude_rings(rings.clone(), *height)?, *transform),
-        };
+        let (local, transform) = cutter_solid(cutter)?;
         body = &body - &placed(&local, transform);
     }
     if body.is_empty() || body.num_tri() == 0 {
@@ -2233,16 +2720,39 @@ fn build_sbox(evaluated: &EvaluatedSbox) -> Result<Manifold, ModelError> {
     Ok(body)
 }
 
-fn sext_mesh_key(rings: &[Vec<[f64; 2]>], height: f64) -> Result<SextMeshKey, ModelError> {
+/// SREV 局部网格：轮廓绕局部 X 回转，再扣掉名下的成员级刀集。
+fn build_srev(evaluated: &EvaluatedSrev) -> Result<Manifold, ModelError> {
+    let mut body = revolve_rings(evaluated.rings.clone(), evaluated.angle_deg)?;
+    for cutter in &evaluated.cutters {
+        let (local, transform) = cutter_solid(cutter)?;
+        body = &body - &placed(&local, transform);
+    }
+    if body.is_empty() || body.num_tri() == 0 {
+        return Err(ModelError::Solid(SolidError::EmptyManifold {
+            what: "catalogue SREV after negatives",
+        }));
+    }
+    Ok(body)
+}
+
+fn profile_key_bits(
+    rings: &[Vec<[f64; 2]>],
+    what: &'static str,
+) -> Result<(Vec<usize>, Vec<u64>), ModelError> {
     let mut ring_lengths = Vec::with_capacity(rings.len());
     let mut coordinate_bits = Vec::new();
     for ring in rings {
         ring_lengths.push(ring.len());
         for point in ring {
-            coordinate_bits.push(finite_bits(point[0], "catalogue SEXT profile")?);
-            coordinate_bits.push(finite_bits(point[1], "catalogue SEXT profile")?);
+            coordinate_bits.push(finite_bits(point[0], what)?);
+            coordinate_bits.push(finite_bits(point[1], what)?);
         }
     }
+    Ok((ring_lengths, coordinate_bits))
+}
+
+fn sext_mesh_key(rings: &[Vec<[f64; 2]>], height: f64) -> Result<SextMeshKey, ModelError> {
+    let (ring_lengths, coordinate_bits) = profile_key_bits(rings, "catalogue SEXT profile")?;
     Ok(SextMeshKey {
         tessellation_version: SEXT_TESSELLATION_VERSION,
         height_bits: finite_bits(height, "catalogue SEXT height")?,
@@ -2335,9 +2845,52 @@ fn missing(element: &DbElement, name: &'static str, what: &'static str) -> Model
     }
 }
 
+/// Resolve a primitive's axis attribute (`PAXI` / `PAAX` / `PBAX` / `PCAX`) or
+/// fail the primitive Core-style with the cause spelled out.
+///
+/// An absent attribute is still [`missing`]. An attribute that is there but
+/// does not resolve used to be reported the same way, which lumped together
+/// "`Pn` is not in the PTSE" (E3D draws nothing either; ams7997 has 124 such
+/// LCYL/SCTO in the HJXSWA valves) with "the point exists but its PTCD/PX did
+/// not evaluate" (our decoder's gap). The account needs the two apart.
+fn catalogue_axis_or_fail(
+    member: &DbElement,
+    component: &DbElement,
+    primitive: &DbElement,
+    name: &'static str,
+    what: &'static str,
+) -> Result<CatalogueAxis, ModelError> {
+    resolve_catalogue_axis(member, component, &required_words(primitive, name)?)?.map_err(
+        |failure| ModelError::UnresolvedAttribute {
+            refno: primitive.refno().to_string(),
+            noun: primitive.element_type().unwrap_or_else(|_| "?".into()),
+            name,
+            what,
+            detail: failure.to_string(),
+        },
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn atta_clfl_cylinder_keeps_the_catalogue_axis() {
+        assert!(!uses_clfl_centreline_frame("ATTA", "SCYL", true));
+        assert!(uses_clfl_centreline_frame("HELE", "SCYL", true));
+        assert!(uses_clfl_centreline_frame("PCLA", "SCYL", true));
+        assert!(!uses_clfl_centreline_frame("HELE", "LCYL", true));
+        assert!(!uses_clfl_centreline_frame("HELE", "SCYL", false));
+        assert_eq!(
+            atta_clfl_roll("ATTA", "SCYL", true, Some(&[-90.0, 0.0, 90.0])),
+            Some(std::f64::consts::FRAC_PI_2)
+        );
+        assert_eq!(
+            atta_clfl_roll("ATTA", "SCYL", true, Some(&[90.0, 0.0, 90.0])),
+            Some(-std::f64::consts::FRAC_PI_2)
+        );
+    }
 
     #[test]
     fn negative_lsnout_span_reparameterizes_ends_without_reversing_paax() {
@@ -2433,6 +2986,8 @@ mod tests {
                 evaluated_nlcy: value,
                 source_nsex: value,
                 evaluated_nsex: value,
+                source_srev: value,
+                evaluated_srev: value,
                 source_scyl: value,
                 evaluated_scyl: value,
                 source_lcyl: value,
@@ -2554,7 +3109,10 @@ mod tests {
         assert_ne!(knuckled.mesh_key, spherical.mesh_key);
         assert!(a.volume() > b.volume(), "折边碟比同底同高的球形碟装得更多");
         let bb = a.bounding_box().unwrap();
-        assert!(bb.min()[2].abs() < 1e-9 && (bb.max()[2] - 200.0).abs() < 1e-9, "底在 z=0、顶在 z=h");
+        assert!(
+            bb.min()[2].abs() < 1e-9 && (bb.max()[2] - 200.0).abs() < 1e-9,
+            "底在 z=0、顶在 z=h"
+        );
     }
 
     #[test]
@@ -2583,6 +3141,135 @@ mod tests {
         let centre = axis * (distance + height * 0.5);
         assert_eq!(centre, DVec3::ZERO);
         assert_eq!(height + NSCY_AXIAL_OVERCUT_MM, 5.01);
+    }
+
+    /// QSSREV（`0x103B81CC`）的扫角归一逐条钉死：`|PANG| < 0.001` 缺省整圈，
+    /// 超 ±360 带符号钳住，其余原样。与设计侧 REV「≈360 一律当整圈」是两条
+    /// 规则——目录臂对 -359.9 这类近整圈保留部分扫角，互相抄就是静默错。
+    #[test]
+    fn qssrev_defaults_a_silent_sweep_to_a_full_circle_and_clamps_to_signed_360() {
+        assert_eq!(qssrev_angle(0.0), 360.0);
+        assert_eq!(qssrev_angle(0.0005), 360.0);
+        assert_eq!(qssrev_angle(-0.0005), 360.0);
+        assert_eq!(qssrev_angle(400.0), 360.0);
+        assert_eq!(qssrev_angle(-400.0), -360.0);
+        assert_eq!(qssrev_angle(90.0), 90.0);
+        assert_eq!(qssrev_angle(-90.0), -90.0);
+        assert_eq!(qssrev_angle(-359.9), -359.9, "近整圈的部分扫角要保留");
+    }
+
+    fn srev_fixture(
+        rings: Vec<Vec<[f64; 2]>>,
+        angle_deg: f64,
+        cutters: Vec<EvaluatedCatalogueCut>,
+    ) -> EvaluatedSrev {
+        EvaluatedSrev {
+            mesh_key: CatalogueMeshKey::Srev(SrevMeshKey {
+                tessellation_version: SREV_TESSELLATION_VERSION,
+                angle_bits: 0,
+                ring_lengths: Vec::new(),
+                coordinate_bits: Vec::new(),
+                cutters: Vec::new(),
+            }),
+            rings,
+            angle_deg,
+            cutters,
+            transform: DMat4::IDENTITY,
+            diagnostics: Vec::new(),
+        }
+    }
+
+    /// 整圈 SREV 的矩形轮廓必须与矩形环面**逐位**同体积——回转轴、段数口径
+    /// 与设计侧回转是同一条路，这条一红不是轴摆错就是段数分了岔。
+    #[test]
+    fn a_full_circle_srev_matches_the_rectangular_torus_bit_for_bit() {
+        // 轮廓在 (轴向 X, 半径 Y)：半径 300..500、轴向 ±100。
+        let ring = vec![
+            [-100.0, 300.0],
+            [100.0, 300.0],
+            [100.0, 500.0],
+            [-100.0, 500.0],
+        ];
+        let body = build_srev(&srev_fixture(vec![ring], 360.0, Vec::new())).unwrap();
+        let torus = rect_torus_solid(300.0, 500.0, 200.0, 360.0).unwrap();
+        assert!(
+            (body.volume() - torus.volume()).abs() / torus.volume() < 1e-12,
+            "SREV {} vs 环面 {}",
+            body.volume(),
+            torus.volume()
+        );
+    }
+
+    /// NSRE 刀从 SREV 上扣掉的必须恰好是它自己的回转体：两边同走
+    /// `revolve_rings`、同一外半径定段数，径向 400..500 的整圈刀贯穿轴向后，
+    /// 剩下的体积就是两只回转体的解析差。
+    #[test]
+    fn an_nsre_cutter_removes_exactly_its_own_revolution() {
+        let outer = vec![
+            [-100.0, 300.0],
+            [100.0, 300.0],
+            [100.0, 500.0],
+            [-100.0, 500.0],
+        ];
+        // 刀在轴向两头各探出 10mm（无过切，探出来自刀自己的轮廓）。
+        let groove = vec![
+            [-110.0, 400.0],
+            [110.0, 400.0],
+            [110.0, 500.0],
+            [-110.0, 500.0],
+        ];
+        let body = build_srev(&srev_fixture(
+            vec![outer.clone()],
+            360.0,
+            vec![EvaluatedCatalogueCut::Revolution {
+                rings: vec![groove],
+                angle_deg: 360.0,
+                transform: DMat4::IDENTITY,
+            }],
+        ))
+        .unwrap();
+        let full = revolve_rings(vec![outer], 360.0).unwrap();
+        let removed = revolve_rings(
+            vec![vec![
+                [-100.0, 400.0],
+                [100.0, 400.0],
+                [100.0, 500.0],
+                [-100.0, 500.0],
+            ]],
+            360.0,
+        )
+        .unwrap();
+        let expected = full.volume() - removed.volume();
+        assert!(
+            (body.volume() - expected).abs() / expected < 1e-9,
+            "体积 {} 应为 {expected}",
+            body.volume()
+        );
+        assert_eq!(body.genus(), 1, "扣掉外圈后仍是一只环");
+    }
+
+    /// 刀参数到建体的逐位映射：Snout 与 Torus 两种新刀的参数顺序一旦写错，
+    /// 体积立刻对不上（其余账面全绿），所以在这里钉死。
+    #[test]
+    fn snout_and_torus_cutters_map_their_parameters_straight_through() {
+        let (snout, _) = cutter_solid(&EvaluatedCatalogueCut::Snout {
+            parameters: [100.0, 50.0, 80.0, 12.0, 0.0],
+            transform: DMat4::IDENTITY,
+        })
+        .unwrap();
+        let direct = snout_solid(100.0, 50.0, 80.0, 12.0, 0.0).unwrap();
+        assert_eq!(snout.volume().to_bits(), direct.volume().to_bits());
+
+        let (torus, _) = cutter_solid(&EvaluatedCatalogueCut::Torus {
+            kind: EvaluatedTorusKind::Rectangular { height: 40.0 },
+            inner: 200.0,
+            outer: 260.0,
+            angle_deg: 90.0,
+            transform: DMat4::IDENTITY,
+        })
+        .unwrap();
+        let direct = rect_torus_solid(200.0, 260.0, 40.0, 90.0).unwrap();
+        assert_eq!(torus.volume().to_bits(), direct.volume().to_bits());
     }
 
     /// NSEX 从 SBOX 上扣掉的必须恰好是「轮廓 × 高度」的棱柱——CRCATI 里

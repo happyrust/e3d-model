@@ -87,6 +87,22 @@ enum Shape {
     /// 靠 `cable_tray_branch_of` 的整条分支级联才够得着。目录库不进门这条腿无从验证：
     /// 托盘几何全走目录链（SPRE→TABITE→PRTREF→GPART→CATR→SCOM→GMRE）。
     CableTray,
+    /// 管路分支：BRAN 名下的路由成员（ELBO/BEND/FTUB/…目录实体）或隐式管身
+    /// （[`GeometryId::ImpliedTube`]）在两端全量里变了。
+    ///
+    /// 它压的是派生腿：成员一动，`nearest_unit` 既要把成员本身收进 `regenerate`，
+    /// 又要把它所在的 BRAN 收进 `regenerate_derived`（`mark_derived`），执行侧
+    /// `route_tubes_of` 整链重算、base 端 `route_slot_keys` 的旧键做差发 Remove。
+    /// 目录库不进门时这条腿在门上没有判别力（管身外径要目录、成员实体要目录，
+    /// 两端全量一根都建不出，`implied_tubes.built = 0`）。
+    Branch,
+    /// 整条 BRAN 被删：容器自己是 Deleted 候选，target 端没有它。
+    ///
+    /// 派生腿的另一半：`execute_plan` 对 target 端已不存在的容器不重算链
+    /// （`derived_retired`），而是把 base 端 `route_slot_keys` 收来的全部旧管身键发
+    /// Remove；名下的路由成员各自出 Remove。漏掉这一半的表现是「BRAN 删了，管身还挂在
+    /// 模型集里」——Remove 是幂等的「确保不存在」，多发无害，少发就是陈旧几何。
+    BranchRemoved,
 }
 
 impl Shape {
@@ -98,6 +114,8 @@ impl Shape {
             Shape::Cascaded => "级联",
             Shape::Reparented => "改挂",
             Shape::CableTray => "桥架",
+            Shape::Branch => "管路分支",
+            Shape::BranchRemoved => "删管路分支",
         }
     }
 }
@@ -125,6 +143,8 @@ struct Sample {
 /// | `ams1112_0001` | 721→722 | 7824 → 4476 | 删除：3348 件正体一次性没掉，删除要跟着上卷 |
 /// | `ams8000_0001` | 195→196 | 153 → 153 | 级联：索引里只有一个 EQUI 候选，变的却是它子树里的后代 |
 /// | `ams251142_0001` | 2→9 | 0 → 全库（CTRAY 128） | 桥架：托盘经目录链成件，每只都得自己成为单元（目录库进门后才看得见；样本随 `cable_tray` 模块入库，见 `SAMPLES` 末尾） |
+/// | `ams8000_0001` | 249→250 | 管身 336 → 336（内容变） | 管路分支：成员挪位，BRAN 进派生集、隐式管身按两站点键做差重算（目录库进门后才看得见） |
+/// | `ams7997_0001` | 11→12 | 删 BRAN `24381/322`（3 成员、4 管身槽位） | 删管路分支：容器退休，base 端旧管身键全部 Remove（目录库进门后才看得见） |
 ///
 /// 件数是 DESI-only 时代的读数；目录库进门（2026-09-02）后裁判还看见路由成员与管身，
 /// ams7999 是 13283 件、ams8000 是 2853 件，窗口两端的差集不变。
@@ -176,7 +196,57 @@ const SAMPLES: &[Sample] = &[
     // 样本本身随 `cable_tray` 模块（桥架件放置 + CTRAY 目录臂）一起入库：没有它，
     // 两端全量都建不出托盘，这道门会按「空窗口」当场喊。届时只需加：
     // `Sample { db: "ams251142_0001", base: 2, target: 9, shape: Shape::CableTray }`。
+    Sample {
+        db: "ams251142_0001",
+        base: 2,
+        target: 9,
+        shape: Shape::CableTray,
+    },
+    // 管路库 ams8000：`PROBE_NOUN=TUBI probe_chain_for_model_change` 在 266 环的链上二分，
+    // 隐式管身（336 根）在 249→250 这一环变了内容、根数没变——某个 BRAN 里的构件挪了位 /
+    // 换了件，管身跟着重算。链上 134/200/233/242/246/248 各环的管身也都与链头不同，
+    // 管路窗口并不稀缺，这里只钉一个。目录库不进门时两端一根管都建不出，这条门开不了。
+    Sample {
+        db: "ams8000_0001",
+        base: 249,
+        target: 250,
+        shape: Shape::Branch,
+    },
+    // 支撑 / 通风库 ams7997：`probe_chain_for_branch_delete` 在 106 环的链上找到 6 个删 BRAN 的环，
+    // 取最小的一个——11→12 删掉 BRAN `24381/322`（名下 3 个路由成员，base 端 4 个管身槽位），
+    // 全窗只有 5 个候选。它压的是容器**退休**：target 端没有这条 BRAN，增量不重算链，
+    // 把 base 端收来的 4 把旧键全部发 Remove。ams7999 86→87（删 `24383/101244`，20 个成员）
+    // 是同类里更大的一个，需要时可加。
+    Sample {
+        db: "ams7997_0001",
+        base: 11,
+        target: 12,
+        shape: Shape::BranchRemoved,
+    },
 ];
+
+/// `GATE_ONLY=ams8000_0001:249:250`（逗号分隔多个）只跑点名的窗口：带目录库的裁判一窗
+/// 要几十秒，调一个新样本时不必把六窗全跑一遍。不设就全跑。
+fn gate_only() -> Option<Vec<(String, u32, u32)>> {
+    let raw = std::env::var("GATE_ONLY").ok()?;
+    let picked: Vec<(String, u32, u32)> = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(|item| {
+            let mut parts = item.split(':');
+            let db = parts.next().expect("库名").to_string();
+            let base = parts.next().expect("base").parse().expect("base 是数字");
+            let target = parts
+                .next()
+                .expect("target")
+                .parse()
+                .expect("target 是数字");
+            (db, base, target)
+        })
+        .collect();
+    Some(picked)
+}
 
 /// 缺语料默认**红**，不再静默变绿。
 ///
@@ -425,6 +495,7 @@ fn an_increment_says_what_two_full_generations_say() {
         return;
     }
     let attlib = shared_attlib();
+    let only = gate_only();
     for sample in SAMPLES {
         let Sample {
             db: name,
@@ -432,6 +503,13 @@ fn an_increment_says_what_two_full_generations_say() {
             target: target_sesno,
             shape,
         } = *sample;
+        if let Some(only) = &only
+            && !only.iter().any(|(db, base, target)| {
+                db == name && *base == base_sesno && *target == target_sesno
+            })
+        {
+            continue;
+        }
         let db_file = Path::new(AMS_DIR).join(name);
 
         // 裁判：两端各全量生成一遍，逐件比不变量。
@@ -471,11 +549,46 @@ fn an_increment_says_what_two_full_generations_say() {
                 .count()
                 + vanished.iter().filter(|id| is_tray(id, &base_full)).count()
         };
+        // 管路分支：数的是隐式管身与路由成员（BRAN 名下能变的两种几何）。
+        let route_touched = || {
+            let is_route = |id: &GeometryId, judge: &Snapshot| {
+                matches!(id, GeometryId::ImpliedTube { .. })
+                    || judge.get(id).is_some_and(|inv| {
+                        matches!(
+                            e3d_model::category::classify(&inv.noun),
+                            e3d_model::category::Category::RouteMember
+                        )
+                    })
+            };
+            appeared
+                .iter()
+                .chain(changed.iter())
+                .filter(|id| is_route(id, &target_full))
+                .count()
+                + vanished
+                    .iter()
+                    .filter(|id| is_route(id, &base_full))
+                    .count()
+        };
         let exercised = match shape {
             Shape::Inserted => appeared.len(),
             Shape::Modified | Shape::Cascaded | Shape::Reparented => changed.len(),
             Shape::Deleted => vanished.len(),
             Shape::CableTray => trays_touched(),
+            Shape::Branch => route_touched(),
+            // 删分支：裁判必须看见路由几何**消失**，不是变了。
+            Shape::BranchRemoved => vanished
+                .iter()
+                .filter(|id| {
+                    matches!(id, GeometryId::ImpliedTube { .. })
+                        || base_full.get(*id).is_some_and(|inv| {
+                            matches!(
+                                e3d_model::category::classify(&inv.noun),
+                                e3d_model::category::Category::RouteMember
+                            )
+                        })
+                })
+                .count(),
         };
         assert!(
             exercised > 0,
@@ -646,6 +759,74 @@ fn an_increment_says_what_two_full_generations_say() {
             assert!(tray_upserts > 0, "{name}: 一只托盘都没重建");
         }
 
+        // 管路样本要再证派生腿真的动了：BRAN 进了 `regenerate_derived`（而不是靠成员
+        // 重建顺带），执行侧真重算了整链，且管身的 upsert/remove 都走 `ImpliedTube` 键。
+        if shape == Shape::Branch {
+            let tube_upserts = upserts
+                .keys()
+                .filter(|id| matches!(id, GeometryId::ImpliedTube { .. }))
+                .count();
+            let tube_removals = removals
+                .iter()
+                .filter(|id| matches!(id, GeometryId::ImpliedTube { .. }))
+                .count();
+            println!(
+                "  管路：裁判 {} 件路由几何变了；派生容器计划 {} / 重算 {} / 退休 {} / 失败 {}；\
+                 管身 upsert {tube_upserts} remove {tube_removals}",
+                route_touched(),
+                outcome.report.derived_to_regenerate,
+                outcome.report.derived_regenerated,
+                outcome.report.derived_retired,
+                outcome.report.derived_failed.len(),
+            );
+            assert!(
+                outcome.report.derived_to_regenerate > 0,
+                "{name}: 管身变了，却没有一个 BRAN 进 regenerate_derived——派生腿没接上"
+            );
+            assert!(
+                outcome.report.derived_failed.is_empty(),
+                "{name}: 派生容器重算失败：{:?}",
+                outcome.report.derived_failed
+            );
+            assert!(
+                tube_upserts > 0,
+                "{name}: 一根管身都没 upsert，裁判却说管身变了"
+            );
+        }
+
+        // 删分支样本：容器必须走**退休**（不重算、清旧键），旧管身键必须真的被 Remove。
+        if shape == Shape::BranchRemoved {
+            let tube_removals = removals
+                .iter()
+                .filter(|id| matches!(id, GeometryId::ImpliedTube { .. }))
+                .count();
+            let vanished_tubes = vanished
+                .iter()
+                .filter(|id| matches!(id, GeometryId::ImpliedTube { .. }))
+                .count();
+            println!(
+                "  删分支：裁判 {exercised} 件路由几何消失（其中管身 {vanished_tubes}）；\
+                 派生容器计划 {} / 重算 {} / 退休 {} / 失败 {}；管身 Remove {tube_removals}",
+                outcome.report.derived_to_regenerate,
+                outcome.report.derived_regenerated,
+                outcome.report.derived_retired,
+                outcome.report.derived_failed.len(),
+            );
+            assert!(
+                outcome.report.derived_retired > 0,
+                "{name}: 整条 BRAN 删了，却没有一个容器走退休——旧管身键谁来清？"
+            );
+            assert!(
+                outcome.report.derived_failed.is_empty(),
+                "{name}: 派生容器处理失败：{:?}",
+                outcome.report.derived_failed
+            );
+            assert!(
+                tube_removals >= vanished_tubes,
+                "{name}: 裁判说 {vanished_tubes} 根管身没了，增量只 Remove 了 {tube_removals} 根"
+            );
+        }
+
         // 改挂样本要再证一件事：L2 真的看见了这条改挂，而且它正是老判据看不见的
         // 那个形状——两端 `(POS, ORI)` 逐项相等。
         //
@@ -684,6 +865,60 @@ fn an_increment_says_what_two_full_generations_say() {
             );
         }
     }
+}
+
+/// **改挂的祖先闭包必须两端都收。** `BOX 24384/25802` 在 ams8000 45→46 从 EQUI
+/// `24384/25801` 挪到 EQUI `24384/25803`：新属主链只有 target 图认得，旧属主链只有
+/// base 图认得，而消费端（gen-model 凭证前移）问的正是「旧根 25801 这一窗有没有被
+/// 波及」——旧根的 manifest 里还留着这件 BOX，不重算就是残留（ADR-009 两端根都重算）。
+///
+/// 这条门钉的是 [`UpdatePlan::affected_closure`] 的一个真实漏洞：同一件元素先走 target
+/// 链再走 base 链时，「已在闭包里就早退」的捷径把 base 链整条吞掉，旧属主永远收不进来。
+/// 捷径只能在**同一端图**内成立——两端图上同一个 refno 的祖先不是同一条链。
+#[test]
+fn the_affected_closure_reaches_both_owners_of_a_reparented_element() {
+    if !fixtures_present() {
+        return;
+    }
+    let attlib = shared_attlib();
+    let db_file = Path::new(AMS_DIR).join("ams8000_0001");
+    let (base_sesno, target_sesno) = (45, 46);
+    let base = open_pinned(&attlib, &db_file, base_sesno);
+    let target = open_pinned(&attlib, &db_file, target_sesno);
+    let window = collect_window(&db_file, base_sesno, target_sesno).expect("收集 45→46");
+    let plan = plan_update(&base, &target, &window);
+
+    let moved = RefNo::new(24384, 25802);
+    let old_owner = RefNo::new(24384, 25801);
+    let new_owner = RefNo::new(24384, 25803);
+    let reparented: Vec<RefNo> = plan
+        .ledger
+        .of_kind(ChangeKind::Reparented)
+        .map(|entry| entry.refno)
+        .collect();
+    assert_eq!(
+        reparented,
+        vec![moved],
+        "窗口前提：这一环恰好改挂了那件 BOX"
+    );
+
+    let closure = plan.affected_closure(&base, &target);
+    assert!(closure.is_complete(), "{:?}", closure.unreadable);
+    assert!(closure.contains(moved), "改挂元素自己必须在闭包里");
+    assert!(
+        closure.contains(new_owner),
+        "新属主 {new_owner}（target 链）必须在闭包里"
+    );
+    assert!(
+        closure.contains(old_owner),
+        "旧属主 {old_owner}（base 链）必须在闭包里——它的 manifest 里还留着搬走的那件"
+    );
+    let touched = plan.touches_roots(&[old_owner, new_owner], &base, &target);
+    assert_eq!(
+        touched,
+        BTreeSet::from([key(old_owner), key(new_owner)]),
+        "两端根都要被判成受波及"
+    );
 }
 
 /// 在一个库的会话链上**二分**出「模型真的变过」的那一环。
@@ -852,6 +1087,108 @@ fn probe_chain_for_cascade() {
         }
         println!(
             "  → {hits} 个级联窗口，{skipped} 环因候选超上限跳过，耗时 {:.1}s",
+            started.elapsed().as_secs_f64(),
+        );
+    }
+}
+
+/// 在会话链上逐环找**删整条 BRAN**的窗口：路由容器自己是 Deleted 候选。
+///
+/// 这条压的是派生腿的「退休」半边：容器在 target 端没了，`execute_plan` 不重算链，
+/// 而是把 base 端 `route_slot_keys` 收来的全部旧管身键发 Remove（`derived_retired`）。
+/// 与 [`probe_chain_for_cascade`] 同款只做 `collect_window` + `plan_update`，一件几何都
+/// 不建；命中就把被删容器、它名下被删的路由成员数、以及计划里的 `derived` 数打出来。
+/// `PROBE_CONTAINER_NOUN`（默认 `BRAN`）可换成 LUG/SUPC/TRUNNI。
+#[test]
+#[ignore = "逐环扫会话链，找删整条路由容器（BRAN）的窗口；run with --ignored --nocapture"]
+fn probe_chain_for_branch_delete() {
+    if !fixtures_present() {
+        return;
+    }
+    let attlib = shared_attlib();
+    let cap = probe_max_candidates();
+    let container_noun = std::env::var("PROBE_CONTAINER_NOUN")
+        .ok()
+        .map(|noun| noun.trim().to_ascii_uppercase())
+        .filter(|noun| !noun.is_empty())
+        .unwrap_or_else(|| "BRAN".to_string());
+    for name in probe_libs() {
+        let db_file = Path::new(AMS_DIR).join(&name);
+        let Some(chain) = chain_of(&db_file) else {
+            println!("\n=== {name}: 开不了库，或链上只有一个会话 ===");
+            continue;
+        };
+        println!(
+            "\n=== {name}: 链 {} 环（新 → 旧），找被删的 {container_noun}，候选上限 {cap} ===",
+            chain.len()
+        );
+        let started = Instant::now();
+        let (mut hits, mut skipped) = (0usize, 0usize);
+        for pair in chain.windows(2) {
+            let (target_sesno, base_sesno) = (pair[0], pair[1]);
+            let window = match collect_window(&db_file, base_sesno, target_sesno) {
+                Ok(window) => window,
+                Err(error) => {
+                    println!("  {base_sesno}→{target_sesno}: 收窗口失败：{error}");
+                    continue;
+                }
+            };
+            // 删容器一定带 Deleted 候选；没有删除的环直接跳过，连 DbSet 都不开。
+            if window.diff.tally.deleted == 0 {
+                continue;
+            }
+            if window.diff.changes.len() > cap {
+                skipped += 1;
+                continue;
+            }
+            let base_set = open_pinned(&attlib, &db_file, base_sesno);
+            let target_set = open_pinned(&attlib, &db_file, target_sesno);
+            let plan = plan_update(&base_set, &target_set, &window);
+            let deleted_containers: Vec<RefNo> = plan
+                .ledger
+                .of_kind(ChangeKind::Deleted)
+                .filter(|entry| entry.noun == container_noun)
+                .map(|entry| entry.refno)
+                .collect();
+            if deleted_containers.is_empty() {
+                continue;
+            }
+            hits += 1;
+            let deleted_members = plan
+                .ledger
+                .of_kind(ChangeKind::Deleted)
+                .filter(|entry| {
+                    matches!(
+                        e3d_model::category::classify(&entry.noun),
+                        e3d_model::category::Category::RouteMember
+                    )
+                })
+                .count();
+            // 被删容器在 base 端有几根管身槽位——退休时要清的旧键数。
+            let stale_slots: usize = deleted_containers
+                .iter()
+                .map(|container| {
+                    e3d_model::route::route_slot_keys(&base_set.element(*container))
+                        .map(|slots| slots.len())
+                        .unwrap_or(0)
+                })
+                .sum();
+            println!(
+                "  ★ {base_sesno}→{target_sesno}: 删 {container_noun} {}（{}），名下被删路由成员 {deleted_members}，\
+                 base 端旧管身槽位 {stale_slots}，计划 derived={} remove={} | {}",
+                deleted_containers.len(),
+                deleted_containers
+                    .iter()
+                    .map(RefNo::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                plan.regenerate_derived.len(),
+                plan.remove.len(),
+                plan.report.totals_line(),
+            );
+        }
+        println!(
+            "  → {hits} 个删{container_noun}窗口，{skipped} 环因候选超上限跳过，耗时 {:.1}s",
             started.elapsed().as_secs_f64(),
         );
     }
@@ -1038,6 +1375,24 @@ const PROBE_LIBS: &[&str] = &["ams8000_0001", "ams6890_0001", "ams1112_0001"];
 
 fn probe_libs() -> Vec<String> {
     match std::env::var("PROBE_LIBS") {
+        // `PROBE_LIBS=ALL_DESI`：ams000 里扫到的全部 DESI 主文件（按库号），给要普查全语料的探针。
+        Ok(list) if list.trim().eq_ignore_ascii_case("ALL_DESI") => {
+            let ams_dir = Path::new(AMS_DIR);
+            let mut names: Vec<String> = shared_resolver()
+                .discovered()
+                .iter()
+                .filter(|db| db.db_type == "DESI" && db.ext_no <= 1)
+                .filter(|db| db.file.parent() == Some(ams_dir))
+                .filter_map(|db| {
+                    db.file
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                })
+                .collect();
+            names.sort();
+            names.dedup();
+            names
+        }
         Ok(list) => list
             .split(',')
             .map(str::trim)
