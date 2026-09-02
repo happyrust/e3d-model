@@ -188,6 +188,13 @@ CRCATI 的圆柱/锥族负臂（SCON/NSCO、SCYL/NSCY、LSNO/NLSN、LCYL/NLCY）
     通用 6 / HVAC 6 / PIPE·NOZZ·STRU·CABLE 0，`E3D_REPRE_LEVEL{,_PIPE,_HVAC,_NOZZ,_STRU,_CABLE}` 覆盖），目录成员按成员学科、
     设计负体按宿主学科取级。ams7997 前后：`display-filtered by leve` 5564 → 5570（多滤的 6 件 = 那两片 LSNO × 3 只 COUP），
     3074 个配对成员逐 kind 对不上 1 → **0**，AABB exact 1940 → 1941、0 件变差；`cargo test --lib` 189 绿。
+  - **`REPRE OBST` 开关**（同晚，`373de59`，`catalogue::repre_obst_on`，`E3D_REPRE_OBST=on|off` 缺省 off）：DR3DWA / DRWANT 的
+    公式是 `in_level ∧ (OBST>0 ∧ obst_on ∨ TUFL ∧ tube_on ∨ CLFL ∧ cl_on)`，原来「`TUFL=false` 一律不画」只是 `obst off` 的特例。
+    GUI / addin 基线 `C-IY-1R330-B` 是 obst on 导的：每只 FTUBE 多一只 `OBST=1/TUFL=false` 的净空盒（`SBOX 13244/51888`，
+    `PZLE = ATTRIB RPRO CLEA` = 100，坐在托盘顶上）——那 35 对 AABB 差的 100 mm 全是它，不是 `ATTRIB RPRO` 求不出（DTSE 18 行
+    e3d-io 都读得到，盖板 `COVR × B` 因 `DESP[3]=0` 为零高与 E3D 一致）。`E3D_REPRE_LEVEL_PIPE=6 E3D_REPRE_OBST=on` 下
+    FTUB **17/17 exact**；剩 12 只 BEND（RVM 导成 3 个 FacetGroup 的那些，9 个的 6 只全 exact）局部 x 差 ±100，是
+    `/ACP1000-TBR-100` 8 只 SEXT 在非直角弯头上的求值 / 摆放，另立一臂。ams7997 缺省口径不变。
   - **轴失败的报错文案拆开**（2026-09-02 下午，随 `2be5ed3` 落地；验证在 `evidence/20260902-g01c-tufl-residual/` §3.1）：
     原来 `Pn` 解不出一律报「缺属性 PAXI」，现在 `catalogue_point::CatalogueAxisFailure` 分「P5 不在 PTSET（有 P1 P2 …）」
     （E3D 也不画）、「P7（PTCA）方向解不出」、「位置求不出」等六句写进 local failure 的 detail，`缺属性` 只留给属性真不在的
