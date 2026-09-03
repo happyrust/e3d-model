@@ -28,14 +28,17 @@
 
 use std::f64::consts::{FRAC_PI_2, PI};
 
+use glam::{DMat3, DMat4, DVec3};
+use manifold_csg::Manifold;
+
 use e3d_io::db_element::{DbElement, DbElementError};
 use e3d_io::db_param_env::DbElementParamEnv;
 use e3d_io::record::descriptor::DescriptorValue;
 
 use crate::catalogue::{display_filtered, optional_number, repre_level_of, required_number};
-use crate::discretise::FilletVertex;
+use crate::discretise::{FilletVertex, flatten_ring};
 use crate::elmodl::ModelError;
-use crate::solid::cylinder_segments;
+use crate::solid::{cylinder_segments, extrude_rings};
 
 /// 缺省对齐线：`JUSL` 未设时 E3D 用中性轴。
 pub const DEFAULT_JUSTIFICATION_LINE: &str = "NA";
@@ -115,6 +118,9 @@ pub struct SectionProfile {
     pub justification_line: String,
     /// 对齐线是否真在 `PSTR` 里找到；没找到按 (0, 0) 对齐并记 note。
     pub justification_found: bool,
+    /// 对齐线自己的 `PLAX` 角（弧度，`GTPLAX`）；`pllib/ROTNAX@0x103A3398` 再把截面标架转
+    /// `90° − 它`。`NA` 的 `[1, 2]` 给 90°，转 0。找不到对齐线按 90°。
+    pub justification_line_angle: f64,
     /// 用的表现级（`LEVEL STRU`）。
     pub level: u32,
     pub notes: Vec<String>,
@@ -227,14 +233,14 @@ pub fn evaluate_section_profile(
         .map(|text| text.trim().to_ascii_uppercase())
         .filter(|text| !text.is_empty())
         .unwrap_or_else(|| DEFAULT_JUSTIFICATION_LINE.to_string());
-    let (justification, justification_found) =
-        justification_offset(&catalogue.sprf, &justification_line, &env, &mut notes)?;
+    let jusl = justification_offset(&catalogue.sprf, &justification_line, &env, &mut notes)?;
 
     Ok(SectionProfile {
         members,
-        justification,
+        justification: jusl.offset,
         justification_line,
-        justification_found,
+        justification_found: jusl.found,
+        justification_line_angle: jusl.plax_angle,
         level,
         notes,
     })
@@ -502,19 +508,31 @@ pub fn annulus_rings(
     vec![ring]
 }
 
-/// `SPRF.PSTR`（PTSS）里 `PKEY == jusl` 的 `PLIN` 的 `(PX, PY)`；找不到按原点并记 note。
+struct Justification {
+    offset: [f64; 2],
+    found: bool,
+    plax_angle: f64,
+}
+
+/// `SPRF.PSTR`（PTSS）里 `PKEY == jusl` 的 `PLIN` 的 `(PX, PY)` 与 `PLAX` 角；找不到按原点、90°
+/// 并记 note。
 fn justification_offset(
     sprf: &DbElement,
     jusl: &str,
     env: &DbElementParamEnv,
     notes: &mut Vec<String>,
-) -> Result<([f64; 2], bool), SectionError> {
+) -> Result<Justification, SectionError> {
+    let absent = Justification {
+        offset: [0.0, 0.0],
+        found: false,
+        plax_angle: FRAC_PI_2,
+    };
     let Some(ptss) = sprf.get_element("PSTR")? else {
         notes.push(format!(
             "SPRF {} 无 PSTR，JUSL {jusl} 按原点对齐",
             sprf.refno()
         ));
-        return Ok(([0.0, 0.0], false));
+        return Ok(absent);
     };
     for pline in ptss.members()? {
         if !pline.element_type()?.eq_ignore_ascii_case("PLIN") {
@@ -530,15 +548,141 @@ fn justification_offset(
         if key != jusl {
             continue;
         }
+        // p-line 自己的 PX/PY 就是位置；PLAX 给方向（ROTNAX 用），不动位置。
         let frame = member_frame(&pline, env)?;
-        // p-line 自己的 PX/PY 就是位置；PLAX 只给方向，不动位置。
-        return Ok((frame.offset, true));
+        return Ok(Justification {
+            offset: frame.offset,
+            found: true,
+            plax_angle: frame.rotation + FRAC_PI_2,
+        });
     }
     notes.push(format!(
         "PSTR {} 里没有 PKEY={jusl} 的 PLIN，按原点对齐",
         ptss.refno()
     ));
-    Ok(([0.0, 0.0], false))
+    Ok(absent)
+}
+
+// ---------------------------------------------------------------------------
+// 第 2 步：直段放置与建体（不切端面）。
+// ---------------------------------------------------------------------------
+
+/// SCTN 在属主坐标系里的标架与长度（`dbboxlib/GTSTDT@0x1036CEC4` 里 `pllib/PICAOR` +
+/// `pllib/PICOPS` 那一半）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SectionPlacement {
+    /// 截面平面 → 属主坐标系：列 X/Y 是截面的 x/y，列 Z 是 `POSS → POSE`，平移是 `POSS`。
+    /// 截面点先减 [`SectionProfile::justification`] 再乘它（`GCORG3` 的 `POSS − R·(PX, PY, 0)`）。
+    pub local: DMat4,
+    /// `|POSE − POSS|`，沿局部 +Z 挤出。
+    pub length: f64,
+    /// 读到的 `BANG`（度）。
+    pub bang_deg: f64,
+}
+
+/// 标架的推法（`pllib/GTDIRS@0x103A4060` → `mathlib/ORNMAT` → `pllib/GSCORI@0x103A306C` → `ROTNAX`）：
+///
+/// - Z = `unit(POSE − POSS)`；参考向量 r = +Z（轴码 3），杆件竖直（水平分量 ≤ 5e-6）时 r = +Y（轴码 2）。
+/// - `ORNMAT(Z, r)`：X = `unit(r × Z)`，Y = `Z × X`。水平杆的 Y 朝上。
+/// - 再绕 Z 转 `BANG`（`ROTMAT` 是逆时针正角），再转 `90° − JUSL p-line 的 PLAX 角`（`ROTNAX`）。
+///
+/// `DRNS/DRNE` 只进两端切平面，本步不用。
+pub fn section_placement(
+    design: &DbElement,
+    profile: &SectionProfile,
+) -> Result<SectionPlacement, SectionError> {
+    let noun = design.element_type()?;
+    let position = |name: &'static str| -> Result<DVec3, SectionError> {
+        design
+            .get_position(name)?
+            .map(DVec3::from_array)
+            .ok_or_else(|| SectionError::Degenerate {
+                refno: design.refno().to_string(),
+                noun: noun.clone(),
+                detail: format!("缺 {name}"),
+            })
+    };
+    let poss = position("POSS")?;
+    let pose = position("POSE")?;
+    let axis = pose - poss;
+    let length = axis.length();
+    if !(length > 0.001) || !length.is_finite() {
+        return Err(SectionError::Degenerate {
+            refno: design.refno().to_string(),
+            noun,
+            detail: format!("POSS→POSE 长 {length} mm（GTDIRS 的 0.001 门）"),
+        });
+    }
+    let z = axis / length;
+    let reference = if z.x.hypot(z.y) > 5e-6 {
+        DVec3::Z
+    } else {
+        DVec3::Y
+    };
+    let x = reference.cross(z).normalize();
+    let y = z.cross(x);
+    let bang_deg = design.get_double("BANG")?.unwrap_or(0.0);
+    let spin = bang_deg.to_radians() + (FRAC_PI_2 - profile.justification_line_angle);
+    let rotation = DMat3::from_cols(x, y, z) * DMat3::from_rotation_z(spin);
+    Ok(SectionPlacement {
+        local: DMat4::from_translation(poss) * DMat4::from_mat3(rotation),
+        length,
+        bang_deg,
+    })
+}
+
+/// 直段实体（局部系 = [`SectionPlacement::local`] 的截面平面，沿 +Z 挤 `length`）：
+/// 每个 GMSS 成员各挤一根后并集（`DB_Sctn` 的截面子树也是逐成员建再组合）。
+///
+/// 环先减 JUSL 偏移再按 [`crate::discretise::flatten_ring`] 折线化（PRAD 倒圆在这里变成弧点）。
+/// 全部成员都折不出环时交 `Ok(None)`，由调用方按「E3D 同样只画中心线」记账。
+pub fn section_local_solid(
+    profile: &SectionProfile,
+    placement: &SectionPlacement,
+    notes: &mut Vec<String>,
+) -> Result<Option<Manifold>, SectionError> {
+    let [jx, jy] = profile.justification;
+    let mut solids: Vec<Manifold> = Vec::new();
+    for member in &profile.members {
+        let mut rings = Vec::new();
+        for (index, ring) in member.rings.iter().enumerate() {
+            match flatten_ring(ring) {
+                Some((points, _)) => rings.push(
+                    points
+                        .into_iter()
+                        .map(|[x, y]| [x - jx, y - jy])
+                        .collect::<Vec<_>>(),
+                ),
+                None if index == 0 => {
+                    notes.push(format!(
+                        "截面成员 {} 外环折线化后退化，跳过该成员",
+                        member.member_refno
+                    ));
+                    rings.clear();
+                    break;
+                }
+                None => notes.push(format!(
+                    "截面成员 {} 孔环 {index} 折线化后退化，丢弃",
+                    member.member_refno
+                )),
+            }
+        }
+        if rings.is_empty() {
+            continue;
+        }
+        match extrude_rings(rings, placement.length) {
+            Ok(solid) => solids.push(solid),
+            Err(error) => notes.push(format!(
+                "截面成员 {} 挤出失败：{error}",
+                member.member_refno
+            )),
+        }
+    }
+    let mut iter = solids.into_iter();
+    let Some(first) = iter.next() else {
+        return Ok(None);
+    };
+    Ok(Some(iter.fold(first, |acc, next| acc.union(&next))))
 }
 
 #[cfg(test)]

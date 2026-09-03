@@ -777,7 +777,7 @@ pub fn model_catalogue_member_with_cache(
             "SREV" => {
                 cache.stats.source_srev += 1;
                 match evaluate_srev(member, &component, &primitive, &env, cache) {
-                    Ok(mut evaluated) => {
+                    Ok(Some(mut evaluated)) => {
                         cache.stats.evaluated_srev += 1;
                         catalogue_negatives += evaluated.cutters.len();
                         diagnostics.append(&mut evaluated.diagnostics);
@@ -810,6 +810,7 @@ pub fn model_catalogue_member_with_cache(
                             .solid;
                         solids.push(placed(local_mesh, evaluated.transform));
                     }
+                    Ok(None) => degenerate_other += 1,
                     Err(error) => diagnostics.push(format!(
                         "catalogue primitive {} skipped by Core-style local failure: {error}",
                         primitive.refno()
@@ -1569,16 +1570,29 @@ fn evaluate_nlpy(
 /// SEXT / SREV 共用的轮廓采集（Core 侧同为环组装配器 `sub_10715170`）：
 /// `SLOO → SVER` 的 PX/PY/PRAD，圆角折线化后成环组。两臂各写一份就是两份
 /// 轮廓规则，键与几何都会静默分叉——纪律同 `route.rs` 只许有一份串接规则。
+///
+/// # 零面积剖面回 `Ok(None)`，不是错
+///
+/// 第一环（外边界，`rings[0]`，见 [`crate::solid::extrude_rings`]）求值后塌成线或点
+/// ——`flatten_ring` 焊掉重点后不足 3 点——是目录把这个图元**参数化关掉**了：ams8000 托盘
+/// 的 `*-GS-COVER-*` 盖板 PX/PY 乘 `ATTRIB RPRO COVR`（无盖时 0）、零角 BEND 的走线段
+/// PX ∝ `TAN(ATTRIB ANGL / 2)`，全库 124 条环 PRAD 全 0，圆角从未参与
+/// （`evidence/20260902-bran-audit-baseline-4c4ec21/collapsed-profiles-ams8000.txt`）。
+/// Core 对零面积剖面不出体，与零高 SEXT / 零径 LCYL 同一档「零高或退化」。孔环塌掉只是
+/// 一个零面积的孔，丢掉照建（`gm_AddCurve` 对它也无事可做）。**一个 SLOO 都没有**才是数据错，
+/// 仍报 [`ModelError::OuterRingCollapsed`]。
 fn profile_rings(
     primitive: &DbElement,
     env: &DbElementParamEnv,
     noun: &'static str,
-) -> Result<Vec<Vec<[f64; 2]>>, ModelError> {
+) -> Result<Option<Vec<Vec<[f64; 2]>>>, ModelError> {
     let mut rings = Vec::new();
+    let mut loops = 0usize;
     for loop_element in primitive.members()? {
         if !loop_element.element_type()?.eq_ignore_ascii_case("SLOO") {
             continue;
         }
+        loops += 1;
         let mut vertices = Vec::new();
         for vertex in loop_element.members()? {
             if !vertex.element_type()?.eq_ignore_ascii_case("SVER") {
@@ -1591,20 +1605,22 @@ fn profile_rings(
             });
         }
         let Some((ring, _notes)) = flatten_ring(&vertices) else {
-            return Err(ModelError::OuterRingCollapsed {
-                refno: primitive.refno().to_string(),
-                noun: noun.into(),
-            });
+            if rings.is_empty() {
+                // 外环零面积：整个图元不出体。
+                return Ok(None);
+            }
+            // 孔环零面积：没有孔可扣，丢掉。
+            continue;
         };
         rings.push(ring);
     }
-    if rings.is_empty() {
+    if loops == 0 {
         return Err(ModelError::OuterRingCollapsed {
             refno: primitive.refno().to_string(),
             noun: noun.into(),
         });
     }
-    Ok(rings)
+    Ok(Some(rings))
 }
 
 /// PAAX/PBAX → 右手标架（Core `ORTHOG`：保第一根轴，第二根由补全的第三根反求）。
@@ -1640,7 +1656,9 @@ fn evaluate_sext(
         return Ok(None);
     }
 
-    let rings = profile_rings(sext, env, "SEXT")?;
+    let Some(rings) = profile_rings(sext, env, "SEXT")? else {
+        return Ok(None);
+    };
     let (pa, rotation) = profile_frame(member, component, sext, "catalogue SEXT axes")?;
     let raw_position = DVec3::new(
         required_number(sext, "PX", env, "catalogue SEXT position")?,
@@ -1691,9 +1709,11 @@ fn evaluate_srev(
     srev: &DbElement,
     env: &DbElementParamEnv,
     cache: &mut CatalogueMeshCache,
-) -> Result<EvaluatedSrev, ModelError> {
+) -> Result<Option<EvaluatedSrev>, ModelError> {
     let angle_deg = qssrev_angle(required_number(srev, "PANG", env, "catalogue SREV")?);
-    let rings = profile_rings(srev, env, "SREV")?;
+    let Some(rings) = profile_rings(srev, env, "SREV")? else {
+        return Ok(None);
+    };
     let (pa, rotation) = profile_frame(member, component, srev, "catalogue SREV axes")?;
     let raw_position = DVec3::new(
         required_number(srev, "PX", env, "catalogue SREV position")?,
@@ -1839,10 +1859,13 @@ fn evaluate_srev(
             }
         } else if noun.eq_ignore_ascii_case("NSRE") {
             // 嵌套负回转只取轮廓 + 扫角 + 放置（与 NSEX 刀不再下钻负体同款）。
-            let nested = (|| -> Result<EvaluatedCatalogueCut, ModelError> {
+            let nested = (|| -> Result<Option<EvaluatedCatalogueCut>, ModelError> {
                 let angle_deg =
                     qssrev_angle(required_number(&child, "PANG", env, "catalogue NSRE")?);
-                let rings = profile_rings(&child, env, "NSRE")?;
+                // 零面积剖面的刀没有东西可扣，跳过（同 NSEX 的 `Ok(None)`）。
+                let Some(rings) = profile_rings(&child, env, "NSRE")? else {
+                    return Ok(None);
+                };
                 let (child_pa, child_rotation) =
                     profile_frame(member, component, &child, "catalogue NSRE axes")?;
                 let child_position = DVec3::new(
@@ -1852,14 +1875,15 @@ fn evaluate_srev(
                 );
                 let child_transform = DMat4::from_translation(child_pa.origin + child_position)
                     * DMat4::from_mat3(child_rotation);
-                Ok(EvaluatedCatalogueCut::Revolution {
+                Ok(Some(EvaluatedCatalogueCut::Revolution {
                     rings,
                     angle_deg,
                     transform: rebase * child_transform,
-                })
+                }))
             })();
             match nested {
-                Ok(cutter) => cutters.push(cutter),
+                Ok(Some(cutter)) => cutters.push(cutter),
+                Ok(None) => {}
                 Err(error) => diagnostics.push(format!(
                     "catalogue negative {} skipped by Core-style local failure: {error}",
                     child.refno()
@@ -1882,14 +1906,14 @@ fn evaluate_srev(
         coordinate_bits,
         cutters: cutter_keys,
     });
-    Ok(EvaluatedSrev {
+    Ok(Some(EvaluatedSrev {
         mesh_key,
         rings,
         angle_deg,
         cutters,
         transform,
         diagnostics,
-    })
+    }))
 }
 
 fn evaluate_sbox(

@@ -138,6 +138,33 @@ impl ElementDiff {
                 .any(|name| PLACEMENT_ATTRIBUTES.contains(&name.as_str()))
     }
 
+    /// 这一窗**只**动了摆放：[`PLACEMENT_ATTRIBUTES`] 里至少一项变了，除此之外一个字没动。
+    ///
+    /// 与 [`Self::placement_input_changed`] 是两个问题，别混用：那个问「我一动，子树里
+    /// 的世界矩阵变不变」，是**级联**判据，改挂 / 类型变 / `opaque` 都算变，答案越宽越
+    /// 安全；这个问「除了摆放，还动了别的没有」，是**便宜路径**判据（不重生成网格，只
+    /// 刷子树的世界矩阵），答案越窄越安全——多算一个，就是把一次真正的几何变更降级成
+    /// 了刷矩阵，网格从此停在旧形状上，而且没有任何东西会报。
+    ///
+    /// 四项排除缺一不可：类型变了两个 noun 的属性表根本不是同一张（那时 `attributes`
+    /// 恒空，不排除就正好被误判成「只动了摆放」）；改挂换掉的是右乘的那条链，够不着的
+    /// 还有房间归属与生成分派；成员表变了是结构变更（core 把它表达成属主身上的
+    /// `ATT_MEMB`）；`opaque` 是「记录变了但指不出哪一项」，指不出就不能说只动了摆放。
+    ///
+    /// `attributes` 为空时返回 `false`：那是「没动」（[`Self::is_unchanged`]），不是
+    /// 「只动了摆放」——便宜路径也是活，没变的元素不该被排进去。
+    pub fn is_placement_only(&self) -> bool {
+        self.type_changed.is_none()
+            && self.owner_changed.is_none()
+            && self.members.is_none()
+            && !self.opaque
+            && !self.attributes.is_empty()
+            && self
+                .attributes
+                .iter()
+                .all(|name| PLACEMENT_ATTRIBUTES.contains(&name.as_str()))
+    }
+
     fn unchanged(refno: RefNo, noun: String) -> Self {
         Self {
             refno: refno.to_string(),
@@ -455,6 +482,59 @@ mod tests {
             assert!(
                 diff_with(vec![name]).placement_input_changed(),
                 "{name} 是矩阵输入，必须触发级联"
+            );
+        }
+    }
+
+    /// 便宜路径判据（spec 035 D7-B）比级联判据窄，两者的差就是「不能只刷矩阵」的那些。
+    ///
+    /// 这条钉的是**窄**的那一半：级联判据答对了只是多算，便宜路径答错了是网格停在旧
+    /// 形状上还不报错，所以这里每一项排除都单独摆出来，少一项就有一类几何变更被降级。
+    #[test]
+    fn the_cheap_path_is_narrower_than_the_cascade_trigger() {
+        for name in PLACEMENT_ATTRIBUTES {
+            assert!(diff_with(vec![name]).is_placement_only(), "{name} 只动摆放");
+        }
+        assert!(diff_with(vec!["POS", "ORI"]).is_placement_only());
+
+        // 摆放之外还动了别的：网格要重算，不能只刷矩阵。
+        assert!(!diff_with(vec!["POS", "DIAM"]).is_placement_only());
+        assert!(!diff_with(vec!["DIAM"]).is_placement_only());
+
+        // 「什么都没动」不是「只动了摆放」——便宜路径也是活，别排空转的。
+        assert!(diff_with(vec![]).is_unchanged());
+        assert!(!diff_with(vec![]).is_placement_only());
+
+        // 四项排除，逐条：类型变了 attributes 恒空，不排除正好被误判成只动摆放。
+        for excluded in [
+            ElementDiff {
+                type_changed: Some(("BOX".into(), "CYLI".into())),
+                ..diff_with(vec![])
+            },
+            ElementDiff {
+                owner_changed: Some((Some("1/7".into()), Some("1/8".into()))),
+                ..diff_with(vec!["POS"])
+            },
+            ElementDiff {
+                members: Some(MemberDelta {
+                    added: vec!["1/9".into()],
+                    removed: Vec::new(),
+                    reordered: false,
+                }),
+                ..diff_with(vec!["POS"])
+            },
+            ElementDiff {
+                opaque: true,
+                ..diff_with(vec!["POS"])
+            },
+        ] {
+            assert!(
+                excluded.placement_input_changed(),
+                "这些都该级联: {excluded:?}"
+            );
+            assert!(
+                !excluded.is_placement_only(),
+                "但都不许走便宜路径: {excluded:?}"
             );
         }
     }

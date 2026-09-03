@@ -148,6 +148,13 @@ pub struct ChangeTally {
 pub struct ChangeLedger {
     entries: Vec<LedgerEntry>,
     unchanged: usize,
+    /// 这一窗只动了摆放的元素（[`ElementDiff::is_placement_only`]）。
+    ///
+    /// 单独存一份，而不是让消费者拿账本条目回头猜：`ElementDiff` 在 [`Self::record`]
+    /// 之后就没人持有了，`AttributesModified` 那条的 `detail` 是给人读的散文，不是
+    /// 判据。消费者（gen-model 的窗口规划器）手里只有账本，而「只动了摆放」是便宜
+    /// 路径（刷世界矩阵、不重生成网格）唯一的入口条件。
+    placement_only: BTreeSet<(u32, u32)>,
     /// 建账时记下的属主，`finish` 用它算祖先抢占。
     owners: Vec<(usize, RefNo)>,
     /// 每个候选在 L4 的去向，按登记顺序；重复登记由 [`Self::accounts_for`] 判出来。
