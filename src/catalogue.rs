@@ -1315,9 +1315,13 @@ fn model_hvac_rectangular_basic(
     let mut built = instantiate_box(dimensions.x, dimensions.y, dimensions.z, true)?;
     let centre = DMat4::from_translation(centre_offset);
     built.solid = placed(&built.solid, centre);
-    if let Some(instance) = &mut built.instance {
-        instance.local_transform = centre * instance.local_transform;
-    }
+    // 这一族不发实例身份：内核对这只箱子施加了**两次**局部变换（缩放，然后
+    // 居中平移），而能记进 `PrimitiveInstance` 的只有一个矩阵。把两者折叠成
+    // `centre * scale` 记下来，数学上等价、位模式上不等价——消费方拿它从规范
+    // 网格重算世界顶点时，会与内核差几个 ULP（ams7997 实测 STRT 366 件 +
+    // BRCO 89 件，最大 1.5e-11 mm；`examples/instance_transform_bits.rs` 里
+    // 「折叠」那一列就是这个现象）。宁可少一族实例化，不要一个记错的变换。
+    built.instance = None;
     let world = world_matrix(member)?;
     let noun = member.element_type()?;
     Ok(Some(CatalogueMemberBuild {
