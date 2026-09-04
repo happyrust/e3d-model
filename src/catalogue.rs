@@ -1232,17 +1232,22 @@ pub fn model_catalogue_member_with_cache(
         }));
     }
     let world = world_matrix(member)?;
-    // E3D keeps a CLFL display program as independent RVM components even when
-    // its primitives overlap.  Require the whole visible program to be CLFL so
-    // a mixed catalogue solid does not accidentally bypass its boolean compose.
-    let preserve_components = saw_display_primitive && all_display_primitives_are_clfl;
+    let noun = member.element_type()?;
+    // E3D keeps CLFL display programs as independent RVM components even when
+    // their primitives overlap. NPPIPE ATTA is noun-wide rather than flag-wide:
+    // RVM 24383/73951 and /73956 retain both visible cylinders, while the binary
+    // catalogue flags do not expose a stable CLFL discriminator for this pair.
+    let preserve_components = preserves_catalogue_components(
+        &noun,
+        saw_display_primitive,
+        all_display_primitives_are_clfl,
+    );
     let parts = preserve_components.then(|| {
         solids
             .iter()
             .map(|solid| placed(solid, world))
             .collect::<Vec<_>>()
     });
-    let noun = member.element_type()?;
     let notes = vec![format!(
         "catalogue assembly: built={} sext_total={} sext_zero_height={} degenerate_other={} failed={} centre_lines={} display_filtered={} duplicate_placements={} component={}",
         solids.len(),
@@ -1275,6 +1280,16 @@ pub fn model_catalogue_member_with_cache(
         }),
         diagnostics,
     })
+}
+
+fn preserves_catalogue_components(
+    member_noun: &str,
+    saw_display_primitive: bool,
+    all_display_primitives_are_clfl: bool,
+) -> bool {
+    saw_display_primitive
+        && (all_display_primitives_are_clfl
+            || member_noun.eq_ignore_ascii_case("ATTA"))
 }
 
 /// Core expands HVAC `DESP` through xrules before catalogue evaluation. The
@@ -3056,6 +3071,14 @@ mod tests {
             atta_clfl_roll("ATTA", "SCYL", true, Some(&[90.0, 0.0, 90.0])),
             Some(-std::f64::consts::FRAC_PI_2)
         );
+    }
+
+    #[test]
+    fn atta_mixed_clfl_program_keeps_independent_components() {
+        assert!(preserves_catalogue_components("ATTA", true, false));
+        assert!(!preserves_catalogue_components("VALV", true, false));
+        assert!(preserves_catalogue_components("HELE", true, true));
+        assert!(!preserves_catalogue_components("ATTA", false, true));
     }
 
     #[test]
