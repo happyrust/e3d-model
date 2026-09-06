@@ -101,14 +101,20 @@ fn parse_args() -> anyhow::Result<Args> {
     })
 }
 
-/// 解析图元自校的容差（mm）。两侧都是 f64 算到底，只差 RVM 那一次 f32 落盘，
-/// 坐标量级 ~2e4 时是 ~2e-3 mm；给 0.01 留一个数量级。
+/// 解析图元自校的容差（mm）：**只管 f32 落盘那一档**。两侧都是 f64 算到底，
+/// 只差 RVM 那一次 f32 落盘，坐标量级 ~2e4 时是 ~2e-3 mm；给 0.01 留一个数量级。
+///
+/// 网格与解析面之间的离散化缺口不在这个数里——它按每块网格自己的段数算，见
+/// [`e3d_model::rvm_write::chord_sagitta_mm`]。这条线 2026-09-06 之前是拿 0.01 mm
+/// 一把尺量到底的，于是 `1RCV0101` 的 14 根真圆柱（8/16/28 段，弦高 0.06–0.35 mm）
+/// 全被当成「约定写错了」退回面片：几何没错，只是文件大了，圆柱也没写成圆柱。
 const ANALYTIC_TOL_MM: f64 = 0.01;
 
 /// 一个组件 → 一条 RVM 记录。能认成解析图元就写解析图元，否则写 FacetGroup。
 ///
 /// **自校闸**：解析候选算出来的世界 AABB 必须与这块网格实算的一致，否则退回面片。
 /// 规范体约定写错了照样能写出一份解析得开但几何是错的 RVM，这种错不该靠人眼发现。
+/// 「一致」的尺度由候选自己给（[`e3d_model::rvm_write::AnalyticCandidate::matches_mesh_aabb`]）。
 #[allow(clippy::too_many_arguments)]
 fn rvm_component_geometry(
     world: &glam::DMat4,
@@ -130,24 +136,18 @@ fn rvm_component_geometry(
             e3d_model::rvm_write::box_geometry(world, lengths, centre)
         })
         .or_else(|| {
-            let (radius, height, axis, centre) =
+            let cylinder =
                 e3d_model::rvm_write::cylinder_from_local_mesh(local_vertices, triangles)?;
-            Some(e3d_model::rvm_write::cylinder_geometry(
-                world, radius, height, axis, centre,
-            ))
+            Some(e3d_model::rvm_write::cylinder_geometry(world, &cylinder))
         })
         .or_else(|| {
             let torus = e3d_model::rvm_write::torus_from_local_mesh(local_vertices, triangles)?;
             Some(e3d_model::rvm_write::circular_torus_geometry(world, &torus))
         });
     let had_candidate = candidate.is_some();
-    let accepted = candidate.filter(|geometry| match geometry.world_aabb_mm() {
-        Some(a) => (0..3).all(|axis| {
-            (a[axis] - world_lo[axis]).abs() <= ANALYTIC_TOL_MM
-                && (a[axis + 3] - world_hi[axis]).abs() <= ANALYTIC_TOL_MM
-        }),
-        None => false,
-    });
+    let accepted = candidate
+        .filter(|candidate| candidate.matches_mesh_aabb(world_lo, world_hi, ANALYTIC_TOL_MM))
+        .map(|candidate| candidate.geometry);
     match &accepted {
         Some(_) => *analytic_count += 1,
         None if had_candidate => *rejected_count += 1,
@@ -694,13 +694,8 @@ fn main() -> anyhow::Result<()> {
                     .and_then(|instance| {
                         e3d_model::rvm_write::analytic_from_instance(&generated.world, instance)
                     })
-                    .filter(|geometry| match geometry.world_aabb_mm() {
-                        Some(a) => (0..3).all(|axis| {
-                            (a[axis] - lo[axis]).abs() <= ANALYTIC_TOL_MM
-                                && (a[axis + 3] - hi[axis]).abs() <= ANALYTIC_TOL_MM
-                        }),
-                        None => false,
-                    });
+                    .filter(|candidate| candidate.matches_mesh_aabb(lo, hi, ANALYTIC_TOL_MM))
+                    .map(|candidate| candidate.geometry);
 
                 let mut geometries = Vec::with_capacity(component_meshes.len());
                 if let Some(geometry) = whole_element_instance {

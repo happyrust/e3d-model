@@ -264,6 +264,54 @@ fn face_normal(v: &[[f64; 3]; 3]) -> [f64; 3] {
     }
 }
 
+/// 弦高（mm）：半径 `radius` 的圆弧被一段圆心角 `step` 的弦切下来时，弧与弦之间的最大缺口
+/// `r·(1 − cos(step/2))`。整圆 n 等分就是熟悉的 `r·(1 − cos(π/n))`。
+///
+/// 这是解析图元与它的离散网格之间**唯一**的系统差：网格顶点落在曲面上、边落在曲面内侧，
+/// 所以任何方向上网格的支撑值都比解析面小，最多小这一个弦高。
+///
+/// 为什么不拿定段数的那个容差当常数（[`crate::solid::cylinder_segments`] 是按弦高 ≤ 0.5 mm
+/// 定段数的）：同一份网格可能出自不同口径——曲面 0.5 mm、轮廓
+/// [`PROFILE_CHORD_TOL_MM`](crate::discretise::PROFILE_CHORD_TOL_MM)、SNOU 5 mm，
+/// 而且 45° 封顶一生效实际弦高就比容差小一截。从网格自己的段数回算，不用猜它出自哪一档。
+pub fn chord_sagitta_mm(radius: f64, step: f64) -> f64 {
+    if !(radius > 0.0) || !(step > 0.0) || !step.is_finite() {
+        return 0.0;
+    }
+    radius * (1.0 - (step / 2.0).cos())
+}
+
+/// 一个解析候选：图元记录，加上它与源网格之间允许的离散化缺口。
+///
+/// 两样东西必须一起走。网格是内接的、解析面是外接的，「这个候选是不是这块网格」
+/// 就得按 [`chord_sagitta_mm`] 的尺度问；把图元单独递出去，下一个人只能拿个常数去卡它
+/// ——那正是 2026-09-06 之前 `1RCV0101` 的 14 根真圆柱被退回面片的原因：它们的
+/// AABB 差 0.06–0.35 mm，全都是自己那 8/16/28 段离散该有的弦高，闸门却按 0.01 mm 判。
+#[derive(Debug, Clone)]
+pub struct AnalyticCandidate {
+    pub geometry: RvmGeometry,
+    /// 网格与解析面之间系统差的上界（mm）。网格本身就是精确形体时为 0。
+    pub sagitta_mm: f64,
+}
+
+impl AnalyticCandidate {
+    /// 自校闸：候选算出来的世界 AABB 必须与网格实算的一致，否则调用方退回 FacetGroup。
+    ///
+    /// 规范体约定写错了照样能写出一份解析得开、几何却是错的 RVM，这种错不该靠人眼发现。
+    /// 闸门留得住它：约定错的量级是半径或半高（几十上百 mm），而这里放行的只有
+    /// `tol_mm`（f32 落盘那一档）加一个弦高（实测 ≤ 0.5 mm），两者差两三个数量级。
+    pub fn matches_mesh_aabb(&self, mesh_lo: [f64; 3], mesh_hi: [f64; 3], tol_mm: f64) -> bool {
+        let slack = tol_mm + self.sagitta_mm;
+        match self.geometry.world_aabb_mm() {
+            Some(a) => (0..3).all(|axis| {
+                (a[axis] - mesh_lo[axis]).abs() <= slack
+                    && (a[axis + 3] - mesh_hi[axis]).abs() <= slack
+            }),
+            None => false,
+        }
+    }
+}
+
 /// 可复用基本体 → RVM 解析图元（`Box(2)` / `Cylinder(8)`）。凑不上就返回 None，由调用方退回 FacetGroup。
 ///
 /// 三套规范体各自的约定（`solid.rs` / `primitive_instance.rs`，都是对着 E3D RVM 面片坐实过的）：
@@ -275,12 +323,12 @@ fn face_normal(v: &[[f64; 3]; 3]) -> [f64; 3] {
 ///
 /// 所以圆柱要把原点从底面挪到中点（沿它自己的局部 Z 走 h/2），盒子不用。
 ///
-/// **调用方必须校验**：拿返回的图元算世界 AABB，与网格实算的 AABB 比；对不上就别用。
+/// **调用方必须校验**：走 [`AnalyticCandidate::matches_mesh_aabb`] 对一遍网格，对不上就别用。
 /// 约定写错了照样能写出一个解析得开的 RVM，只是几何是错的——这种错不该靠人眼发现。
 pub fn analytic_from_instance(
     world: &glam::DMat4,
     instance: &crate::primitive_instance::PrimitiveInstance,
-) -> Option<RvmGeometry> {
+) -> Option<AnalyticCandidate> {
     use crate::primitive_instance::PrimitiveMeshKey;
 
     let (scale, rotation, translation) = instance.local_transform.to_scale_rotation_translation();
@@ -288,12 +336,14 @@ pub fn analytic_from_instance(
         return None;
     }
 
-    let (primitive, centre_offset) = match instance.key {
+    let (primitive, centre_offset, sagitta_mm) = match instance.key {
+        // 规范立方是精确形体，没有离散化缺口。
         PrimitiveMeshKey::BoxV1 => (
             Primitive::Box([scale.x, scale.y, scale.z]),
             glam::DVec3::ZERO,
+            0.0,
         ),
-        PrimitiveMeshKey::CylinderV3 { .. } => {
+        PrimitiveMeshKey::CylinderV3 { segments } => {
             // 半径来自 X/Y 两轴，非各向同性缩放就不是圆柱了，交给 FacetGroup。
             if (scale.x - scale.y).abs() > 1e-9 * scale.x.max(1.0) {
                 return None;
@@ -301,6 +351,9 @@ pub fn analytic_from_instance(
             (
                 Primitive::Cylinder([scale.x, scale.z]),
                 glam::DVec3::new(0.0, 0.0, scale.z / 2.0),
+                // 段数就在键里（规范体是 `Manifold::cylinder(…, segments, …)`），
+                // 半径是缩放后的 `scale.x`——弦高按世界尺寸算才是 mm。
+                chord_sagitta_mm(scale.x, std::f64::consts::TAU / f64::from(segments)),
             )
         }
     };
@@ -326,7 +379,10 @@ pub fn analytic_from_instance(
     };
     // 解析图元的记录 bbox 走**局部帧**——E3D 的 196/196 都是这一档。
     geometry.record_bbox = geometry.primitive.local_aabb_mm()?;
-    Some(geometry)
+    Some(AnalyticCandidate {
+        geometry,
+        sagitta_mm,
+    })
 }
 
 /// 网格本身就是一只轴对齐长方体时，给出它的三个边长（局部 mm）。否则 None。
@@ -386,7 +442,27 @@ fn same_point(a: &[f64; 3], b: &[f64; 3]) -> bool {
     (0..3).all(|axis| (a[axis] - b[axis]).abs() <= 1e-6)
 }
 
-/// 网格是一根正棱柱（= 离散圆柱）时，给出 `(半径, 高, 轴向, 轴心)`，都在局部系 mm。
+/// 一根圆柱的识别结果，全在局部系 mm。
+#[derive(Debug, Clone, Copy)]
+pub struct RecognisedCylinder {
+    pub radius: f64,
+    pub height: f64,
+    /// 轴向（RVM 的局部 +Z）。
+    pub axis: glam::DVec3,
+    /// 轴心（两个端盖的中点）。
+    pub centre: glam::DVec3,
+    /// 端盖多边形的边数，也就是整圆被分成了几段。
+    pub segments: usize,
+}
+
+impl RecognisedCylinder {
+    /// 圆柱面与它的内接棱柱之间的缺口，见 [`chord_sagitta_mm`]。
+    pub fn sagitta_mm(&self) -> f64 {
+        chord_sagitta_mm(self.radius, std::f64::consts::TAU / self.segments as f64)
+    }
+}
+
+/// 网格是一根正棱柱（= 离散圆柱）时把它解出来。
 ///
 /// 只在**逐组件**这一层调用才说得准：一个组件就是一个目录图元，多个图元合成的网格不该被认成圆柱。
 ///
@@ -401,7 +477,7 @@ fn same_point(a: &[f64; 3], b: &[f64; 3]) -> bool {
 pub fn cylinder_from_local_mesh(
     vertices: &[[f64; 3]],
     triangles: &[[u32; 3]],
-) -> Option<(f64, f64, glam::DVec3, glam::DVec3)> {
+) -> Option<RecognisedCylinder> {
     use glam::DVec3;
     if triangles.len() < 8 || vertices.len() < 6 {
         return None;
@@ -461,7 +537,23 @@ pub fn cylinder_from_local_mesh(
             continue;
         }
         let centre = centroid + axis * (levels[0] + levels[1]) / 2.0;
-        return Some((radius, height, axis, centre));
+        // 段数 = 落在一侧端盖上的不同顶点数。自校闸要拿它回算弦高，
+        // 「网格比解析面细多少」这件事只有这块网格自己说得准。
+        let mut cap: Vec<DVec3> = Vec::new();
+        for p in &points {
+            if ((*p - centroid).dot(axis) - levels[0]).abs() <= 1e-6
+                && !cap.iter().any(|q| (*q - *p).length() <= 1e-6)
+            {
+                cap.push(*p);
+            }
+        }
+        return Some(RecognisedCylinder {
+            radius,
+            height,
+            axis,
+            centre,
+            segments: cap.len(),
+        });
     }
     None
 }
@@ -481,6 +573,23 @@ pub struct RecognisedTorus {
     pub axis: glam::DVec3,
     /// 起始管心方向（RVM 的局部 +X）。
     pub start: glam::DVec3,
+    /// 管截面多边形的边数（整圆分几段）。
+    pub tube_segments: usize,
+    /// 扫掠折线的段数：顶点分布在 `sweep_steps + 1` 圈截面上。
+    pub sweep_steps: usize,
+}
+
+impl RecognisedTorus {
+    /// 圆环面与它的内接网格之间的缺口。
+    ///
+    /// 两处离散**都**要算：管截面是内接多边形（缺口按管半径），扫掠是内接折线
+    /// （缺口按扫掠半径）。两者能在同一个方向上叠加，所以取和不取大。
+    pub fn sagitta_mm(&self) -> f64 {
+        chord_sagitta_mm(
+            self.radius,
+            std::f64::consts::TAU / self.tube_segments as f64,
+        ) + chord_sagitta_mm(self.offset, self.angle / self.sweep_steps as f64)
+    }
 }
 
 /// 网格是一段**部分圆环**（弯头 / 弯管）时把它解出来。整圈圆环没有端盖，认不出来，返回 None。
@@ -523,7 +632,7 @@ pub fn torus_from_local_mesh(
     }
     // 端盖朝外，两个法向相反；取三角面最多的两组。
     groups.sort_by_key(|(_, members)| std::cmp::Reverse(members.len()));
-    let caps: Vec<(DVec3, DVec3, f64)> = groups
+    let caps: Vec<(DVec3, DVec3, f64, usize)> = groups
         .iter()
         .take(4)
         .filter_map(|(normal, members)| {
@@ -546,14 +655,15 @@ pub fn torus_from_local_mesh(
             {
                 return None; // 不共圆，不是端盖。
             }
-            Some((*normal, centre, radius))
+            // 端盖上的顶点数 = 管截面多边形的边数，自校闸拿它回算弦高。
+            Some((*normal, centre, radius, unique.len()))
         })
         .collect();
     if caps.len() < 2 {
         return None;
     }
-    let (n1, c1, r1) = caps[0];
-    let (n2, c2, r2) = caps[1];
+    let (n1, c1, r1, tube_segments) = caps[0];
+    let (n2, c2, r2, _) = caps[1];
     if (r1 - r2).abs() > 1e-6 {
         return None;
     }
@@ -613,6 +723,21 @@ pub fn torus_from_local_mesh(
     if !(angle > 0.0) {
         return None;
     }
+
+    // 扫掠折线的段数：顶点的角位有几个不同值，就是几圈截面，段数少一。
+    let side = axis.cross(start);
+    let mut rings: Vec<f64> = Vec::new();
+    for p in &points {
+        let planar = (*p - centre) - axis * (*p - centre).dot(axis);
+        let mut phi = planar.dot(side).atan2(planar.dot(start));
+        if phi < -1e-9 {
+            phi += std::f64::consts::TAU;
+        }
+        if !rings.iter().any(|r| (r - phi).abs() <= 1e-7) {
+            rings.push(phi);
+        }
+    }
+
     Some(RecognisedTorus {
         offset,
         radius,
@@ -620,6 +745,8 @@ pub fn torus_from_local_mesh(
         centre,
         axis,
         start,
+        tube_segments,
+        sweep_steps: rings.len().saturating_sub(1).max(1),
     })
 }
 
@@ -645,7 +772,7 @@ fn line_intersection(
 /// 由 [`torus_from_local_mesh`] 认出来的圆环造一条 `CircularTorus` 记录。
 ///
 /// RVM 的局部帧：扫掠绕 **+Z**、从 **+X** 起转。
-pub fn circular_torus_geometry(world: &glam::DMat4, torus: &RecognisedTorus) -> RvmGeometry {
+pub fn circular_torus_geometry(world: &glam::DMat4, torus: &RecognisedTorus) -> AnalyticCandidate {
     let x = torus.start;
     let z = torus.axis;
     let y = z.cross(x);
@@ -663,61 +790,70 @@ pub fn circular_torus_geometry(world: &glam::DMat4, torus: &RecognisedTorus) -> 
     .map(|value| value / M_TO_MM);
     let primitive = Primitive::CircularTorus([torus.offset, torus.radius, torus.angle]);
     let record_bbox = primitive.local_aabb_mm().unwrap_or([0.0; 6]);
-    RvmGeometry {
-        tag: "PRIM".to_string(),
-        flags: 1,
-        primitive,
-        matrix3,
-        translation_mm: [cols[12], cols[13], cols[14]],
-        record_bbox,
-        bbox_frame: crate::rvm_read::BboxFrame::Local,
-        level: None,
+    AnalyticCandidate {
+        geometry: RvmGeometry {
+            tag: "PRIM".to_string(),
+            flags: 1,
+            primitive,
+            matrix3,
+            translation_mm: [cols[12], cols[13], cols[14]],
+            record_bbox,
+            bbox_frame: crate::rvm_read::BboxFrame::Local,
+            level: None,
+        },
+        sagitta_mm: torus.sagitta_mm(),
     }
 }
 
 /// 由 [`cylinder_from_local_mesh`] 认出来的圆柱造一条 `Cylinder` 记录。
 ///
 /// RVM 的 `Cylinder` 轴向是**局部 Z、沿 Z 居中**，所以要把识别出来的轴转到 Z。
-pub fn cylinder_geometry(
-    world: &glam::DMat4,
-    radius: f64,
-    height: f64,
-    axis: glam::DVec3,
-    centre_local_mm: glam::DVec3,
-) -> RvmGeometry {
+pub fn cylinder_geometry(world: &glam::DMat4, cylinder: &RecognisedCylinder) -> AnalyticCandidate {
+    let RecognisedCylinder {
+        radius,
+        height,
+        axis,
+        centre,
+        ..
+    } = *cylinder;
     let to_z = glam::DQuat::from_rotation_arc(glam::DVec3::Z, axis);
-    let placed = *world * glam::DMat4::from_rotation_translation(to_z, centre_local_mm);
+    let placed = *world * glam::DMat4::from_rotation_translation(to_z, centre);
     let cols = placed.to_cols_array();
     let matrix3 = [
         cols[0], cols[1], cols[2], cols[4], cols[5], cols[6], cols[8], cols[9], cols[10],
     ]
     .map(|value| value / M_TO_MM);
-    RvmGeometry {
-        tag: "PRIM".to_string(),
-        flags: 1,
-        primitive: Primitive::Cylinder([radius, height]),
-        matrix3,
-        translation_mm: [cols[12], cols[13], cols[14]],
-        record_bbox: [
-            -radius,
-            -radius,
-            -height / 2.0,
-            radius,
-            radius,
-            height / 2.0,
-        ],
-        bbox_frame: crate::rvm_read::BboxFrame::Local,
-        level: None,
+    AnalyticCandidate {
+        geometry: RvmGeometry {
+            tag: "PRIM".to_string(),
+            flags: 1,
+            primitive: Primitive::Cylinder([radius, height]),
+            matrix3,
+            translation_mm: [cols[12], cols[13], cols[14]],
+            record_bbox: [
+                -radius,
+                -radius,
+                -height / 2.0,
+                radius,
+                radius,
+                height / 2.0,
+            ],
+            bbox_frame: crate::rvm_read::BboxFrame::Local,
+            level: None,
+        },
+        sagitta_mm: cylinder.sagitta_mm(),
     }
 }
 
 /// 由 [`box_from_local_mesh`] 认出来的盒子造一条 `Box` 记录。
 /// `centre_local_mm` 是盒心在元素局部系里的位置（一般不是原点）。
+///
+/// 盒子没有曲面，网格就是形体本身，所以 [`AnalyticCandidate::sagitta_mm`] 是 0。
 pub fn box_geometry(
     world: &glam::DMat4,
     lengths: [f64; 3],
     centre_local_mm: [f64; 3],
-) -> RvmGeometry {
+) -> AnalyticCandidate {
     let placed = *world * glam::DMat4::from_translation(glam::DVec3::from_array(centre_local_mm));
     let cols = placed.to_cols_array();
     let matrix3 = [
@@ -725,15 +861,18 @@ pub fn box_geometry(
     ]
     .map(|value| value / M_TO_MM);
     let half = lengths.map(|l| l / 2.0);
-    RvmGeometry {
-        tag: "PRIM".to_string(),
-        flags: 1,
-        primitive: Primitive::Box(lengths),
-        matrix3,
-        translation_mm: [cols[12], cols[13], cols[14]],
-        record_bbox: [-half[0], -half[1], -half[2], half[0], half[1], half[2]],
-        bbox_frame: crate::rvm_read::BboxFrame::Local,
-        level: None,
+    AnalyticCandidate {
+        geometry: RvmGeometry {
+            tag: "PRIM".to_string(),
+            flags: 1,
+            primitive: Primitive::Box(lengths),
+            matrix3,
+            translation_mm: [cols[12], cols[13], cols[14]],
+            record_bbox: [-half[0], -half[1], -half[2], half[0], half[1], half[2]],
+            bbox_frame: crate::rvm_read::BboxFrame::Local,
+            level: None,
+        },
+        sagitta_mm: 0.0,
     }
 }
 
@@ -956,10 +1095,121 @@ mod tests {
         let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
         assert!(torus_from_local_mesh(&mesh.vertices, &triangles).is_none());
         // 而圆柱识别必须认得出它。
-        let (radius, height, ..) =
+        let cylinder =
             cylinder_from_local_mesh(&mesh.vertices, &triangles).expect("直管应认成圆柱");
-        assert!((radius - 50.0).abs() < 1e-6, "radius={radius}");
-        assert!((height - 400.0).abs() < 1e-6, "height={height}");
+        assert!(
+            (cylinder.radius - 50.0).abs() < 1e-6,
+            "radius={}",
+            cylinder.radius
+        );
+        assert!(
+            (cylinder.height - 400.0).abs() < 1e-6,
+            "height={}",
+            cylinder.height
+        );
+    }
+
+    #[test]
+    fn chord_sagitta_is_the_gap_between_an_inscribed_polygon_and_its_circle() {
+        // 独立量法：取圆上相邻两个格点，弦中点离圆心多远，缺口就是半径减它。
+        let (radius, segments) = (5.0_f64, 8.0_f64);
+        let step = std::f64::consts::TAU / segments;
+        let a = glam::DVec2::new(radius, 0.0);
+        let b = glam::DVec2::new(radius * step.cos(), radius * step.sin());
+        let measured = radius - ((a + b) / 2.0).length();
+        assert!((chord_sagitta_mm(radius, step) - measured).abs() < 1e-12);
+        // 退化输入不该把容差算成 NaN 交出去——那会让自校闸的比较恒为 false。
+        assert_eq!(chord_sagitta_mm(radius, 0.0), 0.0);
+        assert_eq!(chord_sagitta_mm(0.0, step), 0.0);
+        assert_eq!(chord_sagitta_mm(radius, f64::INFINITY), 0.0);
+    }
+
+    /// 自校闸放行的尺度必须是这块网格自己的弦高，不是一个常数。
+    ///
+    /// 这是 `1RCV0101` 那 14 根真圆柱被退回面片的复现：它们几何没错，只是网格内接、
+    /// 解析面外接，AABB 天生差一个弦高，而闸门拿 0.01 mm 判。
+    #[test]
+    fn a_rotated_cylinder_clears_the_gate_by_its_own_chord_height() {
+        // r = 5 → 8 段（段数规则的 45° 封顶那一档），弦高 5·(1−cos(π/8)) ≈ 0.381 mm。
+        let solid = crate::solid::csg_cylinder_solid(10.0, 200.0).unwrap();
+        let mesh = crate::mesh::TriMesh::from_manifold(&solid);
+        let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
+        let cylinder = cylinder_from_local_mesh(&mesh.vertices, &triangles).unwrap();
+        assert_eq!(cylinder.segments, 8);
+        assert_eq!(
+            cylinder.segments as i32,
+            crate::solid::cylinder_segments(5.0)
+        );
+
+        // 段数规则把 0/90/180/270 铺在网格上，所以轴对齐时 AABB 一点不差；缺口是转起来
+        // 才有的，而现场没有一根管子是轴对齐的。
+        let world = glam::DMat4::from_rotation_z(0.4) * glam::DMat4::from_rotation_x(0.7);
+        let (lo, hi) = mesh.vertices.iter().fold(
+            ([f64::MAX; 3], [f64::MIN; 3]),
+            |(mut lo, mut hi), vertex| {
+                let w = (world * glam::DVec3::from_array(*vertex).extend(1.0)).truncate();
+                for axis in 0..3 {
+                    lo[axis] = lo[axis].min(w[axis]);
+                    hi[axis] = hi[axis].max(w[axis]);
+                }
+                (lo, hi)
+            },
+        );
+
+        let candidate = cylinder_geometry(&world, &cylinder);
+        assert!(
+            (candidate.sagitta_mm - 5.0 * (1.0 - (std::f64::consts::PI / 8.0).cos())).abs() < 1e-12
+        );
+        assert!(
+            candidate.matches_mesh_aabb(lo, hi, 0.01),
+            "sagitta={} 的圆柱必须过闸",
+            candidate.sagitta_mm
+        );
+        // 同一个候选，把弦高抹掉就是改动前的闸门——它退回面片，这条才是回归。
+        let fixed_tolerance = AnalyticCandidate {
+            sagitta_mm: 0.0,
+            ..candidate
+        };
+        assert!(!fixed_tolerance.matches_mesh_aabb(lo, hi, 0.01));
+    }
+
+    /// 弯头两处离散（管截面 + 扫掠）都要算进缺口，否则整族 BEND 永远退回面片。
+    #[test]
+    fn a_rotated_elbow_clears_the_gate_by_both_of_its_chord_heights() {
+        let (inner, outer, sweep_deg) = (95.0_f64, 105.0_f64, 90.0_f64);
+        let solid = crate::solid::circ_torus_solid(inner, outer, sweep_deg).unwrap();
+        let mesh = crate::mesh::TriMesh::from_manifold(&solid);
+        let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
+        let torus = torus_from_local_mesh(&mesh.vertices, &triangles).unwrap();
+        // 顶点数说得清这两个数：每圈截面 tube_segments 个点，共 sweep_steps + 1 圈。
+        assert_eq!(
+            torus.tube_segments * (torus.sweep_steps + 1),
+            mesh.vertices.len(),
+            "tube={} steps={}",
+            torus.tube_segments,
+            torus.sweep_steps
+        );
+
+        let world = glam::DMat4::from_rotation_z(0.4) * glam::DMat4::from_rotation_x(0.7);
+        let (lo, hi) = mesh.vertices.iter().fold(
+            ([f64::MAX; 3], [f64::MIN; 3]),
+            |(mut lo, mut hi), vertex| {
+                let w = (world * glam::DVec3::from_array(*vertex).extend(1.0)).truncate();
+                for axis in 0..3 {
+                    lo[axis] = lo[axis].min(w[axis]);
+                    hi[axis] = hi[axis].max(w[axis]);
+                }
+                (lo, hi)
+            },
+        );
+
+        let candidate = circular_torus_geometry(&world, &torus);
+        assert!(candidate.matches_mesh_aabb(lo, hi, 0.01));
+        let fixed_tolerance = AnalyticCandidate {
+            sagitta_mm: 0.0,
+            ..candidate
+        };
+        assert!(!fixed_tolerance.matches_mesh_aabb(lo, hi, 0.01));
     }
 
     #[test]
