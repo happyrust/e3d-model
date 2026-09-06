@@ -26,7 +26,7 @@ use crate::route::orimat;
 use crate::solid::{
     SolidError, box_solid, circ_torus_solid, csg_cylinder_solid, cylinder_segments,
     dish_knuckle_radius, elliptical_dish_solid, extrude_rings, placed, pyramid_solid,
-    rect_torus_solid, revolve_rings, slope_ended_cylinder_solid, snout_solid,
+    rect_torus_solid, revolve_rings_profile_faceted, slope_ended_cylinder_solid, snout_solid,
     snout_solid_with_segments, spherical_dish_solid, unit_sphere_solid,
 };
 use crate::transform::world_matrix;
@@ -35,7 +35,7 @@ const GEOMETRY_REF: &str = "GMRE";
 const AXIS_TOL: f64 = 1.0e-9;
 const HEIGHT_TOL_MM: f64 = 1.0e-6;
 const SEXT_TESSELLATION_VERSION: u32 = 1;
-const SREV_TESSELLATION_VERSION: u32 = 1;
+const SREV_TESSELLATION_VERSION: u32 = 2;
 const SBOX_TESSELLATION_VERSION: u32 = 1;
 const NSCY_AXIAL_OVERCUT_MM: f64 = 0.01;
 const CYLINDER_TESSELLATION_VERSION: u32 = 1;
@@ -65,6 +65,12 @@ pub struct CatalogueMeshCacheStats {
     pub evaluated_nlcy: usize,
     pub source_nsex: usize,
     pub evaluated_nsex: usize,
+    pub source_nssl: usize,
+    pub evaluated_nssl: usize,
+    pub source_nsds: usize,
+    pub evaluated_nsds: usize,
+    pub source_nssp: usize,
+    pub evaluated_nssp: usize,
     pub source_srev: usize,
     pub evaluated_srev: usize,
     pub source_scyl: usize,
@@ -85,6 +91,9 @@ pub struct CatalogueMeshCacheStats {
     pub evaluated_sdsh: usize,
     pub source_sdis: usize,
     pub evaluated_sdis: usize,
+    /// 正体名下被表现级 / TUFL 筛掉的负体（`CSG_TreeBuilderCat::addNegatives` 对每把刀也过
+    /// 一遍 `isWanted`）。不是失败、不落 note，只在这里记一笔，别让「刀少了」变成静默。
+    pub display_filtered_negatives: usize,
     pub local_mesh_hits: usize,
     pub local_mesh_misses: usize,
     pub unique_placed_parts: usize,
@@ -103,6 +112,13 @@ pub struct CatalogueMeshCacheStats {
 #[derive(Default)]
 pub struct CatalogueMeshCache {
     local_meshes: HashMap<CatalogueMeshKey, CachedCatalogueMesh>,
+    /// 按 `CachedCatalogueMesh::id` 索引的三角面数，建体那一次记下来。
+    ///
+    /// 存在的理由只有一个：判「这件有没有成体」不该把 CSG 树逼出来。`Manifold` 的
+    /// 变换与 compose 都是惰性的，一句 `num_tri()` 就会把本件在**局部系**先物化一遍，
+    /// 而随后 `placed(.., world)` 再取网格时又物化一遍——同一批顶点算了两轮。
+    /// 面数不随仿射变换改变，从这里读就够。
+    mesh_tri_counts: Vec<usize>,
     stats: CatalogueMeshCacheStats,
     pub(crate) extrusions: crate::extrusion_reuse::ExtrusionMeshStore,
 }
@@ -136,6 +152,12 @@ impl CatalogueMeshCacheStats {
             evaluated_nlcy: delta!(evaluated_nlcy),
             source_nsex: delta!(source_nsex),
             evaluated_nsex: delta!(evaluated_nsex),
+            source_nssl: delta!(source_nssl),
+            evaluated_nssl: delta!(evaluated_nssl),
+            source_nsds: delta!(source_nsds),
+            evaluated_nsds: delta!(evaluated_nsds),
+            source_nssp: delta!(source_nssp),
+            evaluated_nssp: delta!(evaluated_nssp),
             source_srev: delta!(source_srev),
             evaluated_srev: delta!(evaluated_srev),
             source_scyl: delta!(source_scyl),
@@ -156,6 +178,7 @@ impl CatalogueMeshCacheStats {
             evaluated_sdsh: delta!(evaluated_sdsh),
             source_sdis: delta!(source_sdis),
             evaluated_sdis: delta!(evaluated_sdis),
+            display_filtered_negatives: delta!(display_filtered_negatives),
             local_mesh_hits: delta!(local_mesh_hits),
             local_mesh_misses: delta!(local_mesh_misses),
             unique_placed_parts: delta!(unique_placed_parts),
@@ -182,6 +205,12 @@ impl CatalogueMeshCacheStats {
         add!(evaluated_nlcy);
         add!(source_nsex);
         add!(evaluated_nsex);
+        add!(source_nssl);
+        add!(evaluated_nssl);
+        add!(source_nsds);
+        add!(evaluated_nsds);
+        add!(source_nssp);
+        add!(evaluated_nssp);
         add!(source_srev);
         add!(evaluated_srev);
         add!(source_scyl);
@@ -202,6 +231,7 @@ impl CatalogueMeshCacheStats {
         add!(evaluated_sdsh);
         add!(source_sdis);
         add!(evaluated_sdis);
+        add!(display_filtered_negatives);
         add!(local_mesh_hits);
         add!(local_mesh_misses);
         add!(unique_placed_parts);
@@ -230,13 +260,28 @@ struct SrevMeshKey {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum CatalogueMeshKey {
+    /// 无刀的 SEXT，也是 NSEX 刀自己的轮廓键（刀不再下钻负体，永远无刀）。
     Sext(SextMeshKey),
+    /// 名下挂了负体的 SEXT：与 [`CatalogueMeshKey::Cut`] 同理，
+    /// 同轮廓不同刀的两个 SEXT 不是同一张网格；无刀时退回 `Sext`，键不变。
+    CutSext {
+        base: SextMeshKey,
+        cutters: Vec<CatalogueCutKey>,
+    },
     Srev(SrevMeshKey),
     Sbox(SboxMeshKey),
     Cylinder {
         tessellation_version: u32,
         diameter_bits: u64,
         height_bits: u64,
+    },
+    /// 名下挂了负体的圆柱 / 棱锥 / 锥台 / 环面 / 球 / 碟 / 斜切圆柱 / 圆盘：
+    /// 同一张正体网格配不同的刀不是同一张网格；无刀时退回 `base` 本身，键不变。
+    /// `CSG_TreeBuilderCat::getCSGTree`（`0x1072F5D0`）对**每一个**有成员的正体都开
+    /// `Combination(3)` 差集，不分正体 noun，所以这一层包装对所有正体臂通用。
+    Cut {
+        base: Box<CatalogueMeshKey>,
+        cutters: Vec<CatalogueCutKey>,
     },
     Pyramid {
         tessellation_version: u32,
@@ -332,6 +377,25 @@ enum CatalogueCutKey {
         coordinate_bits: Vec<u64>,
         transform_bits: [u64; 16],
     },
+    /// NSSP：与正体 SSPH 同一个单位球网格（CRCATI 701101/860747 正负同臂），
+    /// 半径在放置矩阵的缩放里。
+    Sphere {
+        segments: i32,
+        transform_bits: [u64; 16],
+    },
+    /// NSDS：与正体 SDSH 同一组 r / h / 折边开关（CRCATI 702883/908861 正负同臂）；
+    /// `PHEI = 0` 的退化路是 1 mm 圆盘，走 [`CatalogueCutKey::Cylinder`]。
+    Dish {
+        knuckled: bool,
+        radius_bits: u64,
+        height_bits: u64,
+        transform_bits: [u64; 16],
+    },
+    /// NSSL：与正体 SSLC 同一组半径、高度、四个斜切角（CRCATI 599770/782015 正负同臂）。
+    SlopeCylinder {
+        parameter_bits: [u64; 6],
+        transform_bits: [u64; 16],
+    },
 }
 
 struct CachedCatalogueMesh {
@@ -350,6 +414,10 @@ struct EvaluatedSext {
     rings: Vec<Vec<[f64; 2]>>,
     height: f64,
     transform: DMat4,
+    /// 名下的成员级刀集，已回到 SEXT 局部系。[`evaluate_sext`] 只出轮廓（NSEX 刀走它，
+    /// 刀不下钻负体），恒为空；正体走 [`evaluate_sext_body`] 才收集。
+    cutters: Vec<EvaluatedCatalogueCut>,
+    diagnostics: Vec<String>,
 }
 
 struct EvaluatedSrev {
@@ -380,6 +448,8 @@ struct EvaluatedCylinder {
     diameter: f64,
     height: f64,
     transform: DMat4,
+    cutters: Vec<EvaluatedCatalogueCut>,
+    diagnostics: Vec<String>,
 }
 
 struct EvaluatedPyramid {
@@ -480,6 +550,29 @@ enum EvaluatedCatalogueCut {
         angle_deg: f64,
         transform: DMat4,
     },
+    /// NSSP 负球：与正体 SSPH 同一个求值器（`QSSPHE` → `gm_CreateSphere(PDIA/2)`），
+    /// 单位球网格，半径进放置矩阵的缩放；CRCATI 的负臂**没有** +0.01 过切。
+    Sphere {
+        segments: i32,
+        transform: DMat4,
+    },
+    /// NSDS 负碟：与正体 SDSH 同一个求值器（`QSDISH`，球形 / 折边两路），
+    /// CRCATI 的负臂**没有** +0.01 过切；`PHEI = 0` 的退化路落 [`Self::Cylinder`]（1 mm 圆盘）。
+    Dish {
+        body: EvaluatedDishBody,
+        radius: f64,
+        height: f64,
+        transform: DMat4,
+    },
+    /// NSSL 负斜切圆柱：与正体 SSLC 同一个求值器（`QSSLCY` + `CSRTAX` 标架 + 角度折回），
+    /// CRCATI 的负臂**没有** +0.01 过切。
+    SlopeCylinder {
+        radius: f64,
+        height: f64,
+        /// `[xtop, ytop, xbot, ybot]`，度。
+        shear_deg: [f64; 4],
+        transform: DMat4,
+    },
 }
 
 /// Result of evaluating one design member's catalogue program.
@@ -562,16 +655,26 @@ fn has_hvac_ancestor(el: &DbElement) -> bool {
 /// `PZLE = ATTRIB RPRO CLEA` = 100，坐在托盘顶上），就是它把 35 对 AABB 的 z 顶抬高 100 mm
 /// （`evidence/20260902-repre-level-tty-experiments/` §9）。环境变量 `E3D_REPRE_OBST=on|off`，
 /// 缺省 off（TTY 口径）；对拍 GUI / addin 基线时与 `E3D_REPRE_LEVEL_PIPE=6` 一起设。
-pub(crate) fn repre_obst_on() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| {
-        std::env::var("E3D_REPRE_OBST").ok().is_some_and(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "on" | "1" | "true" | "yes"
-            )
-        })
+/// `on` 对应 E3D 的一级障碍表现；`all` / `2` 才同时放行 `OBST=2`。AMS 的 addin RVM
+/// 把 `RESERVED/OBST=1` 导出而不含 `OBSTRUCTION/OBST=2`，为这条等级边界提供了判据。
+pub(crate) fn repre_obst_level() -> u32 {
+    static LEVEL: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *LEVEL.get_or_init(|| {
+        match std::env::var("E3D_REPRE_OBST")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "on" | "1" | "true" | "yes" => 1,
+            "all" | "2" => 2,
+            _ => 0,
+        }
     })
+}
+
+pub(crate) fn repre_obst_on() -> bool {
+    repre_obst_level() > 0
 }
 
 /// E3D 的几何集成员显示过滤（GTGEOM 侧 `sub_107149B0` 那一签：
@@ -597,10 +700,10 @@ pub(crate) fn repre_obst_on() -> bool {
 /// 与 SCYL 100、DAMP `/RVCD-CLASH` 盒（`OBST 1/TUFL=false/CLFL=false`）在 RVM 里一件都没有。
 ///
 /// 曾经的反例已经消化：`C-IY` 基准里 `OBST=1/TUFL=false` 的净空盒被 E3D 导出，是因为那份
-/// addin 导出开着 `REPRE OBST`（TTY 基线宏是 `repre obst off`）。DR3DWA / DRWANT 的公式是
-/// `in_level ∧ (OBST>0 ∧ obst_on ∨ TUFL ∧ tube_on ∨ CLFL ∧ cl_on)`——`TUFL=false` 一律不画只是
-/// `obst off / cl off` 下的特例；[`repre_obst_on`] 打开时 OBST 1/2 的图元照画（对拍托盘语料
-/// 时设 `E3D_REPRE_OBST=on`）。
+/// addin 导出开着一级 `REPRE OBST`（TTY 基线宏是 `repre obst off`）。DR3DWA / DRWANT 的公式是
+/// `in_level ∧ (OBST>0 ∧ obst_level>=OBST ∨ TUFL ∧ tube_on ∨ CLFL ∧ cl_on)`——`TUFL=false`
+/// 一律不画只是 `obst off / cl off` 下的特例；对拍托盘语料时设
+/// `E3D_REPRE_OBST=on`，需要二级障碍体时设 `all`。
 /// HANG 24381/177986 的 HELEMENT 把 `CLFL=true` 的三个 SCYL 和一个 SEXT 全部导出——
 /// 它们 `TUFL=true`，本筛照画；"CLFL 即隐藏"仍然是错的读法。
 ///
@@ -627,7 +730,7 @@ pub(crate) fn display_filtered(
         return Ok(None);
     }
     // DR3DWA / DRWANT 的 `OBST>0 ∧ obst_on` 项：`REPRE OBST ON` 时障碍体（OBST 1/2）照画。
-    if obstruction > 0 && repre_obst_on() {
+    if obstruction > 0 && obstruction <= repre_obst_level() {
         return Ok(None);
     }
     Ok(Some(if obstruction == 2 {
@@ -637,6 +740,34 @@ pub(crate) fn display_filtered(
     } else {
         "tube-off"
     }))
+}
+
+/// Filter optional catalogue parts controlled by route design properties.
+///
+/// Core's `csg_gml4/DRWANT` calls `GATLG1` for cable-way member types before
+/// applying the ordinary representation flags.  The ACP tray catalogue uses
+/// the primitive label (stored as its name suffix) together with `RPRO COVR`,
+/// `OUTA`, and `OUTB`: zero means no cover, while the OUT flags document
+/// `0: Have, 1: No`.  These controls are independent of whether a profile
+/// expression happens to multiply a dimension by the flag.
+fn application_filtered(
+    primitive: &DbElement,
+    env: &DbElementParamEnv,
+) -> Result<Option<&'static str>, ModelError> {
+    let Some(name) = primitive.stored_name()? else {
+        return Ok(None);
+    };
+    let label = name.to_ascii_uppercase();
+    if label.contains("COVER") && env.rpro("COVR").is_some_and(|value| value <= 0.0) {
+        return Ok(Some("rpro-covr"));
+    }
+    if label.contains("L_SPLICE_PLATE") && env.rpro("OUTA").is_some_and(|value| value != 0.0) {
+        return Ok(Some("rpro-outa"));
+    }
+    if label.contains("R_SPLICE_PLATE") && env.rpro("OUTB").is_some_and(|value| value != 0.0) {
+        return Ok(Some("rpro-outb"));
+    }
+    Ok(None)
 }
 
 /// Build the visible catalogue geometry carried by one design route member.
@@ -654,10 +785,19 @@ pub fn model_catalogue_member_with_cache(
     member: &DbElement,
     cache: &mut CatalogueMeshCache,
 ) -> Result<CatalogueMemberBuild, ModelError> {
-    if let Some(build) = model_hvac_rectangular_basic(member)? {
+    let _timing = crate::perf::catalogue_scope();
+    // The DESP shortcut represents the level-0 physical body only. At higher
+    // HVAC representation levels E3D also emits the catalogue's level-specific
+    // primitives, so bypassing the catalogue would silently drop them.
+    if repre_level_of(member)? == 0
+        && let Some(build) = model_hvac_rectangular_basic(member)?
+    {
         return Ok(build);
     }
-    let Some(component) = catalogue_component(member)? else {
+    let chain = crate::perf::cat_chain_scope();
+    let component = catalogue_component(member)?;
+    drop(chain);
+    let Some(component) = component else {
         // 两种没形状要分开记：没有 SPRE 是设计数据没给规格（E3D 同样不出几何）；有 SPRE
         // 却走不到 SCOM 是链断（SPCO 无 CATR/PRTREF、引用悬空、库没开），得指出从哪儿断。
         let no_shape = match member.get_element("SPRE")? {
@@ -707,18 +847,25 @@ pub fn model_catalogue_member_with_cache(
     let mut display_filter_notes = Vec::new();
     let mut diagnostics = Vec::new();
     let mut saw_display_primitive = false;
-    let mut all_display_primitives_are_clfl = true;
     // 表现级按成员的学科取（MODCMP：管道构件 `LEVEL PIPE`、风管 `LEVEL HVAC`…），整只成员一个数。
     let member_discipline = repre_discipline_of(member)?;
     let member_level = repre_level_for(member_discipline);
 
+    let prims_timing = crate::perf::cat_prims_scope();
     for primitive in geometry.members()? {
         primitives += 1;
         let primitive_noun = primitive.element_type()?;
+        // LINE / SLINE 在 CRCATI 里同走 `gml_bkend/CRCURV`：出曲线不出体，只记账。
+        let curve_only = primitive_noun == "LINE" || primitive_noun == "SLINE";
+        if !curve_only && let Some(reason) = application_filtered(&primitive, &env)? {
+            display_filter_notes.push(format!(
+                "catalogue primitive {} noun {primitive_noun} application-filtered by {reason}",
+                primitive.refno(),
+            ));
+            continue;
+        }
         // LINE 成员本来就只记账不建体，不进显示过滤，保住 centre_lines 的账目口径。
-        if primitive_noun != "LINE"
-            && let Some(reason) = display_filtered(&primitive, member_level)?
-        {
+        if !curve_only && let Some(reason) = display_filtered(&primitive, member_level)? {
             display_filter_notes.push(format!(
                 "catalogue primitive {} noun {primitive_noun} display-filtered by {reason} (repre {} {member_level}, obst {})",
                 primitive.refno(),
@@ -727,19 +874,20 @@ pub fn model_catalogue_member_with_cache(
             ));
             continue;
         }
-        if primitive_noun != "LINE" {
+        if !curve_only {
             saw_display_primitive = true;
-            all_display_primitives_are_clfl &= primitive.get_bool("CLFL")? == Some(true);
         }
         match primitive_noun.as_str() {
             "SEXT" => {
                 sext_total += 1;
                 cache.stats.source_sext += 1;
-                match evaluate_sext(member, &component, &primitive, &env) {
-                    Ok(Some(evaluated)) => {
+                match evaluate_sext_body(member, &component, &primitive, &env, cache) {
+                    Ok(Some(mut evaluated)) => {
                         cache.stats.evaluated_sext += 1;
+                        catalogue_negatives += evaluated.cutters.len();
+                        diagnostics.append(&mut evaluated.diagnostics);
                         let mesh_id = match cached_mesh_id(cache, &evaluated.mesh_key, || {
-                            Ok(extrude_rings(evaluated.rings.clone(), evaluated.height)?)
+                            build_sext(&evaluated)
                         }) {
                             Ok(mesh_id) => mesh_id,
                             Err(error) => {
@@ -865,90 +1013,89 @@ pub fn model_catalogue_member_with_cache(
                 match evaluate_lpyr(member, &component, &primitive, &env) {
                     Ok(Some(evaluated)) => {
                         cache.stats.evaluated_lpyr += 1;
-                        let mesh_id = match cached_mesh_id(cache, &evaluated.mesh_key, || {
-                            let [xbot, ybot, xtop, ytop, height, xoff, yoff] = evaluated.parameters;
-                            Ok(pyramid_solid(xbot, ybot, xtop, ytop, height, xoff, yoff)?)
-                        }) {
-                            Ok(mesh_id) => mesh_id,
-                            Err(error) => {
-                                diagnostics.push(format!(
-                                    "catalogue primitive {} skipped by Core-style local failure: {error}",
-                                    primitive.refno()
-                                ));
-                                continue;
-                            }
-                        };
-                        let placed_key = PlacedPartKey {
-                            mesh_id,
-                            transform_bits: matrix_bits(evaluated.transform),
-                        };
-                        if !placed_parts.insert(placed_key) {
-                            member_duplicates += 1;
-                            cache.stats.duplicate_placed_parts += 1;
-                            continue;
+                        let (mesh_key, cutters, mut cut_diagnostics) = owned_negatives_of(
+                            member,
+                            &component,
+                            &primitive,
+                            &env,
+                            cache,
+                            evaluated.mesh_key,
+                            evaluated.transform,
+                        );
+                        catalogue_negatives += cutters.len();
+                        diagnostics.append(&mut cut_diagnostics);
+                        let outcome = place_cached_part(
+                            cache,
+                            &mut placed_parts,
+                            &mut solids,
+                            &mesh_key,
+                            evaluated.transform,
+                            || {
+                                let [xbot, ybot, xtop, ytop, height, xoff, yoff] =
+                                    evaluated.parameters;
+                                subtract_owned_negatives(
+                                    pyramid_solid(xbot, ybot, xtop, ytop, height, xoff, yoff)?,
+                                    &cutters,
+                                    "catalogue LPYR after negatives",
+                                )
+                            },
+                        );
+                        match outcome {
+                            Ok(true) => {}
+                            Ok(false) => member_duplicates += 1,
+                            Err(error) => diagnostics.push(local_failure(&primitive, &error)),
                         }
-                        cache.stats.unique_placed_parts += 1;
-                        let local_mesh = &cache
-                            .local_meshes
-                            .get(&evaluated.mesh_key)
-                            .expect("catalogue mesh inserted above")
-                            .solid;
-                        solids.push(placed(local_mesh, evaluated.transform));
                     }
                     Ok(None) => degenerate_other += 1,
-                    Err(error) => diagnostics.push(format!(
-                        "catalogue primitive {} skipped by Core-style local failure: {error}",
-                        primitive.refno()
-                    )),
+                    Err(error) => diagnostics.push(local_failure(&primitive, &error)),
                 }
             }
             noun @ ("LSNO" | "SCON") => {
                 match evaluate_catalogue_snout(member, &component, &primitive, &env, noun) {
                     Ok(Some(evaluated)) => {
-                        let mesh_id = match cached_mesh_id(cache, &evaluated.mesh_key, || {
-                            let [dbot, dtop, height, xoff, yoff] = evaluated.parameters;
-                            // libgm `GM_Snout` 走曲面口径（与 GM_Cylinder 同一条 0.5 mm 规则，
-                            // 喂大端半径），不是设计侧 SNOU FacetGroup 那条 5 mm。
-                            Ok(snout_solid_with_segments(
-                                dbot,
-                                dtop,
-                                height,
-                                xoff,
-                                yoff,
-                                cylinder_segments(dbot.max(dtop) * 0.5),
-                            )?)
-                        }) {
-                            Ok(mesh_id) => mesh_id,
-                            Err(error) => {
-                                diagnostics.push(format!(
-                                    "catalogue primitive {} skipped by Core-style local failure: {error}",
-                                    primitive.refno()
-                                ));
-                                continue;
-                            }
-                        };
-                        let placed_key = PlacedPartKey {
-                            mesh_id,
-                            transform_bits: matrix_bits(evaluated.transform),
-                        };
-                        if !placed_parts.insert(placed_key) {
-                            member_duplicates += 1;
-                            cache.stats.duplicate_placed_parts += 1;
-                            continue;
+                        let (mesh_key, cutters, mut cut_diagnostics) = owned_negatives_of(
+                            member,
+                            &component,
+                            &primitive,
+                            &env,
+                            cache,
+                            evaluated.mesh_key,
+                            evaluated.transform,
+                        );
+                        catalogue_negatives += cutters.len();
+                        diagnostics.append(&mut cut_diagnostics);
+                        let outcome = place_cached_part(
+                            cache,
+                            &mut placed_parts,
+                            &mut solids,
+                            &mesh_key,
+                            evaluated.transform,
+                            || {
+                                let [dbot, dtop, height, xoff, yoff] = evaluated.parameters;
+                                // libgm `GM_Snout` 走曲面口径（与 GM_Cylinder 同一条 0.5 mm 规则，
+                                // 喂大端半径），不是设计侧 SNOU FacetGroup 那条 5 mm。
+                                subtract_owned_negatives(
+                                    snout_solid_with_segments(
+                                        dbot,
+                                        dtop,
+                                        height,
+                                        xoff,
+                                        yoff,
+                                        cylinder_segments(dbot.max(dtop) * 0.5),
+                                    )?,
+                                    &cutters,
+                                    "catalogue snout after negatives",
+                                )
+                            },
+                        );
+                        match outcome {
+                            Ok(true) => {}
+                            Ok(false) => member_duplicates += 1,
+                            Err(error) => diagnostics.push(local_failure(&primitive, &error)),
                         }
-                        cache.stats.unique_placed_parts += 1;
-                        let local_mesh = &cache
-                            .local_meshes
-                            .get(&evaluated.mesh_key)
-                            .expect("catalogue mesh inserted above")
-                            .solid;
-                        solids.push(placed(local_mesh, evaluated.transform));
                     }
                     Ok(None) => degenerate_other += 1,
-                    Err(error) => diagnostics.push(format!(
-                        "catalogue primitive {} skipped by Core-style local failure: {error}",
-                        primitive.refno()
-                    )),
+                    Err(error) => diagnostics.push(local_failure(&primitive, &error)),
                 }
             }
             noun @ ("SCYL" | "LCYL") => {
@@ -957,15 +1104,18 @@ pub fn model_catalogue_member_with_cache(
                 } else {
                     cache.stats.source_lcyl += 1;
                 }
-                match evaluate_catalogue_cylinder(member, &component, &primitive, &env, noun) {
-                    Ok(Some(evaluated)) => {
+                match evaluate_catalogue_cylinder(member, &component, &primitive, &env, noun, cache)
+                {
+                    Ok(Some(mut evaluated)) => {
+                        catalogue_negatives += evaluated.cutters.len();
+                        diagnostics.append(&mut evaluated.diagnostics);
                         if noun == "SCYL" {
                             cache.stats.evaluated_scyl += 1;
                         } else {
                             cache.stats.evaluated_lcyl += 1;
                         }
                         let mesh_id = match cached_mesh_id(cache, &evaluated.mesh_key, || {
-                            Ok(csg_cylinder_solid(evaluated.diameter, evaluated.height)?)
+                            build_catalogue_cylinder(&evaluated)
                         }) {
                             Ok(mesh_id) => mesh_id,
                             Err(error) => {
@@ -1013,55 +1163,58 @@ pub fn model_catalogue_member_with_cache(
                         } else {
                             cache.stats.evaluated_srto += 1;
                         }
-                        let mesh_id = match cached_mesh_id(cache, &evaluated.mesh_key, || {
-                            Ok(match evaluated.kind {
-                                EvaluatedTorusKind::Circular => circ_torus_solid(
-                                    evaluated.inner,
-                                    evaluated.outer,
-                                    evaluated.angle_deg,
-                                )?,
-                                EvaluatedTorusKind::Rectangular { height } => rect_torus_solid(
-                                    evaluated.inner,
-                                    evaluated.outer,
-                                    height,
-                                    evaluated.angle_deg,
-                                )?,
-                            })
-                        }) {
-                            Ok(mesh_id) => mesh_id,
-                            Err(error) => {
-                                diagnostics.push(format!(
-                                    "catalogue primitive {} skipped by Core-style local failure: {error}; torus inner={} outer={} angle_deg={}",
-                                    primitive.refno(),
-                                    evaluated.inner,
-                                    evaluated.outer,
-                                    evaluated.angle_deg,
-                                ));
-                                continue;
-                            }
-                        };
-                        let placed_key = PlacedPartKey {
-                            mesh_id,
-                            transform_bits: matrix_bits(evaluated.transform),
-                        };
-                        if !placed_parts.insert(placed_key) {
-                            member_duplicates += 1;
-                            cache.stats.duplicate_placed_parts += 1;
-                            continue;
+                        let (mesh_key, cutters, mut cut_diagnostics) = owned_negatives_of(
+                            member,
+                            &component,
+                            &primitive,
+                            &env,
+                            cache,
+                            evaluated.mesh_key,
+                            evaluated.transform,
+                        );
+                        catalogue_negatives += cutters.len();
+                        diagnostics.append(&mut cut_diagnostics);
+                        let outcome = place_cached_part(
+                            cache,
+                            &mut placed_parts,
+                            &mut solids,
+                            &mesh_key,
+                            evaluated.transform,
+                            || {
+                                let body = match evaluated.kind {
+                                    EvaluatedTorusKind::Circular => circ_torus_solid(
+                                        evaluated.inner,
+                                        evaluated.outer,
+                                        evaluated.angle_deg,
+                                    )?,
+                                    EvaluatedTorusKind::Rectangular { height } => rect_torus_solid(
+                                        evaluated.inner,
+                                        evaluated.outer,
+                                        height,
+                                        evaluated.angle_deg,
+                                    )?,
+                                };
+                                subtract_owned_negatives(
+                                    body,
+                                    &cutters,
+                                    "catalogue torus after negatives",
+                                )
+                            },
+                        );
+                        match outcome {
+                            Ok(true) => {}
+                            Ok(false) => member_duplicates += 1,
+                            Err(error) => diagnostics.push(format!(
+                                "{}; torus inner={} outer={} angle_deg={}",
+                                local_failure(&primitive, &error),
+                                evaluated.inner,
+                                evaluated.outer,
+                                evaluated.angle_deg,
+                            )),
                         }
-                        cache.stats.unique_placed_parts += 1;
-                        let local_mesh = &cache
-                            .local_meshes
-                            .get(&evaluated.mesh_key)
-                            .expect("catalogue mesh inserted above")
-                            .solid;
-                        solids.push(placed(local_mesh, evaluated.transform));
                     }
                     Ok(None) => degenerate_other += 1,
-                    Err(error) => diagnostics.push(format!(
-                        "catalogue primitive {} skipped by Core-style local failure: {error}",
-                        primitive.refno()
-                    )),
+                    Err(error) => diagnostics.push(local_failure(&primitive, &error)),
                 }
             }
             "SSPH" => {
@@ -1073,40 +1226,41 @@ pub fn model_catalogue_member_with_cache(
                             CatalogueMeshKey::Sphere { segments, .. } => *segments,
                             _ => unreachable!("sphere evaluator returned a non-sphere key"),
                         };
-                        let mesh_id = match cached_mesh_id(cache, &evaluated.mesh_key, || {
-                            Ok(unit_sphere_solid(segments)?)
-                        }) {
-                            Ok(mesh_id) => mesh_id,
-                            Err(error) => {
-                                diagnostics.push(format!(
-                                    "catalogue primitive {} skipped by Core-style local failure: {error}",
-                                    primitive.refno()
-                                ));
-                                continue;
-                            }
-                        };
-                        let placed_key = PlacedPartKey {
-                            mesh_id,
-                            transform_bits: matrix_bits(evaluated.transform),
-                        };
-                        if !placed_parts.insert(placed_key) {
-                            member_duplicates += 1;
-                            cache.stats.duplicate_placed_parts += 1;
-                            continue;
+                        // 单位球的放置矩阵带半径缩放，刀随 `transform.inverse()` 一起缩进单位球
+                        // 系再做差集，等比缩放不改变布尔结果。
+                        let (mesh_key, cutters, mut cut_diagnostics) = owned_negatives_of(
+                            member,
+                            &component,
+                            &primitive,
+                            &env,
+                            cache,
+                            evaluated.mesh_key,
+                            evaluated.transform,
+                        );
+                        catalogue_negatives += cutters.len();
+                        diagnostics.append(&mut cut_diagnostics);
+                        let outcome = place_cached_part(
+                            cache,
+                            &mut placed_parts,
+                            &mut solids,
+                            &mesh_key,
+                            evaluated.transform,
+                            || {
+                                subtract_owned_negatives(
+                                    unit_sphere_solid(segments)?,
+                                    &cutters,
+                                    "catalogue SSPH after negatives",
+                                )
+                            },
+                        );
+                        match outcome {
+                            Ok(true) => {}
+                            Ok(false) => member_duplicates += 1,
+                            Err(error) => diagnostics.push(local_failure(&primitive, &error)),
                         }
-                        cache.stats.unique_placed_parts += 1;
-                        let local_mesh = &cache
-                            .local_meshes
-                            .get(&evaluated.mesh_key)
-                            .expect("catalogue mesh inserted above")
-                            .solid;
-                        solids.push(placed(local_mesh, evaluated.transform));
                     }
                     Ok(None) => degenerate_other += 1,
-                    Err(error) => diagnostics.push(format!(
-                        "catalogue primitive {} skipped by Core-style local failure: {error}",
-                        primitive.refno()
-                    )),
+                    Err(error) => diagnostics.push(local_failure(&primitive, &error)),
                 }
             }
             "SSLC" => {
@@ -1115,21 +1269,36 @@ pub fn model_catalogue_member_with_cache(
                     Ok(Some(evaluated)) => {
                         cache.stats.evaluated_sslc += 1;
                         let [xtop, ytop, xbot, ybot] = evaluated.shear_deg;
+                        let (mesh_key, cutters, mut cut_diagnostics) = owned_negatives_of(
+                            member,
+                            &component,
+                            &primitive,
+                            &env,
+                            cache,
+                            evaluated.mesh_key,
+                            evaluated.transform,
+                        );
+                        catalogue_negatives += cutters.len();
+                        diagnostics.append(&mut cut_diagnostics);
                         let outcome = place_cached_part(
                             cache,
                             &mut placed_parts,
                             &mut solids,
-                            &evaluated.mesh_key,
+                            &mesh_key,
                             evaluated.transform,
                             || {
-                                Ok(slope_ended_cylinder_solid(
-                                    evaluated.radius,
-                                    evaluated.height,
-                                    xtop,
-                                    ytop,
-                                    xbot,
-                                    ybot,
-                                )?)
+                                subtract_owned_negatives(
+                                    slope_ended_cylinder_solid(
+                                        evaluated.radius,
+                                        evaluated.height,
+                                        xtop,
+                                        ytop,
+                                        xbot,
+                                        ybot,
+                                    )?,
+                                    &cutters,
+                                    "catalogue SSLC after negatives",
+                                )
                             },
                         );
                         match outcome {
@@ -1147,24 +1316,35 @@ pub fn model_catalogue_member_with_cache(
                 match evaluate_sdsh(member, &component, &primitive, &env) {
                     Ok(Some(evaluated)) => {
                         cache.stats.evaluated_sdsh += 1;
-                        let outcome = match &evaluated {
-                            EvaluatedSdsh::Dish(dish) => place_cached_part(
-                                cache,
-                                &mut placed_parts,
-                                &mut solids,
-                                &dish.mesh_key,
-                                dish.transform,
-                                || Ok(build_dish(dish)?),
-                            ),
-                            EvaluatedSdsh::Disc(disc) => place_cached_part(
-                                cache,
-                                &mut placed_parts,
-                                &mut solids,
-                                &disc.mesh_key,
-                                disc.transform,
-                                || Ok(csg_cylinder_solid(disc.diameter, disc.height)?),
-                            ),
+                        let (base_key, transform) = match &evaluated {
+                            EvaluatedSdsh::Dish(dish) => (dish.mesh_key.clone(), dish.transform),
+                            EvaluatedSdsh::Disc(disc) => (disc.mesh_key.clone(), disc.transform),
                         };
+                        let (mesh_key, cutters, mut cut_diagnostics) = owned_negatives_of(
+                            member, &component, &primitive, &env, cache, base_key, transform,
+                        );
+                        catalogue_negatives += cutters.len();
+                        diagnostics.append(&mut cut_diagnostics);
+                        let outcome = place_cached_part(
+                            cache,
+                            &mut placed_parts,
+                            &mut solids,
+                            &mesh_key,
+                            transform,
+                            || {
+                                let body = match &evaluated {
+                                    EvaluatedSdsh::Dish(dish) => build_dish(dish)?,
+                                    EvaluatedSdsh::Disc(disc) => {
+                                        csg_cylinder_solid(disc.diameter, disc.height)?
+                                    }
+                                };
+                                subtract_owned_negatives(
+                                    body,
+                                    &cutters,
+                                    "catalogue SDSH after negatives",
+                                )
+                            },
+                        );
                         match outcome {
                             Ok(true) => {}
                             Ok(false) => member_duplicates += 1,
@@ -1180,13 +1360,30 @@ pub fn model_catalogue_member_with_cache(
                 match evaluate_sdis(member, &component, &primitive, &env) {
                     Ok(Some(disc)) => {
                         cache.stats.evaluated_sdis += 1;
+                        let (mesh_key, cutters, mut cut_diagnostics) = owned_negatives_of(
+                            member,
+                            &component,
+                            &primitive,
+                            &env,
+                            cache,
+                            disc.mesh_key,
+                            disc.transform,
+                        );
+                        catalogue_negatives += cutters.len();
+                        diagnostics.append(&mut cut_diagnostics);
                         let outcome = place_cached_part(
                             cache,
                             &mut placed_parts,
                             &mut solids,
-                            &disc.mesh_key,
+                            &mesh_key,
                             disc.transform,
-                            || Ok(csg_cylinder_solid(disc.diameter, disc.height)?),
+                            || {
+                                subtract_owned_negatives(
+                                    csg_cylinder_solid(disc.diameter, disc.height)?,
+                                    &cutters,
+                                    "catalogue SDIS after negatives",
+                                )
+                            },
                         );
                         match outcome {
                             Ok(true) => {}
@@ -1198,14 +1395,18 @@ pub fn model_catalogue_member_with_cache(
                     Err(error) => diagnostics.push(local_failure(&primitive, &error)),
                 }
             }
-            // GMRE LINE entries are centreline metadata, not visible solids.
-            "LINE" => ignored_lines += 1,
+            // GMRE LINE entries are centreline metadata, not visible solids. CRCATI
+            // (`0x10345ACC`) 把 LINE(640317) 与 SLINE(3471112) 送进同一个 `gml_bkend/CRCURV`
+            // (`0x103474C7`)——出的是曲线不是实体，两个 noun 同一口径。此前只认 LINE，
+            // SLINE 会落 `is not implemented`，把一条 E3D 也不出体的线记成欠账。
+            "LINE" | "SLINE" => ignored_lines += 1,
             unsupported => diagnostics.push(format!(
                 "catalogue primitive {} noun {unsupported} is not implemented",
                 primitive.refno()
             )),
         }
     }
+    drop(prims_timing);
     let display_filtered_members = display_filter_notes.len();
     if solids.is_empty() {
         // GMRE 在、图元一个都没成体：把每个图元的去向数出来，读报告的人不用再翻目录。
@@ -1225,29 +1426,42 @@ pub fn model_catalogue_member_with_cache(
         });
     }
 
-    let local = Manifold::compose(&solids);
-    if local.is_empty() || local.num_tri() == 0 {
+    let compose_timing = crate::perf::cat_compose_scope();
+    // 「本件有没有成体」查缓存里记下的面数，不问 `local`：问一句就把局部系那一遍
+    // 物化出来了，而这批顶点马上还要在世界系再算一遍。`placed_parts` 与 `solids`
+    // 逐个对应（重复放置在上面 `continue` 掉了），面数相加就是汇总后的面数。
+    let assembly_tris: usize = placed_parts
+        .iter()
+        .map(|part| cache.mesh_tri_counts[part.mesh_id])
+        .sum();
+    if assembly_tris == 0 {
         return Err(ModelError::Solid(SolidError::EmptyManifold {
             what: "catalogue assembly",
         }));
     }
+    // 一件图元的「汇总」就是它自己：`Manifold::compose` 走的是从头重建 Impl 那条路
+    // （重算半边、重排顶点、重算包围盒），对单件是净浪费，而且它是**急切**的——
+    // 那一下就把惰性变换逼成了真顶点。ams8000 每件平均 1.18 个图元。
+    let local = match solids.as_slice() {
+        [only] => only.clone(),
+        many => Manifold::compose(many),
+    };
     let world = world_matrix(member)?;
     let noun = member.element_type()?;
-    // E3D keeps CLFL display programs as independent RVM components even when
-    // their primitives overlap. NPPIPE ATTA is noun-wide rather than flag-wide:
-    // RVM 24383/73951 and /73956 retain both visible cylinders, while the binary
-    // catalogue flags do not expose a stable CLFL discriminator for this pair.
-    let preserve_components = preserves_catalogue_components(
-        &noun,
-        saw_display_primitive,
-        all_display_primitives_are_clfl,
-    );
+    // E3D RVM keeps the visible catalogue primitives as independent display
+    // components, including overlapping ones. Composing an AMS VALV's 18 SCYL
+    // and 2 LSNO parts changed three occupied ray intervals and lost 26.95% of
+    // the RVM component-sum volume. Preserve the already filtered parts here;
+    // `solid` remains available to callers that explicitly need one manifold.
+    let preserve_components = preserves_catalogue_components(saw_display_primitive);
     let parts = preserve_components.then(|| {
         solids
             .iter()
             .map(|solid| placed(solid, world))
             .collect::<Vec<_>>()
     });
+    let world_solid = placed(&local, world);
+    drop(compose_timing);
     let notes = vec![format!(
         "catalogue assembly: built={} sext_total={} sext_zero_height={} degenerate_other={} failed={} centre_lines={} display_filtered={} duplicate_placements={} component={}",
         solids.len(),
@@ -1269,8 +1483,9 @@ pub fn model_catalogue_member_with_cache(
             },
             refno: member.refno(),
             noun,
+            is_invalid_tubi: false,
             name: member.stored_name()?,
-            solid: placed(&local, world),
+            solid: world_solid,
             parts,
             world,
             primitive_instance: None,
@@ -1282,14 +1497,8 @@ pub fn model_catalogue_member_with_cache(
     })
 }
 
-fn preserves_catalogue_components(
-    member_noun: &str,
-    saw_display_primitive: bool,
-    all_display_primitives_are_clfl: bool,
-) -> bool {
+fn preserves_catalogue_components(saw_display_primitive: bool) -> bool {
     saw_display_primitive
-        && (all_display_primitives_are_clfl
-            || member_noun.eq_ignore_ascii_case("ATTA"))
 }
 
 /// Core expands HVAC `DESP` through xrules before catalogue evaluation. The
@@ -1331,6 +1540,7 @@ fn model_hvac_rectangular_basic(
             },
             refno: member.refno(),
             noun,
+            is_invalid_tubi: false,
             name: member.stored_name()?,
             solid: placed(&built.solid, world),
             parts: None,
@@ -1373,23 +1583,43 @@ fn evaluate_lpyr(
     pyramid: &DbElement,
     env: &DbElementParamEnv,
 ) -> Result<Option<EvaluatedPyramid>, ModelError> {
-    let mut xtop = required_number(pyramid, "PBTP", env, "catalogue LPYR")?.abs();
-    let mut ytop = required_number(pyramid, "PCTP", env, "catalogue LPYR")?.abs();
-    let mut xbot = required_number(pyramid, "PBBT", env, "catalogue LPYR")?.abs();
-    let mut ybot = required_number(pyramid, "PCBT", env, "catalogue LPYR")?.abs();
-    let top_distance = required_number(pyramid, "PBOF", env, "catalogue LPYR")?;
-    let bottom_distance = required_number(pyramid, "PCOF", env, "catalogue LPYR")?;
-    let xoff = required_number(pyramid, "PTDI", env, "catalogue LPYR")?;
-    let mut yoff = required_number(pyramid, "PBDI", env, "catalogue LPYR")?;
+    let xtop = required_number(pyramid, "PBTP", env, "catalogue LPYR")?.abs();
+    let ytop = required_number(pyramid, "PCTP", env, "catalogue LPYR")?.abs();
+    let xbot = required_number(pyramid, "PBBT", env, "catalogue LPYR")?.abs();
+    let ybot = required_number(pyramid, "PCBT", env, "catalogue LPYR")?.abs();
+    let (top_distance, bottom_distance, xoff, yoff) = lpyr_axial_and_offsets(
+        required_number(pyramid, "PTDI", env, "catalogue LPYR")?,
+        required_number(pyramid, "PBDI", env, "catalogue LPYR")?,
+        required_number(pyramid, "PBOF", env, "catalogue LPYR")?,
+        required_number(pyramid, "PCOF", env, "catalogue LPYR")?,
+    );
 
-    let mut pa = catalogue_axis_or_fail(member, component, pyramid, "PAAX", "catalogue LPYR axis")?;
+    let pa = catalogue_axis_or_fail(member, component, pyramid, "PAAX", "catalogue LPYR axis")?;
     let pb = catalogue_axis_or_fail(member, component, pyramid, "PBAX", "catalogue LPYR axis")?;
     let pc = catalogue_axis_or_fail(member, component, pyramid, "PCAX", "catalogue LPYR axis")?;
 
+    lpyr_geometry(
+        [xbot, ybot, xtop, ytop],
+        [top_distance, bottom_distance, xoff, yoff],
+        pa,
+        pb,
+        pc,
+    )
+}
+
+fn lpyr_geometry(
+    [mut xbot, mut ybot, mut xtop, mut ytop]: [f64; 4],
+    [top_distance, bottom_distance, xoff, mut yoff]: [f64; 4],
+    pa: CatalogueAxis,
+    mut pb: CatalogueAxis,
+    pc: CatalogueAxis,
+) -> Result<Option<EvaluatedPyramid>, ModelError> {
     let mut height = top_distance - bottom_distance;
     if height <= 0.0 {
         height = -height;
-        pa.direction = -pa.direction;
+        // QLPYRA (Core3D 0x103C07B4) calls HCHECK on PBAX, not PAAX.
+        // Axial coordinates retain their sign along the original PAAX.
+        pb.direction = -pb.direction;
         std::mem::swap(&mut xbot, &mut xtop);
         std::mem::swap(&mut ybot, &mut ytop);
     }
@@ -1431,6 +1661,15 @@ fn evaluate_lpyr(
         transform: DMat4::from_translation(pa.origin + rotation * centre)
             * DMat4::from_mat3(rotation),
     }))
+}
+
+fn lpyr_axial_and_offsets(
+    top_distance: f64,
+    bottom_distance: f64,
+    xoff: f64,
+    yoff: f64,
+) -> (f64, f64, f64, f64) {
+    (top_distance, bottom_distance, xoff, yoff)
 }
 
 fn evaluate_catalogue_snout(
@@ -1693,7 +1932,43 @@ fn evaluate_sext(
         rings,
         height,
         transform,
+        cutters: Vec::new(),
+        diagnostics: Vec::new(),
     }))
+}
+
+/// 正体 SEXT：轮廓 + 放置（[`evaluate_sext`]）再加名下的成员级刀集。
+///
+/// ams5052 `/ZSPE660NN2-GS` 的 SEXT 名下挂着 1 只 NSEX（内腔，四周内缩 2 mm）
+/// 与 4 只 NSCY（底板安装孔）；E3D 的 TTY RVM 把它画成 2 mm 薄壳，此前这里只认
+/// SLOO、其余子元素一律跳过，出来的是实心块（体积 3.13e6 对 E3D 的 ≈1.5e6 mm³），
+/// 而报告上 `negatives_skipped=0`、一条 note 都没有。两个工程目录的 30 个 CATA 库里
+/// 挂在 SEXT 名下的负体有 3.8 万件（NSEX / NSBO / NLPY / NSRE / NSCY…），是 SBOX 名下的五倍。
+///
+/// 刀的收集与 SREV 同一份（[`collect_owned_negatives`]）：SEXT 的放置带标架旋转，
+/// 回到局部系走逆矩阵，不能像 SBOX 那样只减 position。
+fn evaluate_sext_body(
+    member: &DbElement,
+    component: &DbElement,
+    sext: &DbElement,
+    env: &DbElementParamEnv,
+    cache: &mut CatalogueMeshCache,
+) -> Result<Option<EvaluatedSext>, ModelError> {
+    let Some(mut evaluated) = evaluate_sext(member, component, sext, env)? else {
+        return Ok(None);
+    };
+    let rebase = evaluated.transform.inverse();
+    let (cutters, diagnostics) =
+        collect_owned_negatives(member, component, sext, env, cache, rebase)?;
+    if !cutters.is_empty() {
+        evaluated.mesh_key = CatalogueMeshKey::CutSext {
+            base: sext_mesh_key(&evaluated.rings, evaluated.height)?,
+            cutters: catalogue_cut_keys(&cutters)?,
+        };
+    }
+    evaluated.cutters = cutters;
+    evaluated.diagnostics = diagnostics;
+    Ok(Some(evaluated))
 }
 
 /// QSSREV（`0x103B81CC`）的扫角归一：`|PANG| < 0.001` 缺省成整圈 360，
@@ -1744,10 +2019,48 @@ fn evaluate_srev(
     // 刀的求值都在部件局部系；SREV 的放置带旋转，回到 SREV 局部系要走逆矩阵
     // （SBOX 是纯平移，减 position 就够，这里不够）。
     let rebase = transform.inverse();
+    let (cutters, diagnostics) =
+        collect_owned_negatives(member, component, srev, env, cache, rebase)?;
 
+    let cutter_keys = catalogue_cut_keys(&cutters)?;
+    let (ring_lengths, coordinate_bits) = profile_key_bits(&rings, "catalogue SREV profile")?;
+    let mesh_key = CatalogueMeshKey::Srev(SrevMeshKey {
+        tessellation_version: SREV_TESSELLATION_VERSION,
+        angle_bits: finite_bits(angle_deg, "catalogue SREV angle")?,
+        ring_lengths,
+        coordinate_bits,
+        cutters: cutter_keys,
+    });
+    Ok(Some(EvaluatedSrev {
+        mesh_key,
+        rings,
+        angle_deg,
+        cutters,
+        transform,
+        diagnostics,
+    }))
+}
+
+/// 轮廓类正体（SREV / SEXT）名下的成员级刀集：逐个子元素按 noun 复用各自正体的
+/// 求值器，刀在部件局部系求出，再乘 `rebase` 回到属主的局部系。SLOO 是属主自己的
+/// 剖面成员，不是刀。认不出的 noun 落一行 `is not implemented`——**不许静默跳过**：
+/// 这份收集器此前只有 SREV 一份、SBOX 另抄一份，SEXT 什么都没有，于是 SEXT 名下
+/// 的负体连一行 note 都不留就没了（见 [`evaluate_sext_body`]）。
+///
+/// 与 SBOX 那份的分岔只剩两处，都有理由：SBOX 是纯平移放置，求值器直接减 position；
+/// NLSN / NSCO / NSRE 至今没有语料在 SBOX 名下出现过（守卫
+/// `both_negative_collectors_recognise_the_same_nouns` 钉着这张单子）。
+fn collect_owned_negatives(
+    member: &DbElement,
+    component: &DbElement,
+    owner: &DbElement,
+    env: &DbElementParamEnv,
+    cache: &mut CatalogueMeshCache,
+    rebase: DMat4,
+) -> Result<(Vec<EvaluatedCatalogueCut>, Vec<String>), ModelError> {
     let mut cutters = Vec::new();
     let mut diagnostics = Vec::new();
-    for child in srev.members()? {
+    for child in owner.members()? {
         let noun = child.element_type()?;
         if noun.eq_ignore_ascii_case("SLOO") {
             continue;
@@ -1908,31 +2221,87 @@ fn evaluate_srev(
                     child.refno()
                 )),
             }
+        } else if noun.eq_ignore_ascii_case("NSSP") {
+            // CRCATI 701101/860747：负球与正体 SSPH 同臂（`QSSPHE` → ORIMAT →
+            // `gm_CreateSphere(PDIA/2)`），**没有** +0.01 过切（反编译 2026-09-06 核实，
+            // 过切只在 NSCO/NLCY/NSCY/NLSN 四臂上 `v48 += 0.01`）。
+            cache.stats.source_nssp += 1;
+            match evaluate_catalogue_sphere(member, component, &child, env) {
+                Ok(Some(cutter)) => {
+                    cache.stats.evaluated_nssp += 1;
+                    let CatalogueMeshKey::Sphere { segments, .. } = cutter.mesh_key else {
+                        unreachable!("sphere evaluator returned a non-sphere key")
+                    };
+                    cutters.push(EvaluatedCatalogueCut::Sphere {
+                        segments,
+                        transform: rebase * cutter.transform,
+                    });
+                }
+                Ok(None) => {}
+                Err(error) => diagnostics.push(format!(
+                    "catalogue negative {} skipped by Core-style local failure: {error}",
+                    child.refno()
+                )),
+            }
+        } else if noun.eq_ignore_ascii_case("NSDS") {
+            // CRCATI 702883/908861：负碟与正体 SDSH 同臂（`QSDISH`，球形 / 折边 / `PHEI=0`
+            // 退化成 1 mm 圆盘三路都一样），**没有** +0.01 过切。
+            cache.stats.source_nsds += 1;
+            match evaluate_sdsh(member, component, &child, env) {
+                Ok(Some(EvaluatedSdsh::Dish(dish))) => {
+                    cache.stats.evaluated_nsds += 1;
+                    cutters.push(EvaluatedCatalogueCut::Dish {
+                        body: dish.body,
+                        radius: dish.radius,
+                        height: dish.height,
+                        transform: rebase * dish.transform,
+                    });
+                }
+                Ok(Some(EvaluatedSdsh::Disc(disc))) => {
+                    cache.stats.evaluated_nsds += 1;
+                    cutters.push(EvaluatedCatalogueCut::Cylinder(EvaluatedNscy {
+                        diameter: disc.diameter,
+                        height: disc.height,
+                        transform: rebase * disc.transform,
+                    }));
+                }
+                Ok(None) => {}
+                Err(error) => diagnostics.push(format!(
+                    "catalogue negative {} skipped by Core-style local failure: {error}",
+                    child.refno()
+                )),
+            }
+        } else if noun.eq_ignore_ascii_case("NSSL") {
+            // CRCATI 599770/782015：负斜切圆柱与正体 SSLC 同臂（`QSSLCY` → ORIMAT →
+            // `CSRTAX` 覆盖标架 → 四角折回 → `gm_CreateSlopeEndedCylinder`），**没有** +0.01 过切。
+            // ams7997 的 C5SEGB / CELBOW（HVAC 分段弯头）一件就挂 4–10 只，此前整族静默漏掉。
+            cache.stats.source_nssl += 1;
+            match evaluate_sslc(member, component, &child, env) {
+                Ok(Some(cutter)) => {
+                    cache.stats.evaluated_nssl += 1;
+                    cutters.push(EvaluatedCatalogueCut::SlopeCylinder {
+                        radius: cutter.radius,
+                        height: cutter.height,
+                        shear_deg: cutter.shear_deg,
+                        transform: rebase * cutter.transform,
+                    });
+                }
+                Ok(None) => {}
+                Err(error) => diagnostics.push(format!(
+                    "catalogue negative {} skipped by Core-style local failure: {error}",
+                    child.refno()
+                )),
+            }
         } else {
+            // CRCATI 还剩 NBXI(726152) / NTUB(586670) 两条负臂没接：它们的正体 BOXI / TUBE
+            // 本仓同样未建（`is not implemented`），30 个目录库的负体普查里一件都没有。
             diagnostics.push(format!(
                 "catalogue negative {} noun {noun} is not implemented",
                 child.refno()
             ));
         }
     }
-
-    let cutter_keys = catalogue_cut_keys(&cutters)?;
-    let (ring_lengths, coordinate_bits) = profile_key_bits(&rings, "catalogue SREV profile")?;
-    let mesh_key = CatalogueMeshKey::Srev(SrevMeshKey {
-        tessellation_version: SREV_TESSELLATION_VERSION,
-        angle_bits: finite_bits(angle_deg, "catalogue SREV angle")?,
-        ring_lengths,
-        coordinate_bits,
-        cutters: cutter_keys,
-    });
-    Ok(Some(EvaluatedSrev {
-        mesh_key,
-        rings,
-        angle_deg,
-        cutters,
-        transform,
-        diagnostics,
-    }))
+    Ok((cutters, diagnostics))
 }
 
 fn evaluate_sbox(
@@ -1959,89 +2328,19 @@ fn evaluate_sbox(
         required_number(sbox, "PY", env, "catalogue SBOX position")?,
         required_number(sbox, "PZ", env, "catalogue SBOX position")?,
     );
-    let mut cutters = Vec::new();
-    let mut diagnostics = Vec::new();
-    for child in sbox.members()? {
-        let noun = child.element_type()?;
-        if noun.eq_ignore_ascii_case("NSCY") {
-            cache.stats.source_nscy += 1;
-            match evaluate_nscy(member, component, &child, env, position) {
-                Ok(Some(cutter)) => {
-                    cache.stats.evaluated_nscy += 1;
-                    cutters.push(EvaluatedCatalogueCut::Cylinder(cutter));
-                }
-                Ok(None) => {}
-                Err(error) => diagnostics.push(format!(
-                    "catalogue negative {} skipped by Core-style local failure: {error}",
-                    child.refno()
-                )),
-            }
-        } else if noun.eq_ignore_ascii_case("NSBO") {
-            cache.stats.source_nsbo += 1;
-            match evaluate_nsbo(&child, env, position) {
-                Ok(Some(cutter)) => {
-                    cache.stats.evaluated_nsbo += 1;
-                    cutters.push(cutter);
-                }
-                Ok(None) => {}
-                Err(error) => diagnostics.push(format!(
-                    "catalogue negative {} skipped by Core-style local failure: {error}",
-                    child.refno()
-                )),
-            }
-        } else if noun.eq_ignore_ascii_case("NLCY") {
-            cache.stats.source_nlcy += 1;
-            match evaluate_nlcy(member, component, &child, env, position) {
-                Ok(Some(cutter)) => {
-                    cache.stats.evaluated_nlcy += 1;
-                    cutters.push(EvaluatedCatalogueCut::Cylinder(cutter));
-                }
-                Ok(None) => {}
-                Err(error) => diagnostics.push(format!(
-                    "catalogue negative {} skipped by Core-style local failure: {error}",
-                    child.refno()
-                )),
-            }
-        } else if noun.eq_ignore_ascii_case("NLPY") {
-            match evaluate_nlpy(member, component, &child, env) {
-                Ok(Some(cutter)) => cutters.push(EvaluatedCatalogueCut::Pyramid {
-                    parameters: cutter.parameters,
-                    transform: DMat4::from_translation(-position) * cutter.transform,
-                }),
-                Ok(None) => {}
-                Err(error) => diagnostics.push(format!(
-                    "catalogue negative {} skipped by Core-style local failure: {error}",
-                    child.refno()
-                )),
-            }
-        } else if noun.eq_ignore_ascii_case("NSEX") {
-            // CRCATI 942751/1008005：正体 SEXT 与负体 NSEX 落同一个臂
-            // （`QSSEXT` 0x103B7FCC，高度 ≥1e-6 才建），几何完全同构、负性由
-            // 消费方施加，且**没有** NSCY 那条 +0.01 轴向过切——反编译核实，
-            // 见方案文档 §2.1/§2.3。放置照 NLPY 的样式回到 SBOX 局部系。
-            cache.stats.source_nsex += 1;
-            match evaluate_sext(member, component, &child, env) {
-                Ok(Some(cutter)) => {
-                    cache.stats.evaluated_nsex += 1;
-                    cutters.push(EvaluatedCatalogueCut::Extrusion {
-                        rings: cutter.rings,
-                        height: cutter.height,
-                        transform: DMat4::from_translation(-position) * cutter.transform,
-                    });
-                }
-                Ok(None) => {}
-                Err(error) => diagnostics.push(format!(
-                    "catalogue negative {} skipped by Core-style local failure: {error}",
-                    child.refno()
-                )),
-            }
-        } else {
-            diagnostics.push(format!(
-                "catalogue negative {} noun {noun} is not implemented",
-                child.refno()
-            ));
-        }
-    }
+    // SBOX 是纯平移放置：回到 SBOX 局部系就是减 position，与 `transform.inverse()` 逐位相同
+    // （`translate(-p) * translate(c) * R == translate(c - p) * R`），所以名下的刀直接走
+    // SREV / SEXT / 圆柱共用的那份收集器。此前这里另抄一份只认 NSCY/NSBO/NLCY/NLPY/NSEX/
+    // NSCT/NSRT，NLSN/NSCO/NSRE 落 `is not implemented`——30 个目录库里 SBOX 名下有 14 只
+    // NLSN、12 只 NSDS，"没语料"那条理由不成立；两份收集器的 noun 单子也再不用靠守卫对齐。
+    let (cutters, diagnostics) = collect_owned_negatives(
+        member,
+        component,
+        sbox,
+        env,
+        cache,
+        DMat4::from_translation(-position),
+    )?;
     let cutter_keys = catalogue_cut_keys(&cutters)?;
     let mesh_key = CatalogueMeshKey::Sbox(SboxMeshKey {
         tessellation_version: SBOX_TESSELLATION_VERSION,
@@ -2159,28 +2458,37 @@ fn evaluate_nscy(
 }
 
 fn uses_clfl_centreline_frame(member_noun: &str, primitive_noun: &str, clfl: bool) -> bool {
-    clfl && primitive_noun.eq_ignore_ascii_case("SCYL") && !member_noun.eq_ignore_ascii_case("ATTA")
+    // CLFL is a display flag, not an alternate SCYL axis. QSCYLI
+    // (Core3D 0x103BF3FC) and CRCATI (0x10345ACC) use PAXI and its
+    // midpoint without a quarter-turn. E3D TTY RVM for CPV STRT
+    // 24381/76730..76732 confirms this for the body and all four flanges.
+    // Keep the existing support-specific convention scoped to the two
+    // families it was introduced for; never apply it to route components.
+    clfl && primitive_noun.eq_ignore_ascii_case("SCYL")
+        && (member_noun.eq_ignore_ascii_case("HELE") || member_noun.eq_ignore_ascii_case("PCLA"))
 }
 
-fn atta_clfl_roll(
+/// ATTA uses the catalogue axis directly; its member ORI is applied once by
+/// world_matrix. Rotating here based on an Euler-angle sign double-applies
+/// placement and turns PAXI=-Z into a horizontal cylinder (24384/26234,26235).
+fn catalogue_cylinder_placement(
     member_noun: &str,
-    primitive_noun: &str,
+    noun: &str,
     clfl: bool,
-    orientation: Option<&[f64]>,
-) -> Option<f64> {
-    (clfl
-        && primitive_noun.eq_ignore_ascii_case("SCYL")
-        && member_noun.eq_ignore_ascii_case("ATTA"))
-    .then(|| {
-        if orientation
-            .and_then(|values| values.first())
-            .is_some_and(|angle| *angle < 0.0)
-        {
-            std::f64::consts::FRAC_PI_2
-        } else {
-            -std::f64::consts::FRAC_PI_2
-        }
-    })
+    axis: CatalogueAxis,
+    centre_distance: f64,
+    height: f64,
+) -> (DMat3, DVec3) {
+    let frame = orimat(axis.direction).expect("validated catalogue cylinder axis");
+    if uses_clfl_centreline_frame(member_noun, noun, clfl) {
+        let rotation = frame * DMat3::from_rotation_x(-std::f64::consts::FRAC_PI_2);
+        (
+            rotation,
+            axis.origin + axis.direction * centre_distance + rotation.z_axis * (height * 0.5),
+        )
+    } else {
+        (frame, axis.origin + axis.direction * centre_distance)
+    }
 }
 
 fn evaluate_catalogue_cylinder(
@@ -2189,6 +2497,7 @@ fn evaluate_catalogue_cylinder(
     cylinder: &DbElement,
     env: &DbElementParamEnv,
     noun: &str,
+    cache: &mut CatalogueMeshCache,
 ) -> Result<Option<EvaluatedCylinder>, ModelError> {
     let diameter = required_number(cylinder, "PDIA", env, "catalogue cylinder")?.abs();
     let mut axis = catalogue_axis_or_fail(
@@ -2198,7 +2507,7 @@ fn evaluate_catalogue_cylinder(
         "PAXI",
         "catalogue cylinder axis",
     )?;
-    let (height, start_distance, centre_distance) = if noun == "SCYL" {
+    let (height, centre_distance) = if noun == "SCYL" {
         let mut height = required_number(cylinder, "PHEI", env, "catalogue SCYL")?;
         let mut distance = required_number(cylinder, "PDIS", env, "catalogue SCYL")?;
         if height <= 0.0 {
@@ -2206,12 +2515,12 @@ fn evaluate_catalogue_cylinder(
             distance = -distance;
             axis.direction = -axis.direction;
         }
-        (height, distance, distance + height * 0.5)
+        (height, distance + height * 0.5)
     } else {
         let top = required_number(cylinder, "PTDI", env, "catalogue LCYL")?;
         let bottom = required_number(cylinder, "PBDI", env, "catalogue LCYL")?;
         let centre = (bottom + top) * 0.5;
-        ((bottom - top).abs(), centre, centre)
+        ((bottom - top).abs(), centre)
     };
     // 零高与零径同一口径（`disc_at` / SSLC 那几条臂早就这么判）：都是 Core 不出体的合法
     // 参数化关法，归零高或退化。零径此前漏判，放行到 `csg_cylinder_solid` 撞 `Degenerate`
@@ -2219,49 +2528,75 @@ fn evaluate_catalogue_cylinder(
     if height < HEIGHT_TOL_MM || diameter < HEIGHT_TOL_MM {
         return Ok(None);
     }
-    let frame = orimat(axis.direction).ok_or_else(|| {
-        ModelError::Solid(SolidError::Degenerate {
-            what: "catalogue cylinder axis",
-            detail: format!("PAXI={:?}", axis.direction),
-        })
-    })?;
-    // CLFL display programs use the RVM centre-line frame: PAXI is their datum
-    // direction while the cylinder runs along frame Y.  NPPIPE ATTA is the
-    // proven exception: RVM 24383/73952 and /73953 keep PDIS on PAXI but use
-    // the member's signed orientation to choose which half-axis the attachment
-    // occupies.  Applying the generic CLFL centre offset moves both by 100 mm.
     let member_noun = member.element_type()?;
     let clfl = cylinder.get_bool("CLFL")? == Some(true);
-    let (rotation, centre) = if uses_clfl_centreline_frame(&member_noun, noun, clfl) {
-        let rotation = frame * DMat3::from_rotation_x(-std::f64::consts::FRAC_PI_2);
-        (
-            rotation,
-            axis.origin + axis.direction * centre_distance + rotation.z_axis * (height * 0.5),
-        )
-    } else if let Some(roll) = atta_clfl_roll(
-        &member_noun,
-        noun,
-        clfl,
-        member.get_double_array("ORI")?.as_deref(),
-    ) {
-        let rotation = frame * DMat3::from_rotation_x(roll);
-        (
-            rotation,
-            axis.origin + axis.direction * start_distance + rotation.z_axis * (height * 0.5),
-        )
+    let (rotation, centre) =
+        catalogue_cylinder_placement(&member_noun, noun, clfl, axis, centre_distance, height);
+    let transform = DMat4::from_translation(centre) * DMat4::from_mat3(rotation);
+    let rebase = transform.inverse();
+    // 圆柱正体（SCYL/LCYL）名下的负体走 SREV/SEXT 同一份收集器：此前这条臂只认
+    // NSCY/NLCY，其余（NSCT/NSRT/NSBO/NSEX/NLPY/NLSN/NSCO/NSRE）一律落
+    // `noun … is not implemented` 静默丢掉——ams7997 的 INST 24381/637 那只 SCYL 名下 4 只
+    // NSCT（法兰环切槽）、另有 21 只 NSBO 就是这么漏的：拿这只 INST 对 E3D 的 TTY RVM，
+    // 补上后 E3D 顶点离我们表面 >0.5mm 的从 48 个（最大 1.39mm）降到 0（最大 0.49mm）。
+    // 回位约定与 SEXT 同（`rebase = transform.inverse()`，圆柱放置带轴向旋转，减 position 不够）。
+    let (cutters, diagnostics) =
+        collect_owned_negatives(member, component, cylinder, env, cache, rebase)?;
+    let base = CatalogueMeshKey::Cylinder {
+        tessellation_version: CYLINDER_TESSELLATION_VERSION,
+        diameter_bits: finite_bits(diameter, "catalogue cylinder diameter")?,
+        height_bits: finite_bits(height, "catalogue cylinder height")?,
+    };
+    let mesh_key = if cutters.is_empty() {
+        base
     } else {
-        (frame, axis.origin + axis.direction * centre_distance)
+        CatalogueMeshKey::Cut {
+            base: Box::new(base),
+            cutters: catalogue_cut_keys(&cutters)?,
+        }
     };
     Ok(Some(EvaluatedCylinder {
-        mesh_key: CatalogueMeshKey::Cylinder {
-            tessellation_version: CYLINDER_TESSELLATION_VERSION,
-            diameter_bits: finite_bits(diameter, "catalogue cylinder diameter")?,
-            height_bits: finite_bits(height, "catalogue cylinder height")?,
-        },
+        mesh_key,
         diameter,
         height,
-        transform: DMat4::from_translation(centre) * DMat4::from_mat3(rotation),
+        transform,
+        cutters,
+        diagnostics,
     }))
+}
+
+/// Boolean catalogue cylinders use the FacetGroup grid for both operands.
+/// Plain cylinders keep their existing finer primitive tessellation.
+fn build_catalogue_cylinder(e: &EvaluatedCylinder) -> Result<Manifold, ModelError> {
+    use crate::solid::{csg_cylinder_solid_with_segments, negative_cylinder_segments};
+    if e.cutters.is_empty() {
+        return Ok(csg_cylinder_solid(e.diameter, e.height)?);
+    }
+    let mut body = csg_cylinder_solid_with_segments(
+        e.diameter,
+        e.height,
+        negative_cylinder_segments(e.diameter / 2.0),
+    )?;
+    for cutter in &e.cutters {
+        let (local, transform) = match cutter {
+            EvaluatedCatalogueCut::Cylinder(c) => (
+                csg_cylinder_solid_with_segments(
+                    c.diameter,
+                    c.height,
+                    negative_cylinder_segments(c.diameter / 2.0),
+                )?,
+                c.transform,
+            ),
+            _ => cutter_solid(cutter)?,
+        };
+        body = &body - &placed(&local, transform);
+    }
+    if body.is_empty() || body.num_tri() == 0 {
+        return Err(ModelError::Solid(SolidError::EmptyManifold {
+            what: "catalogue cylinder after negatives",
+        }));
+    }
+    Ok(body)
 }
 
 fn cached_mesh_id(
@@ -2273,14 +2608,14 @@ fn cached_mesh_id(
         cache.stats.local_mesh_hits += 1;
         return Ok(cached.id);
     }
+    let _timing = crate::perf::mesh_build_scope();
     let id = cache.local_meshes.len();
-    cache.local_meshes.insert(
-        key.clone(),
-        CachedCatalogueMesh {
-            id,
-            solid: build()?,
-        },
-    );
+    let solid = build()?;
+    debug_assert_eq!(cache.mesh_tri_counts.len(), id, "mesh id 就是这张表的下标");
+    cache.mesh_tri_counts.push(solid.num_tri());
+    cache
+        .local_meshes
+        .insert(key.clone(), CachedCatalogueMesh { id, solid });
     cache.stats.local_mesh_misses += 1;
     Ok(id)
 }
@@ -2360,6 +2695,80 @@ fn local_failure(primitive: &DbElement, error: &ModelError) -> String {
         "catalogue primitive {} skipped by Core-style local failure: {error}",
         primitive.refno()
     )
+}
+
+/// `CSG_TreeBuilderCat::getCSGTree`（`0x1072F5D0`）：正体只要有成员就开一个
+/// `gm_CreateCombination(3)` 差集，`addNegatives`（`0x1072F480`）逐成员过 `isWanted`
+/// 后送进 CRCATI，建得出来的全扣掉——**不分正体 noun**。SEXT / SREV / SBOX / 圆柱四臂在
+/// 各自的求值器里收刀；棱锥 / 锥台 / 环面 / 球 / 斜切圆柱 / 碟 / 圆盘七臂此前一把都不收，
+/// 42 个目录库里这八种属主名下约 5200 只负体连一行 note 都没有就没了（LPYR 3683 /
+/// LSNO 794 / SSLC 413 / SRTO 161 / SCTO 95 / SDSH 25 / SSPH 22 / SCON 2；
+/// 普查 2026-09-06）。
+///
+/// 这里做 Core3D 那一步的前半：收刀、把网格键包成 [`CatalogueMeshKey::Cut`]——无刀时键
+/// 不变，缓存不分岔。刀已回到正体局部系（`transform.inverse()`，与圆柱臂同一约定）。
+/// 收刀本身失败不拦正体：Core3D 也是正体先进组合、刀再逐把加，这里落一行 note 然后
+/// 按无刀建体。
+fn owned_negatives_of(
+    member: &DbElement,
+    component: &DbElement,
+    primitive: &DbElement,
+    env: &DbElementParamEnv,
+    cache: &mut CatalogueMeshCache,
+    base_key: CatalogueMeshKey,
+    transform: DMat4,
+) -> (CatalogueMeshKey, Vec<EvaluatedCatalogueCut>, Vec<String>) {
+    let negatives_failure = |error: &ModelError| {
+        format!(
+            "catalogue primitive {} negatives skipped by Core-style local failure: {error}",
+            primitive.refno()
+        )
+    };
+    let (cutters, mut diagnostics) = match collect_owned_negatives(
+        member,
+        component,
+        primitive,
+        env,
+        cache,
+        transform.inverse(),
+    ) {
+        Ok(collected) => collected,
+        Err(error) => return (base_key, Vec::new(), vec![negatives_failure(&error)]),
+    };
+    if cutters.is_empty() {
+        return (base_key, cutters, diagnostics);
+    }
+    match catalogue_cut_keys(&cutters) {
+        Ok(keys) => (
+            CatalogueMeshKey::Cut {
+                base: Box::new(base_key),
+                cutters: keys,
+            },
+            cutters,
+            diagnostics,
+        ),
+        Err(error) => {
+            diagnostics.push(negatives_failure(&error));
+            (base_key, Vec::new(), diagnostics)
+        }
+    }
+}
+
+/// Core3D 那一步的后半：正体局部网格逐把扣掉名下的刀。空刀集原样返回——无刀时与旧路
+/// 逐位相同。扣空了是错（Core 的差集出空体同样什么都不画，但这里要它落 note 而不是静默）。
+fn subtract_owned_negatives(
+    mut body: Manifold,
+    cutters: &[EvaluatedCatalogueCut],
+    what: &'static str,
+) -> Result<Manifold, ModelError> {
+    for cutter in cutters {
+        let (local, transform) = cutter_solid(cutter)?;
+        body = &body - &placed(&local, transform);
+    }
+    if !cutters.is_empty() && (body.is_empty() || body.num_tri() == 0) {
+        return Err(ModelError::Solid(SolidError::EmptyManifold { what }));
+    }
+    Ok(body)
 }
 
 /// `CSRTAX`（core.dll mathlib，`0x560ad30`）：轴向量 → 标架，CRCATI 只在 SSLC/NSSL 臂上
@@ -2460,6 +2869,8 @@ fn disc_at(
         },
         diameter,
         height: DISC_THICKNESS_MM,
+        cutters: Vec::new(),
+        diagnostics: Vec::new(),
         transform: DMat4::from_translation(centre) * DMat4::from_mat3(rotation),
     }))
 }
@@ -2818,6 +3229,41 @@ fn catalogue_cut_keys(
                     transform_bits: matrix_bits(*transform),
                 })
             }
+            EvaluatedCatalogueCut::Sphere {
+                segments,
+                transform,
+            } => Ok(CatalogueCutKey::Sphere {
+                segments: *segments,
+                transform_bits: matrix_bits(*transform),
+            }),
+            EvaluatedCatalogueCut::Dish {
+                body,
+                radius,
+                height,
+                transform,
+            } => Ok(CatalogueCutKey::Dish {
+                knuckled: matches!(body, EvaluatedDishBody::Knuckled),
+                radius_bits: finite_bits(*radius, "catalogue NSDS radius")?,
+                height_bits: finite_bits(*height, "catalogue NSDS height")?,
+                transform_bits: matrix_bits(*transform),
+            }),
+            EvaluatedCatalogueCut::SlopeCylinder {
+                radius,
+                height,
+                shear_deg,
+                transform,
+            } => Ok(CatalogueCutKey::SlopeCylinder {
+                parameter_bits: [
+                    *radius,
+                    *height,
+                    shear_deg[0],
+                    shear_deg[1],
+                    shear_deg[2],
+                    shear_deg[3],
+                ]
+                .map(f64::to_bits),
+                transform_bits: matrix_bits(*transform),
+            }),
         })
         .collect()
 }
@@ -2874,12 +3320,49 @@ fn cutter_solid(cutter: &EvaluatedCatalogueCut) -> Result<(Manifold, DMat4), Mod
             },
             *transform,
         ),
-        // NSRE 与正体 SREV 同一条建体路（revolve_rings），无过切（§2.3）。
+        // NSRE 与正体 SREV 同走目录 FacetGroup 的 10 mm 分片网格，无过切（§2.3）。
         EvaluatedCatalogueCut::Revolution {
             rings,
             angle_deg,
             transform,
-        } => (revolve_rings(rings.clone(), *angle_deg)?, *transform),
+        } => (
+            revolve_rings_profile_faceted(rings.clone(), *angle_deg)?,
+            *transform,
+        ),
+        EvaluatedCatalogueCut::Sphere {
+            segments,
+            transform,
+        } => (unit_sphere_solid(*segments)?, *transform),
+        EvaluatedCatalogueCut::Dish {
+            body,
+            radius,
+            height,
+            transform,
+        } => (
+            match body {
+                EvaluatedDishBody::Spherical => spherical_dish_solid(*radius, *height)?,
+                EvaluatedDishBody::Knuckled => {
+                    elliptical_dish_solid(*radius, *height, dish_knuckle_radius(*radius, *height))?
+                }
+            },
+            *transform,
+        ),
+        EvaluatedCatalogueCut::SlopeCylinder {
+            radius,
+            height,
+            shear_deg,
+            transform,
+        } => (
+            slope_ended_cylinder_solid(
+                *radius,
+                *height,
+                shear_deg[0],
+                shear_deg[1],
+                shear_deg[2],
+                shear_deg[3],
+            )?,
+            *transform,
+        ),
     })
 }
 
@@ -2901,9 +3384,25 @@ fn build_sbox(evaluated: &EvaluatedSbox) -> Result<Manifold, ModelError> {
     Ok(body)
 }
 
+/// SEXT 局部网格：轮廓沿局部 Z 挤出（与 NSEX 刀同一条 `extrude_rings`），再扣掉
+/// 名下的成员级刀集。无刀时与旧路逐位相同——刀集为空的键仍是 `Sext`。
+fn build_sext(evaluated: &EvaluatedSext) -> Result<Manifold, ModelError> {
+    let mut body = extrude_rings(evaluated.rings.clone(), evaluated.height)?;
+    for cutter in &evaluated.cutters {
+        let (local, transform) = cutter_solid(cutter)?;
+        body = &body - &placed(&local, transform);
+    }
+    if body.is_empty() || body.num_tri() == 0 {
+        return Err(ModelError::Solid(SolidError::EmptyManifold {
+            what: "catalogue SEXT after negatives",
+        }));
+    }
+    Ok(body)
+}
+
 /// SREV 局部网格：轮廓绕局部 X 回转，再扣掉名下的成员级刀集。
 fn build_srev(evaluated: &EvaluatedSrev) -> Result<Manifold, ModelError> {
-    let mut body = revolve_rings(evaluated.rings.clone(), evaluated.angle_deg)?;
+    let mut body = revolve_rings_profile_faceted(evaluated.rings.clone(), evaluated.angle_deg)?;
     for cutter in &evaluated.cutters {
         let (local, transform) = cutter_solid(cutter)?;
         body = &body - &placed(&local, transform);
@@ -2971,7 +3470,7 @@ pub(crate) fn required_number(
     what: &'static str,
 ) -> Result<f64, ModelError> {
     let outcome = element.get_number(name, env)?;
-    if outcome.value().is_none() && raw_zero_tuple(element, name) {
+    if matches!(outcome, AttributeNumber::NotNumeric) && raw_zero_tuple(element, name) {
         return Ok(0.0);
     }
     outcome
@@ -2995,7 +3494,10 @@ pub(crate) fn optional_number(
     outcome
         .value()
         .filter(|value| value.is_finite())
-        .or_else(|| raw_zero_tuple(element, name).then_some(0.0))
+        .or_else(|| {
+            (matches!(outcome, AttributeNumber::NotNumeric) && raw_zero_tuple(element, name))
+                .then_some(0.0)
+        })
 }
 
 /// Catalogue coordinate/radius slots use an all-zero tuple for an explicit
@@ -3058,7 +3560,83 @@ fn catalogue_axis_or_fail(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn gril_negative_lpyr_stays_between_native_axial_endpoints() {
+        // /RGRILOFF-BODY 15194/3412 as used by GRIL 24381/57342.
+        let axis = |direction| CatalogueAxis {
+            origin: DVec3::ZERO,
+            direction,
+        };
+        let geometry = lpyr_geometry(
+            [2.5, 2.5, 72.5, 72.5],
+            [-5.0, -2.0, 0.0, 0.0],
+            axis(DVec3::X),
+            axis(-DVec3::Z),
+            axis(DVec3::Y),
+        )
+        .unwrap()
+        .unwrap();
+        let [xb, yb, xt, yt, h, xo, yo] = geometry.parameters;
+        let body = placed(
+            &pyramid_solid(xb, yb, xt, yt, h, xo, yo).unwrap(),
+            geometry.transform,
+        );
+        let bounds = body.bounding_box().unwrap();
+        assert!((bounds.min()[0] + 5.0).abs() < 1e-9, "{:?}", bounds);
+        assert!((bounds.max()[0] + 2.0).abs() < 1e-9, "{:?}", bounds);
+        assert!((geometry.transform.z_axis.truncate() - DVec3::X).length() < 1e-12);
+        assert!((geometry.transform.x_axis.truncate() - DVec3::Z).length() < 1e-12);
+    }
+
+    #[test]
+    fn lpyr_uses_ptdi_pbdi_for_axis_and_pbof_pcof_for_offsets() {
+        assert_eq!(
+            lpyr_axial_and_offsets(50.0, 0.0, 7.0, -3.0),
+            (50.0, 0.0, 7.0, -3.0)
+        );
+    }
+
+    use std::collections::BTreeSet;
+
     use super::*;
+
+    /// /-CPV-S-2-L-1301, STRT 24381/76730: /CSTRA-BODY has
+    /// PAXI=Z, CLFL=true, DESP[2]=1600 and DESP[6]=1220.
+    #[test]
+    fn cpv_strt_body_and_flanges_stay_on_the_catalogue_axis() {
+        let axis = CatalogueAxis {
+            origin: DVec3::ZERO,
+            direction: DVec3::Z,
+        };
+        for (diameter, height, distance) in [
+            (1600.0, 1220.0, 0.0),
+            (1700.0, 5.0, 0.0),
+            (1610.0, 50.0, 0.0),
+            (1700.0, 5.0, 1215.0),
+            (1610.0, 50.0, 1170.0),
+        ] {
+            let (rotation, centre) = catalogue_cylinder_placement(
+                "STRT",
+                "SCYL",
+                true,
+                axis,
+                distance + height / 2.0,
+                height,
+            );
+            let body = placed(
+                &csg_cylinder_solid(diameter, height).unwrap(),
+                DMat4::from_translation(centre) * DMat4::from_mat3(rotation),
+            );
+            let bounds = body.bounding_box().unwrap();
+            assert!(
+                (rotation.z_axis - DVec3::Z).length() < 1e-12,
+                "STRT cylinder axis must follow PAXI, got {:?}",
+                rotation.z_axis
+            );
+            assert!((bounds.min()[2] - distance).abs() < 1e-9);
+            assert!((bounds.max()[2] - distance - height).abs() < 1e-9);
+        }
+    }
 
     #[test]
     fn atta_clfl_cylinder_keeps_the_catalogue_axis() {
@@ -3067,22 +3645,128 @@ mod tests {
         assert!(uses_clfl_centreline_frame("PCLA", "SCYL", true));
         assert!(!uses_clfl_centreline_frame("HELE", "LCYL", true));
         assert!(!uses_clfl_centreline_frame("HELE", "SCYL", false));
+    }
+
+    fn test_cut_cylinder(cutters: Vec<EvaluatedCatalogueCut>) -> EvaluatedCylinder {
+        let base = CatalogueMeshKey::Cylinder {
+            tessellation_version: CYLINDER_TESSELLATION_VERSION,
+            diameter_bits: 60.3_f64.to_bits(),
+            height_bits: 250.0_f64.to_bits(),
+        };
+        let mesh_key = if cutters.is_empty() {
+            base
+        } else {
+            CatalogueMeshKey::Cut {
+                base: Box::new(base),
+                cutters: catalogue_cut_keys(&cutters).unwrap(),
+            }
+        };
+        EvaluatedCylinder {
+            mesh_key,
+            diameter: 60.3,
+            height: 250.0,
+            transform: DMat4::IDENTITY,
+            cutters,
+            diagnostics: vec![],
+        }
+    }
+
+    fn test_bore(diameter: f64, transform: DMat4) -> EvaluatedCatalogueCut {
+        EvaluatedCatalogueCut::Cylinder(EvaluatedNscy {
+            diameter,
+            height: 252.0,
+            transform,
+        })
+    }
+
+    #[test]
+    fn catalogue_cylinder_without_cuts_retains_primitive_mesh() {
+        let e = test_cut_cylinder(vec![]);
         assert_eq!(
-            atta_clfl_roll("ATTA", "SCYL", true, Some(&[-90.0, 0.0, 90.0])),
-            Some(std::f64::consts::FRAC_PI_2)
-        );
-        assert_eq!(
-            atta_clfl_roll("ATTA", "SCYL", true, Some(&[90.0, 0.0, 90.0])),
-            Some(-std::f64::consts::FRAC_PI_2)
+            build_catalogue_cylinder(&e).unwrap().volume().to_bits(),
+            csg_cylinder_solid(60.3, 250.0).unwrap().volume().to_bits()
         );
     }
 
     #[test]
-    fn atta_mixed_clfl_program_keeps_independent_components() {
-        assert!(preserves_catalogue_components("ATTA", true, false));
-        assert!(!preserves_catalogue_components("VALV", true, false));
-        assert!(preserves_catalogue_components("HELE", true, true));
-        assert!(!preserves_catalogue_components("ATTA", false, true));
+    fn catalogue_cylinder_child_bore_makes_an_octagonal_annulus() {
+        let e = test_cut_cylinder(vec![test_bore(40.3, DMat4::IDENTITY)]);
+        let body = build_catalogue_cylinder(&e).unwrap();
+        let expected =
+            4.0 * std::f64::consts::FRAC_1_SQRT_2 * (30.15_f64.powi(2) - 20.15_f64.powi(2)) * 250.0;
+        assert!((body.volume() - expected).abs() < 1e-6);
+        assert_eq!(body.genus(), 1);
+    }
+
+    #[test]
+    fn catalogue_cylinder_cut_key_includes_bore_and_placement() {
+        let a = test_cut_cylinder(vec![test_bore(40.3, DMat4::IDENTITY)]);
+        let b = test_cut_cylinder(vec![test_bore(30.3, DMat4::IDENTITY)]);
+        let c = test_cut_cylinder(vec![test_bore(40.3, DMat4::from_translation(DVec3::X))]);
+        assert_ne!(a.mesh_key, b.mesh_key);
+        assert_ne!(a.mesh_key, c.mesh_key);
+        assert_ne!(a.mesh_key, test_cut_cylinder(vec![]).mesh_key);
+    }
+
+    #[test]
+    fn catalogue_cylinder_transverse_cut_removes_the_pipe_saddle() {
+        let bore = || test_bore(40.3, DMat4::IDENTITY);
+        let plain = build_catalogue_cylinder(&test_cut_cylinder(vec![bore()])).unwrap();
+        let transverse = test_bore(
+            60.0,
+            DMat4::from_translation(DVec3::new(0.0, 0.0, 125.0))
+                * DMat4::from_rotation_y(std::f64::consts::FRAC_PI_2),
+        );
+        let cut = build_catalogue_cylinder(&test_cut_cylinder(vec![bore(), transverse])).unwrap();
+        assert!(cut.volume() < plain.volume() - 1000.0);
+        assert!(!cut.is_empty());
+    }
+
+    #[test]
+    fn atta_negative_z_must_not_get_an_extra_roll() {
+        // Actual screenshot members, including their rotation and DESP[1].
+        for (ori, height, end_z) in [
+            ([0.0, 0.0, -150.0], 250.0, -250.0),
+            ([180.0, 0.0, -150.0], 150.0, 150.0),
+        ] {
+            let axis = CatalogueAxis {
+                origin: DVec3::ZERO,
+                direction: -DVec3::Z,
+            };
+            let (rotation, centre) =
+                catalogue_cylinder_placement("ATTA", "SCYL", true, axis, height / 2.0, height);
+            let world = crate::transform::ori_matrix(ori);
+            assert!(
+                (world * (centre - rotation.z_axis * height / 2.0)).abs_diff_eq(DVec3::ZERO, 1e-9)
+            );
+            assert!(
+                (world * (centre + rotation.z_axis * height / 2.0))
+                    .abs_diff_eq(DVec3::new(0.0, 0.0, end_z), 1e-9)
+            );
+        }
+    }
+
+    #[test]
+    fn atta_catalogue_axis_and_offset_do_not_depend_on_member_euler_sign() {
+        for direction in [DVec3::X, -DVec3::Y, -DVec3::Z] {
+            let axis = CatalogueAxis {
+                origin: DVec3::new(3.0, 4.0, 5.0),
+                direction,
+            };
+            let (rotation, centre) =
+                catalogue_cylinder_placement("ATTA", "SCYL", true, axis, 17.0 + 50.0, 100.0);
+            assert!(rotation.z_axis.abs_diff_eq(direction, 1e-9));
+            assert!(centre.abs_diff_eq(axis.origin + direction * 67.0, 1e-9));
+        }
+    }
+
+    #[test]
+    fn visible_catalogue_programs_keep_independent_components() {
+        // AMS /A0Ph33VNN0FF is a VALV with overlapping SCYL/LSNO parts.
+        // RVM keeps every part independently; composing them changes both
+        // occupied ray intervals and the summed display volume.
+        assert!(preserves_catalogue_components(true));
+        assert!(!preserves_catalogue_components(false));
     }
 
     #[test]
@@ -3179,6 +3863,12 @@ mod tests {
                 evaluated_nlcy: value,
                 source_nsex: value,
                 evaluated_nsex: value,
+                source_nssl: value,
+                evaluated_nssl: value,
+                source_nsds: value,
+                evaluated_nsds: value,
+                source_nssp: value,
+                evaluated_nssp: value,
                 source_srev: value,
                 evaluated_srev: value,
                 source_scyl: value,
@@ -3199,6 +3889,7 @@ mod tests {
                 evaluated_sdsh: value,
                 source_sdis: value,
                 evaluated_sdis: value,
+                display_filtered_negatives: value,
                 local_mesh_hits: value,
                 local_mesh_misses: value,
                 unique_placed_parts: value,
@@ -3372,8 +4063,8 @@ mod tests {
         }
     }
 
-    /// 整圈 SREV 的矩形轮廓必须与矩形环面**逐位**同体积——回转轴、段数口径
-    /// 与设计侧回转是同一条路，这条一红不是轴摆错就是段数分了岔。
+    /// 整圈目录 SREV 与同一条 profile-faceted 构造路必须逐位一致；设计侧
+    /// REV/解析环面使用另一条 0.5 mm 网格，不能再作为目录 FacetGroup 的锚点。
     #[test]
     fn a_full_circle_srev_matches_the_rectangular_torus_bit_for_bit() {
         // 轮廓在 (轴向 X, 半径 Y)：半径 300..500、轴向 ±100。
@@ -3384,7 +4075,16 @@ mod tests {
             [-100.0, 500.0],
         ];
         let body = build_srev(&srev_fixture(vec![ring], 360.0, Vec::new())).unwrap();
-        let torus = rect_torus_solid(300.0, 500.0, 200.0, 360.0).unwrap();
+        let torus = revolve_rings_profile_faceted(
+            vec![vec![
+                [-100.0, 300.0],
+                [100.0, 300.0],
+                [100.0, 500.0],
+                [-100.0, 500.0],
+            ]],
+            360.0,
+        )
+        .unwrap();
         assert!(
             (body.volume() - torus.volume()).abs() / torus.volume() < 1e-12,
             "SREV {} vs 环面 {}",
@@ -3393,8 +4093,20 @@ mod tests {
         );
     }
 
+    /// E3D RVM exports catalogue SREV as a coarse FacetGroup, not as a curved
+    /// analytic primitive.  The ACP1000 60-degree bends use the 10 mm profile
+    /// facet grid: radius 250 mm resolves to two sweep segments (16 triangles
+    /// for this rectangular fixture).  The 0.5 mm primitive grid produces 40
+    /// triangles and changes orientation-dependent world AABBs by 5--7 mm.
+    #[test]
+    fn catalogue_srev_uses_the_rvm_profile_facet_grid() {
+        let ring = vec![[-25.0, 50.0], [25.0, 50.0], [25.0, 250.0], [-25.0, 250.0]];
+        let body = build_srev(&srev_fixture(vec![ring], 60.0, Vec::new())).unwrap();
+        assert_eq!(body.num_tri(), 20);
+    }
+
     /// NSRE 刀从 SREV 上扣掉的必须恰好是它自己的回转体：两边同走
-    /// `revolve_rings`、同一外半径定段数，径向 400..500 的整圈刀贯穿轴向后，
+    /// `revolve_rings_profile_faceted`、同一外半径定段数，径向 400..500 的整圈刀贯穿轴向后，
     /// 剩下的体积就是两只回转体的解析差。
     #[test]
     fn an_nsre_cutter_removes_exactly_its_own_revolution() {
@@ -3421,8 +4133,8 @@ mod tests {
             }],
         ))
         .unwrap();
-        let full = revolve_rings(vec![outer], 360.0).unwrap();
-        let removed = revolve_rings(
+        let full = revolve_rings_profile_faceted(vec![outer], 360.0).unwrap();
+        let removed = revolve_rings_profile_faceted(
             vec![vec![
                 [-100.0, 400.0],
                 [100.0, 400.0],
@@ -3496,5 +4208,207 @@ mod tests {
             body.volume()
         );
         assert_eq!(body.genus(), 1, "贯穿孔应当带来一个环柄");
+    }
+
+    fn sext_fixture(
+        rings: Vec<Vec<[f64; 2]>>,
+        height: f64,
+        cutters: Vec<EvaluatedCatalogueCut>,
+    ) -> EvaluatedSext {
+        EvaluatedSext {
+            mesh_key: CatalogueMeshKey::Sext(SextMeshKey {
+                tessellation_version: SEXT_TESSELLATION_VERSION,
+                height_bits: 0,
+                ring_lengths: Vec::new(),
+                coordinate_bits: Vec::new(),
+            }),
+            rings,
+            height,
+            transform: DMat4::IDENTITY,
+            cutters,
+            diagnostics: Vec::new(),
+        }
+    }
+
+    /// SEXT 名下的 NSEX 刀扣掉的必须恰好是它自己的挤出体：两边同走 `extrude_rings`，
+    /// 内缩 10 的方孔沿高度贯穿后，剩下的是两只棱柱的解析差，且多出一个环柄。
+    /// ams5052 `/ZSPE660NN2-GS` 的仪表外壳就是这个形态（外壳 − 内缩 2 mm 的 NSEX）。
+    #[test]
+    fn an_nsex_cutter_hollows_its_own_sext() {
+        let outer = vec![[0.0, 0.0], [100.0, 0.0], [100.0, 100.0], [0.0, 100.0]];
+        let hole = vec![[10.0, 10.0], [90.0, 10.0], [90.0, 90.0], [10.0, 90.0]];
+        // 刀比外壳高 20，两头各探出 10（无过切，探出来自刀自己的高度）。
+        let body = build_sext(&sext_fixture(
+            vec![outer.clone()],
+            50.0,
+            vec![EvaluatedCatalogueCut::Extrusion {
+                rings: vec![hole],
+                height: 70.0,
+                transform: DMat4::from_translation(DVec3::new(0.0, 0.0, -10.0)),
+            }],
+        ))
+        .unwrap();
+        let expected = 100.0 * 100.0 * 50.0 - 80.0 * 80.0 * 50.0;
+        assert!(
+            (body.volume() - expected).abs() < 1e-6,
+            "体积 {} 应为 {expected}",
+            body.volume()
+        );
+        assert_eq!(body.genus(), 1, "贯穿的方孔应当带来一个环柄");
+
+        // 无刀时必须与旧路（裸 extrude_rings）逐位相同——键没变，缓存也不该分岔。
+        let plain = build_sext(&sext_fixture(vec![outer.clone()], 50.0, Vec::new())).unwrap();
+        let reference = extrude_rings(vec![outer], 50.0).unwrap();
+        assert_eq!(plain.num_tri(), reference.num_tri());
+        assert!((plain.volume() - reference.volume()).abs() < 1e-9);
+    }
+
+    /// `owned_negatives_of` 的后半：**任一**正体网格都能扣名下的刀——`getCSGTree` 的差集
+    /// 不看正体是什么。拿 LPYR 的建体函数当样本（四边等长的棱台就是盒子），竖直打一个通孔。
+    #[test]
+    fn subtract_owned_negatives_hollows_any_positive_body() {
+        let body = pyramid_solid(100.0, 100.0, 100.0, 100.0, 50.0, 0.0, 0.0).unwrap();
+        let solid_volume = body.volume();
+
+        // 空刀集：原样返回，与旧路逐位相同。
+        let plain = subtract_owned_negatives(body.clone(), &[], "test").unwrap();
+        assert_eq!(plain.num_tri(), body.num_tri());
+        assert_eq!(plain.volume().to_bits(), solid_volume.to_bits());
+
+        // Ø20 × 60 的圆柱刀居中穿过 50 高的体：体积少一根圆柱，多一个环柄。
+        let bore = EvaluatedCatalogueCut::Cylinder(EvaluatedNscy {
+            diameter: 20.0,
+            height: 60.0,
+            transform: DMat4::IDENTITY,
+        });
+        let cut =
+            subtract_owned_negatives(body.clone(), std::slice::from_ref(&bore), "test").unwrap();
+        let removed = solid_volume - cut.volume();
+        // 刀是 `cutter_solid` 建的内接多边形柱（Ø20 分 12 段，截面 3r² = 300），60 高的刀只有
+        // 体内那 50 高被扣掉：扣掉的体积 = 刀体积 × 50/60，逐位可算。
+        let (bore_solid, _) = cutter_solid(&bore).unwrap();
+        let expected = bore_solid.volume() * 50.0 / 60.0;
+        assert!(
+            (removed - expected).abs() < 1e-6,
+            "扣掉 {removed}，应为刀在体内的那段 {expected}"
+        );
+        assert_eq!(cut.genus(), 1, "贯穿孔应当带来一个环柄");
+
+        // 刀把正体整个吃掉不是「没东西」，是要落 note 的错。
+        let swallow = EvaluatedCatalogueCut::Box {
+            dimensions: DVec3::new(400.0, 400.0, 400.0),
+            transform: DMat4::IDENTITY,
+        };
+        assert!(
+            subtract_owned_negatives(body, std::slice::from_ref(&swallow), "test").is_err(),
+            "扣空的正体必须报错，不能静默出空体"
+        );
+    }
+
+    /// 刀的 noun 单子全 crate 只许有一份（`collect_owned_negatives`），而且每一条正体臂都
+    /// 必须走它——SREV / SEXT / SBOX / 圆柱在求值器里收，其余七臂在 dispatch 里经
+    /// `owned_negatives_of` 收。
+    ///
+    /// ams7997 的 24381/637 名下 8 件 NSRT 就是这么漏的：SREV 那条早就接了
+    /// `evaluate_catalogue_torus`，SBOX 这条没接，报告上只落一行
+    /// `noun NSRT is not implemented`，账面全绿。给一条加了臂、另一条忘了，
+    /// 行为上看不出来，只能从源码钉。同一只 INST 的 SEXT 名下 1 只 NSEX + 4 只 NSCY
+    /// 漏得更彻底——连 note 都没有——所以 SEXT 不另抄一份，直接走 SREV 那份。
+    #[test]
+    fn both_negative_collectors_recognise_the_same_nouns() {
+        fn nouns(body: &str) -> BTreeSet<String> {
+            let mut found = BTreeSet::new();
+            for line in body.lines().map(str::trim) {
+                if line.starts_with("//") {
+                    continue;
+                }
+                for chunk in line.split("eq_ignore_ascii_case(\"").skip(1) {
+                    if let Some((noun, _)) = chunk.split_once('"') {
+                        found.insert(noun.to_string());
+                    }
+                }
+            }
+            found
+        }
+
+        let source = include_str!("catalogue.rs");
+        let srev = source
+            .split_once("\nfn collect_owned_negatives(")
+            .expect("collect_owned_negatives 必须在")
+            .1
+            .split_once("\nfn evaluate_sbox(")
+            .expect("collect_owned_negatives 在 evaluate_sbox 之前收尾")
+            .0;
+        // SREV / SEXT / 圆柱三条正体臂都必须真的走这份收集器——只要有一条改回自己抄，
+        // 这张单子就又只钉住一部分。圆柱臂 2026-09-06 从「只认 NSCY/NLCY、其余 not implemented」
+        // 并进来（INST 24381/637 的 SCYL 名下 4 NSCT + 21 NSBO 曾这么静默漏掉）。
+        for arm in [
+            "\nfn evaluate_srev(",
+            "\nfn evaluate_sext_body(",
+            "\nfn evaluate_catalogue_cylinder(",
+            "\nfn owned_negatives_of(",
+        ] {
+            let body = source
+                .split_once(arm)
+                .unwrap_or_else(|| panic!("{arm} 必须在"))
+                .1
+                .split_once("\nfn ")
+                .expect("函数之后还有函数")
+                .0;
+            assert!(
+                body.contains("collect_owned_negatives("),
+                "{} 没有调用 collect_owned_negatives",
+                arm.trim()
+            );
+        }
+        // 其余七条正体臂（LPYR / LSNO|SCON / SCTO|SRTO / SSPH / SSLC / SDSH / SDIS）在
+        // dispatch 里走 `owned_negatives_of`：`CSG_TreeBuilderCat::getCSGTree` 对每一个有
+        // 成员的正体都开差集，不分 noun。少一条就是那一种属主名下的刀又静默没了
+        // （42 个目录库里 LPYR 名下 3683 只、LSNO 794 只……普查 2026-09-06）。
+        let dispatch = source
+            .split_once("\npub fn model_catalogue_member_with_cache(")
+            .expect("model_catalogue_member_with_cache 必须在")
+            .1
+            .split_once("\nfn preserves_catalogue_components(")
+            .expect("dispatch 在 preserves_catalogue_components 之前收尾")
+            .0;
+        let arms_with_owned_negatives = dispatch.matches("owned_negatives_of(").count();
+        assert_eq!(
+            arms_with_owned_negatives, 7,
+            "dispatch 里走 owned_negatives_of 的正体臂应为 7 条（LPYR / LSNO|SCON / SCTO|SRTO / \
+             SSPH / SSLC / SDSH / SDIS），现在 {arms_with_owned_negatives} 条"
+        );
+        let sbox = source
+            .split_once("\nfn evaluate_sbox(")
+            .expect("evaluate_sbox 必须在")
+            .1
+            .split_once("\nfn evaluate_nlcy(")
+            .expect("evaluate_sbox 在 evaluate_nlcy 之前收尾")
+            .0;
+
+        // SBOX 名下原来另抄一份收集器，noun 单子靠这条守卫与 SREV 那份对齐；2026-09-06 并进
+        // 共享的那份之后，SBOX 臂里不该再出现任何按 noun 分岔的代码——再出现就是又抄回去了。
+        assert!(
+            sbox.contains("collect_owned_negatives("),
+            "evaluate_sbox 没有调用 collect_owned_negatives"
+        );
+        let sbox_private: Vec<String> = nouns(sbox).into_iter().collect();
+        assert!(
+            sbox_private.is_empty(),
+            "evaluate_sbox 又自己认起 noun 来了：{sbox_private:?}——刀的 noun 单子只许在 \
+             collect_owned_negatives 里有一份"
+        );
+        // 共享收集器认全 CRCATI（`0x10345ACC`）的负臂：15 个 N* noun 里只差 NBXI / NTUB
+        // （正体 BOXI / TUBE 是 1 mm stub、42 个目录库里负体零件），少一个就是那种刀静默没了。
+        let recognised = nouns(srev);
+        for noun in [
+            "NSCY", "NLCY", "NSBO", "NLPY", "NSEX", "NLSN", "NSCO", "NSCT", "NSRT", "NSRE", "NSSP",
+            "NSDS", "NSSL",
+        ] {
+            assert!(
+                recognised.contains(noun),
+                "collect_owned_negatives 不认 {noun}，这种刀会落 `is not implemented`"
+            );
+        }
     }
 }

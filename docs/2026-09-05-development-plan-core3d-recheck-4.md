@@ -744,3 +744,144 @@ ams1112 非 STWALL 的 4627 件逐 refno 对比 N0-1 产物：refno 集合相同
 三角数不同（rel ≤ 9.5e-4），那是并行会话今天在 `solid.rs` / `elmodl.rs` 上的 FLOOR 布尔清理
 改动，不在本条路径上；真库门 `increment_real` 3 条全绿（1177 秒，`is_model_unit` 改名单
 正是它盯的那类静默漏件——增量必须能上卷到新认领的 STWALL）。
+
+---
+
+## 十一、目录图元 CRCATI 全表：36 条臂数全，刀的属主不分 noun（2026-09-06）
+
+前面几节数的都是**设计侧**的 noun（哪些元素 E3D 会画）；这一节数**目录侧**——GMRE 里的
+图元 noun，E3D 到底认几个、我们接了几个。起点是 SEXT 收集器那条臂留下的话：INST 24381/637
+的 SCYL 名下 4 只 NSCT 落 `noun NSCT is not implemented`（圆柱臂当时只认 NSCY/NLCY）。
+把圆柱臂并进共享收集器之后，顺手把「还剩哪些类型」这件事从「下一个撞到的」变成一张
+可以数全的表。原始产物在 `evidence/20260906-crcati-negatives/`。
+
+### 11.1 CRCATI（`gml_bkend/CRCATI` = `sub_10345ACC`，6651 字节）的 36 条臂
+
+`switch(DGETI(noun))` 的立即数逐个反哈希（`tools/noun_decode.py`），**18 对正负**：
+
+| 正体 | 负体 | Core3D 建体 | 本仓 |
+|---|---|---|---|
+| `SBOX` 1014841 | `NSBO` 828671 | `sub_103BFCEC` → `GMCBOX` | ✅ 正负都接 |
+| `SCYL` 785962 | `NSCY` 1026230 | `sub_103BF3FC` + `ORIMAT` → 圆柱，负臂 `+0.01` | ✅ |
+| `LCYL` 785955 | `NLCY` 1026041 | `sub_103C0374` + `ORIMAT` → 圆柱，负臂 `+0.01` | ✅ |
+| `LSNO` 837417 | `NLSN` 821192 | `sub_103BFFC4` → 锥台，负臂 `+0.01` | ✅ |
+| `SCON` 818038 | `NSCO` 829400 | `sub_103BFE40` + `ORIMAT` → 锥台，负臂 `+0.01` | ✅ |
+| `SSPH` 701101 | `NSSP` 860747 | `sub_103C2480` + `ORIMAT` → 球，**无**过切 | ✅ |
+| `SCTO` 841366 | `NSCT` 927815 | `sub_103C0E84` → 圆环段，**无**过切 | ✅ |
+| `SRTO` 841771 | `NSRT` 938750 | `sub_103C0FA0` → 矩环段，**无**过切 | ✅ |
+| `SDSH` 702883 | `NSDS` 908861 | `sub_103C0CBC` + `ORIMAT` → 球碟 / 折边碟 / `PHEI=0` 1 mm 圆盘 | ✅ |
+| `SSLC` 599770 | `NSSL` 782015 | `sub_103C0514` + `ORIMAT` + `CSRTAX` → 斜切圆柱，四角折回 (−90°, 90°] | ✅ |
+| `LPYR` 904404 | `NLPY` 1035518 | `sub_103C07B4` → 棱台 | ✅ |
+| `SEXT` 942751 | `NSEX` 1008005 | `sub_103B7FCC` → 轮廓挤出（`PHEI ≥ 1e-6` 才建） | ✅ |
+| `SREV` 968617 | `NSRE` 643505 | `sub_103B81CC` → 轮廓回转；`PANG≈0` 当 360°；>180° 且 `UQMODN` 命中时分两半各建一次再 `GMAMEM` | ✅ |
+| `SDIS` 912106 | — | `sub_103C25E0` + `ORIMAT` → 圆柱(r, `unk_10B4E108` = 1.0) | ✅ |
+| `LINE` 640317 / `SLINE` 3471112 | — | 同一个 `gml_bkend/CRCURV`（`sub_103474C7`）→ **曲线**不出体 | ✅ 两个都记 `ignored_lines`（SLINE 是本轮并进来的，此前落 `is not implemented`） |
+| `SREC` 594640 / `SANN` 817255 / `SPRO` 840259 | — | 2D 截面，CRCATI 拿 1000 mm 默认深度挤出给目录预览用 | ➖ 42 个目录库里只出现在 `GMSS` 名下（SPRO 565 / SREC 179 / SANN 103，`GMRE` 名下 0），走 `section.rs` 的截面链，不进这条臂 |
+| `BOXI` 726491 | `NBXI` 726152 | `sub_103BF6D8` → `GMCBOX(x, **1.0**, z)` | ➖ 1 mm stub（隐式管身 GTTUBG 线的占位），语料 BOXI 43 件全在 `GMSE` 下、负体 0 |
+| `TUBE` 631901 | `NTUB` 586670 | `ORIMAT` → 圆柱(`sub_103B8834`/2, **1.0**) | ➖ 同上，TUBE 49 件、负体 0 |
+
+`default` 落 `v5 = 1`（错误码），不建体。**36 条臂到此全部有归属**：30 条已接、3 条 2D 截面
+走别的线、2 对 1 mm stub 零负体语料、SLINE 本轮并入。
+
+### 11.2 刀挂在谁名下，E3D 不看属主是什么——我们看了
+
+`CSG_TreeBuilderCat::getCSGTree`（`0x1072F5D0`）走 GMRE 成员：每个正体过 `isWanted` → CRCATI
+建体；**只要这个正体有成员**（`DB_Element::firstMember` 非空）就开 `gm_CreateCombination(3)`
+差集，把正体放进去，再 `addNegatives`（`0x1072F480`）——逐成员过 `isWanted`、送进 CRCATI、
+建得出来的全加进差集。**没有任何按正体 noun 的分支**；负体自己的成员不下钻。
+
+本仓此前只有 SEXT / SREV / SBOX / 圆柱四条臂在求值器里收刀，其余七臂（LPYR / LSNO|SCON /
+SCTO|SRTO / SSPH / SSLC / SDSH / SDIS）**一把都不收，也不落 note**。全部 42 个 CATA 库普查
+（`examples/catalogue_negative_census.rs`，`evidence/…/cata-negative-owners.txt`），刀按属主分：
+
+| 属主 | 名下负体（件） | 此前 |
+|---|---:|---|
+| `SCYL` / `LCYL` | 94 500 / 1 060 | 圆柱臂 02:01 已接 |
+| `SEXT` | 38 400 | 已接 |
+| `SBOX` | 7 500 | 已接 |
+| `SREV` | 100 | 已接 |
+| **`LPYR`** | **3 683**（NSEX 1904 / NSCY 691 / NLPY 586 / NLCY 377 / NSBO 102 / NLSN 10 / NSRT 8 / NSCT 2 / NSRE 2 / NSSP 1） | **静默丢** |
+| **`LSNO`** | **794**（NLSN 377 / NLCY 180 / NSCY 92 / NSEX 86 / NLPY 35 / NSBO 24） | 静默丢 |
+| **`SSLC`** | **413**（NSSL 349 / NSEX 64） | 静默丢 |
+| **`SRTO`** | **161**（NSCY 96 / NSRT 43 / NSBO 8 / NSEX 8 / NLCY 6） | 静默丢 |
+| **`SCTO`** | **95**（NSCT 41 / NLCY 39 / NSCY 11 / NSDS 2 / NSBO 1 / NSRT 1） | 静默丢 |
+| **`SDSH`** / **`SSPH`** / **`SCON`** | 25 / 22 / 2 | 静默丢 |
+| `NGMS` | 2 485 | 负几何集，另一条线（`geometry_set_negatives`），不在本节 |
+
+约 **5 200** 只刀属于「E3D 扣、我们连 note 都没有」——总纲 §六 红线 1 的形态，比 SEXT 那次
+（3.8 万件但至少有一部分落 note）更纯。
+
+### 11.3 接线（`src/catalogue.rs`）
+
+- `owned_negatives_of`：七臂在 dispatch 里调它——`collect_owned_negatives(…, transform.inverse())`
+  收刀（回位约定与圆柱臂同），有刀就把网格键包成 `CatalogueMeshKey::Cut { base, cutters }`
+  （无刀键不变，缓存不分岔）。收刀本身失败不拦正体：落一行
+  `negatives skipped by Core-style local failure` 再按无刀建体（Core3D 也是正体先进组合）。
+- `subtract_owned_negatives`：正体局部网格逐把扣刀；扣空报 `EmptyManifold`，不静默出空体。
+- 七臂顺手统一到 `place_cached_part`（G2-5 那条「手抄版」清单少七处）。SSPH 的放置矩阵带半径
+  缩放，刀随 `inverse()` 一起缩进单位球系，等比缩放不改变布尔结果。
+- `LINE | SLINE` 同臂（`curve_only`），显示过滤与 `saw_display_primitive` 也同口径。
+- 守卫 `both_negative_collectors_recognise_the_same_nouns` 改钉三件事：四个求值器 + `owned_negatives_of`
+  都调 `collect_owned_negatives`；dispatch 里 `owned_negatives_of(` 恰好 7 处；共享收集器认全
+  13 个 N\* noun（只差 NBXI / NTUB）。SBOX 那半张「noun 分岔单」删掉——SBOX 已并进共享收集器，
+  再出现按 noun 分岔的代码就是抄回去了。
+- 新单测 `subtract_owned_negatives_hollows_any_positive_body`：LPYR 建体 100×100×50 竖直打 Ø20
+  通孔，扣掉的体积 = 刀体积 × 50/60 逐位相等、genus 1；空刀集逐位原样；刀吞掉整个正体报错。
+- 顺手修了并发会话留下的编译断点：`cache_report_can_measure_one_root_without_double_counting_prior_roots`
+  的 `all()` 少了 NSSL / NSDS / NSSP 六个字段，`cargo test --lib` 整个编不过。
+
+### 11.4 验证
+
+- `cargo test --lib` 268 条 + `noun_coverage` 8 条全绿（隔离 target）；`rustfmt --check` 我碰的两个文件干净。
+- 六库 A/B（同一份语料，`gen_ams.exe@14:01`（圆柱臂已接、七臂未接）vs 本轮，
+  `evidence/…/ab-six-libraries.txt`）：**只有 ams7997 变**，117 件——114 只 `PCLA`（`HANG /1TFA022MP-SUPP-09`
+  一族，`SRTO` 名下各 2 只 NSCY，体积 4191 → 4167 mm³）+ 3 只 `INST`（`/Copy-of-1RCS716MD`，刀 6 → 8，
+  −0.4%）；`source_nscy` 59 → 287、`source_nsbo` 105 → 111，**体积无一上升**，`failed` / `notes` / 六本账
+  一个数没变，`accounts_for` 六库全平。ams1112 / ams8000 / aps250164 / aps250209 逐 refno 逐位不变；
+  aps250110 的 +11 件是并行会话同一时段接的详图式 RAIL / KICKPL，不在本条路径上。
+- 六库 `is not implemented` 注记：**0**（本轮之前那份 census 也是 0——那 5200 只刀本来就不落 note，
+  这正是它们要靠目录侧普查才数得出来的原因）。
+- **E3D TTY 对拍**（本机 238 份旧导出没有一份含那 117 件，当场从 E3D 导了两份，
+  `gen-model/output/crcati-verify/`，含 `.mac` / `RESULTS.txt` / 脚本）：
+  - `HANG /1TFA022MP-SUPP-30/H1` → 3 只 PCLA：`rvm_compare` AABB 3/3 `exact`（≤ 0.0004 mm，base / fix 同——
+    刀切的是 SRTO 的**棱边缺口**，新顶点全落在旧面平面上，AABB 与顶点距离两个法都看不见，只有体法看得见）。
+    体采样（`hole_check3.py`，每构件 60000 点 winding）：两只 SRTO 各少 11.91 mm³（与 `elements.json` 同数），
+    **被扣区域 E3D 有料 1/1604、3/1717（边界噪声）**；箱内 `base∧¬E3D` 1615 → `fix∧¬E3D` 7、`E3D∧¬fix` 2。
+    PCLA 3 同型（各 8.89 mm³，E3D 有料 0/1239、0/1212）。E3D 一件一个 FacetGroup（129 面 9 孔）体积 3614.5 是**并集**，
+    我们 16 个构件 compose 求和 4166.8，差的是重叠计账，与刀无关。
+  - `BRAN /Copy-of-1RCS0203-1R80004` → INST `/Copy-of-1RCS716MD`：LSNO `13246/504649`（Ø200→Ø110 × 46，
+    `PBDM=200 / PTDM=110 / PTDI=46`）名下 2 只 NSBO 扣掉 43 733 mm³，**被扣区域 E3D 有料 0/1454** ✓。
+    箱内还剩约 67 000 mm³ 我们有、E3D 没有（`fix∧¬E3D` 2917/80000，`E3D∧¬fix` 0），查过了**不是几何差**：
+    E3D 把这只被切过的锥台写成 FacetGroup，锥面只分 **8 段**（底缘顶点在 ±45°/±90°/±135°，r 100.00；
+    顶缘 8 个），内接八边形面积只有圆的 90.0%；我们按 0.5 mm 弦高分 26 段。残差沿整个锥面均匀分布在
+    外皮 1–2 mm 内（各 z 切片 E3D r_max 比我们小 0.4–1.8）、`E3D∧¬fix = 0`（内接多边形 ⊂ 真圆锥），
+    与八边形的算术对得上。该根 `geometry_set_negatives` / `host_negatives` 为空，没有 NGMS 一级的刀。
+  - 顺带看见的旧账：`HELE 1 of HANG /1TFA022MP-SUPP-30/H1` AABB `off` 36 mm，base / fix 同，不在本条路径上。
+- 没跑 `increment_real`（20 分钟）：本轮不碰 `is_model_unit` / 分类，只改目录件的局部网格。
+
+### 11.5 还留着的
+
+1. **BOXI / NBXI、TUBE / NTUB**：1 mm stub，隐式管身 GTTUBG 那条线的占位（09-01 计划 G0-3）。
+   语料里正体只在 `GMSE` 下 92 件、负体 0，`collect_owned_negatives` 落 `is not implemented` 不静默。
+2. **刀的 `isWanted`**：`addNegatives` 对每把刀也过一遍表现级 / TUFL 过滤；`CatalogueMeshCacheStats::display_filtered_negatives`
+   字段在、**没有任何地方加一**。刀不按表现级筛，多扣不会少扣——但与 E3D 的 `LEVEL` 分档预览会有差。
+3. **NGMS 名下 2 485 只**：负几何集那条线的分母，与本节无关，记在这里免得下次又当成新发现。
+
+### 11.6 锚点
+
+| 用途 | 地址 |
+|---|---|
+| 目录图元建体 | `gml_bkend/CRCATI` = `sub_10345ACC`（`0x10345ACC`–`0x103474C7`，36 臂） |
+| 曲线臂 | `gml_bkend/CRCURV` = `sub_103474C7`（LINE / SLINE 同入） |
+| 目录 CSG 树 | `CSG_TreeBuilderCat::getCSGTree@0x1072F5D0`（正体有成员 → `Combination(3)`） |
+| 刀 | `CSG_TreeBuilderCat::addNegatives@0x1072F480`（逐成员 `isWanted` → CRCATI → `gm_AddMember`） |
+
+> 复现：
+> ```
+> ida-bridge exec idalib-49136 --sql "SELECT n, line FROM pseudocode WHERE func_ea = 0x10345ACC AND line LIKE '%case %' ORDER BY n"
+> python tools/noun_decode.py <36 个 case 立即数>          # → evidence/…/crcati-switch-decoded.txt
+> cargo run --release --example catalogue_negative_census -- --attlib <attlib.dat> --template <catvir.dat> \
+>     D:\AVEVA\Projects\E3D3.1\AvevaMarineSample\ams000 D:\AVEVA\Projects\E3D3.1\AvevaPlantSample\aps000 \
+>     D:\AVEVA\Projects\E3D3.1\AvevaCatalogue\acp000    # 42 个 CATA 库，80 秒
+> python evidence/20260906-crcati-negatives/ab_diff.py out/<base> out/<fix>
+> ```
