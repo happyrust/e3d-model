@@ -47,6 +47,8 @@ pub mod polyhedron;
 pub mod primitive_instance;
 pub mod profile;
 pub mod route;
+pub mod rvm_read;
+pub mod rvm_write;
 pub mod section;
 pub mod solid;
 pub mod transform;

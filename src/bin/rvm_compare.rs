@@ -68,13 +68,13 @@ fn chord_tolerance_mm(noun: &str) -> f64 {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct Snapshot {
     meta: SnapshotMeta,
     members: Vec<SnapshotMember>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct SnapshotMeta {
     dbnum: Option<u32>,
     root_name: Option<String>,
@@ -83,7 +83,7 @@ struct SnapshotMeta {
     geometry_count: Option<usize>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct SnapshotMember {
     name: Option<String>,
     noun: Option<String>,
@@ -112,13 +112,13 @@ struct FacetData {
     components: Vec<Vec<[f64; 3]>>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct GeneratedComponent {
     local_aabb_min: [f64; 3],
     local_aabb_max: [f64; 3],
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct Generated {
     refno: String,
     noun: String,
@@ -137,6 +137,10 @@ struct Generated {
     world: Option<[[f64; 3]; 4]>,
     #[serde(default)]
     components: Vec<GeneratedComponent>,
+    /// 本元素写出的 RVM 图元种类，按记录顺序。只有 RVM ↔ RVM 这条路填得出来
+    /// （`elements.json` 里没有这个概念），走老路时是空的，kind 一致率随之标为「不适用」。
+    #[serde(default)]
+    kinds: Vec<String>,
     genus: i32,
     negatives_applied: usize,
     negatives_skipped: usize,
@@ -215,6 +219,11 @@ struct Pair {
     aabb_source: &'static str,
     /// `local` 为可信判据；`world` 是缺局部帧时的兼容回退。
     comparison_frame: &'static str,
+    /// 两侧写出的 RVM 图元种类是否同一套（多重集比较，顺序无关）。
+    /// 只有 RVM ↔ RVM 有值；这是「我们的几何分解是否与 E3D 同构」的度量，比 AABB 严。
+    kind_match: Option<bool>,
+    baseline_kinds: Vec<String>,
+    generated_kinds: Vec<String>,
     delta_min_mm: [f64; 3],
     delta_max_mm: [f64; 3],
     baseline_aabb: [f64; 6],
@@ -236,6 +245,9 @@ struct NounTally {
     chord: usize,
     reference_artifact: usize,
     off: usize,
+    /// 两侧图元种类同一套 / 不同。只有 RVM ↔ RVM 填得出来，见 [`Pair::kind_match`]。
+    kind_match: usize,
+    kind_differ: usize,
 }
 
 #[derive(Serialize)]
@@ -269,24 +281,210 @@ type BaseEntry<'a> = (
     &'static str,
 );
 
-fn main() -> anyhow::Result<()> {
-    let (baseline_path, elements_path, facets_path, out_path, noun_filter) = parse_args()?;
+/// `FTUBE 1 of BRANCH /C-IY-1R330-B` → `("FTUBE", 1, "BRANCH /C-IY-1R330-B")`。
+/// 命名元素（`/C-IY-1R330-B`）没有这个形态，返回 None。
+fn parse_default_display_name(name: &str) -> Option<(String, usize, String)> {
+    let (head, owner) = name.trim().split_once(" of ")?;
+    let (noun, ordinal) = head.rsplit_once(' ')?;
+    Some((
+        normalise_rvm_noun(noun.trim()),
+        ordinal.trim().parse().ok()?,
+        owner.trim().to_string(),
+    ))
+}
 
-    let snapshot: Snapshot = serde_json::from_slice(
-        &std::fs::read(&baseline_path)
-            .with_context(|| format!("读基准 {}", baseline_path.display()))?,
-    )
-    .context("解析 RVM 快照 JSON")?;
-    let generated: Vec<Generated> = serde_json::from_slice(
-        &std::fs::read(&elements_path)
-            .with_context(|| format!("读生成物 {}", elements_path.display()))?,
-    )
-    .context("解析 elements.json")?;
+/// E3D 把隐含管身导成 `TUBE n of BRANCH /X`，库里的 noun 是 `TUBI`。
+/// 两侧 `noun4()` 之后是 `TUBE` vs `TUBI`，**配不上**，而且 `pair_tubes_by_centre`
+/// 只对 `noun == "TUBI"` 生效，于是整族管身两边各成孤儿。
+/// `rvm_verify import` 早就在做这个归一（快照里记的是 `TUBI`），
+/// RVM ↔ RVM 这条路自己读文件，就得自己归一。
+///
+/// 2026-09-04 的 21 条 BRAN 批量对拍里，`26229-Copy-of-1RCV0101` 的 4 根管身
+/// 就是这么漏掉的（旧路径 `TUBI 1..4` 有，新路径没有）。
+fn normalise_rvm_noun(noun: &str) -> String {
+    match noun {
+        "TUBE" => "TUBI".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// 一份 `.rvm` 摊平后的三样东西：基准形态的成员表、面片索引、生成形态的元素表。
+/// 同一份文件既能当基准也能当生成侧，所以三样一起给。
+type RvmSide = (
+    Vec<SnapshotMember>,
+    BTreeMap<String, FacetData>,
+    Vec<Generated>,
+);
+
+/// 一份 `.rvm` 摊成本工具原有的两种形态，好让配对与判档一行不改地跑在上面。
+///
+/// 这是「RVM ↔ RVM 对称对拍」的全部实现：两侧都走 [`e3d_model::rvm_read`]，
+/// 于是「基准 AABB 怎么算」只剩一处代码，也不再需要 `--facets` 这条旁路
+/// ——面片顶点本来就在文件里。
+fn load_rvm_side(path: &std::path::Path) -> anyhow::Result<RvmSide> {
+    let file = e3d_model::rvm_read::RvmFile::read(path)?;
+    let unknown = file.bbox_frame_tally().get("unknown").copied().unwrap_or(0);
+    if unknown > 0 {
+        bail!(
+            "{} 里有 {unknown} 条记录的 bbox 帧认不出来——先查 rvm_read，别拿它当判据",
+            path.display()
+        );
+    }
+
+    let mut members = Vec::new();
+    let mut facets = BTreeMap::new();
+    let mut generated = Vec::new();
+
+    for member in &file.members {
+        let Some(world_aabb) = member.world_aabb_mm() else {
+            continue; // 只有中心线或没有几何的容器，不参与判定。
+        };
+        let default_name = parse_default_display_name(&member.name);
+        let (noun, owner_desc, ordinal, named) = match &default_name {
+            Some((noun, ordinal, owner)) => (noun.clone(), Some(owner.clone()), *ordinal, None),
+            // 命名元素：noun 从 RVM 里读不出来，只能靠同名配对（Key::Name）。
+            None => (String::new(), None, 0, Some(member.name.clone())),
+        };
+
+        members.push(SnapshotMember {
+            name: Some(member.name.clone()),
+            noun: (!noun.is_empty()).then(|| noun.clone()),
+            owner_desc: owner_desc.clone(),
+            ordinal: default_name.as_ref().map(|d| d.1),
+            aabb_world_mm: Some(world_aabb),
+            // 存 kind 名而不是占位 null：基准侧的 kind 一致率要拿它算。
+            geometries: member
+                .geometries
+                .iter()
+                .map(|g| serde_json::Value::String(g.primitive.name().to_string()))
+                .collect(),
+        });
+
+        // 局部帧取第一条几何的（我们自己写出的 RVM 每个成员就一条；E3D 的多条共用元素帧）。
+        let first = &member.geometries[0];
+        let rotation = first.rotation();
+        let world = [
+            [rotation[0], rotation[1], rotation[2]],
+            [rotation[3], rotation[4], rotation[5]],
+            [rotation[6], rotation[7], rotation[8]],
+            first.translation_mm,
+        ];
+        // 解析图元没有真顶点，用规范盒的八个角顶上：否则同一份 RVM 里 Box 成员退回
+        // 世界帧、FacetGroup 成员走局部帧，两类成员的判据就不是一套了。
+        let world_vertices = member.world_hull_points_mm();
+        let inverse = world_matrix(world).inverse();
+        let local = world_vertices.iter().map(|vertex| {
+            (inverse * glam::DVec3::from_array(*vertex).extend(1.0))
+                .truncate()
+                .to_array()
+        });
+        let (local_min, local_max) = match aabb6(local) {
+            Some(a) => ([a[0], a[1], a[2]], [a[3], a[4], a[5]]),
+            None => ([0.0; 3], [0.0; 3]),
+        };
+
+        if !world_vertices.is_empty() {
+            let polygons = member
+                .geometries
+                .iter()
+                .flat_map(|geometry| match &geometry.primitive {
+                    e3d_model::rvm_read::Primitive::FacetGroup(polygons) => polygons
+                        .iter()
+                        .map(|polygon| {
+                            polygon
+                                .contours
+                                .iter()
+                                .flat_map(|c| c.vertices.iter())
+                                .map(|v| geometry.to_world_mm(*v))
+                                .collect::<Vec<_>>()
+                        })
+                        .collect::<Vec<_>>(),
+                    // 解析图元当成一个整块，连通分量分析（reference_artifact 判档）拿它当一片。
+                    _ => match geometry.world_hull_points_mm() {
+                        points if points.is_empty() => Vec::new(),
+                        points => vec![points],
+                    },
+                })
+                .collect::<Vec<_>>();
+            facets.insert(
+                member.name.trim().to_string(),
+                FacetData {
+                    components: connected_polygon_components(&polygons),
+                    vertices: world_vertices,
+                },
+            );
+        }
+
+        generated.push(Generated {
+            refno: member.path.clone(),
+            noun,
+            name: named,
+            owner_desc,
+            ordinal,
+            // RVM 里没有体积 / 亏格 / 负体账，这几项在判档里只作展示，填 0 不影响判定。
+            volume_mm3: 0.0,
+            aabb_min: [world_aabb[0], world_aabb[1], world_aabb[2]],
+            aabb_max: [world_aabb[3], world_aabb[4], world_aabb[5]],
+            local_aabb_min: Some(local_min),
+            local_aabb_max: Some(local_max),
+            world: Some(world),
+            components: Vec::new(),
+            kinds: member
+                .geometries
+                .iter()
+                .map(|g| g.primitive.name().to_string())
+                .collect(),
+            genus: 0,
+            negatives_applied: 0,
+            negatives_skipped: 0,
+        });
+    }
+
+    Ok((members, facets, generated))
+}
+
+fn main() -> anyhow::Result<()> {
+    let (baseline_path, elements_path, facets_path, out_path, noun_filter, generated_rvm) =
+        parse_args()?;
+
+    // RVM ↔ RVM：两侧同一个读法，`--facets` 不再需要（面片就在文件里）。
+    let rvm_side = generated_rvm.as_deref().map(load_rvm_side).transpose()?;
+    let baseline_rvm = match &rvm_side {
+        Some(_) => Some(load_rvm_side(&baseline_path)?),
+        None => None,
+    };
+
+    let snapshot: Snapshot = match &baseline_rvm {
+        Some((members, _, _)) => Snapshot {
+            meta: SnapshotMeta {
+                dbnum: None,
+                root_name: members.first().and_then(|m| m.name.clone()),
+                export_scope: Some("rvm".to_string()),
+                member_count: Some(members.len()),
+                geometry_count: Some(members.iter().map(|m| m.geometries.len()).sum()),
+            },
+            members: members.clone(),
+        },
+        None => serde_json::from_slice(
+            &std::fs::read(&baseline_path)
+                .with_context(|| format!("读基准 {}", baseline_path.display()))?,
+        )
+        .context("解析 RVM 快照 JSON")?,
+    };
+    let generated: Vec<Generated> = match &rvm_side {
+        Some((_, _, generated)) => generated.clone(),
+        None => serde_json::from_slice(
+            &std::fs::read(&elements_path)
+                .with_context(|| format!("读生成物 {}", elements_path.display()))?,
+        )
+        .context("解析 elements.json")?,
+    };
 
     // ---- 面片实算 AABB（可信基准，见模块文档） ----
-    let facet_vertices: BTreeMap<String, FacetData> = match &facets_path {
-        None => BTreeMap::new(),
-        Some(path) => {
+    let facet_vertices: BTreeMap<String, FacetData> = match (&baseline_rvm, &facets_path) {
+        (Some((_, facets, _)), _) => facets.clone(),
+        (None, None) => BTreeMap::new(),
+        (None, Some(path)) => {
             let groups: Vec<FacetGroupDump> = serde_json::from_slice(
                 &std::fs::read(path).with_context(|| format!("读面片 {}", path.display()))?,
             )
@@ -619,6 +817,25 @@ fn main() -> anyhow::Result<()> {
             "off"
         };
 
+        // 图元种类是否同一套。多重集比较：RVM 里同一个成员的几条记录没有稳定顺序。
+        let mut baseline_kinds: Vec<String> = member
+            .geometries
+            .iter()
+            .filter_map(|g| g.as_str().map(str::to_string))
+            .collect();
+        let mut generated_kinds = element.kinds.clone();
+        let kind_match = (!baseline_kinds.is_empty() && !generated_kinds.is_empty()).then(|| {
+            baseline_kinds.sort();
+            generated_kinds.sort();
+            if baseline_kinds == generated_kinds {
+                tally.kind_match += 1;
+                true
+            } else {
+                tally.kind_differ += 1;
+                false
+            }
+        });
+
         pairs.push(Pair {
             key: if ours_key == key {
                 key.display()
@@ -634,6 +851,9 @@ fn main() -> anyhow::Result<()> {
             verdict,
             aabb_source,
             comparison_frame,
+            kind_match,
+            baseline_kinds,
+            generated_kinds,
             delta_min_mm,
             delta_max_mm,
             baseline_aabb,
@@ -907,12 +1127,19 @@ fn significant_components_aabb(
     Some((combined, components.len() - kept.len()))
 }
 
+/// `(baseline, elements, facets, out, noun, generated_rvm)`
+///
+/// 两种模式：
+/// - `--baseline <*.rvm.json> --elements <elements.json> [--facets …]` —— 老路，不动。
+/// - `--baseline <a.rvm> --generated <b.rvm>` —— RVM ↔ RVM，两侧同一个读法，
+///   不需要 `--elements`，也不需要 `--facets`（面片就在文件里）。
 type Args = (
     PathBuf,
     PathBuf,
     Option<PathBuf>,
     Option<PathBuf>,
     Option<String>,
+    Option<PathBuf>,
 );
 
 fn parse_args() -> anyhow::Result<Args> {
@@ -921,6 +1148,7 @@ fn parse_args() -> anyhow::Result<Args> {
     let mut facets = None;
     let mut out = None;
     let mut noun = None;
+    let mut generated = None;
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
         let mut value = || it.next().with_context(|| format!("参数 {flag} 缺值"));
@@ -930,15 +1158,31 @@ fn parse_args() -> anyhow::Result<Args> {
             "--facets" => facets = Some(PathBuf::from(value()?)),
             "--out" => out = Some(PathBuf::from(value()?)),
             "--noun" => noun = Some(value()?),
+            "--generated" => generated = Some(PathBuf::from(value()?)),
             other => bail!("不认识的参数 {other}"),
+        }
+    }
+    if generated.is_some() {
+        if elements.is_some() {
+            bail!(
+                "--generated 与 --elements 只能给一个：前者是 RVM ↔ RVM，后者是快照 ↔ elements.json"
+            );
+        }
+        if facets.is_some() {
+            bail!("--generated 模式下面片就在 .rvm 里，不要再给 --facets");
         }
     }
     Ok((
         baseline.context("缺 --baseline")?,
-        elements.context("缺 --elements")?,
+        match (&generated, elements) {
+            (Some(_), None) => PathBuf::new(),
+            (_, Some(path)) => path,
+            (None, None) => bail!("缺 --elements（或用 --generated 走 RVM ↔ RVM）"),
+        },
         facets,
         out,
         noun,
+        generated,
     ))
 }
 

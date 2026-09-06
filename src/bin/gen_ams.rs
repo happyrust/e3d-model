@@ -48,6 +48,8 @@ struct Args {
     project_dirs: Vec<PathBuf>,
     route_only: bool,
     no_instance_cache: bool,
+    /// 给了就额外写一份 `<out>/generated.rvm`，见 [`e3d_model::rvm_write`]。
+    rvm: bool,
 }
 
 fn parse_args() -> anyhow::Result<Args> {
@@ -62,6 +64,7 @@ fn parse_args() -> anyhow::Result<Args> {
     let mut project_dirs = Vec::new();
     let mut route_only = false;
     let mut no_instance_cache = false;
+    let mut rvm = false;
 
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
@@ -78,6 +81,7 @@ fn parse_args() -> anyhow::Result<Args> {
             "--project-dir" => project_dirs.push(PathBuf::from(value()?)),
             "--route-only" => route_only = true,
             "--no-instance-cache" => no_instance_cache = true,
+            "--rvm" => rvm = true,
             other => bail!("不认识的参数 {other}"),
         }
     }
@@ -93,7 +97,88 @@ fn parse_args() -> anyhow::Result<Args> {
         project_dirs,
         route_only,
         no_instance_cache,
+        rvm,
     })
+}
+
+/// 解析图元自校的容差（mm）。两侧都是 f64 算到底，只差 RVM 那一次 f32 落盘，
+/// 坐标量级 ~2e4 时是 ~2e-3 mm；给 0.01 留一个数量级。
+const ANALYTIC_TOL_MM: f64 = 0.01;
+
+/// 一个组件 → 一条 RVM 记录。能认成解析图元就写解析图元，否则写 FacetGroup。
+///
+/// **自校闸**：解析候选算出来的世界 AABB 必须与这块网格实算的一致，否则退回面片。
+/// 规范体约定写错了照样能写出一份解析得开但几何是错的 RVM，这种错不该靠人眼发现。
+#[allow(clippy::too_many_arguments)]
+fn rvm_component_geometry(
+    world: &glam::DMat4,
+    rotation: [f64; 9],
+    local_vertices: &[[f64; 3]],
+    triangles: &[[u32; 3]],
+    world_lo: [f64; 3],
+    world_hi: [f64; 3],
+    analytic_count: &mut usize,
+    rejected_count: &mut usize,
+) -> e3d_model::rvm_read::RvmGeometry {
+    let candidate = e3d_model::rvm_write::box_from_local_mesh(local_vertices, triangles)
+        .map(|lengths| {
+            let centre = [0, 1, 2].map(|axis| {
+                let lo = local_vertices.iter().fold(f64::MAX, |m, v| m.min(v[axis]));
+                let hi = local_vertices.iter().fold(f64::MIN, |m, v| m.max(v[axis]));
+                (lo + hi) / 2.0
+            });
+            e3d_model::rvm_write::box_geometry(world, lengths, centre)
+        })
+        .or_else(|| {
+            let (radius, height, axis, centre) =
+                e3d_model::rvm_write::cylinder_from_local_mesh(local_vertices, triangles)?;
+            Some(e3d_model::rvm_write::cylinder_geometry(
+                world, radius, height, axis, centre,
+            ))
+        })
+        .or_else(|| {
+            let torus = e3d_model::rvm_write::torus_from_local_mesh(local_vertices, triangles)?;
+            Some(e3d_model::rvm_write::circular_torus_geometry(world, &torus))
+        });
+    let had_candidate = candidate.is_some();
+    let accepted = candidate.filter(|geometry| match geometry.world_aabb_mm() {
+        Some(a) => (0..3).all(|axis| {
+            (a[axis] - world_lo[axis]).abs() <= ANALYTIC_TOL_MM
+                && (a[axis + 3] - world_hi[axis]).abs() <= ANALYTIC_TOL_MM
+        }),
+        None => false,
+    });
+    match &accepted {
+        Some(_) => *analytic_count += 1,
+        None if had_candidate => *rejected_count += 1,
+        None => {}
+    }
+    accepted.unwrap_or_else(|| {
+        e3d_model::rvm_write::facet_group_from_world_triangles(
+            rotation,
+            world.w_axis.truncate().to_array(),
+            local_vertices,
+            triangles,
+        )
+    })
+}
+
+/// E3D 给 RVM 组用的显示名：命名元素直接是 `/NAME`，无名元素是
+/// `<NOUN> <n> of <OWNER 显示名>`。
+///
+/// noun 这里发的是库里的短名（`FTUB`），E3D 发的是全称（`FTUBE`）。
+/// **对拍不受影响**——`rvm_compare` 两侧都做 `noun4()` 截断；人读时差一截尾巴。
+fn rvm_display_name(
+    name: Option<&String>,
+    noun: &str,
+    owner_desc: Option<&String>,
+    ordinal: usize,
+) -> String {
+    match (name, owner_desc) {
+        (Some(name), _) => name.clone(),
+        (None, Some(owner)) => format!("{noun} {ordinal} of {owner}"),
+        (None, None) => format!("{noun} {ordinal}"),
+    }
 }
 
 fn parse_refno(text: &str) -> anyhow::Result<RefNo> {
@@ -427,6 +512,16 @@ fn main() -> anyhow::Result<()> {
 
     let mut merged = Report::default();
     let mut invariants = Vec::new();
+    // 生成侧 RVM 的成员表。0 号是根容器（平移全 0，只提供层级），元素全挂在它下面。
+    // E3D 会把 SITE/ZONE/PIPE 祖先一并导出来，我们暂时只给一层——`rvm_compare` 的
+    // 主键只用成员名，不看祖先层数（见 `Key` / `owner_key`）。
+    let mut rvm_members = vec![e3d_model::rvm_write::container_member(
+        "/GENERATED",
+        "/GENERATED",
+        None,
+    )];
+    // 写成解析图元的件数 / 有可复用基本体但自校没过、退回 FacetGroup 的件数。
+    let (mut rvm_analytic, mut rvm_analytic_rejected) = (0usize, 0usize);
     let obj_path = args.out.join("model.obj");
     let mut obj = std::io::BufWriter::new(
         std::fs::File::create(&obj_path).with_context(|| format!("建 {}", obj_path.display()))?,
@@ -533,25 +628,22 @@ fn main() -> anyhow::Result<()> {
             let mesh = generated.mesh();
             let (lo, hi) = mesh.aabb().unwrap_or(([0.0; 3], [0.0; 3]));
             let inv_world = generated.world.inverse();
-            let local_vertices = mesh.vertices.iter().map(|vertex| {
+            let to_local = |vertex: &[f64; 3]| {
                 (inv_world * glam::DVec3::from_array(*vertex).extend(1.0))
                     .truncate()
                     .to_array()
-            });
+            };
+            let local_vertices: Vec<[f64; 3]> = mesh.vertices.iter().map(to_local).collect();
             let (local_lo, local_hi) =
-                aabb_of_points(local_vertices).unwrap_or(([0.0; 3], [0.0; 3]));
+                aabb_of_points(local_vertices.iter().copied()).unwrap_or(([0.0; 3], [0.0; 3]));
             let mut components = generated
                 .components()
                 .into_iter()
                 .map(|component| {
                     let component_mesh = TriMesh::from_manifold(&component);
-                    let local_vertices = component_mesh.vertices.iter().map(|vertex| {
-                        (inv_world * glam::DVec3::from_array(*vertex).extend(1.0))
-                            .truncate()
-                            .to_array()
-                    });
                     let (component_lo, component_hi) =
-                        aabb_of_points(local_vertices).unwrap_or(([0.0; 3], [0.0; 3]));
+                        aabb_of_points(component_mesh.vertices.iter().map(to_local))
+                            .unwrap_or(([0.0; 3], [0.0; 3]));
                     ComponentInvariants {
                         volume_mm3: component.volume(),
                         local_aabb_min: component_lo,
@@ -570,6 +662,83 @@ fn main() -> anyhow::Result<()> {
                     keys.get(&generated.refno).cloned().unwrap_or((None, 0))
                 }
             };
+            if args.rvm && !mesh.indices.is_empty() {
+                let world = &generated.world;
+                let rotation = [
+                    world.x_axis.x,
+                    world.x_axis.y,
+                    world.x_axis.z,
+                    world.y_axis.x,
+                    world.y_axis.y,
+                    world.y_axis.z,
+                    world.z_axis.x,
+                    world.z_axis.y,
+                    world.z_axis.z,
+                ];
+                // **逐组件一条记录**，不是逐元素一条。E3D 就是按目录件拆的
+                // （`GeneratedElement::parts` 那条注释说的就是这件事：
+                // 「E3D preserves touching catalogue primitives as separate display meshes」），
+                // 合成一条会让 `Cylinder×2 → FacetGroup` 这类差异永远消不掉。
+                // `components()` 有 `parts` 就用它，没有就按连通性拆——单块实体拆出来还是一块。
+                let component_meshes: Vec<TriMesh> = generated
+                    .components()
+                    .iter()
+                    .map(TriMesh::from_manifold)
+                    .filter(|m| !m.indices.is_empty())
+                    .collect();
+                // `PrimitiveInstance` 描述的是**整个元素**（`local_transform` 在元素局部系里），
+                // 所以只有单组件时它才说得准；多组件的逐块自己认几何。
+                let whole_element_instance = (component_meshes.len() == 1)
+                    .then_some(generated.primitive_instance.as_ref())
+                    .flatten()
+                    .and_then(|instance| {
+                        e3d_model::rvm_write::analytic_from_instance(&generated.world, instance)
+                    })
+                    .filter(|geometry| match geometry.world_aabb_mm() {
+                        Some(a) => (0..3).all(|axis| {
+                            (a[axis] - lo[axis]).abs() <= ANALYTIC_TOL_MM
+                                && (a[axis + 3] - hi[axis]).abs() <= ANALYTIC_TOL_MM
+                        }),
+                        None => false,
+                    });
+
+                let mut geometries = Vec::with_capacity(component_meshes.len());
+                if let Some(geometry) = whole_element_instance {
+                    rvm_analytic += 1;
+                    geometries.push(geometry);
+                } else {
+                    for component in &component_meshes {
+                        let local: Vec<[f64; 3]> =
+                            component.vertices.iter().map(to_local).collect();
+                        let tris: Vec<[u32; 3]> = component.indices.as_chunks::<3>().0.to_vec();
+                        let (clo, chi) = component.aabb().unwrap_or(([0.0; 3], [0.0; 3]));
+                        geometries.push(rvm_component_geometry(
+                            world,
+                            rotation,
+                            &local,
+                            &tris,
+                            clo,
+                            chi,
+                            &mut rvm_analytic,
+                            &mut rvm_analytic_rejected,
+                        ));
+                    }
+                }
+                let name = rvm_display_name(
+                    generated.name.as_ref(),
+                    &generated.noun,
+                    owner_desc.as_ref(),
+                    ordinal,
+                );
+                rvm_members.push(e3d_model::rvm_read::RvmMember {
+                    path: format!("/GENERATED/{name}"),
+                    name,
+                    parent: Some(0),
+                    translation_mm: world.w_axis.truncate().to_array(),
+                    material: 1,
+                    geometries,
+                });
+            }
             invariants.push(ElementInvariants {
                 geometry_id: generated.geometry_id.clone(),
                 refno: generated.refno.to_string(),
@@ -612,6 +781,29 @@ fn main() -> anyhow::Result<()> {
 
     let elements_path = args.out.join("elements.json");
     std::fs::write(&elements_path, serde_json::to_vec_pretty(&invariants)?)?;
+    if args.rvm {
+        let rvm_path = args.out.join("generated.rvm");
+        let file = e3d_model::rvm_read::RvmFile {
+            header: e3d_model::rvm_write::generated_header(
+                format!(
+                    "generated by e3d-model from {} (root {})",
+                    args.db_file.display(),
+                    args.root
+                        .map(|r| r.to_string())
+                        .unwrap_or_else(|| "<whole db>".to_string()),
+                ),
+                "AMS",
+                "/ALL",
+            ),
+            members: rvm_members,
+        };
+        file.write(&rvm_path)?;
+        println!(
+            "RVM: {} 个成员（解析图元 {rvm_analytic} / 自校未过退回面片 {rvm_analytic_rejected}）-> {}",
+            file.members.len() - 1,
+            rvm_path.display()
+        );
+    }
     let report_path = args.out.join("report.json");
     std::fs::write(&report_path, serde_json::to_vec_pretty(&merged)?)?;
     let cache_path = args.out.join("primitive-cache.json");
