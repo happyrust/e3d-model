@@ -141,6 +141,10 @@ fn rvm_component_geometry(
             Some(e3d_model::rvm_write::cylinder_geometry(world, &cylinder))
         })
         .or_else(|| {
+            let snout = e3d_model::rvm_write::snout_from_local_mesh(local_vertices, triangles)?;
+            Some(e3d_model::rvm_write::snout_geometry(world, &snout))
+        })
+        .or_else(|| {
             let torus = e3d_model::rvm_write::torus_from_local_mesh(local_vertices, triangles)?;
             Some(e3d_model::rvm_write::circular_torus_geometry(world, &torus))
         });

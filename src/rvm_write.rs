@@ -442,6 +442,87 @@ fn same_point(a: &[f64; 3], b: &[f64; 3]) -> bool {
     (0..3).all(|axis| (a[axis] - b[axis]).abs() <= 1e-6)
 }
 
+/// 轴向候选：端盖是平面多边形，**它的法向就是轴向**，而端盖法向一定出现在三角面法向里。
+/// 方向不分正负，统一朝一侧，省一半候选。
+fn face_normal_axes(points: &[glam::DVec3], triangles: &[[u32; 3]]) -> Vec<glam::DVec3> {
+    let mut axes: Vec<glam::DVec3> = Vec::new();
+    for tri in triangles {
+        let [a, b, c] = tri.map(|i| points[i as usize]);
+        let normal = (b - a).cross(c - a);
+        if normal.length_squared() <= 0.0 {
+            continue;
+        }
+        let normal = normal.normalize();
+        let normal = if normal.z < 0.0
+            || (normal.z == 0.0 && (normal.y < 0.0 || (normal.y == 0.0 && normal.x < 0.0)))
+        {
+            -normal
+        } else {
+            normal
+        };
+        if !axes
+            .iter()
+            .any(|existing| (*existing - normal).length() < 1e-9)
+        {
+            axes.push(normal);
+        }
+    }
+    axes
+}
+
+/// 顶点沿 `axis` 恰好落在两个平面上时给出 `(低档, 高档)` 投影值（相对 `origin`）。
+/// 这是「两个端盖」这句话的判据：多一档就说明侧面上还有顶点，那就不是圆柱也不是圆台。
+fn two_levels_along(
+    points: &[glam::DVec3],
+    axis: glam::DVec3,
+    origin: glam::DVec3,
+) -> Option<(f64, f64)> {
+    let mut levels: Vec<f64> = Vec::with_capacity(2);
+    for p in points {
+        let t = (*p - origin).dot(axis);
+        if !levels.iter().any(|l| (l - t).abs() <= 1e-6) {
+            levels.push(t);
+            if levels.len() > 2 {
+                return None;
+            }
+        }
+    }
+    match levels[..] {
+        [a, b] => Some((a.min(b), a.max(b))),
+        _ => None,
+    }
+}
+
+/// 落在 `axis` 上 `level` 那一档的顶点共圆时，给出 `(圆心, 半径, 顶点数)`。
+fn circular_cap(
+    points: &[glam::DVec3],
+    axis: glam::DVec3,
+    origin: glam::DVec3,
+    level: f64,
+) -> Option<(glam::DVec3, f64, usize)> {
+    let mut unique: Vec<glam::DVec3> = Vec::new();
+    for p in points {
+        if ((*p - origin).dot(axis) - level).abs() <= 1e-6
+            && !unique.iter().any(|q| (*q - *p).length() <= 1e-6)
+        {
+            unique.push(*p);
+        }
+    }
+    if unique.len() < 3 {
+        return None;
+    }
+    let centre = unique.iter().copied().sum::<glam::DVec3>() / unique.len() as f64;
+    let radius = (unique[0] - centre).length();
+    if !(radius > 0.0)
+        || unique
+            .iter()
+            .any(|p| ((*p - centre).length() - radius).abs() > 1e-6)
+    {
+        return None;
+    }
+    Some((centre, radius, unique.len()))
+}
+
 /// 一根圆柱的识别结果，全在局部系 mm。
 #[derive(Debug, Clone, Copy)]
 pub struct RecognisedCylinder {
@@ -485,45 +566,12 @@ pub fn cylinder_from_local_mesh(
     let points: Vec<DVec3> = vertices.iter().copied().map(DVec3::from_array).collect();
     let centroid = points.iter().copied().sum::<DVec3>() / points.len() as f64;
 
-    let mut axes: Vec<DVec3> = Vec::new();
-    for tri in triangles {
-        let [a, b, c] = tri.map(|i| points[i as usize]);
-        let normal = (b - a).cross(c - a);
-        if normal.length_squared() <= 0.0 {
-            continue;
-        }
-        let normal = normal.normalize();
-        // 轴向不分正负，统一朝一侧，省一半候选。
-        let normal = if normal.z < 0.0
-            || (normal.z == 0.0 && (normal.y < 0.0 || (normal.y == 0.0 && normal.x < 0.0)))
-        {
-            -normal
-        } else {
-            normal
-        };
-        if !axes.iter().any(|a| (*a - normal).length() < 1e-9) {
-            axes.push(normal);
-        }
-    }
-
-    for axis in axes {
+    for axis in face_normal_axes(&points, triangles) {
         // 1. 沿轴只有两个投影值。
-        let mut levels: Vec<f64> = Vec::with_capacity(2);
-        let mut ok = true;
-        for p in &points {
-            let t = (*p - centroid).dot(axis);
-            if !levels.iter().any(|l| (l - t).abs() <= 1e-6) {
-                levels.push(t);
-                if levels.len() > 2 {
-                    ok = false;
-                    break;
-                }
-            }
-        }
-        if !ok || levels.len() != 2 {
+        let Some((low, high)) = two_levels_along(&points, axis, centroid) else {
             continue;
-        }
-        let height = (levels[0] - levels[1]).abs();
+        };
+        let height = high - low;
         if !(height > 0.0) {
             continue;
         }
@@ -536,23 +584,113 @@ pub fn cylinder_from_local_mesh(
         if !(radius > 0.0) || points.iter().any(|p| (radial(p) - radius).abs() > 1e-6) {
             continue;
         }
-        let centre = centroid + axis * (levels[0] + levels[1]) / 2.0;
+        let centre = centroid + axis * (low + high) / 2.0;
         // 段数 = 落在一侧端盖上的不同顶点数。自校闸要拿它回算弦高，
         // 「网格比解析面细多少」这件事只有这块网格自己说得准。
-        let mut cap: Vec<DVec3> = Vec::new();
-        for p in &points {
-            if ((*p - centroid).dot(axis) - levels[0]).abs() <= 1e-6
-                && !cap.iter().any(|q| (*q - *p).length() <= 1e-6)
-            {
-                cap.push(*p);
-            }
-        }
+        let (_, _, segments) = circular_cap(&points, axis, centroid, low)?;
         return Some(RecognisedCylinder {
             radius,
             height,
             axis,
             centre,
-            segments: cap.len(),
+            segments,
+        });
+    }
+    None
+}
+
+/// 一段圆台（`Snout`）的识别结果，全在局部系 mm。
+#[derive(Debug, Clone, Copy)]
+pub struct RecognisedSnout {
+    /// `axis` 负向那一端的半径。
+    pub bottom_radius: f64,
+    /// `axis` 正向那一端的半径。
+    pub top_radius: f64,
+    pub height: f64,
+    /// 顶面中心相对底面中心的**横向**偏移长度。局部 +X 就取这个方向，于是 RVM 的 `YOFF` 恒为 0。
+    pub offset: f64,
+    /// 两个盖心的中点。
+    pub centre: glam::DVec3,
+    /// 底 → 顶（RVM 的局部 +Z）。
+    pub axis: glam::DVec3,
+    /// 偏移方向（RVM 的局部 +X）。
+    pub start: glam::DVec3,
+    /// 端盖多边形的边数，两端相同。
+    pub segments: usize,
+}
+
+impl RecognisedSnout {
+    /// 锥面与它的内接棱台之间的缺口。粗的那一端说了算，见 [`chord_sagitta_mm`]。
+    pub fn sagitta_mm(&self) -> f64 {
+        chord_sagitta_mm(
+            self.bottom_radius.max(self.top_radius),
+            std::f64::consts::TAU / self.segments as f64,
+        )
+    }
+}
+
+/// 网格是一段圆台（= 离散 `Snout`）时把它解出来。
+///
+/// 认法与 [`cylinder_from_local_mesh`] 同源，只是两端各有各的半径、各有各的盖心：
+///
+/// 1. 顶点沿候选轴的投影只有**两个**取值（两个端盖，间距 = 高）；
+/// 2. 每一档的顶点各自共圆，给出该端的半径与盖心；
+/// 3. 两端盖心的横向错位就是 RVM 的 `XOFF`（`YOFF` 由取轴方式吃掉）。
+///
+/// 三条成立时顶点集合恰好是两个圆，闭合网格只能是它们张成的那只圆台。
+///
+/// 三种情况**故意**认不出来，退回面片：两端等径且不偏心的是圆柱，`Cylinder` 更贴 E3D；
+/// 带剪切的端面不垂直于轴，第 1 条就过不去；锥顶退化成一点的圆锥只有一个顶点，
+/// 撑不起「共圆」这句判断。
+pub fn snout_from_local_mesh(
+    vertices: &[[f64; 3]],
+    triangles: &[[u32; 3]],
+) -> Option<RecognisedSnout> {
+    use glam::DVec3;
+    if triangles.len() < 8 || vertices.len() < 6 {
+        return None;
+    }
+    let points: Vec<DVec3> = vertices.iter().copied().map(DVec3::from_array).collect();
+    let centroid = points.iter().copied().sum::<DVec3>() / points.len() as f64;
+
+    for axis in face_normal_axes(&points, triangles) {
+        let Some((low, high)) = two_levels_along(&points, axis, centroid) else {
+            continue;
+        };
+        let height = high - low;
+        if !(height > 0.0) {
+            continue;
+        }
+        let (Some(bottom), Some(top)) = (
+            circular_cap(&points, axis, centroid, low),
+            circular_cap(&points, axis, centroid, high),
+        ) else {
+            continue;
+        };
+        let ((bottom_centre, bottom_radius, segments), (top_centre, top_radius, top_segments)) =
+            (bottom, top);
+        if segments != top_segments {
+            continue; // 两端段数不同，不是一次回转扫出来的。
+        }
+        let arm = top_centre - bottom_centre;
+        let lateral = arm - axis * arm.dot(axis);
+        let offset = lateral.length();
+        if (bottom_radius - top_radius).abs() <= 1e-9 && offset <= 1e-9 {
+            return None; // 这是圆柱，让 `cylinder_from_local_mesh` 去接。
+        }
+        return Some(RecognisedSnout {
+            bottom_radius,
+            top_radius,
+            height,
+            offset,
+            centre: (bottom_centre + top_centre) / 2.0,
+            axis,
+            start: if offset > 1e-9 {
+                lateral / offset
+            } else {
+                axis.any_orthonormal_vector()
+            },
+            segments,
         });
     }
     None
@@ -614,7 +752,7 @@ pub fn torus_from_local_mesh(
     }
 
     // 按面法向分组。端盖是平面圆盘，它的三角面共享同一个法向且数量可观。
-    let mut groups: Vec<(DVec3, Vec<u32>)> = Vec::new();
+    let mut groups: Vec<(DVec3, Vec<[u32; 3]>)> = Vec::new();
     for tri in triangles {
         let [a, b, c] = tri.map(|i| points[i as usize]);
         let normal = (b - a).cross(c - a);
@@ -626,18 +764,28 @@ pub fn torus_from_local_mesh(
             .iter_mut()
             .find(|(n, _)| (*n - normal).length() < 1e-7)
         {
-            Some((_, members)) => members.extend_from_slice(tri),
-            None => groups.push((normal, tri.to_vec())),
+            Some((_, members)) => members.push(*tri),
+            None => groups.push((normal, vec![*tri])),
         }
     }
-    // 端盖朝外，两个法向相反；取三角面最多的两组。
+    // 取三角面最多的几组，每组再按共顶点连通性拆开。
+    //
+    // **为什么要拆**：90° 弯头的两个端盖法向相反、各成一组，直接取前两组就行；但包角
+    // 180° 时起点盖背朝扫掠方向、终点盖顺着，转过半圈两者**共面且同向**，会落进同一组。
+    // 合在一起 16 个顶点不共圆，整组就被判成「不是端盖」——`1RCV002VP` 的两条 π 弯
+    // 因此一个盖也认不出来。两个盖不共顶点，按连通性拆得开。
     groups.sort_by_key(|(_, members)| std::cmp::Reverse(members.len()));
     let caps: Vec<(DVec3, DVec3, f64, usize)> = groups
         .iter()
         .take(4)
-        .filter_map(|(normal, members)| {
+        .flat_map(|(normal, members)| {
+            connected_triangle_groups(members)
+                .into_iter()
+                .map(|indices| (*normal, indices))
+        })
+        .filter_map(|(normal, indices)| {
             let mut unique: Vec<DVec3> = Vec::new();
-            for index in members {
+            for index in &indices {
                 let p = points[*index as usize];
                 if !unique.iter().any(|u| (*u - p).length() < 1e-9) {
                     unique.push(p);
@@ -656,7 +804,7 @@ pub fn torus_from_local_mesh(
                 return None; // 不共圆，不是端盖。
             }
             // 端盖上的顶点数 = 管截面多边形的边数，自校闸拿它回算弦高。
-            Some((*normal, centre, radius, unique.len()))
+            Some((normal, centre, radius, unique.len()))
         })
         .collect();
     if caps.len() < 2 {
@@ -669,16 +817,26 @@ pub fn torus_from_local_mesh(
     }
     let radius = r1;
 
-    let axis = n1.cross(n2);
+    // 两个端盖法向都垂直于扫掠轴，所以一般情况下叉乘就是轴。**半圈弯头例外**：包角 180°
+    // 时两个端盖反向平行，叉乘退化成 0——`1RCV002VP` 的两条 π 弯就是这么被当成「直管」
+    // 丢掉的。这时改用另一组正交关系：轴同时垂直于端盖法向与两个盖心的连线（半圈时盖心
+    // 连线过扫掠中心，必与轴垂直）。**直管在这一支照样退化**：它的盖心连线与法向共线，
+    // 叉乘仍是 0，所以这个回退没有放松「不是弯头就别认」这条。
+    let axis = match n1.cross(n2) {
+        from_normals if from_normals.length_squared() >= 1e-12 => from_normals,
+        _ => n1.cross(c2 - c1),
+    };
     if axis.length_squared() < 1e-12 {
-        return None; // 两个端盖平行 = 直管，不是弯头。
+        return None;
     }
     let axis = axis.normalize();
 
     // 端盖平面内的径向：管心从这个方向离开扫掠中心。
     let d1 = n1.cross(axis).normalize();
     let d2 = n2.cross(axis).normalize();
-    let centre = line_intersection(c1, d1, c2, d2)?;
+    // 半圈时两条径向线重合，交点不唯一——两臂等长反向，扫掠中心就是两个盖心的中点。
+    // 取错了下面「两臂等长」与「每个顶点都在管面上」两道校验会把它挡回去。
+    let centre = line_intersection(c1, d1, c2, d2).unwrap_or_else(|| (c1 + c2) / 2.0);
 
     let arm1 = c1 - centre;
     let arm2 = c2 - centre;
@@ -748,6 +906,30 @@ pub fn torus_from_local_mesh(
         tube_segments,
         sweep_steps: rings.len().saturating_sub(1).max(1),
     })
+}
+
+/// 把一组共面三角面按**共顶点**拆成连通块，每块给出它自己的顶点索引。
+///
+/// 只服务于端盖识别：同一个平面上可能坐着两个互不相连的盘（见 [`torus_from_local_mesh`]
+/// 里 180° 那一段），把它们当成一个盘就什么都认不出来。
+fn connected_triangle_groups(triangles: &[[u32; 3]]) -> Vec<Vec<u32>> {
+    let mut components: Vec<Vec<u32>> = Vec::new();
+    for tri in triangles {
+        // 与这个三角面共顶点的已有块全部并进来——一次可能连通好几块。
+        let mut merged: Vec<u32> = tri.to_vec();
+        components.retain(|component| {
+            if component.iter().any(|vertex| tri.contains(vertex)) {
+                merged.extend_from_slice(component);
+                false
+            } else {
+                true
+            }
+        });
+        merged.sort_unstable();
+        merged.dedup();
+        components.push(merged);
+    }
+    components
 }
 
 /// 两条共面直线的交点。异面或平行时 None。
@@ -842,6 +1024,54 @@ pub fn cylinder_geometry(world: &glam::DMat4, cylinder: &RecognisedCylinder) -> 
             level: None,
         },
         sagitta_mm: cylinder.sagitta_mm(),
+    }
+}
+
+/// 由 [`snout_from_local_mesh`] 认出来的圆台造一条 `Snout` 记录。
+///
+/// RVM 的 `Snout`：轴向局部 **Z**、原点在两个面心的中点，`XOFF`/`YOFF` 是顶面中心相对
+/// 底面中心的偏移，**上下各摊一半**。局部 +X 取偏移方向，于是 `YOFF` 恒为 0；剪切一律 0
+/// ——带剪切的形体识别器根本不认（见它的文档）。
+pub fn snout_geometry(world: &glam::DMat4, snout: &RecognisedSnout) -> AnalyticCandidate {
+    let x = snout.start;
+    let z = snout.axis;
+    let y = z.cross(x);
+    let frame = glam::DMat4::from_cols(
+        x.extend(0.0),
+        y.extend(0.0),
+        z.extend(0.0),
+        snout.centre.extend(1.0),
+    );
+    let placed = *world * frame;
+    let cols = placed.to_cols_array();
+    let matrix3 = [
+        cols[0], cols[1], cols[2], cols[4], cols[5], cols[6], cols[8], cols[9], cols[10],
+    ]
+    .map(|value| value / M_TO_MM);
+    let primitive = Primitive::Snout([
+        snout.bottom_radius,
+        snout.top_radius,
+        snout.height,
+        snout.offset,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+    ]);
+    let record_bbox = primitive.local_aabb_mm().unwrap_or([0.0; 6]);
+    AnalyticCandidate {
+        geometry: RvmGeometry {
+            tag: "PRIM".to_string(),
+            flags: 1,
+            primitive,
+            matrix3,
+            translation_mm: [cols[12], cols[13], cols[14]],
+            record_bbox,
+            bbox_frame: crate::rvm_read::BboxFrame::Local,
+            level: None,
+        },
+        sagitta_mm: snout.sagitta_mm(),
     }
 }
 
@@ -958,6 +1188,21 @@ fn push_f32s(out: &mut Vec<u8>, values: &[f64]) {
 mod tests {
     use super::*;
     use crate::rvm_read::BboxFrame;
+
+    /// 网格摆到 `world` 之后的世界 AABB，自校闸的另一半判据。
+    fn world_aabb_of(vertices: &[[f64; 3]], world: &glam::DMat4) -> ([f64; 3], [f64; 3]) {
+        vertices.iter().fold(
+            ([f64::MAX; 3], [f64::MIN; 3]),
+            |(mut lo, mut hi), vertex| {
+                let w = (*world * glam::DVec3::from_array(*vertex).extend(1.0)).truncate();
+                for axis in 0..3 {
+                    lo[axis] = lo[axis].min(w[axis]);
+                    hi[axis] = hi[axis].max(w[axis]);
+                }
+                (lo, hi)
+            },
+        )
+    }
 
     fn sample() -> RvmFile {
         // /SITE → /ZONE → BOX 1 of EQUIPMENT /E1（带一个单位立方的 FacetGroup）
@@ -1109,6 +1354,73 @@ mod tests {
         );
     }
 
+    /// 半圈弯头的两个端盖反向平行，`n1 × n2` 退化——`1RCV002VP` 的两条 π 弯就是这么
+    /// 被当成直管丢掉的。轴改由「法向 × 盖心连线」定，这条钉住它。
+    #[test]
+    fn a_half_turn_bend_is_not_mistaken_for_a_straight_tube() {
+        let (inner, outer) = (152.5_f64, 162.5_f64);
+        let solid = crate::solid::circ_torus_solid(inner, outer, 180.0).unwrap();
+        let mesh = crate::mesh::TriMesh::from_manifold(&solid);
+        let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
+        let torus = torus_from_local_mesh(&mesh.vertices, &triangles)
+            .expect("包角 180° 的弯头必须认得回来");
+        assert!(
+            (torus.angle - std::f64::consts::PI).abs() < 1e-6,
+            "angle={}",
+            torus.angle.to_degrees()
+        );
+        assert!(
+            (torus.offset - (inner + outer) / 2.0).abs() < 1e-6,
+            "{torus:?}"
+        );
+        assert!(
+            (torus.radius - (outer - inner) / 2.0).abs() < 1e-6,
+            "{torus:?}"
+        );
+    }
+
+    #[test]
+    fn recognises_a_snout_built_by_the_solid_kernel() {
+        // 同心的与偏心的各来一只：`1RCV002VP` 两种都有（XOFF 12.06 那两条是偏心的）。
+        for (dbot, dtop, height, xoff) in [(66.33, 60.30, 14.4, 0.0), (66.33, 84.42, 115.2, 12.06)]
+        {
+            let solid = crate::solid::snout_solid(dbot, dtop, height, xoff, 0.0).unwrap();
+            let mesh = crate::mesh::TriMesh::from_manifold(&solid);
+            let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
+            let snout = snout_from_local_mesh(&mesh.vertices, &triangles)
+                .unwrap_or_else(|| panic!("圆台应认得回来: {dbot}/{dtop}/{height}/{xoff}"));
+            // 轴向由面法向定，可能与内核的 +Z 反向；反过来时两端半径跟着换个个儿。
+            let (rb, rt) = if snout.axis.z >= 0.0 {
+                (snout.bottom_radius, snout.top_radius)
+            } else {
+                (snout.top_radius, snout.bottom_radius)
+            };
+            assert!((rb - dbot / 2.0).abs() < 1e-6, "rb={rb}");
+            assert!((rt - dtop / 2.0).abs() < 1e-6, "rt={rt}");
+            assert!((snout.height - height).abs() < 1e-6, "h={}", snout.height);
+            assert!((snout.offset - xoff).abs() < 1e-6, "off={}", snout.offset);
+
+            // 写出来的记录必须过自校闸：偏心那只的 XOFF 写丢了，AABB 立刻差 12 mm。
+            let world = glam::DMat4::from_rotation_z(0.4) * glam::DMat4::from_rotation_x(0.7);
+            let (lo, hi) = world_aabb_of(&mesh.vertices, &world);
+            let candidate = snout_geometry(&world, &snout);
+            assert!(
+                candidate.matches_mesh_aabb(lo, hi, 0.01),
+                "{dbot}/{dtop}/{height}/{xoff}: sagitta={}",
+                candidate.sagitta_mm
+            );
+        }
+    }
+
+    #[test]
+    fn a_cylinder_is_not_offered_as_a_snout() {
+        // 两端等径又不偏心的是圆柱：`Cylinder` 那条记录更贴 E3D，圆台识别器必须让路。
+        let solid = crate::solid::csg_cylinder_solid(100.0, 400.0).unwrap();
+        let mesh = crate::mesh::TriMesh::from_manifold(&solid);
+        let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
+        assert!(snout_from_local_mesh(&mesh.vertices, &triangles).is_none());
+    }
+
     #[test]
     fn chord_sagitta_is_the_gap_between_an_inscribed_polygon_and_its_circle() {
         // 独立量法：取圆上相邻两个格点，弦中点离圆心多远，缺口就是半径减它。
@@ -1144,17 +1456,7 @@ mod tests {
         // 段数规则把 0/90/180/270 铺在网格上，所以轴对齐时 AABB 一点不差；缺口是转起来
         // 才有的，而现场没有一根管子是轴对齐的。
         let world = glam::DMat4::from_rotation_z(0.4) * glam::DMat4::from_rotation_x(0.7);
-        let (lo, hi) = mesh.vertices.iter().fold(
-            ([f64::MAX; 3], [f64::MIN; 3]),
-            |(mut lo, mut hi), vertex| {
-                let w = (world * glam::DVec3::from_array(*vertex).extend(1.0)).truncate();
-                for axis in 0..3 {
-                    lo[axis] = lo[axis].min(w[axis]);
-                    hi[axis] = hi[axis].max(w[axis]);
-                }
-                (lo, hi)
-            },
-        );
+        let (lo, hi) = world_aabb_of(&mesh.vertices, &world);
 
         let candidate = cylinder_geometry(&world, &cylinder);
         assert!(
@@ -1191,17 +1493,7 @@ mod tests {
         );
 
         let world = glam::DMat4::from_rotation_z(0.4) * glam::DMat4::from_rotation_x(0.7);
-        let (lo, hi) = mesh.vertices.iter().fold(
-            ([f64::MAX; 3], [f64::MIN; 3]),
-            |(mut lo, mut hi), vertex| {
-                let w = (world * glam::DVec3::from_array(*vertex).extend(1.0)).truncate();
-                for axis in 0..3 {
-                    lo[axis] = lo[axis].min(w[axis]);
-                    hi[axis] = hi[axis].max(w[axis]);
-                }
-                (lo, hi)
-            },
-        );
+        let (lo, hi) = world_aabb_of(&mesh.vertices, &world);
 
         let candidate = circular_torus_geometry(&world, &torus);
         assert!(candidate.matches_mesh_aabb(lo, hi, 0.01));
