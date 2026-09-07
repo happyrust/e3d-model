@@ -662,6 +662,23 @@ pub fn tube_outer_diameter(
     }
 }
 
+/// `CGETOD` 的 A 段：一条槽位**离开侧**选中的管子目录件外径（`PARA[2]`）。
+///
+/// 容器头读 `HSTU`/`HSRO`，普通构件离开读 `LSTU`/`LSRO`——与 [`crate::pipeline`] 建隐式管身时
+/// 取外径的那一步同源，这里只是把它公开给不建几何、只要外径的消费者（gen-model 的 MBD 尺寸
+/// 标注按 PML `aod of $!mem` 决定尺寸行位与字高）。目录库没开 / stub 不在所钉会话 / `PARA`
+/// 缺席一律 `Ok(None)`，调用方按 [`tube_outer_diameter`] 回落到到达侧通径。
+pub fn departure_tube_outer_diameter(from: &RouteEnd) -> Result<Option<f64>, DbElementError> {
+    match from {
+        RouteEnd::ContainerHead(departure) | RouteEnd::ContainerTail(departure) => {
+            crate::catalogue_point::tube_outer_diameter_from_stub(departure, &["HSTU", "HSRO"])
+        }
+        RouteEnd::MemberLeave { member, .. } | RouteEnd::MemberArrive { member, .. } => {
+            crate::catalogue_point::tube_outer_diameter_from_stub(member, &["LSTU", "LSRO"])
+        }
+    }
+}
+
 /// 建成的一根管身。
 pub struct TubeGeometry {
     /// 世界系实体。
