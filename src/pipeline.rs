@@ -29,6 +29,7 @@
 use std::collections::BTreeMap;
 
 use e3d_io::db_element::{DbElement, DbElementError};
+use e3d_io::refno::RefNo;
 
 use crate::cable_tray::{self, is_cable_tray_element};
 use crate::catalogue::{
@@ -39,7 +40,7 @@ use crate::category::{
     BuildDisposition, Category, CompositeFamily, decision, derives_implied_tubes,
     graphics_ignored_below, is_model_unit,
 };
-use crate::elmodl::{GeneratedElement, GeometryId, Modeled, model_element_with_cache};
+use crate::elmodl::{GeneratedElement, GeometryId, Modeled, SkipKind, model_element_with_cache};
 use crate::extrusion_reuse::ExtrusionReuseStats;
 use crate::route::{
     ArriveCheck, PPointResolver, Route, RouteEnd, SlotAlignment, TubeOutcome, ZERO_LENGTH_TOL_MM,
@@ -143,6 +144,19 @@ pub struct Report {
     pub failed: Vec<Incident>,
     /// 目录件记账：noun → 数量（二期 G4）。
     pub catalog_pending: BTreeMap<String, usize>,
+    /// 只画中心线的型材：noun → 件数（[`crate::elmodl::SkipKind::CentrelineOnly`]）。
+    ///
+    /// ams8000 的 528 只 SCTN 里 500 只没有 `SPRE`（MSUP 杆件），E3D 的 TTY 导出给的是
+    /// 一根 `Line`、没有实体。**不并进 [`Report::skipped`]**：那本账的语义是「E3D 也什么
+    /// 都不画」，而这些是 **E3D 画了一条线、我们一条都还不画**——混在一起，中心线这笔
+    /// 欠款就再也看不见了。它也仍留在 [`Report::evidence_pending`] 里，正是这个原因。
+    pub centreline_only: BTreeMap<String, usize>,
+    /// 目录链断的明细（[`crate::elmodl::SkipKind::CatalogueChainBroken`]）：引用悬空、
+    /// 库没开、缺 `CATR`/`GSTR`。
+    ///
+    /// 与上一本分开、且逐条点名：ams8000 那 24 只指向 db 5052 的 refno 不在所钉会话的
+    /// 索引里，是数据或 `--catalogue` 配置问题，要能顺着 refno 查下去；一个计数查不动。
+    pub catalogue_chain_broken: Vec<Incident>,
     /// 路由容器记账：noun → 数量。BRAN/HANG/LUG/SUPC/TRUNNI 五族**都记**——
     /// HANG 与风管 BRAN（属主 HVAC）也在账上，只是不派生管身
     /// （[`crate::category::derives_implied_tubes`]）。
@@ -197,6 +211,23 @@ pub struct Report {
     pub unsupported: BTreeMap<String, usize>,
     /// 分类表没认领：noun → 数量。出现即分类表欠账。
     pub unknown_nouns: BTreeMap<String, usize>,
+    /// **E3D 建、我们没接线**的件数：noun → 数量。判据是
+    /// [`crate::core3d_registry::is_not_wired`]，即「[`classify`] 判 `Unknown` 或
+    /// `NonGraphic` ∧ 该 noun 在 Core3D 的 builder 注册表里」。
+    ///
+    /// 这是总纲 §4 的 D3 闸门第一次有一个**跟着实跑走的数**。在它之前，
+    /// 「E3D 也不画」与「我们还没建」的分界只存在于 recheck 文档里，
+    /// 靠人每隔几周去反编译里翻一遍；`catalog_pending` 那一万件到底欠多少，
+    /// 报告上答不出来。
+    ///
+    /// **交叉记账，不进 [`Report::accounts_for`] 的等式**：这里的每一件都已经在
+    /// [`Report::unknown_nouns`] 或 [`Report::proven_non_graphic`] 里数过一次了。
+    /// 与 [`Report::implied_tubes`] / [`Report::host_negatives`] 同一个道理——
+    /// 它是从另一个角度照同一批元素，不是第三本收支账。
+    ///
+    /// 只数**遍历到的**元素：被属主消费掉的成员不入栈，因此不在这本账上。
+    /// 那是对的——一个被 `SCTN` 吃进去的 `PLOO` 不欠任何人一份几何。
+    pub not_wired: BTreeMap<String, usize>,
     /// 判「无三维表示」而放过的：noun → 数量。[`Category::NonGraphic`]。
     ///
     /// 这本账立出来之前，`NonGraphic` 与 [`Category::List`] 共用一个空分支，元素只进
@@ -207,6 +238,19 @@ pub struct Report {
     /// 记了账才谈得上复核：先让每一次「无三维表示」的放行都在报告里留名。
     pub proven_non_graphic: BTreeMap<String, usize>,
     /// 已有明确建模路径、但 builder 或目标语料证据尚未闭环：noun → 数量。
+    ///
+    /// 每个 [`BuildDisposition::EvidencePending`] 的元素先按 noun 记一笔，**产出了就当场
+    /// 回冲**（[`decrement`]）：目录件 model unit 建成、桥架件放置算出、`CTRAY` 目录链出实体、
+    /// 路由成员出形状、路由容器补出至少一根管身、以及容器按
+    /// [`crate::category::derives_implied_tubes`] 判定本来就不该有管身。
+    ///
+    /// **不回冲的两处是有意的**：路由成员「解出来但没形状」还没有对着 E3D 逐件核过；
+    /// [`Report::centreline_only`] 那 500 只 MSUP 杆件是 E3D 画了线、我们一条都不画。
+    /// 两笔都是真欠款，回冲掉就再也看不见了。
+    ///
+    /// 回冲这件事漏一处的表现不是报错，是**排期依据失真**：`RouteMember` 那 92 个 noun
+    /// 一度整批不回冲，于是 ams7997 的 `BEND` 3320、`ATTA` 3226 全挂在这本账上，而那一跑
+    /// `route_members=11448`、`generated=50501` —— 报告说「待建」的绝大多数其实早建好了。
     pub evidence_pending: BTreeMap<String, usize>,
     /// 已实际完成成员聚合并产出实体的复合构件：noun → 数量。
     ///
@@ -233,6 +277,28 @@ pub struct Report {
 pub struct GenerationOutcome {
     pub elements: Vec<GeneratedElement>,
     pub report: Report,
+    /// DFS 访问到的每一个元素，**按遍历序**、含根、含没出几何的容器与记账项；
+    /// 被属主消费掉的成员（剖面环 / 负体）不入栈，因此也不在这里——它们在
+    /// [`Report::consumed`] 那本账上。`visited.len() == report.visited` 恒成立。
+    ///
+    /// 消费方拿它做「生成一根顺手把子树的数据面终态写进库」（gen-model 读透缓存的
+    /// 写透，`docs/plans/2026-09-05-kv-mem-zero-ingest-read-through-plan.md` §3.2）：
+    /// 子树是什么只有这一份答案，另起一次枚举就是第二份。
+    pub visited: Vec<RefNo>,
+    /// 这次生成**真读到**的目录元素：不在根所在库、且所在库类型为 `CATA` 的每一个元素，
+    /// 按首次读到的顺序去重。「真读」= e3d-io 走到了 `parsed` / `extraction`（含缓存命中），
+    /// 只造了句柄没读的不算；记录点在 e3d-io 的读入口（`read_stats::trace_element_reads`），
+    /// 不是逐个调用点手记，所以目录链上每一跳（`SPRE→SPCO→CATR→SCOM→GMSE/PTSE/…`、
+    /// P 点求值、剖面、桥架目录件）都在里面，新增一条读法也不用改这里。
+    ///
+    /// 它是 gen-model 依赖闭包（ADR-064 D5 `cata_dependency`）的对拍 oracle：
+    /// `catalogue_visited ⊆ closure(seed(visited))` 必须成立，闭包比实读宽允许、窄就是漏。
+    /// 纯输出、不带句柄（ADR-057 B1）。
+    ///
+    /// 两条边界：跨到**别的设计库**的读（`HREF` / `TREF` 指向另一库的 NOZZ 之类）不在这里
+    /// ——它们不是目录依赖；目录局部网格缓存命中的目录件**不会再被读**，因此也不在这里——
+    /// 要一根完整的目录实读集，给它一个空的 [`CatalogueMeshCache`]。
+    pub catalogue_visited: Vec<RefNo>,
 }
 
 /// 从 `root` 起 DFS 生成整棵子树。遍历中的 I/O 错误（读不到成员表）直接上抛——
@@ -251,13 +317,20 @@ pub fn generate_subtree_with_cache(
 ) -> Result<GenerationOutcome, DbElementError> {
     let mut elements = Vec::new();
     let mut report = Report::default();
+    let mut visited = Vec::new();
     let cache_stats_before = catalogue_mesh_cache.stats();
     let extrusion_stats_before = catalogue_mesh_cache.extrusion_stats();
+    // 目录实读集从这里开始记（e3d-io 读入口的线程局部记录器），到 DFS 结束收账；
+    // 中途 `?` 早退时记录器随作用域丢弃，不会留下一层挂着。
+    let root_dbno = root.refno().dbno();
+    let set = root.db_set().clone();
+    let read_trace = e3d_io::read_stats::trace_element_reads();
     // 显式栈，避免深树递归爆栈；压栈顺序反转以保持文件原序遍历。
     let mut stack: Vec<DbElement> = vec![root];
 
     while let Some(el) = stack.pop() {
         report.visited += 1;
+        visited.push(el.refno());
         let noun = el.element_type()?;
         let noun_decision = decision(&noun);
         let category = noun_decision.category;
@@ -268,6 +341,12 @@ pub fn generate_subtree_with_cache(
             .or_insert_with(|| noun_decision.evidence.to_owned());
         if noun_decision.disposition == BuildDisposition::EvidencePending {
             *report.evidence_pending.entry(noun.clone()).or_insert(0) += 1;
+        }
+        // 记在 match 外面：这本账横跨 Unknown 与 NonGraphic 两个分支，而这两个分支
+        // 之所以要一起数，正是因为它们在报告上长得完全不一样——一个挂着欠账、一个
+        // 记在「不欠账」那本。分头记就等于让判据跟着分支走，走着走着就只剩一半。
+        if crate::core3d_registry::is_not_wired(&noun) {
+            *report.not_wired.entry(noun.clone()).or_insert(0) += 1;
         }
 
         match category {
@@ -295,14 +374,12 @@ pub fn generate_subtree_with_cache(
                                 detail: note.clone(),
                             });
                         }
-                        report.generated += 1;
+                        record_generated(&mut report, &noun, 1);
                         elements.push(*generated);
                     }
-                    Ok(Modeled::Skipped { reason }) => report.skipped.push(Incident {
-                        refno,
-                        noun,
-                        detail: reason,
-                    }),
+                    Ok(Modeled::Skipped { kind, reason }) => {
+                        record_skip(&mut report, kind, refno, noun, reason);
+                    }
                     Err(error) => report.failed.push(Incident {
                         refno,
                         noun,
@@ -327,15 +404,12 @@ pub fn generate_subtree_with_cache(
                                 detail: note.clone(),
                             });
                         }
-                        report.generated += 1;
-                        decrement(&mut report.evidence_pending, &noun);
+                        record_generated(&mut report, &noun, 1);
                         elements.push(*generated);
                     }
-                    Ok(Modeled::Skipped { reason }) => report.skipped.push(Incident {
-                        refno,
-                        noun,
-                        detail: reason,
-                    }),
+                    Ok(Modeled::Skipped { kind, reason }) => {
+                        record_skip(&mut report, kind, refno, noun, reason);
+                    }
                     Err(error) => report.failed.push(Incident {
                         refno,
                         noun,
@@ -349,8 +423,14 @@ pub fn generate_subtree_with_cache(
             Category::RouteContainer => {
                 *report.route_containers.entry(noun.clone()).or_insert(0) += 1;
                 // 风管分支（属主 HVAC）与 HANG 一样只下钻成员、不补管身，见谓词文档。
-                if derives_implied_tubes(&el)? {
+                if !derives_implied_tubes(&el)? {
+                    // 不派生管身是**谓词给的结论**，不是 builder 没写：几何全在成员上。
+                    // 留在 evidence_pending 里等于说「这只 HANG 还欠一份几何」。
+                    decrement(&mut report.evidence_pending, &noun);
+                } else {
+                    let walk_timing = crate::perf::route_walk_scope();
                     let route = walk_route(&el)?;
+                    drop(walk_timing);
                     if route.pass_through_unresolved > 0 {
                         report.notes.push(Incident {
                             refno: refno.clone(),
@@ -368,6 +448,7 @@ pub fn generate_subtree_with_cache(
                         .by_owner_noun
                         .entry(noun.clone())
                         .or_insert(0) += tubes;
+                    let tubes_timing = crate::perf::route_tubes_scope();
                     let built = build_route_tubes(
                         &el,
                         &route,
@@ -375,7 +456,10 @@ pub fn generate_subtree_with_cache(
                         &mut report.implied_tubes,
                         &mut elements,
                     )?;
-                    report.generated += built;
+                    drop(tubes_timing);
+                    if built > 0 {
+                        record_generated(&mut report, &noun, built);
+                    }
                 }
             }
             Category::RouteMember => {
@@ -398,12 +482,15 @@ pub fn generate_subtree_with_cache(
                                         detail: note.clone(),
                                     });
                                 }
-                                report.generated += 1;
+                                record_generated(&mut report, &noun, 1);
                                 elements.push(generated);
                             }
                             // 路由成员没形状是常态（无 SPRE 的 FTUB、无 GMRE 的 MDS 支撑
                             // 参考、全零高的目录件），不进 skipped；但**依据**必须留在 notes 里，
                             // 否则报告上分不出「有意不画」与「漏建」（ams8000 体检 105 件）。
+                            //
+                            // 这一支**不**回冲 evidence_pending：没出形状的那几件是否真该没有，
+                            // 还没有对着 E3D 逐件核过，账上留着才看得见。
                             None => {
                                 if let Some(reason) = build.no_shape {
                                     report.notes.push(Incident {
@@ -462,8 +549,7 @@ pub fn generate_subtree_with_cache(
                                         detail: note.clone(),
                                     });
                                 }
-                                report.generated += 1;
-                                decrement(&mut report.evidence_pending, &noun);
+                                record_generated(&mut report, &noun, 1);
                                 *report.composites_built.entry(noun.clone()).or_insert(0) += 1;
                                 elements.push(generated);
                             }
@@ -478,6 +564,35 @@ pub fn generate_subtree_with_cache(
                                 ),
                             }),
                         }
+                    }
+                    Err(error) => report.failed.push(Incident {
+                        refno,
+                        noun,
+                        detail: error.to_string(),
+                    }),
+                }
+            }
+            // 布局式扶手（`crate::handrail`）：判据在 `category::is_model_unit`，执行臂在
+            // `model_element`；这里与 CTRAY 一样只做投递。跳过的两种结局（详图式 / 没东西
+            // 可画）都是「E3D 在 HANDRA 这一层同样不画」——留在 evidence_pending 里等于说
+            // 这只 HANDRA 还欠一份几何，而它欠的（若有）是 RAIL/KICKPL/HRPOST 成员各自的账。
+            Category::Composite(CompositeFamily::Structural) if is_model_unit(&noun) => {
+                match model_element_with_cache(&el, category, catalogue_mesh_cache) {
+                    Ok(Modeled::Solid(generated)) => {
+                        for note in &generated.notes {
+                            report.notes.push(Incident {
+                                refno: refno.clone(),
+                                noun: noun.clone(),
+                                detail: note.clone(),
+                            });
+                        }
+                        record_generated(&mut report, &noun, 1);
+                        *report.composites_built.entry(noun.clone()).or_insert(0) += 1;
+                        elements.push(*generated);
+                    }
+                    Ok(Modeled::Skipped { kind, reason }) => {
+                        decrement(&mut report.evidence_pending, &noun);
+                        record_skip(&mut report, kind, refno, noun, reason);
                     }
                     Err(error) => report.failed.push(Incident {
                         refno,
@@ -526,7 +641,63 @@ pub fn generate_subtree_with_cache(
     report.extrusion_mesh_cache = catalogue_mesh_cache
         .extrusion_stats()
         .checked_delta_from(extrusion_stats_before);
-    Ok(GenerationOutcome { elements, report })
+    debug_assert_eq!(
+        visited.len(),
+        report.visited,
+        "访问名单与 visited 计数必须同步增长"
+    );
+    let catalogue_visited = catalogue_reads(&set, root_dbno, read_trace.finish());
+    Ok(GenerationOutcome {
+        elements,
+        report,
+        visited,
+        catalogue_visited,
+    })
+}
+
+/// 一次生成的全部实读里挑出目录侧：不在根所在库、且所在库在池里登记为 `CATA`。
+///
+/// 库类型只问池里**已经开着**的库（读过的元素所在库必然开着），按 dbno 记一次；
+/// 类型字解不出来的库当非目录——宁少不多是这里的口径：这份名单是对拍 oracle 的
+/// 「实读」一侧，把一个非目录元素混进去会让闭包对拍误报「漏」。
+fn catalogue_reads(set: &e3d_io::db_element::DbSet, root_dbno: u32, reads: Vec<RefNo>) -> Vec<RefNo> {
+    let mut is_catalogue: BTreeMap<u32, bool> = BTreeMap::new();
+    reads
+        .into_iter()
+        .filter(|refno| {
+            let dbno = refno.dbno();
+            if dbno == root_dbno {
+                return false;
+            }
+            *is_catalogue.entry(dbno).or_insert_with(|| {
+                set.db_type(dbno)
+                    .is_some_and(|db_type| db_type.eq_ignore_ascii_case("CATA"))
+            })
+        })
+        .collect()
+}
+
+/// 把一条「有依据地没出几何」按 [`SkipKind`] 记进对应的那本账。
+///
+/// 分类由 [`crate::elmodl::model_element_with_cache`] 随结论一起交出来，这里只做投递——
+/// 报告不去猜 `reason` 那句话怎么写的。三本账的语义差别见 [`Report::centreline_only`]。
+fn record_skip(report: &mut Report, kind: SkipKind, refno: String, noun: String, reason: String) {
+    match kind {
+        SkipKind::NoShape => report.skipped.push(Incident {
+            refno,
+            noun,
+            detail: reason,
+        }),
+        // 500 只 MSUP 杆件的理由是同一句话，逐条留名只会把 notes 淹掉；件数按 noun 记。
+        SkipKind::CentrelineOnly => {
+            *report.centreline_only.entry(noun).or_insert(0) += 1;
+        }
+        SkipKind::CatalogueChainBroken => report.catalogue_chain_broken.push(Incident {
+            refno,
+            noun,
+            detail: reason,
+        }),
+    }
 }
 
 fn decrement(ledger: &mut BTreeMap<String, usize>, noun: &str) {
@@ -536,6 +707,23 @@ fn decrement(ledger: &mut BTreeMap<String, usize>, noun: &str) {
             ledger.remove(noun);
         }
     }
+}
+
+/// 记 `n` 件产出：`generated` 加上去，同时把这个 noun 的 [`Report::evidence_pending`]
+/// 回冲一笔。
+///
+/// **DFS 里不许再直接写 `report.generated += …`**（由
+/// `generated_is_only_recorded_together_with_the_pending_retirement` 钉住）。两件事拆成
+/// 两行写过一次，代价是 `RouteMember` 那 92 个 noun 整批只加不冲：ams7997 的 `BEND` 3320、
+/// `ATTA` 3226 挂在待建账上，而那一跑它们绝大多数早就建出来了——报告不报错，只是把
+/// 排期依据读反。
+///
+/// 回冲按 noun 记一笔，不按产出件数：待建账数的是**元素**，一只路由容器补出 12 根管身
+/// 仍然只是一只不再欠几何的容器。[`Category`] 判 `Built` 的 noun 从来没进过这本账，
+/// [`decrement`] 对缺席的键是空操作，所以每个产出点都能无条件调它。
+fn record_generated(report: &mut Report, noun: &str, n: usize) {
+    report.generated += n;
+    decrement(&mut report.evidence_pending, noun);
 }
 
 /// 单独为**一个**路由容器产出它名下该有的全部隐式管身——增量重建派生几何走这一条。
@@ -565,6 +753,14 @@ pub fn route_tubes_of(container: &DbElement) -> Result<Vec<GeneratedElement>, Db
         &mut elements,
     )?;
     Ok(elements)
+}
+
+fn invalid_tubi_reason(alignment: SlotAlignment) -> Option<&'static str> {
+    match alignment {
+        SlotAlignment::Misaligned { .. } => Some("misaligned"),
+        SlotAlignment::Reversed { .. } => Some("reversed"),
+        SlotAlignment::Aligned { .. } | SlotAlignment::Indeterminate => None,
+    }
 }
 
 /// 量一个容器上的全部管身槽位，逐类记账（算法文档 §4 的退化表），能建的建出来。
@@ -617,6 +813,7 @@ fn build_route_tubes(
         // E3D 的第一道门：槽位要与两端方向共轴且朝前，否则不画（见
         // `TUBE_ALIGNMENT_TOL`）。零长槽位先让 `build_tube` 按 zero_length 记账——
         // 两点重合时夹角没有意义。容器尾只有真读到 TDIR 才查到达侧。
+        let mut invalid_reason = None;
         if tube_length(from.pos, to.pos) >= ZERO_LENGTH_TOL_MM {
             let arrive = match &slot.to {
                 RouteEnd::MemberArrive { .. } | RouteEnd::MemberLeave { .. } => ArriveCheck::Member,
@@ -629,20 +826,62 @@ fn build_route_tubes(
                 }
                 RouteEnd::ContainerHead(_) => ArriveCheck::Skip,
             };
-            match slot_alignment(&from, &to, arrive) {
+            let alignment = slot_alignment(&from, &to, arrive);
+            invalid_reason = invalid_tubi_reason(alignment);
+            match alignment {
                 SlotAlignment::Misaligned { .. } => {
                     ledger.degenerate.misaligned += 1;
-                    continue;
                 }
                 SlotAlignment::Reversed { .. } => {
                     ledger.degenerate.reversed += 1;
-                    continue;
                 }
                 SlotAlignment::Aligned { .. } | SlotAlignment::Indeterminate => {}
             }
         }
         if bore_mismatch(&from, &to) {
             ledger.degenerate.bore_mismatch += 1;
+            // Native AMS head probe: changing only HBOR 500 -> 25 removes
+            // the RVM head solid; restoring 500 brings it back. Changing only
+            // the stub nominal bore does not remove it. Member/tail slots need
+            // their own native validation.
+            if matches!(&slot.from, RouteEnd::ContainerHead(_)) {
+                invalid_reason.get_or_insert("head bore mismatch");
+            }
+        }
+        // Native VALV and COUP probes retain identical P-point coordinates
+        // when ORIL is cleared, but no longer export the head tube solid.
+        if let (RouteEnd::ContainerHead(_), RouteEnd::MemberArrive { member, .. }) =
+            (&slot.from, &slot.to)
+        {
+            match member.get_bool("ORIL") {
+                Ok(Some(false)) => {
+                    invalid_reason.get_or_insert("head arrival orientation unset");
+                }
+                Ok(_) | Err(DbElementError::UnknownAttribute { .. }) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        // Native AMS BRAN probes with both null and non-null HREF remove
+        // the head solid when HSTU is cleared. Check the stored references
+        // before resolving the catalogue: an unavailable target is not null.
+        if let RouteEnd::ContainerHead(departure) = &slot.from {
+            if departure.element_type()?.eq_ignore_ascii_case("BRAN") {
+                let head_stub_null = match departure.get_ref("HSTU") {
+                    Ok(value) => value.is_none(),
+                    Err(DbElementError::UnknownAttribute { .. }) => false,
+                    Err(error) => return Err(error),
+                };
+                if head_stub_null {
+                    let alternate_null = match departure.get_ref("HSRO") {
+                        Ok(value) => value.is_none(),
+                        Err(DbElementError::UnknownAttribute { .. }) => true,
+                        Err(error) => return Err(error),
+                    };
+                    if alternate_null {
+                        invalid_reason.get_or_insert("head stub unset");
+                    }
+                }
+            }
         }
         // CGETOD 的 A 是槽位离开侧：容器头读 HSTU/HSRO，普通构件离开读
         // LSTU/LSRO。目录 PARA 是一基下标，PARA[2] 即 Rust values[1]。
@@ -673,6 +912,12 @@ fn build_route_tubes(
             TubeOutcome::Built(tube) => {
                 ledger.measured += 1;
                 ledger.measured_length_mm += tube.length_mm;
+                // Alignment and head-condition checks are native E3D draw
+                // gates.  Keep their measurements and detailed ledger counts,
+                // but never leak a diagnostic cylinder into the model/RVM.
+                if invalid_reason.is_some() {
+                    continue;
+                }
                 ledger.built += 1;
                 built_count += 1;
                 let (from_station, to_station) = slot.station_refnos();
@@ -686,6 +931,7 @@ fn build_route_tubes(
                     // 管身没有库记录；来源元素固定保存容器，绝不制造伪 refno。
                     refno: container.refno(),
                     noun: "TUBI".into(),
+                    is_invalid_tubi: false,
                     name: None,
                     solid: tube.solid,
                     parts: None,
@@ -694,14 +940,15 @@ fn build_route_tubes(
                     negatives_applied: 0,
                     negatives_skipped: Vec::new(),
                     notes: vec![format!(
-                        "implied tube length={}mm radius={}mm source={}",
+                        "implied tube length={}mm radius={}mm source={}{}",
                         tube.length_mm,
                         tube.radius_mm,
                         if catalogue_od.is_some() {
                             "catalogue PARA[2]"
                         } else {
                             "arrive bore fallback"
-                        }
+                        },
+                        "",
                     )],
                 });
             }
@@ -779,6 +1026,8 @@ impl Report {
             skipped,
             failed,
             catalog_pending,
+            centreline_only,
+            catalogue_chain_broken,
             route_containers,
             route_members,
             catalogue_mesh_cache,
@@ -790,6 +1039,7 @@ impl Report {
             geometry_set_negatives,
             unsupported,
             unknown_nouns,
+            not_wired,
             proven_non_graphic,
             evidence_pending,
             composites_built,
@@ -803,6 +1053,7 @@ impl Report {
         self.generated += generated;
         self.skipped.extend(skipped);
         self.failed.extend(failed);
+        self.catalogue_chain_broken.extend(catalogue_chain_broken);
         self.negatives_skipped.extend(negatives_skipped);
         self.notes.extend(notes);
         self.catalogue_mesh_cache.accumulate(catalogue_mesh_cache);
@@ -843,6 +1094,7 @@ impl Report {
         }
         for (target, source) in [
             (&mut self.catalog_pending, catalog_pending),
+            (&mut self.centreline_only, centreline_only),
             (&mut self.route_containers, route_containers),
             (&mut self.route_members, route_members),
             (&mut self.primitive_containers, primitive_containers),
@@ -855,6 +1107,7 @@ impl Report {
             (&mut self.geometry_set_negatives, geometry_set_negatives),
             (&mut self.unsupported, unsupported),
             (&mut self.unknown_nouns, unknown_nouns),
+            (&mut self.not_wired, not_wired),
             (&mut self.proven_non_graphic, proven_non_graphic),
             (&mut self.evidence_pending, evidence_pending),
             (&mut self.composites_built, composites_built),
@@ -898,6 +1151,13 @@ impl Report {
         self.implied_tubes.count
     }
 
+    /// E3D 建、我们没接线的件数合计，见 [`Report::not_wired`]。
+    ///
+    /// 这是 D3 闸门上那个该逐周下降的数。它降到零之前，`unknown=0` 说明不了任何事。
+    pub fn not_wired_total(&self) -> usize {
+        self.not_wired.values().sum()
+    }
+
     /// 各本账 + 生成数是否把 visited 解释干净。对拍前先跑这个自检，
     /// 账对不上就别谈几何。
     pub fn totals_line(&self) -> String {
@@ -906,7 +1166,7 @@ impl Report {
              route_containers={} route_members={} implied_tubes={} tubes_measured={} \
              tubes_built={} tubes_catalogue_od={} tubes_bore_fallback={} tubes_no_ppoint={} \
              tubes_misaligned={} tubes_reversed={} \
-             unsupported={} unknown={} orphans={} neg_skipped={}",
+             unsupported={} unknown={} not_wired={} orphans={} neg_skipped={}",
             self.visited,
             self.consumed_total(),
             self.generated,
@@ -925,6 +1185,7 @@ impl Report {
             self.implied_tubes.degenerate.reversed,
             self.unsupported.values().sum::<usize>(),
             self.unknown_nouns.values().sum::<usize>(),
+            self.not_wired_total(),
             self.orphans.values().sum::<usize>(),
             self.negatives_skipped.len(),
         )
@@ -934,6 +1195,121 @@ impl Report {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn misaligned_and_reversed_tubes_are_kept_as_invalid_diagnostics() {
+        assert_eq!(
+            invalid_tubi_reason(SlotAlignment::Misaligned { deviation_deg: 3.0 }),
+            Some("misaligned")
+        );
+        assert_eq!(
+            invalid_tubi_reason(SlotAlignment::Reversed {
+                deviation_deg: 178.0
+            }),
+            Some("reversed")
+        );
+        assert_eq!(
+            invalid_tubi_reason(SlotAlignment::Aligned {
+                leave_deg: 0.0,
+                arrive_deg: Some(0.0),
+            }),
+            None
+        );
+    }
+
+    /// 产出与回冲必须一起发生：DFS 里不许再直接写 `report.generated += …`。
+    ///
+    /// 这条不看行为看源码，因为它防的正是「行为看不出来」的那种漏：忘了回冲，
+    /// 报告照常全绿、`accounts_for` 照常平，只有 [`Report::evidence_pending`] 悄悄
+    /// 把已经建好的件继续算作待建。`RouteMember` 那 92 个 noun 就是这么挂了整批的。
+    ///
+    /// 唯一允许直接加的地方是 [`record_generated`] 自己与 [`Report::merge`]。
+    #[test]
+    fn generated_is_only_recorded_together_with_the_pending_retirement() {
+        let source = include_str!("pipeline.rs");
+        let body = source
+            .split_once("pub fn generate_subtree_with_cache(")
+            .expect("generate_subtree_with_cache 必须在")
+            .1
+            .split_once("\nfn record_skip(")
+            .expect("DFS 主体在 record_skip 之前收尾")
+            .0;
+        let offenders: Vec<&str> = body
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.starts_with("//"))
+            .filter(|line| line.contains("report.generated +="))
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "DFS 里请改调 record_generated（产出即回冲 evidence_pending）：{offenders:?}"
+        );
+        assert!(
+            body.contains("record_generated(&mut report"),
+            "DFS 至少要有一个产出点走 record_generated，否则这条守卫是空的"
+        );
+    }
+
+    /// `catalogue_visited` 的来源只有一个：DFS 前开的 e3d-io 读记录器，DFS 后收账、按目录侧
+    /// 过滤。它是 gen-model 依赖闭包的对拍 oracle（ADR-064 D5），记录器开在栈建好之前、收在
+    /// 回执组装之前——挪到别处（比如只包一部分分支）名单就静默变短，而对拍只会因此更容易绿。
+    /// 这条看源码，因为「少记」在行为上看不出来。
+    #[test]
+    fn catalogue_visited_is_traced_around_the_whole_dfs() {
+        let source = include_str!("pipeline.rs");
+        let body = source
+            .split_once("pub fn generate_subtree_with_cache(")
+            .expect("generate_subtree_with_cache 必须在")
+            .1
+            .split_once("\nfn catalogue_reads(")
+            .expect("catalogue_reads 紧跟 DFS 之后")
+            .0;
+        let opened = body
+            .find("e3d_io::read_stats::trace_element_reads()")
+            .expect("DFS 前要开读记录器");
+        let stack_built = body
+            .find("let mut stack: Vec<DbElement> = vec![root];")
+            .expect("显式栈");
+        let finished = body
+            .find("read_trace.finish()")
+            .expect("DFS 后要收账");
+        let outcome = body.find("Ok(GenerationOutcome {").expect("回执");
+        assert!(opened < stack_built, "记录器要在压栈之前打开，根自己的读也在作用域里");
+        assert!(stack_built < finished && finished < outcome, "收账在 DFS 之后、回执之前");
+        assert!(
+            body.contains("catalogue_visited,") || body.contains("catalogue_visited:"),
+            "回执里要带 catalogue_visited"
+        );
+        assert_eq!(
+            body.matches("trace_element_reads()").count(),
+            1,
+            "一次生成只开一个记录器；分支里再开会把那一段的读从外层账上拿走"
+        );
+    }
+
+    /// [`record_generated`] 本身：产出计数照加，待建账当场少一笔，加没加过的 noun 不炸。
+    #[test]
+    fn recording_a_build_retires_one_pending_entry() {
+        let mut report = Report::default();
+        report.evidence_pending.insert("BEND".into(), 2);
+
+        record_generated(&mut report, "BEND", 1);
+        assert_eq!(report.generated, 1);
+        assert_eq!(report.evidence_pending["BEND"], 1);
+
+        // 回冲按 noun 记一笔，与产出件数无关：一只 BRAN 补 12 根管身仍只销一只容器。
+        record_generated(&mut report, "BEND", 12);
+        assert_eq!(report.generated, 13);
+        assert!(
+            !report.evidence_pending.contains_key("BEND"),
+            "冲到 0 的键要移掉，否则报告上留一行 BEND=0"
+        );
+
+        // 判 Built 的 noun 从没进过这本账，回冲必须是空操作而不是下溢。
+        record_generated(&mut report, "BOX", 1);
+        assert_eq!(report.generated, 14);
+        assert!(report.evidence_pending.is_empty());
+    }
 
     /// 隐式管身是派生件，不许挤进 `visited + consumed` 那道等式。
     ///
@@ -978,6 +1354,7 @@ mod tests {
         left.implied_tubes.by_owner_noun.insert("BRAN".into(), 5);
         left.implied_tubes.degenerate.zero_length = 1;
         left.proven_non_graphic.insert("TEXT".into(), 2);
+        left.not_wired.insert("HANDRA".into(), 40);
         left.evidence_pending.insert("NOZZ".into(), 2);
         left.composites_built.insert("NOZZ".into(), 1);
         left.noun_evidence.insert("NOZZ".into(), "ida".into());
@@ -1000,6 +1377,8 @@ mod tests {
             .ppoint_db_not_open_by_dbno
             .insert("5053".into(), 4);
         right.proven_non_graphic.insert("TEXT".into(), 5);
+        right.not_wired.insert("HANDRA".into(), 41);
+        right.not_wired.insert("RNODE".into(), 7);
         right.evidence_pending.insert("NOZZ".into(), 3);
         right.composites_built.insert("NOZZ".into(), 4);
         right.noun_evidence.insert("NOZZ".into(), "newer".into());
@@ -1025,9 +1404,38 @@ mod tests {
             4
         );
         assert_eq!(left.proven_non_graphic["TEXT"], 7);
+        assert_eq!(left.not_wired["HANDRA"], 81);
+        assert_eq!(left.not_wired["RNODE"], 7);
+        assert_eq!(left.not_wired_total(), 88);
         assert_eq!(left.evidence_pending["NOZZ"], 5);
         assert_eq!(left.composites_built["NOZZ"], 5);
         assert_eq!(left.noun_evidence["NOZZ"], "ida");
+    }
+
+    /// `not_wired` 是交叉记账，不许挤进 `visited + consumed` 那道等式。
+    ///
+    /// 这本账里的每一件都已经在 `unknown_nouns` 或 `proven_non_graphic` 里数过一次；
+    /// 让它进等式，`accounts_for` 就变成「元素数 + 一部分元素再数一遍」才平，
+    /// 于是真丢了子树反而能靠这本账把差额补齐——判据被自己的观测数据毁掉。
+    #[test]
+    fn not_wired_stays_out_of_the_balance_equation() {
+        let mut report = Report {
+            visited: 10,
+            ..Default::default()
+        };
+        report.consumed.insert("PLOO".into(), 4);
+        report.unknown_nouns.insert("HANDRA".into(), 3);
+        report.proven_non_graphic.insert("RNODE".into(), 2);
+        assert!(report.accounts_for(14).is_ok());
+
+        report.not_wired.insert("HANDRA".into(), 3);
+        report.not_wired.insert("RNODE".into(), 2);
+        assert!(
+            report.accounts_for(14).is_ok(),
+            "欠账账进来后 14 这个总数不该改变"
+        );
+        assert_eq!(report.not_wired_total(), 5);
+        assert!(report.totals_line().contains("not_wired=5"));
     }
 
     /// 总长只要有一边没量过，合并结果就必须是 `None`。
