@@ -34,7 +34,10 @@
 //!    - 上卷路上跨过路由容器（含候选自身）→ 容器进派生集，名下隐式管身按两端键
 //!      重算（见下「派生单元」一节）；
 //!    - 改动落在没有单元归属、也不在任何路由射程里的元素上（容器改名、NonGraphic、
-//!      未建的目录件）→ 记 `no_model` 账，一个都不许蒸发。
+//!      未建的目录件）→ 记 `no_model` 账，一个都不许蒸发；
+//!    - 调用方经 [`plan_update_with`] 判为「只改了业务元数据、无结构变化」的 Modified
+//!      候选（gen-model 的 DataOnly ∧ DCHC=0 名单）→ 同样记 `no_model`、不上卷不级联，
+//!      但账本照记、闭包种子照收（凭证前移那一层不因此少收）。
 //! 3. **执行** [`execute_plan`]：逐单元重建（与全量管线同一条 [`model_element`]），
 //!    产出 Upsert / Remove 动作。重建结果为 Skipped / 失败时**发 Remove**——
 //!    Core 的次序是先擦后画，画不出来那一行就该保持擦掉的状态，绝不留陈旧网格。
@@ -218,6 +221,10 @@ pub struct IncrementReport {
     /// 与「这个改动落在没有模型归属的元素上」是两回事。老实现没有 L2，
     /// 这些候选一律当「变了」照常上卷重建。
     pub unchanged: usize,
+    /// `no_model` 里由调用方的「不影响模型」谓词判掉的那部分（[`plan_update_with`]）：
+    /// 记录真的变了，但改动全部落在业务元数据上（NAME / DESC …），成员 / 属主 / 类型都没动。
+    /// 横切计数，已含在 `no_model` 里——它回答的是「这一窗省了多少次上卷」，不是第四本账。
+    pub metadata_only: usize,
     /// 折算进了某个单元动作（重建 / 移除，含被去重掉的）的候选数。
     pub rolled_up: usize,
     /// `rolled_up` 里**只**靠变换级联折进去的候选数（自身与上方都没有单元 / 容器，
@@ -365,7 +372,7 @@ impl IncrementReport {
     pub fn totals_line(&self) -> String {
         format!(
             "window {}→{}: candidates={} (+{} ~{} -{}) rolled_up={} unchanged={} no_model={} \
-             unresolved={} cascades={} units regen={} remove={} derived={} | \
+             (metadata_only={}) unresolved={} cascades={} units regen={} remove={} derived={} | \
              regenerated={} skipped={} failed={} | derived regen={} retired={} failed={} \
              tubes +{} -{}",
             self.base_sesno,
@@ -377,6 +384,7 @@ impl IncrementReport {
             self.rolled_up,
             self.unchanged,
             self.no_model.values().sum::<usize>(),
+            self.metadata_only,
             self.unresolved.len(),
             self.cascades.len(),
             self.units_to_regenerate,
@@ -561,12 +569,29 @@ impl UpdatePlan {
     /// 不在闭包里，它上方的根就会被前移，几何却已经过期。多收的代价只是根级重算，
     /// 少收的代价是静默陈旧——按「宁多勿漏」取前者。
     pub fn affected_closure(&self, base: &Arc<DbSet>, target: &Arc<DbSet>) -> AffectedClosure {
+        self.affected_closure_filtering_ledger(base, target, |_| true)
+    }
+
+    /// 与 [`Self::affected_closure`] 相同，但允许消费端只从账本种子中排除已被其模型入口门
+    /// 明确判为无模型影响的条目。`regenerate` / `remove` / `regenerate_derived` 三个动作集
+    /// 始终作为种子保留；过滤器不能撤销已经上卷出的几何或删除动作。
+    pub fn affected_closure_filtering_ledger(
+        &self,
+        base: &Arc<DbSet>,
+        target: &Arc<DbSet>,
+        keep_ledger_entry: impl Fn(&crate::ledger::LedgerEntry) -> bool,
+    ) -> AffectedClosure {
         let mut closure = AffectedClosure::default();
         let mut seeds: BTreeSet<(u32, u32)> = BTreeSet::new();
         seeds.extend(self.regenerate.iter().copied());
         seeds.extend(self.remove.iter().copied());
         seeds.extend(self.regenerate_derived.iter().copied());
-        for entry in self.ledger.entries() {
+        for entry in self
+            .ledger
+            .entries()
+            .iter()
+            .filter(|entry| keep_ledger_entry(entry))
+        {
             seeds.insert(key(entry.refno));
         }
         // 「已收过就早退」的捷径只在**同一端图**内成立：同一个 refno 在 base 与 target
@@ -976,6 +1001,30 @@ pub fn plan_update_bounded(
     window: &WindowDiff,
     limits: PlanLimits,
 ) -> UpdatePlan {
+    plan_update_with(base, target, window, limits, |_| false)
+}
+
+/// [`plan_update_bounded`] 外加一道调用方给的「不影响模型」谓词（gen-model 2026-09-08）。
+///
+/// `metadata_only(diff)` 对一个 **Modified** 候选回 `true` = 这次改动全部落在业务元数据上
+/// （NAME / DESC 之类），成员 / 属主 / 类型 / opaque 都没动：**不上卷、不级联**，
+/// 记 `no_model`（横切计数 [`IncrementReport::metadata_only`]）。哪些属性算元数据由调用方说
+/// ——本 crate 不认识 gen-model 的效果表与 E3D 字典的 DCHC，名单只写一份。
+///
+/// 三条不变量，调用方与本函数各守一半：
+/// - 账本**照记**（`ledger.record` 在谓词之前）：这些候选仍是 [`UpdatePlan::affected_closure`]
+///   的种子，「根不在闭包里 = 子树什么都没动」的凭证前移判据一字不改，只是不再把它们上卷成
+///   `regenerate`；房间结构触发那类读账本的消费者也照常看得见它们。
+/// - 谓词只对 Modified 候选起作用：Inserted / Deleted 没有「只改了元数据」这一说。
+/// - 谓词返回 `true` 的候选必须真的没有结构变化——那是调用方谓词的责任，这里不复核；
+///   `|_| false` 就是 [`plan_update_bounded`]。
+pub fn plan_update_with(
+    base: &Arc<DbSet>,
+    target: &Arc<DbSet>,
+    window: &WindowDiff,
+    limits: PlanLimits,
+    metadata_only: impl Fn(&ElementDiff) -> bool,
+) -> UpdatePlan {
     let mut report = IncrementReport {
         base_sesno: window.base_sesno,
         target_sesno: window.target_sesno,
@@ -1250,6 +1299,13 @@ pub fn plan_update_bounded(
                 ledger.record(refno, &diff);
                 if diff.is_unchanged() {
                     report.unchanged += 1;
+                    continue;
+                }
+                // 调用方的「不影响模型」门（见 [`plan_update_with`]）：改动全部落在业务元数据上、
+                // 无结构变化 → 记 no_model，不上卷、不级联。账本上面已经记过，闭包种子照收。
+                if metadata_only(&diff) {
+                    report.metadata_only += 1;
+                    settle(&mut report, &mut ledger, refno, &diff.noun, false);
                     continue;
                 }
 
@@ -1550,7 +1606,7 @@ pub fn execute_plan(target: &Arc<DbSet>, plan: UpdatePlan) -> IncrementOutcome {
                 report.regenerated += 1;
                 upserts.push(*generated);
             }
-            Ok(Modeled::Skipped { reason }) => {
+            Ok(Modeled::Skipped { reason, .. }) => {
                 // E3D 同样不出几何 → 模型集里不该有它的行（先擦后画，画不出保持擦掉）。
                 removals.insert(element_id(unit));
                 report.regen_skipped.push(incident(refno, noun, reason));
