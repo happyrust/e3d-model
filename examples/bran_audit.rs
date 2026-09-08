@@ -203,7 +203,9 @@ fn audit_bran(
     // rvm-BRAN-24381-30598-primitives.json` 只有 4 Box + 1 Pyramid）。这类容器的槽位只
     // 列出来看间隙、不建；生产若建了任何一根就是缺陷。
     let derives_tubes = derives_implied_tubes(&bran)?;
-    let GenerationOutcome { elements, report } = generate_subtree_with_cache(bran.clone(), cache)?;
+    let GenerationOutcome {
+        elements, report, ..
+    } = generate_subtree_with_cache(bran.clone(), cache)?;
 
     // 成员 → 生成结果。
     let mut generated: BTreeMap<String, (f64, usize)> = BTreeMap::new();
@@ -387,6 +389,48 @@ fn audit_bran(
                 } else {
                     None
                 };
+                // 与生产路径相同的原生 E3D 头部绘制门。坐标本身可建出圆柱并不
+                // 代表 E3D 会画：头通径不合、到达件 ORIL=false，或 BRAN 没有
+                // HSTU/HSRO 时，原生 RVM 都没有该头管。
+                let mut native_head_gate = None;
+                if let RouteEnd::ContainerHead(departure) = &slot.from {
+                    if row.bore_mismatch {
+                        native_head_gate = Some("head bore mismatch");
+                    }
+                    if let RouteEnd::MemberArrive { member, .. } = &slot.to {
+                        match member.get_bool("ORIL") {
+                            Ok(Some(false)) => {
+                                native_head_gate.get_or_insert("head arrival orientation unset");
+                            }
+                            Ok(_)
+                            | Err(e3d_io::db_element::DbElementError::UnknownAttribute {
+                                ..
+                            }) => {}
+                            Err(error) => return Err(error.into()),
+                        }
+                    }
+                    if departure.element_type()?.eq_ignore_ascii_case("BRAN") {
+                        let head_stub_null = match departure.get_ref("HSTU") {
+                            Ok(value) => value.is_none(),
+                            Err(e3d_io::db_element::DbElementError::UnknownAttribute {
+                                ..
+                            }) => false,
+                            Err(error) => return Err(error.into()),
+                        };
+                        if head_stub_null {
+                            let alternate_null = match departure.get_ref("HSRO") {
+                                Ok(value) => value.is_none(),
+                                Err(e3d_io::db_element::DbElementError::UnknownAttribute {
+                                    ..
+                                }) => true,
+                                Err(error) => return Err(error.into()),
+                            };
+                            if alternate_null {
+                                native_head_gate.get_or_insert("head stub unset");
+                            }
+                        }
+                    }
+                }
                 if let Some((length, radius)) = built_tubes.get(&key) {
                     row.outcome = "built".into();
                     row.length_mm = Some(*length);
@@ -415,6 +459,15 @@ fn audit_bran(
                     row.length_mm = Some(tube_length(from.pos, to.pos));
                     problems.push(format!(
                         "[data] 槽位 {} → {} 反向（{deviation_deg:.0}°，长 {:.1}mm）：负管长形态，E3D 不画",
+                        row.from,
+                        row.to,
+                        row.length_mm.unwrap_or(f64::NAN)
+                    ));
+                } else if let Some(reason) = native_head_gate {
+                    row.outcome = "native_head_filtered".into();
+                    row.length_mm = Some(tube_length(from.pos, to.pos));
+                    problems.push(format!(
+                        "[data] 槽位 {} → {} 被 E3D 头部绘制门挡下（{reason}，长 {:.1}mm）",
                         row.from,
                         row.to,
                         row.length_mm.unwrap_or(f64::NAN)

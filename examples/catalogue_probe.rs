@@ -168,6 +168,26 @@ fn probe(member: &DbElement) -> anyhow::Result<()> {
     };
     dump_attrs("  SCOM", &scom)?;
     let env = DbElementParamEnv::new(Some(member.clone()), Some(scom.clone())).without_insulation();
+    if let Some(table) = scom.get_element("DTRE")? {
+        println!(
+            "  DTRE → {} {} {:?}",
+            table.refno(),
+            table.element_type()?,
+            table.stored_name()?
+        );
+        for row in table.members()? {
+            dump_attrs("    设计属性行", &row)?;
+            let mut values = Vec::new();
+            for name in ["PPRO", "DPRO"] {
+                if row.attribute(name).ok().flatten().is_some() {
+                    values.push(format!("{name}={:?}", row.get_number(name, &env)));
+                }
+            }
+            if !values.is_empty() {
+                println!("      求值 {}", values.join("  "));
+            }
+        }
+    }
 
     for set_attr in ["GMRE", "PTRE"] {
         let Some(gmset) = scom.get_element(set_attr)? else {

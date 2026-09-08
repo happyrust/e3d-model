@@ -17,7 +17,7 @@
 //!
 //! 数据结构两变体（gen-model `fast_model/prim_model.rs` 的权威读法）：
 //!
-//! - **现代 POLYHE**：首成员 `POLPTL`（顶点表，`POIN.POS`），其余成员为面（POGON），
+//! - **现代 POLYHE**：成员 `POLPTL`（顶点表，`POIN.POS`），其余成员为面（POLFAC），
 //!   面下 `POLOOP` 环（首环外边界、其余是孔），环下 `LOOPTS.VXREF`（顶点引用数组，
 //!   同一环多条 LOOPTS 串接）。对应 §3.7.4 的 noun 码 183671242（顶点组）/44236870（面）。
 //! - **旧式 POHE**：成员即面，面成员即顶点（读 `POS`），每面单环无孔。
@@ -78,17 +78,22 @@ fn vxrefs_or_empty(el: &DbElement) -> Result<Vec<RefNo>, DbElementError> {
 /// 一张面都收不到是硬错误（数据坏，响亮）。
 pub fn polyhedron_faces(el: &DbElement) -> Result<Vec<PolyFace>, PolyhedronError> {
     let members: Vec<DbElement> = el.members()?.collect();
-    let modern = match members.first() {
-        Some(first) => first.element_type()? == "POLPTL",
-        None => false,
-    };
+    // E3D permits faces to precede the point list after editing/insertion.
+    // Discover the table by type; member order does not select the format.
+    let mut point_list = None;
+    for (index, member) in members.iter().enumerate() {
+        if member.element_type()? == "POLPTL" {
+            point_list = Some(index);
+            break;
+        }
+    }
 
     let mut faces = Vec::new();
-    if modern {
+    if let Some(point_list_index) = point_list {
         // 趟 1（对标 §3.7.4）：POLPTL 的 POIN 成员建 RefNo → 位置 索引。
         // POS 未设按 dabacon 缺省语义取 0（与 `loop_profile` 同款）。
         let mut verts: HashMap<RefNo, DVec3> = HashMap::new();
-        for poin in members[0].members()? {
+        for poin in members[point_list_index].members()? {
             if poin.element_type()? != "POIN" {
                 continue;
             }
@@ -96,7 +101,10 @@ pub fn polyhedron_faces(el: &DbElement) -> Result<Vec<PolyFace>, PolyhedronError
             verts.insert(poin.refno(), DVec3::from_array(pos));
         }
         // 趟 2：其余成员即面（POGON），面下 POLOOP 环经 LOOPTS.VXREF 解引用。
-        for face_el in &members[1..] {
+        for (index, face_el) in members.iter().enumerate() {
+            if index == point_list_index {
+                continue;
+            }
             let mut loops = Vec::new();
             collect_poloop_rings(face_el, &verts, &mut loops)?;
             if !loops.is_empty() {
@@ -161,6 +169,50 @@ fn collect_poloop_rings(
 struct FaceMesh {
     tris: Vec<[u32; 3]>,
     edges: Vec<(u32, u32)>,
+}
+
+/// Legacy POHE renders its POGO members as individual thin panels, not as a
+/// closed B-rep. AMS 8000 exports one six-face FacetGroup per polygon, with
+/// thickness 0.99 mm along its winding normal, including for a closed cube.
+pub fn legacy_polygon_panels(
+    faces: &[PolyFace],
+    notes: &mut Vec<String>,
+) -> Result<Manifold, PolyhedronError> {
+    let mut panels = Vec::new();
+    for (index, face) in faces.iter().enumerate() {
+        let Some(outer) = face.loops.first() else {
+            continue;
+        };
+        let Some(normal) = newell_normal(outer) else {
+            notes.push(format!("POHE polygon {index} is degenerate; skipped"));
+            continue;
+        };
+        let offset = normal * 0.99;
+        let mut shell = vec![
+            face.clone(),
+            PolyFace {
+                loops: face
+                    .loops
+                    .iter()
+                    .map(|ring| ring.iter().map(|p| *p + offset).collect())
+                    .collect(),
+            },
+        ];
+        for ring in &face.loops {
+            for i in 0..ring.len() {
+                let a = ring[i];
+                let b = ring[(i + 1) % ring.len()];
+                shell.push(PolyFace {
+                    loops: vec![vec![a, b, b + offset, a + offset]],
+                });
+            }
+        }
+        panels.push(polyhedron_solid(&shell, notes)?);
+    }
+    if panels.is_empty() {
+        return Err(PolyhedronError::NoTriangles { faces: faces.len() });
+    }
+    Ok(Manifold::compose(&panels))
 }
 
 /// 面片组 → 封闭实体。
@@ -428,6 +480,20 @@ fn propagate_orientation(faces: &[FaceMesh], verts: &[DVec3]) -> Vec<bool> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn legacy_pohe_is_six_thin_panels_instead_of_a_filled_cube() {
+        let mut notes = Vec::new();
+        let solid = super::legacy_polygon_panels(&cube(600.0), &mut notes).unwrap();
+        assert!((solid.volume() - 6.0 * 600.0 * 600.0 * 0.99).abs() < 0.01);
+        assert_eq!(solid.decompose().len(), 6);
+    }
+
+    #[test]
+    fn legacy_pohe_accepts_an_open_polygon() {
+        let face = cube(600.0).remove(0);
+        let solid = super::legacy_polygon_panels(&[face], &mut Vec::new()).unwrap();
+        assert!((solid.volume() - 600.0 * 600.0 * 0.99).abs() < 0.01);
+    }
     use super::*;
 
     fn face(points: &[[f64; 3]]) -> PolyFace {

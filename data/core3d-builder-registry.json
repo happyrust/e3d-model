@@ -1,0 +1,1090 @@
+{
+  "$comment": "Nouns for which Core3D has a geometry-building path, enumerated from the live IDB. This is the objective half of the D3 gate: a noun in here that we classify NonGraphic/Unknown is an unaccounted gap, not a proven non-graphic element. Regenerate with tools/core3d_registry_dump.py (inside IDA) plus tools/build_core3d_registry.py.",
+  "image": "Core3D.dll",
+  "capturedOn": "2026-09-05",
+  "evidenceDir": "evidence/20260905-core3d-csg-registry/",
+  "entryPoints": {
+    "csgPlug": "0x107158b0",
+    "dbModelPlug": "0x108e79d0",
+    "legacySwitch": "0x10343b80"
+  },
+  "plugSiteCount": 80,
+  "nouns": [
+    {
+      "noun": "AIDARC",
+      "source": "csg_plug",
+      "builder": "STRU_CSGAidArc",
+      "registrar": "sub_1062CCE0",
+      "sites": [
+        "0x1062d15e"
+      ],
+      "getCsgTree": "0x106408f0",
+      "getCsgTreeBytes": 813
+    },
+    {
+      "noun": "AIDCIR",
+      "source": "csg_plug",
+      "builder": "STRU_CSGAidCircle",
+      "registrar": "sub_1062CCE0",
+      "sites": [
+        "0x1062d190"
+      ],
+      "getCsgTree": "0x10640c20",
+      "getCsgTreeBytes": 464
+    },
+    {
+      "noun": "AIDLIN",
+      "source": "csg_plug",
+      "builder": "STRU_CSGAidLine",
+      "registrar": "sub_1062CCE0",
+      "sites": [
+        "0x1062d12c"
+      ],
+      "getCsgTree": "0x10640df0",
+      "getCsgTreeBytes": 153
+    },
+    {
+      "noun": "AIDPOI",
+      "source": "csg_plug",
+      "builder": "STRU_CSGAidPoint",
+      "registrar": "sub_1062CCE0",
+      "sites": [
+        "0x1062d1c2"
+      ],
+      "getCsgTree": "0x10640e90",
+      "getCsgTreeBytes": 88
+    },
+    {
+      "noun": "BNDLIN",
+      "source": "csg_plug",
+      "builder": "CSG_TreeBuilderBNDLIN",
+      "registrar": "sub_108F54F0",
+      "sites": [
+        "0x108f5f74"
+      ],
+      "getCsgTree": "0x1090cc20",
+      "getCsgTreeBytes": 1187,
+      "nounInferredFrom": "builder class name + DB_AttPluggerHelper::addPlug"
+    },
+    {
+      "noun": "BOX",
+      "source": "csg_plug",
+      "builder": "CSG_TreeBuilderPrimitive",
+      "registrar": "CSG_PrimitiveUtilities::initialise",
+      "sites": [
+        "0x107275ae"
+      ],
+      "getCsgTree": "0x10726890",
+      "getCsgTreeBytes": 498
+    },
+    {
+      "noun": "BPANEL",
+      "source": "csg_plug",
+      "builder": "MDR_BPanelVisualisationManager",
+      "registrar": "ACC_MDR_CSGUtility::initialise",
+      "sites": [
+        "0x10a0057f"
+      ],
+      "getCsgTree": "0x109fff10",
+      "getCsgTreeBytes": 792
+    },
+    {
+      "noun": "CABLE",
+      "source": "csg_plug",
+      "builder": "CableVisualisationManager",
+      "registrar": "sub_109B61A0",
+      "sites": [
+        "0x109b62d8"
+      ],
+      "getCsgTree": "0x109e3160",
+      "getCsgTreeBytes": 443
+    },
+    {
+      "noun": "CLNTIL",
+      "source": "csg_plug",
+      "builder": "CSG_TreeBuilderCLNTIL",
+      "registrar": "sub_108F54F0",
+      "sites": [
+        "0x108f604a"
+      ],
+      "getCsgTree": "0x1090d0d0",
+      "getCsgTreeBytes": 1697
+    },
+    {
+      "noun": "CNODE",
+      "source": "csg_plug",
+      "builder": "CAB_CSGControlNode",
+      "registrar": "sub_109B55E0",
+      "sites": [
+        "0x109b56e5"
+      ],
+      "getCsgTree": "0x109cabb0",
+      "getCsgTreeBytes": 1438
+    },
+    {
+      "noun": "CONE",
+      "source": "csg_plug",
+      "builder": "CSG_TreeBuilderPrimitive",
+      "registrar": "CSG_PrimitiveUtilities::initialise",
+      "sites": [
+        "0x10727612"
+      ],
+      "getCsgTree": "0x10726890",
+      "getCsgTreeBytes": 498
+    },
+    {
+      "noun": "CTBEND",
+      "source": "csg_plug",
+      "builder": "MDR_CSGCableTrayBend",
+      "registrar": "sub_109B55E0",
+      "sites": [
+        "0x109b577b"
+      ],
+      "getCsgTree": "0x109cd6f0",
+      "getCsgTreeBytes": 414
+    },
+    {
+      "noun": "CTCOUP",
+      "source": "csg_plug",
+      "builder": "MDR_CSGCableTrayCoupling",
+      "registrar": "sub_109B55E0",
+      "sites": [
+        "0x109b5749"
+      ],
+      "getCsgTree": "0x109cd6f0",
+      "getCsgTreeBytes": 414
+    },
+    {
+      "noun": "CTCROS",
+      "source": "csg_plug",
+      "builder": "MDR_CSGCableTrayCross",
+      "registrar": "sub_109B55E0",
+      "sites": [
+        "0x109b5811"
+      ],
+      "getCsgTree": "0x109cd6f0",
+      "getCsgTreeBytes": 414
+    },
+    {
+      "noun": "CTREDU",
+      "source": "csg_plug",
+      "builder": "MDR_CSGCableTrayReducer",
+      "registrar": "sub_109B55E0",
+      "sites": [
+        "0x109b5843"
+      ],
+      "getCsgTree": "0x109cd6f0",
+      "getCsgTreeBytes": 414
+    },
+    {
+      "noun": "CTRISE",
+      "source": "csg_plug",
+      "builder": "MDR_CSGCableTrayRiser",
+      "registrar": "sub_109B55E0",
+      "sites": [
+        "0x109b57ad"
+      ],
+      "getCsgTree": "0x109cd890",
+      "getCsgTreeBytes": 2304
+    },
+    {
+      "noun": "CTSTRA",
+      "source": "csg_plug",
+      "builder": "MDR_CSGCableTrayStraight",
+      "registrar": "sub_109B55E0",
+      "sites": [
+        "0x109b5717"
+      ],
+      "getCsgTree": "0x109cd6f0",
+      "getCsgTreeBytes": 414
+    },
+    {
+      "noun": "CTTEE",
+      "source": "csg_plug",
+      "builder": "MDR_CSGCableTrayTee",
+      "registrar": "sub_109B55E0",
+      "sites": [
+        "0x109b57df"
+      ],
+      "getCsgTree": "0x109cd6f0",
+      "getCsgTreeBytes": 414
+    },
+    {
+      "noun": "CTWALL",
+      "source": "csg_plug",
+      "builder": "MDR_WallVisualisationManager",
+      "registrar": "ACC_MDR_CSGUtility::initialise",
+      "sites": [
+        "0x10a0054d"
+      ],
+      "getCsgTree": "0x10a00340",
+      "getCsgTreeBytes": 474
+    },
+    {
+      "noun": "CWBRAN",
+      "source": "csg_plug",
+      "builder": "MDR_CablewaybranchVisualisationManager",
+      "registrar": "sub_109B55E0",
+      "sites": [
+        "0x109b5875"
+      ],
+      "getCsgTree": "0x109c9f60",
+      "getCsgTreeBytes": 619
+    },
+    {
+      "noun": "CYLI",
+      "source": "csg_plug",
+      "builder": "CSG_TreeBuilderPrimitive",
+      "registrar": "CSG_PrimitiveUtilities::initialise",
+      "sites": [
+        "0x107275e0"
+      ],
+      "getCsgTree": "0x10726890",
+      "getCsgTreeBytes": 498
+    },
+    {
+      "noun": "DTPROF",
+      "builder": "DES_ModelDTPROF",
+      "registrar": "sub_1050B1D0",
+      "sites": [
+        "0x1055633d"
+      ],
+      "source": "db_model_plug"
+    },
+    {
+      "noun": "ELFITT",
+      "source": "csg_plug",
+      "builder": "CSG_TreeBuilderAccommodationFitting",
+      "registrar": "sub_108F54F0",
+      "sites": [
+        "0x108f60ae"
+      ],
+      "getCsgTree": "0x1090ca10",
+      "getCsgTreeBytes": 528
+    },
+    {
+      "noun": "FLRLAY",
+      "source": "csg_plug",
+      "builder": "CSG_TreeBuilderFLRLAY",
+      "registrar": "sub_108F54F0",
+      "sites": [
+        "0x108f6018"
+      ],
+      "getCsgTree": "0x1090d780",
+      "getCsgTreeBytes": 598
+    },
+    {
+      "noun": "FPFITT",
+      "source": "csg_plug",
+      "builder": "CSG_TreeBuilderAccommodationFitting",
+      "registrar": "sub_108F54F0",
+      "sites": [
+        "0x108f607c"
+      ],
+      "getCsgTree": "0x1090ca10",
+      "getCsgTreeBytes": 528
+    },
+    {
+      "noun": "GENCUR",
+      "source": "csg_plug",
+      "builder": "xba_drawgenericprimitive",
+      "registrar": "xba_base::Init",
+      "sites": [
+        "0x1077cc97"
+      ],
+      "getCsgTree": "0x1077e190",
+      "getCsgTreeBytes": 1280
+    },
+    {
+      "noun": "GENPRI",
+      "source": "csg_plug",
+      "builder": "xba_drawgenericprimitive",
+      "registrar": "xba_base::Init",
+      "sites": [
+        "0x1077cc64"
+      ],
+      "getCsgTree": "0x1077e190",
+      "getCsgTreeBytes": 1280
+    },
+    {
+      "noun": "HANDRA",
+      "source": "csg_plug",
+      "builder": "ASL_MDR_HandrailVisualisationManager",
+      "registrar": "ASL_MDR_CSGUtility::initialise",
+      "sites": [
+        "0x109f9d81"
+      ],
+      "getCsgTree": "0x109f96a0",
+      "getCsgTreeBytes": 495
+    },
+    {
+      "noun": "HATTA",
+      "source": "csg_plug",
+      "builder": "MDR_CSGHeadAttachmentPoint",
+      "registrar": "MDR_CSGUtility::initialise",
+      "sites": [
+        "0x105e9e68"
+      ],
+      "getCsgTree": "0x106140f0",
+      "getCsgTreeBytes": 876
+    },
+    {
+      "noun": "HRPOST",
+      "source": "csg_plug",
+      "builder": "MDR_HRPostVisualisationManager",
+      "registrar": "sub_108F89A0",
+      "sites": [
+        "0x108f8aa9"
+      ],
+      "getCsgTree": "0x109f4ed0",
+      "getCsgTreeBytes": 577
+    },
+    {
+      "noun": "HVACFI",
+      "source": "csg_plug",
+      "builder": "CSG_TreeBuilderAccommodationFitting",
+      "registrar": "sub_108F54F0",
+      "sites": [
+        "0x108f60e0"
+      ],
+      "getCsgTree": "0x1090ca10",
+      "getCsgTreeBytes": 528
+    },
+    {
+      "noun": "HVBRCO",
+      "source": "csg_plug",
+      "builder": "CSG_TreeBuilderCat",
+      "registrar": "CSG_PrimitiveUtilities::initialise",
+      "sites": [
+        "0x1072834d"
+      ],
+      "getCsgTree": "0x1072f5d0",
+      "getCsgTreeBytes": 743
+    },
+    {
+      "noun": "HVFLAN",
+      "source": "csg_plug",
+      "builder": "CSG_TreeBuilderCat",
+      "registrar": "CSG_PrimitiveUtilities::initialise",
+      "sites": [
+        "0x1072837f"
+      ],
+      "getCsgTree": "0x1072f5d0",
+      "getCsgTreeBytes": 743
+    },
+    {
+      "noun": "HVHACC",
+      "source": "csg_plug",
+      "builder": "CSG_TreeBuilderCat",
+      "registrar": "CSG_PrimitiveUtilities::initialise",
+      "sites": [
+        "0x107283b1"
+      ],
+      "getCsgTree": "0x1072f5d0",
+      "getCsgTreeBytes": 743
+    },
+    {
+      "noun": "HVIDAM",
+      "source": "csg_plug",
+      "builder": "CSG_TreeBuilderCat",
+      "registrar": "CSG_PrimitiveUtilities::initialise",
+      "sites": [
+        "0x107284dd"
+      ],
+      "getCsgTree": "0x1072f5d0",
+      "getCsgTreeBytes": 743
+    },
+    {
+      "noun": "HVSADD",
+      "source": "csg_plug",
+      "builder": "CSG_TreeBuilderCat",
+      "registrar": "CSG_PrimitiveUtilities::initialise",
+      "sites": [
+        "0x107283e3"
+      ],
+      "getCsgTree": "0x1072f5d0",
+      "getCsgTreeBytes": 743
+    },
+    {
+      "noun": "HVSKIR",
+      "source": "csg_plug",
+      "builder": "CSG_TreeBuilderCat",
+      "registrar": "CSG_PrimitiveUtilities::initialise",
+      "sites": [
+        "0x107284ab"
+      ],
+      "getCsgTree": "0x1072f5d0",
+      "getCsgTreeBytes": 743
+    },
+    {
+      "noun": "HVSPLR",
+      "source": "csg_plug",
+      "builder": "CSG_TreeBuilderCat",
+      "registrar": "CSG_PrimitiveUtilities::initialise",
+      "sites": [
+        "0x10728415"
+      ],
+      "getCsgTree": "0x1072f5d0",
+      "getCsgTreeBytes": 743
+    },
+    {
+      "noun": "HVSTIF",
+      "source": "csg_plug",
+      "builder": "CSG_TreeBuilderCat",
+      "registrar": "CSG_PrimitiveUtilities::initialise",
+      "sites": [
+        "0x10728447"
+      ],
+      "getCsgTree": "0x1072f5d0",
+      "getCsgTreeBytes": 743
+    },
+    {
+      "noun": "HVTPPO",
+      "source": "csg_plug",
+      "builder": "CSG_TreeBuilderCat",
+      "registrar": "CSG_PrimitiveUtilities::initialise",
+      "sites": [
+        "0x10728479"
+      ],
+      "getCsgTree": "0x1072f5d0",
+      "getCsgTreeBytes": 743
+    },
+    {
+      "noun": "INFITT",
+      "source": "csg_plug",
+      "builder": "CSG_TreeBuilderAccommodationFitting",
+      "registrar": "sub_108F54F0",
+      "sites": [
+        "0x108f6112"
+      ],
+      "getCsgTree": "0x1090ca10",
+      "getCsgTreeBytes": 528
+    },
+    {
+      "noun": "INSURQ",
+      "source": "csg_plug",
+      "builder": "CSG_TreeBuilderINSURQ",
+      "registrar": "sub_108F54F0",
+      "sites": [
+        "0x108f5fe6"
+      ],
+      "getCsgTree": "0x1090d9e0",
+      "getCsgTreeBytes": 143,
+      "nounInferredFrom": "builder class name + DB_AttPluggerHelper::addPlug"
+    },
+    {
+      "noun": "KICKPL",
+      "source": "csg_plug",
+      "builder": "ASL_MDR_KickplateVisualisationManager",
+      "registrar": "ASL_MDR_CSGUtility::initialise",
+      "sites": [
+        "0x109f9de5"
+      ],
+      "getCsgTree": "0x109f9890",
+      "getCsgTreeBytes": 297
+    },
+    {
+      "noun": "LINDIM",
+      "source": "csg_plug",
+      "builder": "STRU_CSGLinDim",
+      "registrar": "sub_1062CCE0",
+      "sites": [
+        "0x1062d1f4"
+      ],
+      "getCsgTree": "0x10640ef0",
+      "getCsgTreeBytes": 50
+    },
+    {
+      "noun": "MLABEL",
+      "source": "csg_plug",
+      "builder": "STRU_CSGLabel",
+      "registrar": "sub_1062CCE0",
+      "sites": [
+        "0x1062d226"
+      ],
+      "getCsgTree": "0x10640ef0",
+      "getCsgTreeBytes": 50
+    },
+    {
+      "noun": "NBOX",
+      "source": "csg_plug",
+      "builder": "CSG_TreeBuilderNegativePrimitive",
+      "registrar": "CSG_PrimitiveUtilities::initialise",
+      "sites": [
+        "0x10727676"
+      ],
+      "getCsgTree": "0x10726770",
+      "getCsgTreeBytes": 281
+    },
+    {
+      "noun": "NCON",
+      "source": "csg_plug",
+      "builder": "CSG_TreeBuilderNegativePrimitive",
+      "registrar": "CSG_PrimitiveUtilities::initialise",
+      "sites": [
+        "0x107276da"
+      ],
+      "getCsgTree": "0x10726770",
+      "getCsgTreeBytes": 281
+    },
+    {
+      "noun": "NCYL",
+      "source": "csg_plug",
+      "builder": "CSG_TreeBuilderNegativePrimitive",
+      "registrar": "CSG_PrimitiveUtilities::initialise",
+      "sites": [
+        "0x107276a8"
+      ],
+      "getCsgTree": "0x10726770",
+      "getCsgTreeBytes": 281
+    },
+    {
+      "noun": "NOZZ",
+      "source": "csg_plug",
+      "builder": "CSG_TreeBuilderCat",
+      "registrar": "CSG_PrimitiveUtilities::initialise",
+      "sites": [
+        "0x107282e9"
+      ],
+      "getCsgTree": "0x1072f5d0",
+      "getCsgTreeBytes": 743
+    },
+    {
+      "noun": "NPYR",
+      "source": "csg_plug",
+      "builder": "CSG_TreeBuilderNegativePrimitive",
+      "registrar": "CSG_PrimitiveUtilities::initialise",
+      "sites": [
+        "0x1072770e"
+      ],
+      "getCsgTree": "0x10726770",
+      "getCsgTreeBytes": 281
+    },
+    {
+      "noun": "PLTFRM",
+      "source": "csg_plug",
+      "builder": "ASL_MDR_PlatformVisualisationManager",
+      "registrar": "ASL_MDR_CSGUtility::initialise",
+      "sites": [
+        "0x109f9e17"
+      ],
+      "getCsgTree": "0x109f99c0",
+      "getCsgTreeBytes": 589
+    },
+    {
+      "noun": "POINTR",
+      "source": "csg_plug",
+      "builder": "CAB_CSGRoutePoint",
+      "registrar": "sub_109B55E0",
+      "sites": [
+        "0x109b58a7"
+      ],
+      "getCsgTree": "0x109cb8d0",
+      "getCsgTreeBytes": 311
+    },
+    {
+      "noun": "PYRA",
+      "source": "csg_plug",
+      "builder": "CSG_TreeBuilderPrimitive",
+      "registrar": "CSG_PrimitiveUtilities::initialise",
+      "sites": [
+        "0x10727644"
+      ],
+      "getCsgTree": "0x10726890",
+      "getCsgTreeBytes": 498
+    },
+    {
+      "noun": "RAIL",
+      "source": "csg_plug",
+      "builder": "ASL_MDR_RailVisualisationManager",
+      "registrar": "ASL_MDR_CSGUtility::initialise",
+      "sites": [
+        "0x109f9db3"
+      ],
+      "getCsgTree": "0x109f9c10",
+      "getCsgTreeBytes": 297
+    },
+    {
+      "noun": "REFGAR",
+      "source": "csg_plug",
+      "builder": "CSGGridArc",
+      "registrar": "sub_1062CCE0",
+      "sites": [
+        "0x1062cd7e"
+      ],
+      "getCsgTree": "0x1063c520",
+      "getCsgTreeBytes": 868
+    },
+    {
+      "noun": "REFGLN",
+      "source": "csg_plug",
+      "builder": "CSGGridLine",
+      "registrar": "sub_1062CCE0",
+      "sites": [
+        "0x1062cd4c"
+      ],
+      "getCsgTree": "0x1063c890",
+      "getCsgTreeBytes": 964
+    },
+    {
+      "noun": "RLADDR",
+      "source": "csg_plug",
+      "builder": "ASL_CSGLadderVisualisationManager",
+      "registrar": "sub_108F89A0",
+      "sites": [
+        "0x108f8a45"
+      ],
+      "getCsgTree": "0x1092d040",
+      "getCsgTreeBytes": 2261
+    },
+    {
+      "noun": "RNODE",
+      "source": "csg_plug",
+      "builder": "CAB_CSGRouteNode",
+      "registrar": "sub_109B55E0",
+      "sites": [
+        "0x109b56b3"
+      ],
+      "getCsgTree": "0x109cb150",
+      "getCsgTreeBytes": 1909
+    },
+    {
+      "noun": "SLADDR",
+      "source": "csg_plug",
+      "builder": "ASL_CSGStepLadderVisualisationManager",
+      "registrar": "sub_108F89A0",
+      "sites": [
+        "0x108f8a77"
+      ],
+      "getCsgTree": "0x1092d920",
+      "getCsgTreeBytes": 1088
+    },
+    {
+      "noun": "STRFLT",
+      "source": "csg_plug",
+      "builder": "ASL_CSGMultiflightStairsVisualisationManager",
+      "registrar": "sub_108F89A0",
+      "sites": [
+        "0x108f8a13"
+      ],
+      "getCsgTree": "0x10922700",
+      "getCsgTreeBytes": 741
+    },
+    {
+      "noun": "STRLNG",
+      "source": "csg_plug",
+      "builder": "ASL_MDR_PlatformVisualisationManager",
+      "registrar": "ASL_MDR_CSGUtility::initialise",
+      "sites": [
+        "0x109f9e49"
+      ],
+      "getCsgTree": "0x109f99c0",
+      "getCsgTreeBytes": 589
+    },
+    {
+      "noun": "STWELD",
+      "source": "csg_plug",
+      "builder": "STRU_CSGWeldPlugins",
+      "registrar": "sub_1062CCE0",
+      "sites": [
+        "0x1062d258"
+      ],
+      "getCsgTree": "0x10640f30",
+      "getCsgTreeBytes": 318
+    },
+    {
+      "noun": "SUBCOM",
+      "source": "csg_plug",
+      "builder": "CSG_TreeBuilderCat",
+      "registrar": "CSG_PrimitiveUtilities::initialise",
+      "sites": [
+        "0x1072831b"
+      ],
+      "getCsgTree": "0x1072f5d0",
+      "getCsgTreeBytes": 743
+    },
+    {
+      "noun": "TATTA",
+      "source": "csg_plug",
+      "builder": "MDR_CSGTailAttachmentPoint",
+      "registrar": "MDR_CSGUtility::initialise",
+      "sites": [
+        "0x105e9e9a"
+      ],
+      "getCsgTree": "0x10614460",
+      "getCsgTreeBytes": 844
+    },
+    {
+      "noun": "TRNCUR",
+      "source": "csg_plug",
+      "builder": "xba_drawterraincurve",
+      "registrar": "xba_base::Init",
+      "sites": [
+        "0x1077cc32"
+      ],
+      "getCsgTree": "0x1077e690",
+      "getCsgTreeBytes": 950
+    },
+    {
+      "noun": "WLJOIN",
+      "source": "csg_plug",
+      "builder": "MDR_WallJoinerVisualisationManager",
+      "registrar": "ACC_MDR_CSGUtility::initialise",
+      "sites": [
+        "0x10a005b1"
+      ],
+      "getCsgTree": "0x10a00230",
+      "getCsgTreeBytes": 268
+    },
+    {
+      "noun": "WLPANE",
+      "source": "csg_plug",
+      "builder": "ACC_CSGWallPanelPlugger",
+      "registrar": "ACC_MDR_CSGUtility::initialise",
+      "sites": [
+        "0x10a00615"
+      ],
+      "getCsgTree": "0x10a0adc0",
+      "getCsgTreeBytes": 139
+    },
+    {
+      "noun": "WLPROF",
+      "source": "csg_plug",
+      "builder": "ACC_WallProfileVisualisationManager",
+      "registrar": "ACC_MDR_CSGUtility::initialise",
+      "sites": [
+        "0x10a005e3"
+      ],
+      "getCsgTree": "0x109ffde0",
+      "getCsgTreeBytes": 297
+    }
+  ],
+  "legacySwitchArms": [
+    {
+      "noun": "BOUN",
+      "source": "crdesi",
+      "code": 822719,
+      "switch": "0x10343b80"
+    },
+    {
+      "noun": "BOX",
+      "source": "crdesi",
+      "code": 549344,
+      "switch": "0x10343b80"
+    },
+    {
+      "noun": "CONE",
+      "source": "crdesi",
+      "code": 640470,
+      "switch": "0x10343b80"
+    },
+    {
+      "noun": "CTOR",
+      "source": "crdesi",
+      "code": 897213,
+      "switch": "0x10343b80"
+    },
+    {
+      "noun": "CYLI",
+      "source": "crdesi",
+      "code": 718014,
+      "switch": "0x10343b80"
+    },
+    {
+      "noun": "DATU",
+      "source": "crdesi",
+      "code": 959395,
+      "switch": "0x10343b80"
+    },
+    {
+      "noun": "DISH",
+      "source": "crdesi",
+      "code": 703003,
+      "switch": "0x10343b80"
+    },
+    {
+      "noun": "DRAW",
+      "source": "crdesi",
+      "code": 985369,
+      "switch": "0x10343b80"
+    },
+    {
+      "noun": "EXTR",
+      "source": "crdesi",
+      "code": 900968,
+      "switch": "0x10343b80"
+    },
+    {
+      "noun": "GRDM",
+      "source": "crdesi",
+      "code": 790729,
+      "switch": "0x10343b80"
+    },
+    {
+      "noun": "GRIDLN",
+      "source": "crdesi",
+      "code": 207879217,
+      "switch": "0x10343b80"
+    },
+    {
+      "noun": "IPOI",
+      "source": "crdesi",
+      "code": 719964,
+      "switch": "0x10343b80"
+    },
+    {
+      "noun": "NBOX",
+      "source": "crdesi",
+      "code": 1014836,
+      "switch": "0x10343b80"
+    },
+    {
+      "noun": "NCON",
+      "source": "crdesi",
+      "code": 818033,
+      "switch": "0x10343b80"
+    },
+    {
+      "noun": "NCTO",
+      "source": "crdesi",
+      "code": 841361,
+      "switch": "0x10343b80"
+    },
+    {
+      "noun": "NCYL",
+      "source": "crdesi",
+      "code": 785957,
+      "switch": "0x10343b80"
+    },
+    {
+      "noun": "NDIS",
+      "source": "crdesi",
+      "code": 912101,
+      "switch": "0x10343b80"
+    },
+    {
+      "noun": "NPOLYH",
+      "source": "crdesi",
+      "code": 128856299,
+      "switch": "0x10343b80"
+    },
+    {
+      "noun": "NPYR",
+      "source": "crdesi",
+      "code": 904406,
+      "switch": "0x10343b80"
+    },
+    {
+      "noun": "NREV",
+      "source": "crdesi",
+      "code": 968612,
+      "switch": "0x10343b80"
+    },
+    {
+      "noun": "NRTO",
+      "source": "crdesi",
+      "code": 841766,
+      "switch": "0x10343b80"
+    },
+    {
+      "noun": "NRUL",
+      "source": "crdesi",
+      "code": 783446,
+      "switch": "0x10343b80"
+    },
+    {
+      "noun": "NSLC",
+      "source": "crdesi",
+      "code": 599765,
+      "switch": "0x10343b80"
+    },
+    {
+      "noun": "NSNO",
+      "source": "crdesi",
+      "code": 837419,
+      "switch": "0x10343b80"
+    },
+    {
+      "noun": "NXTR",
+      "source": "crdesi",
+      "code": 900977,
+      "switch": "0x10343b80"
+    },
+    {
+      "noun": "PLOO",
+      "source": "crdesi",
+      "code": 837961,
+      "switch": "0x10343b80"
+    },
+    {
+      "noun": "PNOD",
+      "source": "crdesi",
+      "code": 621502,
+      "switch": "0x10343b80"
+    },
+    {
+      "noun": "POGO",
+      "source": "crdesi",
+      "code": 832210,
+      "switch": "0x10343b80"
+    },
+    {
+      "noun": "POHE",
+      "source": "crdesi",
+      "code": 636109,
+      "switch": "0x10343b80"
+    },
+    {
+      "noun": "POIN",
+      "source": "crdesi",
+      "code": 813985,
+      "switch": "0x10343b80"
+    },
+    {
+      "noun": "POLYHE",
+      "source": "crdesi",
+      "code": 77028748,
+      "switch": "0x10343b80"
+    },
+    {
+      "noun": "PVOL",
+      "source": "crdesi",
+      "code": 779182,
+      "switch": "0x10343b80"
+    },
+    {
+      "noun": "PYRA",
+      "source": "crdesi",
+      "code": 564937,
+      "switch": "0x10343b80"
+    },
+    {
+      "noun": "REVO",
+      "source": "crdesi",
+      "code": 842877,
+      "switch": "0x10343b80"
+    },
+    {
+      "noun": "RPLA",
+      "source": "crdesi",
+      "code": 560322,
+      "switch": "0x10343b80"
+    },
+    {
+      "noun": "RTOR",
+      "source": "crdesi",
+      "code": 897228,
+      "switch": "0x10343b80"
+    },
+    {
+      "noun": "RULS",
+      "source": "crdesi",
+      "code": 914751,
+      "switch": "0x10343b80"
+    },
+    {
+      "noun": "SLCY",
+      "source": "crdesi",
+      "code": 1026046,
+      "switch": "0x10343b80"
+    },
+    {
+      "noun": "SNOD",
+      "source": "crdesi",
+      "code": 621505,
+      "switch": "0x10343b80"
+    },
+    {
+      "noun": "SNOU",
+      "source": "crdesi",
+      "code": 956116,
+      "switch": "0x10343b80"
+    },
+    {
+      "noun": "TPOI",
+      "source": "crdesi",
+      "code": 719975,
+      "switch": "0x10343b80"
+    }
+  ],
+  "unresolvedSites": [
+    {
+      "site": "0x105e9df6",
+      "registrar": "MDR_CSGUtility::initialise",
+      "builder": "MDR_BranchVisualisationManager",
+      "why": "DB_Noun arrives in a register; follow the caller to pin it"
+    },
+    {
+      "site": "0x105e9e36",
+      "registrar": "MDR_CSGUtility::initialise",
+      "builder": "MDR_CSGAttachmentPoint",
+      "why": "DB_Noun arrives in a register; follow the caller to pin it"
+    },
+    {
+      "site": "0x105e9ed8",
+      "registrar": "MDR_CSGUtility::initialise",
+      "builder": "MDR_SegmentVisualisationManager",
+      "why": "DB_Noun arrives in a register; follow the caller to pin it"
+    },
+    {
+      "site": "0x105e9eef",
+      "registrar": "MDR_CSGUtility::initialise",
+      "builder": null,
+      "why": "DB_Noun arrives in a register; follow the caller to pin it"
+    },
+    {
+      "site": "0x10729034",
+      "registrar": "sub_10728EC0",
+      "builder": "CSG_TreeBuilderMyBox",
+      "why": "DB_Noun arrives in a register; follow the caller to pin it"
+    },
+    {
+      "site": "0x10729062",
+      "registrar": "sub_10728EC0",
+      "builder": "CSG_TreeBuilderMyBox",
+      "why": "DB_Noun arrives in a register; follow the caller to pin it"
+    },
+    {
+      "site": "0x10729090",
+      "registrar": "sub_10728EC0",
+      "builder": "CSG_TreeBuilderMyBox",
+      "why": "DB_Noun arrives in a register; follow the caller to pin it"
+    },
+    {
+      "site": "0x107290be",
+      "registrar": "sub_10728EC0",
+      "builder": "CSG_TreeBuilderCat",
+      "why": "DB_Noun arrives in a register; follow the caller to pin it"
+    },
+    {
+      "site": "0x10729539",
+      "registrar": "sub_107293D0",
+      "builder": "CSG_TreeBuilderMyBox",
+      "why": "DB_Noun arrives in a register; follow the caller to pin it"
+    },
+    {
+      "site": "0x10729567",
+      "registrar": "sub_107293D0",
+      "builder": "CSG_TreeBuilderMyBox",
+      "why": "DB_Noun arrives in a register; follow the caller to pin it"
+    },
+    {
+      "site": "0x10729595",
+      "registrar": "sub_107293D0",
+      "builder": "CSG_TreeBuilderMyBox",
+      "why": "DB_Noun arrives in a register; follow the caller to pin it"
+    },
+    {
+      "site": "0x107295c3",
+      "registrar": "sub_107293D0",
+      "builder": "CSG_TreeBuilderCat",
+      "why": "DB_Noun arrives in a register; follow the caller to pin it"
+    },
+    {
+      "site": "0x108e7a5e",
+      "registrar": "DB_ModelBuilder::addPlug",
+      "builder": null,
+      "why": "not a registration: DB_ModelBuilder::addPlug forwarding into CSG_TreeBuilder::addPlug"
+    }
+  ]
+}

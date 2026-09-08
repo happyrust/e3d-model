@@ -23,6 +23,7 @@ use e3d_io::db_element::{DbElement, DbFilePin, DbSet, template_file_for};
 use e3d_io::engine::{ReadOnlyEngine, ScanTier};
 use e3d_io::record::descriptor::DescriptorValue;
 use e3d_model::cable_tray::{self, CABLE_TRAY_ELEMENT_NOUNS};
+use e3d_model::catalogue::{CatalogueMeshCache, model_catalogue_member_with_cache};
 use e3d_model::db_discovery::DirectoryDbResolver;
 
 #[derive(Default)]
@@ -52,6 +53,10 @@ struct Census {
     ctray_pos_nonzero: usize,
     ctray_ori_nonzero: usize,
     ctray_heig: BTreeMap<String, usize>,
+    ctray_total: usize,
+    generation_ok: usize,
+    generation_none: usize,
+    generation_err: BTreeMap<String, usize>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -62,6 +67,7 @@ fn main() -> anyhow::Result<()> {
     let mut project_dirs: Vec<PathBuf> = Vec::new();
     let mut dump = 0usize;
     let mut placement = false;
+    let mut generate = false;
 
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
@@ -74,6 +80,7 @@ fn main() -> anyhow::Result<()> {
             "--project-dir" => project_dirs.push(PathBuf::from(value()?)),
             "--dump" => dump = value()?.parse()?,
             "--placement" => placement = true,
+            "--generate" => generate = true,
             other => bail!("不认识的参数 {other}"),
         }
     }
@@ -111,6 +118,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     let mut census = Census::default();
+    let mut catalogue_cache = CatalogueMeshCache::default();
     let mut dumped = 0usize;
     for db_file in &dbs {
         let dbno = set.add_db(DbFilePin {
@@ -142,7 +150,14 @@ fn main() -> anyhow::Result<()> {
             if verbose {
                 dumped += 1;
             }
-            probe_branch(&branch, verbose, placement, &mut census)?;
+            probe_branch(
+                &branch,
+                verbose,
+                placement,
+                generate,
+                &mut catalogue_cache,
+                &mut census,
+            )?;
         }
     }
 
@@ -184,6 +199,16 @@ fn main() -> anyhow::Result<()> {
         println!("放置：解出 {:?}", census.placement_ok);
         println!("  落点 {:?}", census.placement_anchor);
         println!("  出错 {:?}", census.placement_err);
+        if generate {
+            println!(
+                "目录生成：CTRAY {}  成功 {}  无几何 {}  出错 {:?}",
+                census.ctray_total,
+                census.generation_ok,
+                census.generation_none,
+                census.generation_err
+            );
+            println!("目录缓存 {:?}", catalogue_cache.stats());
+        }
     }
     Ok(())
 }
@@ -216,6 +241,8 @@ fn probe_branch(
     branch: &DbElement,
     verbose: bool,
     placement: bool,
+    generate: bool,
+    catalogue_cache: &mut CatalogueMeshCache,
     census: &mut Census,
 ) -> anyhow::Result<()> {
     census.cwbran += 1;
@@ -279,7 +306,14 @@ fn probe_branch(
                     );
                 }
                 for ctele in member.members()? {
-                    probe_ctele(&ctele, verbose, placement, census)?;
+                    probe_ctele(
+                        &ctele,
+                        verbose,
+                        placement,
+                        generate,
+                        catalogue_cache,
+                        census,
+                    )?;
                 }
             }
             _ => {}
@@ -292,6 +326,8 @@ fn probe_ctele(
     ctele: &DbElement,
     verbose: bool,
     placement: bool,
+    generate: bool,
+    catalogue_cache: &mut CatalogueMeshCache,
     census: &mut Census,
 ) -> anyhow::Result<()> {
     let noun = ctele.element_type()?;
@@ -398,6 +434,7 @@ fn probe_ctele(
             continue;
         }
         saw_ctray = true;
+        census.ctray_total += 1;
         let spre = part.get_element("SPRE").unwrap_or(None);
         if spre.is_none() {
             census.ctray_without_spre += 1;
@@ -421,6 +458,16 @@ fn probe_ctele(
                     .unwrap_or_else(|| "unset".into()),
             )
             .or_insert(0) += 1;
+        if generate {
+            match model_catalogue_member_with_cache(&part, catalogue_cache) {
+                Ok(build) if build.generated.is_some() => census.generation_ok += 1,
+                Ok(_) => census.generation_none += 1,
+                Err(error) => {
+                    let key: String = error.to_string().chars().take(80).collect();
+                    *census.generation_err.entry(key).or_insert(0) += 1;
+                }
+            }
+        }
         if verbose {
             println!(
                 "      CTRAY {} SPRE={} HEIG={:?} DESP={:?} POS={} ORI={}",

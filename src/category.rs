@@ -306,6 +306,25 @@ pub fn classify(noun: &str) -> Category {
         // sub_107210A0 逐成员调用 LegacyGeom_CreateBuilderForElement 并串成 builder 链。
         "NOZZ" | "ELCONN" | "EQUCOM" => Composite(CompositeFamily::CoreClass28),
 
+        // ---- 扶手（ASL）：一条路由支线，见 `crate::handrail` ----
+        //
+        // `ASL_MDR_HandrailVisualisationManager::getCSGTree@0x109F96A0` 的上下文类
+        // `ASL_MDR_CSGHandRail` 基类是 `DB_RoutingBranch`：RPATH 的 POINTR 点串变成一串
+        // DB_Curve，Ø40 圆沿着扫、拐角斜接，再按公式放 Ø30 立柱（recheck-4 §五 W4-1 施工图·续）。
+        // 它自己成一件（[`is_model_unit`]），RPATH/POINTR 是它的路径数据、被它消费；
+        // RAILSE/POSTSE/HRKPSE/HRPNSE 那几个集合容器**不**被消费——详图式扶手的几何
+        // 在它们下面的 RAIL/KICKPL/HRPOST 上，那几件各自记账。
+        //
+        // 归到 Structural 这一族而不是新开变体：它与 HRPOST/STRFLT/RLADDR 同族，
+        // 而 Composite 的成员消费语义（只吃 ProfileData 与负体）正好是它要的。
+        "HANDRA" => Composite(CompositeFamily::Structural),
+        // 扶手 / 楼梯 / 舱壁的扫掠路径与路径点：`HANDRA → RPATH → POINTR`（aps250110 3366 件、
+        // aps250209 352 件全在 RPATH 下），`STRFLT → RPATH`、`BPANEL → RPATH` 同型。
+        // `CAB_CSGRoutePoint::getCSGTree@0x109CB8D0` 给孤立显示的 POINTR 画一只 10mm
+        // 立方体记号，那是视图记号不是件——判 ProfileData 之后 POINTR 从 `not_wired`
+        // 基线里退出（recheck-4 §九：4565 件里有 3718 件是它）。
+        "RPATH" | "POINTR" => ProfileData,
+
         // ---- 环拉伸家族（aios-core GNERAL_LOOP_OWNER_NOUN_NAMES） ----
         "PANE" | "FLOOR" | "EXTR" | "AEXTR" | "SCREED" | "GWALL" => LoopExtrusion,
         "NXTR" => NegExtrusion,
@@ -395,6 +414,13 @@ pub fn classify(noun: &str) -> Category {
         "FITT" | "PFIT" | "SBFI" | "CMFI" | "FIXING" | "WALL" | "STWALL" | "GENSEC" | "SCTN" => {
             Catalog
         }
+        // 详图式扶手的栏杆与踢脚板（recheck-4 §五 W4-1 施工图·续 七）。归目录件而不是
+        // 归 HANDRA 那一族：`DB_RoutingBranch::getProfile@0x105B9C50` 走的是
+        // `SPRE → GSTR → GMSS` 逐成员按 LEVE 过筛，与 SCTN 那条截面链**逐句同形**，
+        // 分类要说的正是这件事（画法的差别只在「沿属主 RPATH 扫」而不是 POSS→POSE）。
+        // 同族的 `HRPOST` 不在这里：它的 SPRE 指向一只没有 CATR 的 GPART，是目录构件
+        // 那条路（GMRF → 图元集），还欠着。
+        "RAIL" | "KICKPL" => Catalog,
 
         // ---- 属主几何的数据 ----
         // 后六个是多面体的 B-rep 内脏（顶点表/面/环/顶点引用），由 Polyhedron
@@ -409,10 +435,38 @@ pub fn classify(noun: &str) -> Category {
         | "POGO" | "POLOOP" | "LOOPTS" => ProfileData,
 
         // ---- 无三维表示 ----
-        "JLDATU" | "PLDATU" | "POINSP" | "PNOD" | "SNOD" | "PJOI" | "SJOI" | "PALJ" | "SELJ"
-        | "SCOJ" | "SUBJ" | "SEVE" | "RNODE" | "CNODE" | "APPDAR" | "APPLDA" | "APPLDW" => {
-            NonGraphic
-        }
+        "JLDATU" | "PLDATU" | "POINSP" | "PJOI" | "SJOI" | "PALJ" | "SELJ" | "SCOJ" | "SUBJ"
+        | "SEVE" | "APPDAR" | "APPLDA" | "APPLDW" => NonGraphic,
+
+        // PNOD / SNOD：判对了，理由记在这里免得下一个人再翻一遍反编译。
+        //
+        // 旧路 `CRDESI@0x10343B80` 确实有它们的臂（case 621502 / 621505），recheck-4 §3.1
+        // 据此把它们列进「判据可能反了」的复核清单。两条臂读完是同一个去处：
+        // `sub_10402360@0x10402360` 只有三行，`return gm_CreateMark(point)`——**一个点标记**。
+        // 不是实体，也不是线框，是 E3D 在视图上画的那个记号。判 NonGraphic 成立。
+        "PNOD" | "SNOD" => NonGraphic,
+
+        // RNODE / CNODE：**判据对一半**，两支得分开看（recheck-4 W2 探针，2026-09-05）。
+        //
+        // `CAB_CSGRouteNode::getCSGTree@0x109CB150`（1909 字节）与
+        // `CAB_CSGControlNode::getCSGTree@0x109CABB0`（1438 字节）都是同一个形状：
+        //
+        // 1. 先过 noun 闸 `sub_102B5530@0x102B5530`——只有 `HATTA`(0x1672B5) / `TATTA`(0x1672C1)
+        //    / `RATTA`(0x1672BF) / `RNODE`(0x320775) 在表里，且各自还挂一个运行期显示开关
+        //    （`unk_10F84878`…）。不在表里直接 `return 0`。
+        // 2. **有 `ATT_SPRE`** → `return sub_109CAAD0@0x109CAAD0` → `gm_QueryIsOfType(g, 14)`
+        //    + `gm_CreateSolidTree` → **一件真实体，走目录几何**。
+        // 3. 没有 SPRE → `gm_CreateCombination` + 十几条 `gm_CreateStraight`（CNODE 还有
+        //    六段 `gm_CreateArc`）→ **线框标记**，尺寸取自 `sub_102B55A9` 的每-noun 默认值。
+        //
+        // 所以 NonGraphic 对第 3 支成立、对第 2 支是错的：带 SPRE 的路由节点 E3D 会建实体，
+        // 而这本账的语义是「E3D 也不画」。**没有当场改分类，是因为改它需要件数**——五库里
+        // 到底有几只 RNODE 带 SPRE 要等 recheck-3 的 N0-1 复跑（recheck-4 §六 的合并顺序）。
+        //
+        // 在那之前它不是静默的：`core3d_registry::is_not_wired` 认得这两个 noun，
+        // 每一只都会进 `Report::not_wired` 与覆盖率基线，件数一出来就是排期依据。
+        // 这正是 W1 先做的理由——判据留着是错的，但错得看得见。
+        "RNODE" | "CNODE" => NonGraphic,
         // TEXT 是注释数据；E3D 3.1 字典只有文字与引用属性，不带任何 GTGEOM 家族位。
         "TEXT" => NonGraphic,
         // 库务编号根（ams1112 实测 `17496/1`，名 `/**`，与 WORL `/*` 并列的第二个
@@ -458,9 +512,21 @@ pub fn is_model_unit(noun: &str) -> bool {
         | Category::Polyhedron
         | Category::Primitive(_) => true,
 
-        // 目录件本期整体压在二期的目录求值上，唯独 SBFI 的套管尺寸直接挂在设计侧
-        // `DESP` 上，不查目录就能出几何（`elmodl::sbfitting_local_solid`）。
-        Category::Catalog => matches!(noun, "SBFI" | "WALL"),
+        // 目录件本期整体压在二期的目录求值上，例外四个：`SBFI` 的套管尺寸直接挂在
+        // 设计侧 `DESP` 上，不查目录就能出几何（`elmodl::sbfitting_local_solid`）；
+        // `WALL` 走 SPINE + DESP；`SCTN` 走型材截面那条链（`SPRE→SPCO→CATR→SPRF→
+        // GSTR→GMSS`）挤成直段再切两端（`elmodl::section_body`，G1-1a 第 2+3 步）。
+        // `GENSEC` 与 `SCTN` 共用同一条截面链，只是路径在 SPINE 上而不是 `POSS→POSE`；
+        // 直段（两点无弧，全项目 5540/7564）已接，带弧的交 CentrelineOnly 记账。
+        // `STWALL`（直墙）与 `SCTN` 同型：`SPRE → SPRO(PX/PY = ATTRIB DESP[n])` 的矩形
+        // 截面沿 `POSS → POSE` 挤出、`DRNS`/`DRNE` 切两端（recheck-4 §十），走同一条
+        // `section_body`。它与 `WALL` 不是一回事——`WALL` 没有 SPRE，沿 SPINE 弧扫 DESP 矩形。
+        // `RAIL` / `KICKPL` 共用那条截面链，只是路径在属主 HANDRA 的 RPATH 上、按
+        // `STAREF`/`ENDREF` 取一段（`crate::handrail::detailed_item_local_solid`）。
+        Category::Catalog => matches!(
+            noun,
+            "SBFI" | "WALL" | "SCTN" | "GENSEC" | "STWALL" | "RAIL" | "KICKPL"
+        ),
 
         // 路由成员的实体 = 目录 GMRE 程序求值（`crate::catalogue`），键正是
         // element:refno——这个函数问的「挂在自己 refno 上的一件」。全量在管线的
@@ -480,6 +546,14 @@ pub fn is_model_unit(noun: &str) -> bool {
         // 管线那一侧，增量对 CTRAY 的增 / 删 / 改一律 `no_model`。
         Category::Composite(CompositeFamily::CableTray) => {
             noun.trim().eq_ignore_ascii_case("CTRAY")
+        }
+
+        // 扶手：布局式 HANDRA 的栏杆与立柱是一件挂在 HANDRA 自己 refno 上的实体
+        // （`crate::handrail`，管线的 `Composite(Structural) if noun == "HANDRA"` 臂产出，
+        // 增量上卷到它后走 `model_element` 的同名臂）。同族的 HRPOST/STRFLT/RLADDR
+        // 还没有 builder，不是单元。
+        Category::Composite(CompositeFamily::Structural) => {
+            noun.trim().eq_ignore_ascii_case("HANDRA")
         }
 
         // 以下都不产出挂在自己 refno 上的实体。逐条列而不是一个 `_ => false`：
@@ -728,11 +802,26 @@ fn noun_dictionary() -> &'static BTreeMap<String, NounDictionaryRow> {
 
 /// dabacon 字典的 `graphicsBehaviour` 字段（#5099119）。字典里没有这个 noun 时 `None`。
 ///
-/// 取证（`gen-model/docs/plans/2026-09-02-increment-update-audit-and-next-plan.md` §1.3，
-/// Core3D `DES_DrawList::isGraphicsIgnoredBetween` @ `0x1051c7d0`）：E3D 3.1 的 1931 个
-/// noun 里 0 = 普通元素（1652）、**1 = 几何数据容器（109）**、2 = 层级容器
-/// WORL/SITE/ZONE/…（98）、3 = 特殊画法 CABLE/HANDRA/ATTA…（72）。只有 `== 1` 的语义
-/// 已从指令级坐实（见 [`graphics_ignored_below`]）；2 / 3 的含义未读，不要拿来分派。
+/// E3D 3.1 的 1931 个 noun 分布 0/1/2/3 = 1652/109/98/72。四档语义**都已从指令级坐实**
+/// （`gen-model/docs/2026-09-04_model-cascade-update-inventory.md` §2.3 / §2.5；早先只结了
+/// `== 1`，2 与 3 是 2026-09-04 补读的）。core 的变更→重画判据（Core3D `0x1052f2e0`）逐指令是：
+///
+/// ```text
+/// 重画 el ⟺ el.type ∉ {WORL, MNUM}
+///            ∧ ( gb(el) ∉ {1, 2} ∨ ( gb(el) == 1 ∧ gb(el.owner()) ∉ {1, 2} ) )
+/// ```
+///
+/// - `0`（1652）普通可画件。
+/// - `1`（109）几何数据容器——名下的东西不算独立件，见 [`graphics_ignored_below`]。
+/// - `2`（98）层级容器 WORL/SITE/ZONE/ROOM/STRU*…——**永不单独重画**。我们这边由
+///   [`classify`] 把它们收成 `List` / `Composite` 承担，没有单独一条 gb==2 分派；
+///   要求「gb==2 一个都不许成件」由 `graphics_behaviour_two_containers_are_never_units`
+///   钉住（字典给其中 10 个打了 `primitive` 位，那是这条护栏真正要挡的陷阱）。
+/// - `3`（72）照画，但画法由应用侧专用绘制路径提供（电缆桥架 / 船体型材 / 辅助图元 /
+///   标注 / 网格）。**全产品没有一处把它与 `3` 比较**（全 E3D 2.10 安装 868 模块扫
+///   `push 4DCE6Fh` 只有 `Core3D.dll` 命中，导出符号零导入方，所有读点只比 `1` / `2`），
+///   所以 `3` 对每个消费点都与 `0` 等价：**不要为它加任何分派**。它标出的是几何覆盖度
+///   问题（`CTBEND` / `IPLATE` / `HANDRA` 各有专用画法），不是增量问题。
 pub fn graphics_behaviour(noun: &str) -> Option<u8> {
     let noun = noun.trim().to_ascii_uppercase();
     noun_dictionary()
@@ -1303,13 +1392,42 @@ mod tests {
         assert_eq!(classify("WALL"), Category::Catalog);
         assert!(!classify("WALL").is_positive_solid());
         assert!(is_model_unit("WALL"));
+        // SCTN（G1-1a 第 2+3 步）：型材截面链挤成直段、两端按 GTSTDT 切，
+        // 实体挂在 SCTN 自己的 refno 上，所以增量也得上卷到它。
+        assert_eq!(classify("SCTN"), Category::Catalog);
+        assert!(!classify("SCTN").is_positive_solid());
+        assert!(is_model_unit("SCTN"));
+        // STWALL（recheck-4 §十）：与 SCTN 同一条截面链，实体同样挂在自己的 refno 上。
+        assert_eq!(classify("STWALL"), Category::Catalog);
+        assert!(!classify("STWALL").is_positive_solid());
+        assert!(is_model_unit("STWALL"));
+        // HANDRA（recheck-4 W4-1）：布局式扶手的栏杆与立柱挂在 HANDRA 自己的 refno 上；
+        // 同族的 HRPOST/STRFLT 还没有 builder，不能顺手一起认成单元。
+        assert_eq!(
+            classify("HANDRA"),
+            Category::Composite(CompositeFamily::Structural)
+        );
+        assert!(is_model_unit("HANDRA"));
+        for noun in ["HRPOST", "STRFLT", "RLADDR"] {
+            assert_eq!(
+                classify(noun),
+                Category::Composite(CompositeFamily::Structural),
+                "{noun}"
+            );
+            assert!(!is_model_unit(noun), "{noun} 本期不产实体");
+        }
+        // 路径数据被 HANDRA 消费，不是件。
+        for noun in ["RPATH", "POINTR"] {
+            assert_eq!(classify(noun), Category::ProfileData, "{noun}");
+            assert!(!is_model_unit(noun), "{noun}");
+        }
 
         for noun in ["PANE", "FLOOR", "BOX", "CYLI", "REVO", "POLYHE", "AEXTR"] {
             assert!(is_model_unit(noun), "{noun} 是正体，必然是模型单元");
         }
         // 其余目录件本期不出几何，不能被顺手一起认成单元——那会让增量对着一批
         // 模型集里根本不存在的 refno 发 Remove。
-        for noun in ["FITT", "PFIT", "CMFI", "FIXING", "STWALL", "SCTN"] {
+        for noun in ["FITT", "PFIT", "CMFI", "FIXING"] {
             assert_eq!(classify(noun), Category::Catalog, "{noun}");
             assert!(!is_model_unit(noun), "{noun} 本期不产实体");
         }
@@ -1419,6 +1537,55 @@ mod tests {
         }
         assert_eq!(graphics_behaviour("CABLE"), Some(3));
         assert_eq!(graphics_behaviour("NOT-A-NOUN"), None);
+    }
+
+    /// `graphicsBehaviour == 2` 的 98 个层级容器在 core 里**永不单独重画**
+    /// （`0x1052f2e0` 的 `if (gb != 2)` 门；取证见 [`graphics_behaviour`] 的文档）。
+    /// 所以它们一个都不许成为模型单元或派生单元——成了就是「core 不画、我们画了」，
+    /// 与 gb==1 那条护栏挡的是同一型分歧，只是高一层。
+    ///
+    /// 这条不是空转：字典给其中 **10 个**打了 `primitive` 位（`CSURF` `PLTGRD` `HRPANE`
+    /// `STRLNG` `CPANEL` `INTFRM` `HICPAN` `ENVLOP` `HTFEAT` `STRFLT`）。今天它们都落在
+    /// [`classify`] 的字典兜底臂上（`Composite` / `Unknown`）因而不成件，但那是**巧合不是
+    /// 保证**：谁照着 `primitive` 位往 `classify` 里补一条 `Primitive(_)` 臂，就会让这些
+    /// 容器静默出几何。这条测试就是那一刻会红的东西。
+    ///
+    /// 与 gb==3 相对照：`3` 在 core 里没有任何代码路径、与 `0` 等价，因此**不该**有
+    /// 对应的护栏——为它加分派才是分歧。
+    #[test]
+    fn graphics_behaviour_two_containers_are_never_units() {
+        let containers: Vec<&str> = noun_dictionary()
+            .iter()
+            .filter(|(_, row)| row.graphics_behaviour == 2)
+            .map(|(noun, _)| noun.as_str())
+            .collect();
+        assert_eq!(containers.len(), 98, "E3D 3.1 字典里 gb==2 应当恰好 98 个");
+        for noun in &containers {
+            assert!(
+                !is_model_unit(noun),
+                "{noun} 是 gb==2 层级容器，core 不单独画它"
+            );
+            assert!(
+                !is_derived_unit(noun),
+                "{noun} 是 gb==2 层级容器，名下不派生几何"
+            );
+        }
+        // 字典 `primitive` 位与 core 的 gb==2 门冲突的那 10 个，逐个点名。
+        for noun in [
+            "CSURF", "PLTGRD", "HRPANE", "STRLNG", "CPANEL", "INTFRM", "HICPAN", "ENVLOP",
+            "HTFEAT", "STRFLT",
+        ] {
+            assert_eq!(graphics_behaviour(noun), Some(2), "{noun}");
+            assert!(
+                !is_model_unit(noun),
+                "{noun} 带字典 primitive 位，但 core 不画它"
+            );
+        }
+        // 锚点：普通容器与几个熟脸。
+        for noun in ["WORL", "SITE", "ZONE", "ROOM"] {
+            assert_eq!(graphics_behaviour(noun), Some(2), "{noun}");
+            assert!(!is_model_unit(noun), "{noun}");
+        }
     }
 
     /// 路由族既不产正体也不是负体，更不消费成员——成员是路由本身，必须继续下钻。

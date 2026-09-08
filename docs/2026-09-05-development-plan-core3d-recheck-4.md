@@ -292,7 +292,7 @@ W1 先做的价值就在这里——判据留着是错的，但错得看得见�
 
 | 序 | 族 | 六库件数 | 结论 | 工期 |
 |---|---|---:|---|---|
-| **W4-1** | **ASL 通道钢结构**（§3.2） | **105 欠账 + 145 已挂账** | 唯一有真件数的一族，**提到第一位** | 4 天 |
+| **W4-1** | **ASL 通道钢结构**（§3.2） | **105 欠账 + 145 已挂账** | 唯一有真件数的一族，**提到第一位**。**布局式 HANDRA 2026-09-06 已接**（85/92 出实体，另 7 件是详图式、E3D 在 HANDRA 层也不画；**未对拍**，见施工图·续 九）。**详图式 RAIL / KICKPL 同日已接**（11/13 出实体，另 2 件路径上有本期不认的 `CURVE` 弧，见施工图·续 十）——这一族的 `not_wired` 就此归零。**HRPOST 124 不是缺几何是缺定位**：它的 TMPL 图元早就在画，只是全堆在属主原点上（施工图·续 十一）。定位要用的 RPATH 锚定**已从 `cable_tray` 抽成公共件 `src/rpath.rs`**，桥架 128 件逐字节钉住（施工图·续 十二）；弧段、首点基准与 HRPOST 分支还欠 | 4 天 |
 | W4-2 | `BPANEL`（原 ACC 五件里唯一有件的） | 52（`aps250110`） | 单件做，不必整族 | 1 天 |
 | ~~W4-3~~ | ~~ACC 舱壁其余 4 个~~ | **0** | `WLJOIN`/`WLPROF`/`WLPANE`/`CTWALL` 六库全零，**砍掉** | ~~3 天~~ |
 | ~~W4-4~~ | ~~舱室装修 8 个~~ | **0** | 八个 noun 六库全零，**整条砍掉** | ~~4 天~~ |
@@ -470,9 +470,219 @@ n = floor((L − s − e) / POSTSP) − 1
 - HRGATE、SHOWKP、mode 1/3 三条本机语料都没有件（HRGATE 只有 1 件且挂在 TMPL 下），
   先不接，判据留在上面的伪码里。
 
+**九、布局式接线结果（2026-09-06，`src/handrail.rs`，未对拍）**
+
+按「六、」的伪码写了 `crate::handrail`，三处接线：`classify` 加 `HANDRA → Composite(Structural)`
+与 `RPATH | POINTR → ProfileData`（路径数据由属主消费）；`is_model_unit` 的
+`Composite(Structural) => HANDRA`；`model_element` / 管线各一条 `Composite(Structural) if HANDRA` 臂。
+详图式的判据（有 RAILSE/POSTSE/HRKPSE/HRPNSE 成员）落 `Skipped(NoShape)` 并回冲 `evidence_pending`。
+
+| 库 | HANDRA | 出实体 | 详图式跳过 | 备注 |
+|---|---:|---:|---:|---|
+| `aps250209` | 81 | **81** | 0 | 例：`2013286753/40177` 5 段路径（2 段弧）× 2 高 = 10 节栏杆 + 41 根立柱，外廓 9040×9035×1120 |
+| `aps250110` | 11 | 4 | 7 | 4 件是 `STRFLT` 下的楼梯扶手（只有 RPATH）；7 件带 RAILSE/POSTSE |
+
+- `not_wired`：`aps250209` 433 → **0**，`aps250110` 3449 → **72**（RAIL 8 / KICKPL 5 / SNOD 40 / PNOD 19）；
+  六库合计 4565 → **755**，其中 742 是已证对的 PNOD/SNOD 点标记。**这本账第一次只剩真欠账。**
+  （余下那 13 件 RAIL / KICKPL 同日也接了，见「十、」，六库合计再降到 742。）
+- 基线 `nouns_core3d_builds_that_we_have_not_accounted_for` 删 `HANDRA` / `POINTR` 两行；
+  `the_not_wired_predicate_needs_both_halves` 的样例 noun 换成 `RAIL`。
+- 单测 7 条钉几何：斜接面法向 = `unit(d_in + d_out)`、过轴端点的斜接切法体积不变但两根管
+  相接不重叠、探出的楔 = (2/3)r³、圆角切长 `FRAD·tan(θ/2)` 与弧心位置、
+  `sub_109F60C0` 那套立柱公式（L=3000/s=e=300/POSTSP=1000 → 300/1000/2000/2700）、
+  共线接头退距归零、弧段不放柱。
+- **没接的**（notes 里逐件点名，不静默）：`SHOWKP=true` 的踢脚板（81 件全 true；
+  `ASL_CSGDefaultKickplate` 的默认剖面还没拉）、HRGATE 门与门洞、mode 1/3 简化表示、
+  RPATH 里的 `EXTGEO` / `RSECT` / `CURVE` 段（只接了 POINTR 点串）。
+- **未对拍**：`test_data/rvm/` 没有含 HANDRA 的 E3D 导出，以上几何只有单测自证与
+  `out/handrail-20260906/handrail_preview.png` 的目视（L 形双栏杆 + 等距立柱 + 圆角；
+  楼梯扶手沿斜路径、立柱竖直）。拿到 `aps250209` 的导出后跑 `rvm_compare --noun HANDRA`。
+- 立柱与栏杆是 `Manifold::compose` 拼的，不做布尔并；柱顶停在顶栏杆下缘（相切），
+  穿过中栏杆——与 E3D 的 `gm_CreateCombination(1)` 同样是并列不融合。
+
 **顺带答了 §七-4**（原本要请你指认「哪几个库含 ASL / ACC / 舱室装修 的件」）：
 含 ASL 的只有 `aps250110` 和 `aps250209`；ACC 只有 `BPANEL` 52 件在 `aps250110`；
 舱室装修一件都没有。这个问题不用再问人了，`scripts/run_corpus_census.ps1` 每次复跑自己答。
+
+**十、详图式接线结果（2026-09-06，`src/handrail.rs`，未对拍）**
+
+按「七、」写完 `RAIL` / `KICKPL`。它们与 `SCTN` 共用整条截面链，差别只在**路径**：
+不是 `POSS → POSE` 一根直杆，而是沿属主 HANDRA 的 `RPATH` 取 `STAREF → ENDREF`
+之间那一串连续曲线。因此分类判 `Catalog`（`SPRE/CATR` 驱动）而不是跟 HANDRA 归
+`Composite(Structural)`——分类要说的是「几何从哪来」，这两件的答案就是目录截面链。
+
+四处接线：`classify` 加 `RAIL | KICKPL → Catalog`；`is_model_unit` 的 `Catalog` 臂加这两个；
+`model_element` 加一条 `Catalog if is_detailed_item` 臂（三种结局与 `section_body` 同口径，
+只是没有 FITT 那一支——`RAIL`/`KICKPL` 底下不挂配件）；管线**一行没动**，
+`Catalog if is_model_unit` 那条臂原样接住。
+
+复用到什么程度：`section_catalogue` / `evaluate_section_profile` / `placement_between` /
+`section_cut_planes` 的法向规约 / `section_local_solid` / `spine_swept_solid` 全部原样调用，
+`section.rs` **一个字没改**。新写的只有三件事——属主链取 HANDRA、`STAREF/ENDREF` 换算成
+曲线号串（[`curve_run`]）、把布局式那套斜接面喂进 `SectionCuts`。
+
+| 库 | RAIL | KICKPL | 出实体 | 拒画 |
+|---|---:|---:|---:|---|
+| `aps250110` | 8 | 5 | **11** | 2（`2013286654/3387` 与 `/3388`） |
+
+- `not_wired`：`aps250110` 72 → **59**，剩下的 40 SNOD + 19 PNOD 全是已证对的点标记。
+  **`not_wired` 这本账上从此没有一件真欠账。**六库合计 755 → **742**。
+- **其余 3199 件逐 refno 比对上一版产物**（`out/handrail-census-20260906`）：refno 集合相同，
+  `noun`/`volume_mm3`/`aabb_min`/`aabb_max`/`triangles`/`genus`/`negatives_applied` 逐字段全等。
+- 几何自证：`/PIPE48.3x3.6` 的截面是两个 `PANG=180` 的 SANN，各按 22.5° 折成 8 段，
+  两半合起来 492.6 mm²。`2013286654/3707` 的路径 600+1100+600 = 2300 mm，
+  实得体积 1.1331e6 = 2300 × 492.6 —— **斜接接头不吃体积**（切掉多少补回多少），
+  与布局式那条单测同一条判据。`2013286654/3387` 走闭合路径的长边（曲线 3,4,5,0,1，
+  合 44808.6 mm），实得 2.2075e7 = 44808.6 × 492.6。踢脚板全是 8 × 110 的板。
+- 单测 2 条：段表带得出边号（圆角拐角让一条边出两段、重合点丢掉之后 `kept` 仍指得回
+  原始下标）、`curve_run` 的六种落法（开口整条 / 闭合绕过去 / 单边 / 首尾同点走整圈 /
+  越界 / `end == 0`）。
+
+**拒画的那两件（`2013286654/3387`、`/3388`，属主 HANDRA `2013286654/3335`）**：
+它们的 `RPATH` 里夹着一只 `CURVE`（`2013286654/3391`，`CURTYP=THRU`，过点
+`(−7179.64, −1854.07)`，反算 R ≈ 14827 mm、扫 57.9°），而本期只接 `POINTR` 点串。
+照直段画出来的杆比 E3D 短 641 mm、中段横向差 1854 mm——**顶着真 refno 的错形状比缺一件更难发现**，
+所以整根交 `CentrelineOnly`，与 GENSEC 带弧同一处置。全语料只有这一条 `RPATH` 带 `CURVE`
+（`aps250209` 的 81 件布局式一条都没有），接它要把 `path_layout` 的接头逻辑从「边方向」
+改成「逐边的进 / 出切向」，另开一件。
+
+`XOFF` 的**偏向未对拍**：`sub_105AB2C0` 传给 `offsetPath` 的是 `-this[63]`，
+那个字段是不是 `XOFF`、`offsetPath` 的正向朝哪一侧，两处都没坐实；本期按截面平面 +x 侧偏，
+语料里只有踢脚板的 `XOFF=7` 吃到它。
+
+**十一、`HRPOST` 那 124 件不是缺几何，是缺定位——而且现在正静默画错（2026-09-06 探明）**
+
+上面「七、」把 HRPOST 记成「`SPRE`（db 7047）目录截面」，探下来两头都不对。
+
+**几何早就在画了。** `SPRE` 指向 `23431/36006` = GPART `/Key-Clamp-Size-8-Railing-Mid-Post`，
+它的 `CATR` 是 `0/0`——链根本走不到 `SCOM`，所以**不是**目录构件那条路，`crate::catalogue`
+用不上。真正出几何的是每只 HRPOST 底下那只 `TMPL`（`PurposeContainer`，`TMPR` 指
+db 7048 的模板）：124 只 HRPOST 各带 13～16 个图元，`aps250110` 的 370 只 TMPL 里 124 只是它的。
+**这批图元本来就在 `elements.json` 里**，高 1106 mm，与 `LENG=1100` 对得上。
+
+伪码印证了这一点（`MDR_HRPostVisualisationManager::getCSGTree@0x109F4ED0`，577 B，
+已落 `evidence/20260906-asl-builders/`）：上下文类是 `ACC_CSG_HRPost`，
+先按 vtbl+52 走一遍**与 RAIL/KICKPL 同一个**的 `getProfile`；走通就 `sub_105BE1E0` 扫，
+**走不通就落到 `create_geometry`**——也就是模板实例那一支。本机语料走的正是后者。
+
+**错的是位置。** `HRPOST` 的模板里**没有 `POS`/`ORI`**，`transform::local_matrix` 于是给它单位阵，
+124 根柱子连同 1700 多个图元**全部堆在属主 HANDRA 的原点上**：逐只算图元包围盒中心，
+124 只去重后只有 **8 个不同位置**（每只 HANDRA 一个）。它们生成得好好的，
+不在任何一本欠账上——**`accounts_for` 照平、报告全绿，而模型上 1700 个图元摞成一堆**。
+这是总纲 §六 红线 1「静默缺件」的位置版，比缺件更难发现。
+
+位置该从哪来，属性齐全：`POSREF`（指路径点）+ `ZDIS`（沿路径走多远，语料里
+100 / 994.65 / 1994.65 / 2994.65 … 正好 `POSTSP=1000` 的等距）+ `XOFF` / `HRJUSL`（左右对齐）
++ `VERTDI` / `DRNS`/`DRNE`。`sub_109FFA10` 里那两个 `D3_Point`（`this+112` / `this+118`）
+就是柱子的两端，取距离与单位方向——与 RAIL 一样是一条路由支线，只是只有一段。
+
+**那两个端点是 `POSS` / `POSE`，而它们是伪属性**（`sub_109FF790` 反汇编：ctor 用四参
+`getAtt(ATT_POSS, …, D3_Point&)` / `ATT_POSE` 各取一次；`sub_109FFA10` = `MDR_CSGSegment::makeFullGeometry`
+拿 `this+448` / `this+472` 那两点造**一段 `LINE`(640317) 曲线**，`ddistance > 0.1` 才建）。
+HRPOST 的模板里**根本没有这两条**——`get_position("POSS")` 直接回 `UnknownAttribute`。
+vtbl+88 的 `sub_109FF910` 只读 `DRNS` / `DRNE` / `LMIRR` / `BANG`，端点不在那儿。
+
+求值链已经追到头（伪码全部落在 `evidence/20260906-asl-builders/`）：
+
+```
+sub_109FA130                        HRPOST 等 4 个 noun 各注册一对伪属性 plugger
+  ASL_DBPseudoPOSonHRELE  (vtbl 0x10B80394, getAtt = sub_109F9FE0)
+  ASL_DBPseudoORIonHRELE  (vtbl 0x10B803B0, getAtt = sub_109F9E50)
+      └─ 两个都建一只 MDR_DBPseudoPOSandORIonHandra（vtbl 0x10B8036C，9 槽 ~6.7 KB）
+           slot 6 sub_10617380  readFormDB 入口
+           slot 2 sub_10615C10  readFormDB 主体（1757 B）
+           slot 4 sub_10614A40  （2568 B）
+           sub_10615810 calculatePOS → sub_10615980（HRTERM 且前一段是 CURVE 时走特例）
+```
+
+它是 `MDR_DBPseudoPOSandORIonRPATH`（`sub_109E71E0`）的**姊妹类**——后者
+`crate::cable_tray::placement` 已经整条移植过了（`POSREF` 链折算、`PKDI`/`ZDIS` 定段内位置、
+`ZOFF` 抬高、`BANG` 绕局部轴）。HRPOST 用的属性与桥架件**逐条同名**：
+`POSREF` / `PKDI` / `ZDIS` / `ZOFF` / `XOFF` / `BANG`。
+
+**语义已被语料实证（124/124）**：取 `s = 点 0 → POSREF 的路径弧长 + ZDIS`，四只详图式扶手
+逐只算下来——`s` 沿数据库顺序**严格单调递增**、**没有一件越过路径总长**、相邻间距以
+`POSTSP=1000` 为主（拐角处更短）：
+
+| 属主 HANDRA | 闭合 | 边 | 路径总长 | 柱 | s 首 | s 末 |
+|---|---|---:|---:|---:|---:|---:|
+| `…/3335` | 是 | 6 | 45488.6 | 49 | 100.0 | 45388.6 |
+| `…/3397` | 否 | 5 | 62618.9 | 64 | 752.5 | 61631.4 |
+| `…/3479` | 否 | 3 | 2300.0 | 3 | 700.0 | 1700.0 |
+| `…/3896` | 否 | 3 | 7700.0 | 8 | 600.0 | 7100.0 |
+
+这一条读法有五处自由选择（点号还是边号、往前还是往后、累不累计、闭合绕不绕、含不含 ZOFF），
+124 件全落在区间内且单调，不会是巧合。
+
+**再收紧一层：`ZDIS` 是「`POSREF` 之后那一段之内」的距离，不是沿整条路径走。**
+这与 `calculatePOS`（`sub_10615980`）的形状对得上——它按 A（`this+132`）、B（`this+152`）
+**两个锚点元素的 noun** 分支：A ∈ {`POINTR`,`RSECT`,`EXTGEO`} 且 B ∈ {`POINTR`,`EXTGEO`}
+走 vtbl+4（直段 `sub_106162F0`）；B 是 `CURVE` / `RSECT` 走 vtbl+8（弧段 `sub_10615C10`）；
+再看 `XOFF`/`ZOFF` 那三个数非零才走 vtbl+28 → vtbl+20 加横向偏移。**是一对锚点，不是整条路径。**
+
+逐 `POSREF` 把 `ZDIS` 的上界与那条边的弦长比一遍，11 组里 8 组严丝合缝，另外 3 组的超出量
+**各有一个确定的解释**：
+
+| 属主 | POSREF | 柱 | ZDIS 上界 | 该边弦长 | 差 | 解释 |
+|---|---:|---:|---:|---:|---:|---|
+| `…/3335` | 0 | 16 | 14889.29 | 14359.2 | +530.1 | 这条边就是那只 `CURVE`（THRU，R≈14827、扫 57.9°），**弧长 ≈ 15000** > 14889 ✓ |
+| `…/3397` | 0 | 7 | 6505.00 | 6255.0 | +250.0 | `p0 = (0, −250, 0)`，**基准是 RPATH 原点不是 p0**，差正好 \|p0\| |
+| `…/3479` | 0 | 1 | 700.00 | 600.0 | +100.0 | `p0 = (−100, 0, 0)`，同上，差正好 \|p0\| |
+| `…/3896` | 0 | 1 | 600.00 | 600.0 | 0 | `p0` 就在原点，所以没有这一项 ✓ |
+
+**这两条恰恰是 `cable_tray` 那套锚定不带的**：它的 `RoutePath::load` 明确**拒掉** `FRAD ≠ 0`
+与非 `POINTR` 的成员（弧段根本进不来），首点也没有「以 RPATH 原点为基准」这一支。
+所以「把 `cable_tray` 的 RPATH 锚定抽成公共件两家共用」这条路要连带**扩它两处**，
+不是纯代码搬家——抽之前先想清楚这两处加在公共件里还是留在扶手侧。
+
+**下一步**（一件独立的活）：照 `cable_tray::placement` 的成例把
+`MDR_DBPseudoPOSandORIonHandra` 移植出来，再给 `transform::local_matrix` 加一条 HRPOST 分支
+——**这一件是定位，不是几何**，`crate::catalogue` 与 `crate::section` 都不用动。
+两条路可选：把 `cable_tray` 里那套 RPATH 锚定抽成公共件（它已经过对拍，抽的时候别动语义），
+或按上表那条实证语义单独写一份。`HRJUSL`（LEFT/RIGH）与 `XOFF` 的横向偏移、以及柱子绕自身
+轴的旋转，语料里全是 0 / 对称值，**这三样没有基准可对**。
+`HRPANE` 5 件、`HRTERM` 6 件、`FIXING` 604 件底下同样挂 TMPL，要一并核有没有同样堆在原点
+——`HRTERM` 在 `calculatePOS` 里还有一条专门的特例分支，说明它同属这一族。
+
+→ 两条路取了第一条，分两步走：先纯搬家（**十二**，已完成），再扩弧段与首点基准（未做）。
+
+**十二、RPATH 锚定抽成公共件 `src/rpath.rs`（2026-09-06，桥架 128 件逐字节钉住）**
+
+把 `cable_tray::placement` 里**与家族无关**的那一层原样搬进 `src/rpath.rs`，`cable_tray` 改成调它。
+这一步**只搬家、不扩语义**：弧段与首点基准都没加，公共件算出来的东西与搬家前逐字相同。
+
+分线一句话：**公共件回答「(`POSREF`, `PKDI`, `ZDIS`, `ZOFF`) 在这条 RPATH 上落在哪、那儿的局部系
+是什么」，各家自己在上面加对正偏移。**
+
+| 进了 `rpath.rs`（`pub(crate)`） | 留在 `cable_tray.rs` |
+|---|---|
+| `RoutePath`（点表 + `YDIR`/`BANG`/`CLOSEF`）与 `prev`/`next`/`arrive_dir`/`leave_dir`/`arrive_up`/`leave_up`/`turn`——`PDIR`/`AYDIR`/`LYDIR` 三个 POINTR 伪属性 | `placement` / `placement_matrix` / `CableTrayPlacement`：对外 API 不变，`Anchor` 以 `pub use` 原位再导出，`ctray_probe` 与 `pipeline` 不用改 |
+| `resolve_anchor`（`POSREF` 链逐级折算、按 `PKDI`/`ZDIS` 符号定 A→B、端点兜底）、`resolve_without_posref`、`first_rpath` | `forward_when_zero`：`CTSTRA \| CTREDU \| CTCOUP` 那条名单由调用方算好传进去（原来写死在 `resolve_anchor` 里） |
+| `straight_point`（`calculatePOS` 直线支；交回 `inside` / `along` / `up`）、`straight_rotation`、`frame_xy` | `justification_offset`（`WJUSL` × `WTHICK`）、`justification_shift`（`CWJUSL`/`VWIDT`/`VHEIG`/`VSHAPE` + `CTBEND`/`CTRISE` 特例）——原来在 `straight_position` 尾巴上调，现在由调用方按 `inside` 决定加不加 |
+| `rotate_about` / `angle_between` / `unit` / `unit_or_zero`；属性读取小件 `optional` / `number_or_zero` / `flag` / `reference` / `vector` / `word` / `failed`；`ATTR_TOL` / `LENGTH_TOL` / `VECTOR_TOL` | 收尾的 `BANG`（绕局部 Y）/ `GANGLE`（绕局部 Z） |
+
+唯一改了形状的一处是 `straight_position → straight_point`：原函数在三条早退（距离为负、超出段长、
+段长退化）之后才调 `justification_shift`；现在它交回 `inside`，调用方只在 `inside` 时加偏移。
+口径一致，且 Core 的语义正是「早退直接给端点、不加对正偏移」，这一条写进了 `rpath.rs` 模块注释。
+
+行数：`cable_tray.rs` 943 → 246；`rpath.rs` 782（含 6 条从桥架侧原样搬过来的单测，`--lib` 总数 268 不变）。
+
+**钉**（SHA-256 逐字节对，`out/rpath-extract-20260906/`）：
+
+| 语料 | 件 | 对比 | 结果 |
+|---|---:|---|---|
+| `ams251142` + `acp7001/7021/7047`（`ctray_probe` 用的那本桥架库，六库里没有桥架；**`acp7021` 不给就 128 件全 `db 7021 没注册`、generated=0 而账面照平**） | 128 CTRAY，failed 0，visited 715 | `before-ams251142/` ↔ `after-ams251142/` ↔ `after2-ams251142/`（盘上最终版重跑） | `elements.json` / `model.obj` / `report.json` / `primitive-cache.json` **四件全等** |
+| `aps250110`（扶手 + 其余） | 3210 | `../detailrail-20260906/aps250110/` ↔ `after-aps250110/` ↔ `after2-aps250110/` | 三件全等 |
+
+`cargo test --lib` 268/268、`cargo test --test noun_coverage` 8/8、`cargo fmt --check` 三个文件干净。
+`increment_real` 未重跑：本次不碰 `category` / `pipeline` / `is_model_unit`，两库产物逐字节全等已覆盖。
+
+**没做的**（= 「十一」那条路的第二步）：弧段（`RoutePath::load` 仍拒 `FRAD ≠ 0` 与非 `POINTR` 成员）、
+首点以 RPATH 原点为基准那一支、`transform::local_matrix` 的 HRPOST 分支。往公共件里加这两处时，
+上表那组桥架数就是回归钉——再跑一次 `ams251142` 逐字节对。
+
+顺带一条：`ams251142` + `acp7021` 该进 `scripts/run_corpus_census.ps1`，否则桥架族在标准回归里
+仍然一行都跑不到（六库里 `CTRAY`/`CWBRAN`/`CTMTRL` 全零）。
 
 ### W5 · §3.5 的制图辅助族定性（半天，零几何）
 

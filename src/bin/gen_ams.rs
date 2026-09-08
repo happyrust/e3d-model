@@ -254,6 +254,9 @@ struct ElementInvariants {
     geometry_id: e3d_model::GeometryId,
     refno: String,
     noun: String,
+    /// Diagnostic route segment shown dashed by Plant UI and intentionally
+    /// absent from the E3D solid RVM export.
+    is_invalid_tubi: bool,
     name: Option<String>,
     /// 属主的显示名（`NOUN /名`），属主无名时为 `None`。见 [`owner_keys`]。
     /// 管身（`TUBI`）的属主是容器本身，见 [`tube_pair_key`]。
@@ -442,8 +445,10 @@ fn main() -> anyhow::Result<()> {
         args.template.clone()
     };
 
+    // 池级元素缓存：一次生成是有界的一棵子树，而 owner 链上溯与目录链走查会把同一批
+    // 元素反复解析（ams8000 实测每元素 145 遍）。长驻进程另说，见 `with_element_cache`。
     let set = if args.project_dirs.is_empty() {
-        std::sync::Arc::new(DbSet::with_attlib_file(&args.attlib)?)
+        std::sync::Arc::new(DbSet::with_attlib_file(&args.attlib)?.with_element_cache())
     } else {
         let resolver = DirectoryDbResolver::scan(&args.project_dirs, &template_dir)?;
         for skipped in resolver.skipped() {
@@ -454,10 +459,10 @@ fn main() -> anyhow::Result<()> {
             );
         }
         println!("{}", resolver.summary());
-        std::sync::Arc::new(DbSet::with_attlib_file_and_resolver(
-            &args.attlib,
-            Box::new(resolver),
-        )?)
+        std::sync::Arc::new(
+            DbSet::with_attlib_file_and_resolver(&args.attlib, Box::new(resolver))?
+                .with_element_cache(),
+        )
     };
     let dbno = set.add_db(DbFilePin {
         file: args.db_file.clone(),
@@ -534,6 +539,14 @@ fn main() -> anyhow::Result<()> {
     let mut noun_counts: BTreeMap<String, usize> = BTreeMap::new();
     let mut route_audit = Vec::new();
     let mut catalogue_mesh_cache = CatalogueMeshCache::default();
+    // 分档计时：生成 / 三角化 / 落盘三段在同一个根循环里交错，只能各自累加。
+    // 读取侧（索引查找 + 记录解析）另有全局计数器，取整段的差值。
+    let mut gen_nanos = 0u128;
+    let mut mesh_nanos = 0u128;
+    let mut obj_nanos = 0u128;
+    let reads_before = e3d_io::read_stats::snapshot();
+    let phases_before = e3d_model::perf::snapshot();
+    let loop_start = std::time::Instant::now();
 
     for root in roots {
         let route_element = args.route_only.then(|| set.element(root));
@@ -570,8 +583,13 @@ fn main() -> anyhow::Result<()> {
                 ))
             })
             .transpose()?;
-        let GenerationOutcome { elements, report } =
-            generate_subtree_with_cache(set.element(root), &mut catalogue_mesh_cache)?;
+        let gen_start = std::time::Instant::now();
+        let generated_root =
+            generate_subtree_with_cache(set.element(root), &mut catalogue_mesh_cache);
+        gen_nanos += gen_start.elapsed().as_nanos();
+        let GenerationOutcome {
+            elements, report, ..
+        } = generated_root?;
         if let Some((
             noun,
             name,
@@ -629,7 +647,9 @@ fn main() -> anyhow::Result<()> {
         // 生成物不重排），逐容器计数就是路由序。
         let mut tube_ordinals = std::collections::HashMap::new();
         for generated in &elements {
+            let mesh_start = std::time::Instant::now();
             let mesh = generated.mesh();
+            mesh_nanos += mesh_start.elapsed().as_nanos();
             let (lo, hi) = mesh.aabb().unwrap_or(([0.0; 3], [0.0; 3]));
             let inv_world = generated.world.inverse();
             let to_local = |vertex: &[f64; 3]| {
@@ -742,6 +762,7 @@ fn main() -> anyhow::Result<()> {
                 geometry_id: generated.geometry_id.clone(),
                 refno: generated.refno.to_string(),
                 noun: generated.noun.clone(),
+                is_invalid_tubi: generated.is_invalid_tubi,
                 name: generated.name.clone(),
                 owner_desc,
                 ordinal,
@@ -767,10 +788,15 @@ fn main() -> anyhow::Result<()> {
                 Some(name) => format!("{} {} {}", generated.geometry_id, generated.noun, name),
                 None => format!("{} {}", generated.geometry_id, generated.noun),
             };
+            let obj_start = std::time::Instant::now();
             index_offset = mesh.write_obj_object(&mut obj, &label, index_offset)?;
+            obj_nanos += obj_start.elapsed().as_nanos();
         }
         merged.merge(report);
     }
+    let loop_nanos = loop_start.elapsed().as_nanos();
+    let reads = e3d_io::read_stats::snapshot().delta_from(reads_before);
+    let phases = e3d_model::perf::snapshot().delta_from(phases_before);
     debug_assert_eq!(
         merged.catalogue_mesh_cache,
         catalogue_mesh_cache.stats(),
@@ -825,6 +851,29 @@ fn main() -> anyhow::Result<()> {
         report_path.display(),
         t0.elapsed().as_millis()
     );
+    // 分档：生成 / 三角化 / 写 OBJ 三段之和小于循环总时长，差额是审计与记账。
+    // 读取一档**含在生成里**，不是并列的第四段，单列是为了看重复解析占多少。
+    println!(
+        "计时: 循环外 {}ms | 循环 {}ms = 生成 {}ms + 三角化 {}ms + 写OBJ {}ms + 其它 {}ms",
+        (t0.elapsed().as_nanos() - loop_nanos) / 1_000_000,
+        loop_nanos / 1_000_000,
+        gen_nanos / 1_000_000,
+        mesh_nanos / 1_000_000,
+        obj_nanos / 1_000_000,
+        loop_nanos.saturating_sub(gen_nanos + mesh_nanos + obj_nanos) / 1_000_000,
+    );
+    // `parse_misses / visited` 是「每个元素平均被真读了几遍」。句柄自己的 OnceLock
+    // 只在同一个句柄内省，跨句柄（owner 链上溯、目录链重复引用）省不到——那部分
+    // 只有给 DbSet 加共享缓存才能消掉，这个倍率就是它的收益上界。
+    println!(
+        "读取（含在生成里）: {} | 每元素真读 {:.2} 遍（visited {}）",
+        reads.summary(),
+        reads.parse_misses as f64 / merged.visited.max(1) as f64,
+        merged.visited,
+    );
+    // 各档**嵌套**、不可相加：catalogue 里套着 mesh_build，二者产出的实体随后才被
+    // tri_mesh 三角化。看绝对值和 ms/次，判断往哪一层下刀。
+    println!("分档（嵌套，ms/次数）: {}", phases.summary());
 
     // 产物先落盘再判账：账不平时那三份文件正是查因用的。
     if let Some(total) = index_total {

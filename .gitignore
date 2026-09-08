@@ -19,5 +19,8 @@ Cargo.lock.bak
 # 代理会话的中间产物（对拍矩阵、临时日志），与 evidence/ 同一口径：能重造、不进历史。
 /.codex-artifacts
 
+# probe 输出、对拍中间产物、ct_* 草稿副本——与 /evidence、/.codex-artifacts 同口径：能重造、不进历史。
+/.scratch
+
 __pycache__/
 *.pyc

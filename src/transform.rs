@@ -77,6 +77,7 @@ pub fn local_matrix(el: &DbElement) -> Result<DMat4, DbElementError> {
 
 /// 世界矩阵：owner 链折叠（根 → 自身逐级右乘）。
 pub fn world_matrix(el: &DbElement) -> Result<DMat4, DbElementError> {
+    let _timing = crate::perf::world_matrix_scope();
     let mut chain = vec![local_matrix(el)?];
     let mut cursor = el.owner()?;
     while let Some(current) = cursor {

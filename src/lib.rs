@@ -18,7 +18,8 @@
 //! | [`polyhedron`] | `CSG_BasicPOL::getPrimGeom` → `sub_1071DCF0` | POLYHE/POHE/NPOLYH 显式 B-rep 建体 |
 //! | [`discretise`] | libgm `GM_Profile` 折线化 | 带 FRAD 倒圆的环离散 |
 //! | [`transform`] | `MAT16/CONCAT/GLSMAT` | POS/ORI 折叠出世界矩阵 |
-//! | [`cable_tray`] | `CAB_DB_PseudoPOS/ORIonCTELE::getAtt` | 桥架件（CTSTRA/CTBEND/…）没存 POS/ORI，按 `POSREF→POINTR + ZDIS/PKDI` 现算 |
+//! | [`rpath`] | `MDR_DB_POSandORIonRPATH` + `MDR_DB_PseudoAYDIR/LYDIR/PDIRonPOINTR` | RPATH 锚定公共件：`POSREF/PKDI/ZDIS/ZOFF` 落成路径上的点与局部系，各家再加自己的对正偏移 |
+//! | [`cable_tray`] | `CAB_DB_PseudoPOS/ORIonCTELE::getAtt` | 桥架件（CTSTRA/CTBEND/…）没存 POS/ORI，走 [`rpath`] 锚定再加 `CWJUSL` 对正 |
 //! | [`mesh`] | `gm_CreateFacetStructure` | 三角网格产物 + OBJ 导出 |
 //!
 //! CSG 内核用 manifold-csg（与 gen-model ADR-029 同款），对标 libgm 的
@@ -34,19 +35,23 @@ pub mod cable_tray;
 pub mod catalogue;
 pub mod catalogue_point;
 pub mod category;
+pub mod core3d_registry;
 pub mod db_discovery;
 pub mod discretise;
 pub mod element_diff;
 pub mod elmodl;
 pub mod extrusion_reuse;
+pub mod handrail;
 pub mod increment;
 pub mod ledger;
 pub mod mesh;
+pub mod perf;
 pub mod pipeline;
 pub mod polyhedron;
 pub mod primitive_instance;
 pub mod profile;
 pub mod route;
+pub mod rpath;
 pub mod rvm_read;
 pub mod rvm_write;
 pub mod section;

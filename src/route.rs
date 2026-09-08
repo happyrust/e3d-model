@@ -229,7 +229,7 @@ pub enum StationVerdict {
 /// `Category::RouteMember` 回答的是“这件东西属于管路且要生成目录几何”；它不等于
 /// “这件东西切断管身”。设计 noun 同为 ATTA 的成员在 E3D 里分两种：
 ///
-/// - 目录 **`GTYP=ATTA`**（`/AVEVA-ATTA-SPEC/SUPP:ANY`、`/NPHS/SPEC/PIPE/BRAN` 这类管道
+/// - 目录 **`GTYP=ATTA/PCLA`**（`/AVEVA-ATTA-SPEC/SUPP:ANY`、`/NPHS/SPEC/PIPE/BRAN` 这类管道
 ///   支撑附着点）：E3D 的 TUBE 连续穿过它。ams7999 `/1RCV0101…/B1` 的 TUBE 2 = 801 mm 穿过
 ///   `/R342.062`，ams8000 `24384/26229` 的 TUBE 2 = 312.1 mm 穿过三只到 VALV。把它加入站点链
 ///   会把连续管拆段；附着点在中心线外时还会生成一来一回的重叠假管。
@@ -247,8 +247,8 @@ pub fn station_verdict(noun: &str, scom_gtyp: Option<&str>) -> StationVerdict {
         return StationVerdict::Station;
     }
     match scom_gtyp {
-        Some(gtyp) if gtyp.eq_ignore_ascii_case("ATTA") => StationVerdict::PassThrough,
-        Some(_) => StationVerdict::Station,
+        Some(gtyp) if gtyp.eq_ignore_ascii_case("ANCI") => StationVerdict::Station,
+        Some(_) => StationVerdict::PassThrough,
         None => StationVerdict::PassThroughUnresolved,
     }
 }
@@ -748,8 +748,8 @@ pub fn build_tube(from: &RoutePoint, to: &RoutePoint, outer_diameter: Option<f64
     }
 }
 
-/// 两端通径是否不一致。一致性不影响建管（半径按到达侧取），但要留痕：
-/// 通径突变处正是变径件该在而没在的地方。
+/// 两端通径是否不一致。调用方据槽位决定实体有效性；头槽位的不一致
+/// 由原生 RVM 对照确认只能保留诊断线。半径选择与此判定分开。
 pub fn bore_mismatch(from: &RoutePoint, to: &RoutePoint) -> bool {
     match (from.bore, to.bore) {
         (Some(a), Some(b)) => (a - b).abs() > f64::EPSILON,
@@ -761,7 +761,7 @@ pub fn bore_mismatch(from: &RoutePoint, to: &RoutePoint) -> bool {
 mod tests {
     use super::*;
 
-    /// 站点裁决看的是目录 `GTYP`，不是设计 noun：`GTYP=ATTA` 的附着点被 E3D 的 TUBE 穿过，
+    /// 站点裁决看的是目录 `GTYP`，不是设计 noun：`GTYP=ATTA/PCLA` 的附着点被 E3D 的 TUBE 穿过，
     /// `GTYP=ANCI` 的梯架支撑是站点；目录链走不通按穿过处理但要单列。
     #[test]
     fn station_verdict_follows_the_catalogue_gtyp_for_atta() {
@@ -771,6 +771,10 @@ mod tests {
         );
         assert_eq!(
             station_verdict("ATTA", Some("atta")),
+            StationVerdict::PassThrough
+        );
+        assert_eq!(
+            station_verdict("ATTA", Some("PCLA")),
             StationVerdict::PassThrough
         );
         assert_eq!(

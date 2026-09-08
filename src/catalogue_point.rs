@@ -270,6 +270,15 @@ fn catalogue_point_local_checked(
     component: &DbElement,
     number: u32,
 ) -> Result<Result<RoutePoint, CatalogueAxisFailure>, DbElementError> {
+    catalogue_point_local_checked_at(member, component, number, 0)
+}
+
+fn catalogue_point_local_checked_at(
+    member: &DbElement,
+    component: &DbElement,
+    number: u32,
+    depth: usize,
+) -> Result<Result<RoutePoint, CatalogueAxisFailure>, DbElementError> {
     let point = match point_numbered(component, number)? {
         Ok(point) => point,
         Err(failure) => return Ok(Err(failure)),
@@ -280,7 +289,7 @@ fn catalogue_point_local_checked(
     let local = match noun.as_str() {
         CARTESIAN_POINT => cartesian(&point, &env),
         "PTMI" => mixed(&point, &env),
-        _ => axial(&point, &env),
+        _ => axial(&point, &env, member, component, depth),
     };
     let (pos, dir) = match local {
         Ok(local) => local,
@@ -388,15 +397,7 @@ pub(crate) fn resolve_catalogue_axis(
             },
         );
     }
-    let payload = match words {
-        [3, number] => Some([*number]),
-        [count, rest @ ..] if *count as usize == rest.len() => match rest {
-            [3, number] => Some([*number]),
-            _ => None,
-        },
-        _ => None,
-    };
-    let Some([encoded_number]) = payload else {
+    let Some(encoded_number) = encoded_point_axis(words) else {
         return Ok(Err(CatalogueAxisFailure::NotAnAxis {
             words: words.to_vec(),
         }));
@@ -465,6 +466,14 @@ fn follow_catalogue_component(mut current: DbElement) -> Result<Option<DbElement
         if current.element_type()?.eq_ignore_ascii_case("SCOM") {
             return Ok(Some(current));
         }
+        // 结构 FITT 的 SPCO.CATR 可以直接落到 SFIT，而不是再经过 SCOM。
+        // SFIT 与 SCOM 对求值器暴露同一组 GMRE/PTRE/PARA 接口；以可解析的
+        // GMRE 作为组件终点，避免把这种合法直连误判成目录链断开。
+        match current.get_element("GMRE") {
+            Ok(Some(_)) => return Ok(Some(current)),
+            Ok(None) | Err(DbElementError::UnknownAttribute { .. }) => {}
+            Err(error) => return Err(error),
+        }
         let next = match current.get_element(CATALOGUE_REF) {
             Ok(Some(next)) => Some(next),
             // SELE 等选择节点可能出现在规格引用链中，但它们没有 CATR；这是链到此
@@ -526,11 +535,56 @@ fn point_number(point: &DbElement) -> Option<u32> {
 ///
 /// 两样缺一不可。轴解不出（`Pn` 那种指向另一个 P 点的形式，或未钉死的形状）
 /// 就整条弃掉——只有距离没有方向，落不成一个点。
-fn axial(point: &DbElement, env: &DbElementParamEnv) -> Result<(DVec3, DVec3), PointPart> {
+fn axial(
+    point: &DbElement,
+    env: &DbElementParamEnv,
+    member: &DbElement,
+    component: &DbElement,
+    depth: usize,
+) -> Result<(DVec3, DVec3), PointPart> {
     let axis = axis_words(point).ok_or(PointPart::Direction)?;
-    let dir = DVec3::from_array(axis_spec::direction(&axis, env).ok_or(PointPart::Direction)?);
+    let (origin, dir) = if let Some(dir) = axis_spec::direction(&axis, env) {
+        (DVec3::ZERO, DVec3::from_array(dir))
+    } else {
+        // Core's Pn axis uses another point's datum and direction.  It occurs in
+        // AMS piping components such as /GCMQ1J0JJ: P2 is encoded as [3,7]
+        // and must start at P7 before applying its own PDIS.  Treating this as
+        // an ordinary named axis drops an otherwise valid leave point.
+        const MAX_POINT_AXIS_DEPTH: usize = 16;
+        if depth >= MAX_POINT_AXIS_DEPTH {
+            return Err(PointPart::Direction);
+        }
+        let encoded = encoded_point_axis(&axis).ok_or(PointPart::Direction)?;
+        let (number, negated) = if encoded >= NEGATED_POINT_BASE {
+            (encoded - NEGATED_POINT_BASE, true)
+        } else {
+            (encoded, false)
+        };
+        let referenced = catalogue_point_local_checked_at(member, component, number, depth + 1)
+            .map_err(|_| PointPart::Direction)?
+            .map_err(|_| PointPart::Direction)?;
+        (
+            referenced.pos,
+            if negated {
+                -referenced.dir
+            } else {
+                referenced.dir
+            },
+        )
+    };
     let distance = number_of(point, "PDIS", env).ok_or(PointPart::Position)?;
-    Ok((dir * distance, dir))
+    Ok((origin + dir * distance, dir))
+}
+
+fn encoded_point_axis(words: &[u32]) -> Option<u32> {
+    match words {
+        [3, number] => Some(*number),
+        [count, rest @ ..] if *count as usize == rest.len() => match rest {
+            [3, number] => Some(*number),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// `PAXI` 的原始词。实现里两种数组形状都出现过，都收。

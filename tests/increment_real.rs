@@ -1386,6 +1386,275 @@ fn probe_chain_for_reparent() {
     }
 }
 
+/// 「连接 / 邻居」联动的取窗探针：找一个 **NOZZ 挪位 / 连接属性改动**的窗口。
+///
+/// 它要压的那条联动，在 gen-model 的联动更新分类表里是第 5 类
+/// （`gen-model/docs/2026-09-04_model-cascade-update-inventory.md` §1）：机制在
+/// `ref_rev` 通用反查里，但**设计件之间的联动一次都没被门守过**，本探针就是去找那道门的窗口。
+///
+/// 为什么它值一条自己的探针，而不是复用 [`probe_chain_for_cascade`]：BRAN 的头尾位置是从
+/// `HREF`/`TREF` 指向的 NOZZ 上取的，而 NOZZ 挂在 EQUI 子树里，**跟 BRAN 不在同一条 owner
+/// 链上**。NOZZ 一挪，BRAN 自己的记录一个字节都不会动——索引差分点不到它，
+/// `nearest_unit(NOZZ)` 上卷到的是 EQUI。变换级联走的是 owner 链**内**的后代，这条走的是
+/// 链**外**的引用，两者结构上就不是一件事。
+///
+/// 命中判据（打 ★ 的那一行）：窗口里有 NOZZ 候选、或任何候选的变更属性命中连接类属性，
+/// **而 `plan.regenerate_derived` 是空的**——路由容器一条都没进重算集，就是「接头动了、
+/// 管路没跟着动」。`PROBE_CONNECTION_ATTRS=HREF,TREF` 可以改判据里那张属性表。
+///
+/// 与另外三条探针一样只做 `collect_window` + `plan_update`，一件几何都不建，
+/// 并按 `PROBE_MAX_CANDIDATES` 跳过大窗口。
+///
+/// # 2026-09-04 全语料实测：**这条门本语料压不出来**
+///
+/// `PROBE_LIBS=ALL_DESI` 扫 **292 个 DESI 库**（7 s），结果：
+///
+/// | 数 | 含义 |
+/// |---:|---|
+/// | 44 | 连接改动窗口 |
+/// | **0** | 命中（★）——**每一个窗口都有路由容器进了重算集** |
+/// | **0** | NOZZ 自己的记录变过的窗口 |
+/// | **0** | 「名下有 NOZZ 的元素挪了位」的窗口 |
+///
+/// 而且 44 个窗口的形状高度一致：变的是 **BRAN 自己的 `HPOS` / `TPOS`**
+/// （例：ams8000 277→278 的 `24384/26281`、213→214 的 `24384/23257`）。
+/// 也就是说 **E3D 把接好之后的头尾位置回写在 BRAN 的记录里**——BRAN 因此是它自己的索引候选，
+/// 路由容器照常进重算集，「接头动了、管路没跟着动」这个形状在本语料里根本没有发生过。
+///
+/// 与 [`Shape::Reparented`] 那段是同一类结论：**没有语料窗口能把这条联动做成判别性验收**。
+///
+/// # 而 core 侧取证说这条分歧本来就不可达
+///
+/// 同日 ida-bridge 实读（`gen-model/docs/2026-09-04_model-cascade-update-inventory.md` §2.9）：
+/// **`HPOS`/`TPOS` 是存储属性，没有注册任何 get / put 伪属性插件**——core.dll 里 `ATT_HPOS`
+/// 只有一条 xref 且是初始化写点（`0x56d379a`），Core3D 的三个位置伪属性注册点
+/// （`sub_10425CD0` / `sub_105EF3F0` / `sub_1062CCE0`）一个都不碰它；写它的是
+/// `MDR_ApplicationManager::disconnectHead` / `disconnectTail` 的 `putAtt`，
+/// 读它的一路是普通 `getAtt`，含 `GFX_GraphicsManager::Update`。
+///
+/// 也就是说**画的那一版与存的那一版是同一个**，于是两头都堵死：E3D 回写了 → BRAN 记录变 →
+/// 我们照常重算；E3D 没回写 → 它自己也照陈旧值画 → 我们跟它画的一样。所以本探针留在这里是
+/// **回归**用的，不是欠一道门：真出现 ★，那才是需要重新看 core 的那一天。
+#[test]
+#[ignore = "逐环扫会话链，找 NOZZ 挪位 / 连接属性改动的窗口；run with --ignored --nocapture"]
+fn probe_chain_for_connection_change() {
+    use e3d_io::index::IndexCandidate;
+    use e3d_model::element_diff::diff_element;
+
+    if !fixtures_present() {
+        return;
+    }
+    let attlib = shared_attlib();
+    let cap = probe_max_candidates();
+    let watched = probe_connection_attrs();
+    for name in probe_libs() {
+        let db_file = Path::new(AMS_DIR).join(&name);
+        let Some(chain) = chain_of(&db_file) else {
+            println!("\n=== {name}: 开不了库，或链上只有一个会话 ===");
+            continue;
+        };
+        println!(
+            "\n=== {name}: 链 {} 环（新 → 旧），候选上限 {cap}，看这些属性 {:?} ===",
+            chain.len(),
+            watched,
+        );
+        let started = Instant::now();
+        let (mut hits, mut skipped) = (0usize, 0usize);
+        for pair in chain.windows(2) {
+            let (target_sesno, base_sesno) = (pair[0], pair[1]);
+            let window = match collect_window(&db_file, base_sesno, target_sesno) {
+                Ok(window) => window,
+                Err(error) => {
+                    println!("  {base_sesno}→{target_sesno}: 收窗口失败：{error}");
+                    continue;
+                }
+            };
+            // 接头挪位与改接管都是**改**，不是增删：两端都在的元素才谈得上「连到哪儿变了」。
+            if window.diff.tally.modified == 0 || window.diff.changes.len() > cap {
+                if window.diff.changes.len() > cap {
+                    skipped += 1;
+                }
+                continue;
+            }
+            let base_set = open_pinned(&attlib, &db_file, base_sesno);
+            let target_set = open_pinned(&attlib, &db_file, target_sesno);
+            let mut touched: Vec<(RefNo, String, String)> = Vec::new();
+            for change in &window.diff.changes {
+                let IndexCandidate::Modified { refno, .. } = change else {
+                    continue;
+                };
+                let Ok(diff) = diff_element(&base_set, &target_set, *refno) else {
+                    continue;
+                };
+                let hit: Vec<String> = diff
+                    .attributes
+                    .iter()
+                    .filter(|attr| watched.iter().any(|w| w.eq_ignore_ascii_case(attr)))
+                    .cloned()
+                    .collect();
+                let why = if diff.noun.eq_ignore_ascii_case("NOZZ") {
+                    "接头自己的记录变了".to_string()
+                } else if !hit.is_empty() {
+                    format!("连接属性变了: {}", hit.join(", "))
+                } else if diff.attributes.iter().any(|attr| {
+                    attr.eq_ignore_ascii_case("POS") || attr.eq_ignore_ascii_case("ORI")
+                }) && nozzle_count_below(&target_set, *refno) > 0
+                {
+                    // 这才是「链外引用」真正的形状：设备整体挪位，NOZZ 的**记录一个字节
+                    // 没动**（世界坐标是沿 owner 链折出来的），可连在它上面的 BRAN 头尾
+                    // 就在别处过期了。索引差分点不到 NOZZ，更点不到 BRAN。
+                    format!(
+                        "属主挪位（POS/ORI），名下 {} 个 NOZZ 跟着动、记录却没变",
+                        nozzle_count_below(&target_set, *refno)
+                    )
+                } else {
+                    continue;
+                };
+                touched.push((*refno, diff.noun.clone(), why));
+            }
+            if touched.is_empty() {
+                continue;
+            }
+            hits += 1;
+            let plan = plan_update(&base_set, &target_set, &window);
+            let routes = plan.regenerate_derived.len();
+            println!(
+                "  {} {base_sesno}→{target_sesno}: {} | 路由容器进重算集 {routes} 个",
+                if routes == 0 { "★" } else { " " },
+                plan.report.changes_line(),
+            );
+            for (refno, noun, why) in touched.iter().take(8) {
+                println!("      {refno} {noun} — {why}");
+            }
+            if touched.len() > 8 {
+                println!("      …… 另有 {} 条", touched.len() - 8);
+            }
+            if routes == 0 {
+                println!(
+                    "      ←★ 接头 / 连接属性动了，却没有任何路由容器进重算集：\
+                     这正是「连接联动」要压的窗口"
+                );
+            }
+        }
+        println!(
+            "  → {hits} 个连接改动窗口，{skipped} 环因候选超上限跳过，耗时 {:.1}s",
+            started.elapsed().as_secs_f64(),
+        );
+    }
+}
+
+/// `root` 子树里有几个 NOZZ（含 root 自己）。深度按 [`probe_max_candidates`] 之外的
+/// 固定上限兜住：设备子树是浅的，走不通的库不该把探针挂死。
+fn nozzle_count_below(set: &Arc<DbSet>, root: RefNo) -> usize {
+    let mut found = 0usize;
+    let mut stack = vec![(set.element(root), 0usize)];
+    let mut visited = 0usize;
+    while let Some((el, depth)) = stack.pop() {
+        visited += 1;
+        if visited > 4096 || depth > 12 {
+            break;
+        }
+        let Ok(members) = el.members() else { continue };
+        for member in members {
+            if member
+                .element_type()
+                .is_ok_and(|noun| noun.eq_ignore_ascii_case("NOZZ"))
+            {
+                found += 1;
+            }
+            stack.push((member, depth + 1));
+        }
+    }
+    found
+}
+
+/// [`probe_chain_for_connection_change`] 盯的连接类属性。口径抄自 gen-model
+/// `model_impact::DEPENDENCY_CASCADE_ATTR_NAMES` 里管路连接那一组（`HREF`…`TBOR`）。
+fn probe_connection_attrs() -> Vec<String> {
+    const DEFAULT: &[&str] = &[
+        "HREF", "TREF", "CREF", "CONN", "HPOS", "TPOS", "HDIR", "TDIR", "HBOR", "TBOR", "ARRI",
+    ];
+    match std::env::var("PROBE_CONNECTION_ATTRS") {
+        Ok(list) if !list.trim().is_empty() => list
+            .split(',')
+            .map(|attr| attr.trim().to_ascii_uppercase())
+            .filter(|attr| !attr.is_empty())
+            .collect(),
+        _ => DEFAULT.iter().map(|attr| attr.to_string()).collect(),
+    }
+}
+
+/// 目录库（CATA）到底有没有可用的窗口——`CATA → 引用它的 DESI 根` 那条反查
+/// （gen-model 联动更新分类表第 4 类、09-02 计划 P1-4）要建验收门，第一件事是看语料里
+/// **有没有一个目录库会话前移过**。今天的生产行为是：目录会话一动，`ModelTarget.catalogue`
+/// 指纹失配 → 那个库**全部**根重算；P1-4 要把它换成「只重算引用了变动目录件的根」。
+/// 没有窗口，那道门连红都红不起来。
+///
+/// 逐个目录库打印链长；链 ≥ 2 的库再收一次最新窗口，报候选数与三态计数——
+/// 有候选才谈得上「变了哪些目录件」，P1-4 的反查要吃的正是那份集合。
+#[test]
+#[ignore = "普查目录库的会话链，看 CATA→DESI 反查有没有可用窗口；run with --ignored --nocapture"]
+fn probe_catalogue_chains() {
+    if !fixtures_present() {
+        return;
+    }
+    let resolver = shared_resolver();
+    let mut catalogues: Vec<(u32, PathBuf)> = resolver
+        .discovered()
+        .iter()
+        .filter(|db| db.db_type == "CATA")
+        .map(|db| (db.dbno, db.file.clone()))
+        .collect();
+    catalogues.sort();
+    catalogues.dedup();
+    println!("\n=== 扫到 {} 个 CATA 库 ===", catalogues.len());
+    let (mut with_window, mut single) = (0usize, 0usize);
+    for (dbno, file) in &catalogues {
+        let name = file
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let Some(chain) = chain_of(file) else {
+            single += 1;
+            continue;
+        };
+        with_window += 1;
+        // 默认只看最新一环（普查用）；`PROBE_CATA_ALL_WINDOWS=1` 走完整条链——
+        // 「改一个目录件」那种小窗口通常**不在**链头，链头多半是一次性导入。
+        let links: Vec<&[u32]> = if std::env::var_os("PROBE_CATA_ALL_WINDOWS").is_some() {
+            chain.windows(2).collect()
+        } else {
+            vec![&chain[..2]]
+        };
+        println!("  {name} (dbno {dbno}): 链 {} 环", chain.len());
+        for pair in links {
+            let (target_sesno, base_sesno) = (pair[0], pair[1]);
+            match collect_window(file, base_sesno, target_sesno) {
+                Ok(window) => println!(
+                    "      {base_sesno}→{target_sesno} 候选 {}（+{} ~{} -{}）{}",
+                    window.diff.changes.len(),
+                    window.diff.tally.inserted,
+                    window.diff.tally.modified,
+                    window.diff.tally.deleted,
+                    // 「只改了个位数件」正是 P1-4 那道门要的形状：全量重算 vs 只重算引用者，
+                    // 差得出数来。**整窗候选**都要小——只卡增删会把 8 万个 Modified 的
+                    // 导入窗口也标成小改动。
+                    if window.diff.tally.modified > 0 && window.diff.changes.len() <= 50 {
+                        "  ←★ 小改动窗口，P1-4 的门可以建在这里"
+                    } else {
+                        ""
+                    },
+                ),
+                Err(error) => println!("      {base_sesno}→{target_sesno} 收不了：{error}"),
+            }
+        }
+    }
+    println!(
+        "  → {with_window} 个目录库有 ≥2 环（可以造窗口），{single} 个只有一环（一次性导入，\
+         这条反查在它们身上永远压不出来）"
+    );
+}
+
 /// 逐环全量生成，把一整条会话链上的模型件数画出来。
 ///
 /// 二分只交得出**一个**边界，挑不了「我要一个有插入的窗口」。链短的库（ams1112

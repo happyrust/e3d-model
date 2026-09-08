@@ -24,18 +24,24 @@ use crate::catalogue::{CatalogueMeshCache, model_catalogue_member_with_cache, re
 use crate::category::{Category, CompositeFamily, Prim, classify};
 use crate::discretise::{flatten_ring, has_core3d_skipped_link};
 use crate::extrusion_reuse::{ExtrusionVariant, cached_extrusion};
-use crate::polyhedron::{PolyhedronError, polyhedron_faces, polyhedron_solid};
+use crate::polyhedron::{
+    PolyhedronError, legacy_polygon_panels, polyhedron_faces, polyhedron_solid,
+};
 use crate::primitive_instance::{
-    PrimitiveBuild, PrimitiveInstance, instantiate_box, instantiate_cylinder,
+    PrimitiveBuild, PrimitiveInstance, instantiate_box, instantiate_centered_cylinder,
 };
 use crate::profile::{LoopProfile, ProfileError, loop_profile};
+use crate::section::{
+    SectionChain, evaluate_section_profile, section_catalogue, section_cut_planes,
+    section_local_solid, section_placement, spine_path, spine_swept_solid,
+};
 use crate::solid::{
-    MANIFOLD_NUDGE_MM, SolidError, circ_torus_solid, cleanup_floor_boolean_components,
-    csg_cylinder_solid_with_segments, cylinder_segments, dish_knuckle_radius,
-    elliptical_dish_solid_with_segments, extrude_rings, inflate_about_center,
+    MANIFOLD_NUDGE_MM, SolidError, circ_torus_solid, circ_torus_solid_with_segments,
+    cleanup_floor_boolean_components, csg_cylinder_solid_with_segments, cylinder_segments,
+    dish_knuckle_radius, elliptical_dish_solid_with_segments, extrude_rings, inflate_about_center,
     negative_cylinder_segments, negative_part_rev_segments, placed, pyramid_solid,
-    rect_torus_solid, rect_torus_solid_with_segments, revolve_rings_inflated,
-    slope_ended_cylinder_solid_with_segments, snout_segments, snout_solid,
+    rect_torus_solid, rect_torus_solid_with_segments, revolve_rings_profile_faceted_inflated,
+    slope_ended_cylinder_solid_with_segments, snout_segments, snout_solid_with_segments,
     spherical_dish_solid_with_segments, subtract_negatives,
 };
 use crate::transform::world_matrix;
@@ -71,6 +77,22 @@ pub enum ModelError {
         what: &'static str,
         detail: String,
     },
+    /// 型材截面求值那一路的错（`crate::section`）。装箱是因为
+    /// [`crate::section::SectionError`] 自己也带一个 `ModelError`（截面要问表现级），
+    /// 两个类型互相内嵌，不装箱算不出大小。
+    #[error(transparent)]
+    Section(Box<crate::section::SectionError>),
+}
+
+impl From<crate::section::SectionError> for ModelError {
+    fn from(error: crate::section::SectionError) -> Self {
+        // 截面那侧包着的本来就是 ModelError（表现级那一条）时原样还回来，
+        // 别套成 `Section(Model(...))` 让报告多一层壳。
+        match error {
+            crate::section::SectionError::Model(inner) => inner,
+            other => ModelError::Section(Box::new(other)),
+        }
+    }
 }
 
 /// Core3D validates primitive dimensions before asking libgm for a body. A
@@ -184,11 +206,14 @@ pub struct GeneratedElement {
     /// 来源元素保持不变；派生几何也不得用伪 refno 覆盖它。
     pub refno: RefNo,
     pub noun: String,
+    /// The route endpoints are present, but E3D rejects this implied tube as a
+    /// solid. Consumers keep it as a dashed diagnostic centre line.
+    pub is_invalid_tubi: bool,
     pub name: Option<String>,
     /// 世界系实体，负几何已扣。
     pub solid: Manifold,
-    /// RVM-compatible, non-boolean component list.  Present only when E3D
-    /// preserves touching catalogue primitives as separate display meshes.
+    /// RVM-compatible, non-boolean component list. Present for visible catalogue
+    /// programs because E3D preserves their primitives as separate display meshes.
     pub parts: Option<Vec<Manifold>>,
     /// 本元素局部系到世界系的刚体变换。实体里的 SJUS 下移保留在局部几何中，
     /// 因而把最终网格乘这个矩阵的逆即可得到与 E3D facet 可比的元素局部坐标。
@@ -230,10 +255,29 @@ impl GeneratedElement {
     }
 }
 
+/// 「有依据地没出几何」的分类。报告按它分账。
+///
+/// 分类跟着结论一起从这里交出去，而不是让报告去猜 `reason` 那句话——判据写第二份，
+/// 两份迟早分岔，而分岔的表现一律是「两边的账各自都平、数对不上」
+/// （见 [`crate::category::is_model_unit`] 文档里那次 SBFI 漏件）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkipKind {
+    /// E3D 同样不出几何的常规无形状：零高、尺寸退化、目录侧没有可见图元。
+    NoShape,
+    /// 型材求不到截面（无 `SPRE`、或 GMSS 成员全被显示筛掉）：E3D 只画一条中心线
+    /// （`gen-model/test_data/rvm/1RX03-MSUP-E0110.rvm` 里 8 根 MSUP 杆件全是 `Line`）。
+    ///
+    /// 与 [`SkipKind::NoShape`] 分开：那条是「E3D 也什么都不画」，这条是**E3D 画了一条线
+    /// 而我们一条都还不画**——账上混在一起，中心线这笔欠款就永远看不见。
+    CentrelineOnly,
+    /// 目录链断：引用悬空、库没开、缺 `CATR` / `GSTR`。数据或配置问题，要点名。
+    CatalogueChainBroken,
+}
+
 /// 建模结论：出了实体 / 有依据地没出。
 pub enum Modeled {
     Solid(Box<GeneratedElement>),
-    Skipped { reason: String },
+    Skipped { kind: SkipKind, reason: String },
 }
 
 /// 对一个**正实体**类别的元素建模。调用方负责用 [`classify`] 先分好类；
@@ -253,6 +297,7 @@ pub fn model_element_with_cache(
     category: Category,
     cache: &mut CatalogueMeshCache,
 ) -> Result<Modeled, ModelError> {
+    let _timing = crate::perf::elmodl_scope();
     // 路由成员的实体不是设计侧正体，而是目录 GMRE 程序求值的产物——与全量管线
     // pipeline 的 RouteMember 臂共用同一个 [`model_catalogue_member_with_cache`]。
     // 这条臂必须存在的理由与 `category::is_model_unit` 文档里那次 SBFI 事故同型：
@@ -267,6 +312,7 @@ pub fn model_element_with_cache(
         return Ok(match build.generated {
             Some(generated) => Modeled::Solid(Box::new(generated)),
             None => Modeled::Skipped {
+                kind: SkipKind::NoShape,
                 reason: format!(
                     "目录侧无可见几何，E3D 同样不出几何：{}（局部失败 {} 条）",
                     build
@@ -285,6 +331,7 @@ pub fn model_element_with_cache(
     if matches!(category, Category::Composite(CompositeFamily::CableTray)) {
         if !noun.eq_ignore_ascii_case("CTRAY") {
             return Ok(Modeled::Skipped {
+                kind: SkipKind::NoShape,
                 reason: format!("{noun} 是桥架件，只算放置，几何在它下面的 CTRAY 上"),
             });
         }
@@ -292,6 +339,7 @@ pub fn model_element_with_cache(
         return Ok(match build.generated {
             Some(generated) => Modeled::Solid(Box::new(generated)),
             None => Modeled::Skipped {
+                kind: SkipKind::NoShape,
                 reason: format!(
                     "目录链（SPRE→…→SCOM→GMRE）没有产出可见几何：{}（局部失败 {} 条）",
                     build.no_shape.unwrap_or_else(|| "原因未记".to_string()),
@@ -305,6 +353,7 @@ pub fn model_element_with_cache(
     // Any boolean operand stays at real dimensions: unit scaling can differ by
     // a few ulps and coincident-face CSG may amplify that into another topology.
     let mut negatives = Vec::new();
+    let gate_timing = crate::perf::neg_gate_scope();
     collect_negatives(el, &mut negatives)?;
     // DRWAND 的表现级门先过（Core3D `csg_gml4/DRWAND` 0x1008BEE0：对负体自己跑
     // `rules/STYSET` 后判 `LEVE.lo <= level <= LEVE.hi`）。被门挡下的负体不是失败，
@@ -327,8 +376,16 @@ pub fn model_element_with_cache(
         });
         false
     });
+    drop(gate_timing);
     let had_negative_members = !negatives.is_empty();
 
+    // SCTN 的局部系不是它自己的 POS/ORI——那两个属性它根本没存（实测 `24381/47163`
+    // 只有 POSS/POSE/DRNS/DRNE/BANG/JUSL），标架是 GTSTDT 从 POSS→POSE + BANG +
+    // JUSL p-line 推出来的，要在**属主**世界系上右乘。拿到值的那一路在这里留一手，
+    // 下面算 `world` 时用。
+    let mut section_frame: Option<DMat4> = None;
+
+    let local_timing = crate::perf::local_solid_scope();
     let (local, primitive_instance) = match category {
         // 与基本体同一条实例化边界：正体一旦有负体要扣，就按布尔参与者烘焙直建。
         Category::LoopExtrusion => match extrusion_local_solid(
@@ -343,12 +400,14 @@ pub fn model_element_with_cache(
             Ok(LocalSolid::Solid(s)) => (s, None),
             Ok(LocalSolid::ZeroHeight(h)) => {
                 return Ok(Modeled::Skipped {
+                    kind: SkipKind::NoShape,
                     reason: format!("HEIG={h}（≈0，E3D 同样不出几何）"),
                 });
             }
             Err(error) => {
                 if let Some(reason) = profile_no_shape_reason(&error) {
                     return Ok(Modeled::Skipped {
+                        kind: SkipKind::NoShape,
                         reason: format!("{reason}（无正轮廓，Core3D 不产几何）"),
                     });
                 }
@@ -361,6 +420,7 @@ pub fn model_element_with_cache(
                 Err(error) => {
                     if let Some(reason) = primitive_no_shape_reason(&error) {
                         return Ok(Modeled::Skipped {
+                            kind: SkipKind::NoShape,
                             reason: format!("{reason}（Core3D 尺寸校验不产几何）"),
                         });
                     }
@@ -371,11 +431,32 @@ pub fn model_element_with_cache(
         }
         Category::Revolution => (revolution_local_solid(el, &noun, 0.0, &mut notes)?, None),
         Category::Polyhedron => (polyhedron_local_solid(el, &mut notes)?, None),
+        // 布局式扶手（`crate::handrail`）：判据在 `category::is_model_unit` 的
+        // `Composite(Structural) => HANDRA`，这里是它的执行臂；管线的同名臂与增量上卷
+        // 都走到这里。详图式（几何在 RAIL/KICKPL/HRPOST 成员上）与没东西可画的两种结局
+        // 都是「E3D 在 HANDRA 这一层同样不画」，落 `Skipped(NoShape)`。
+        Category::Composite(CompositeFamily::Structural) if noun == "HANDRA" => {
+            match crate::handrail::handrail_local_solid(el, &mut notes)? {
+                crate::handrail::HandrailBuild::Solid(solid) => (solid, None),
+                crate::handrail::HandrailBuild::Detailed(reason)
+                | crate::handrail::HandrailBuild::NoGeometry(reason) => {
+                    return Ok(Modeled::Skipped {
+                        kind: SkipKind::NoShape,
+                        reason: if notes.is_empty() {
+                            reason
+                        } else {
+                            format!("{reason}; {}", notes.join("; "))
+                        },
+                    });
+                }
+            }
+        }
         Category::Catalog if noun == "SBFI" => match sbfitting_local_solid(el, &mut notes) {
             Ok(solid) => (solid, None),
             Err(error) => {
                 if let Some(reason) = sbfitting_no_shape_reason(&error) {
                     return Ok(Modeled::Skipped {
+                        kind: SkipKind::NoShape,
                         reason: format!("{reason}（DESP 没带套管尺寸，E3D 同样不出几何）"),
                     });
                 }
@@ -383,20 +464,115 @@ pub fn model_element_with_cache(
             }
         },
         Category::Catalog if noun == "WALL" => (wall_local_solid(el, &mut notes)?, None),
+        // 详图式扶手的栏杆与踢脚板：目录截面沿属主 HANDRA 的 RPATH 扫一段
+        // （`crate::handrail`，recheck-4 §五 W4-1 施工图·续 七）。截面链与 SCTN 同一条，
+        // 三种结局也同口径，只是没有 FITT 那一支——`RAIL`/`KICKPL` 底下不挂配件。
+        Category::Catalog if crate::handrail::is_detailed_item(&noun) => {
+            match crate::handrail::detailed_item_local_solid(el, &mut notes)? {
+                crate::handrail::RailBuild::Solid(solid) => (solid, None),
+                crate::handrail::RailBuild::CentrelineOnly(reason) => {
+                    return Ok(Modeled::Skipped {
+                        kind: SkipKind::CentrelineOnly,
+                        reason: format!("{reason}; {}", notes.join("; ")),
+                    });
+                }
+                crate::handrail::RailBuild::ChainBroken(reason) => {
+                    return Ok(Modeled::Skipped {
+                        kind: SkipKind::CatalogueChainBroken,
+                        reason: format!("{reason}; {}", notes.join("; ")),
+                    });
+                }
+            }
+        }
+        Category::Catalog if is_section_like(&noun) => match section_body(el, &mut notes)? {
+            SectionBody::Solid { solid, frame } => {
+                section_frame = Some(frame);
+                (solid, None)
+            }
+            SectionBody::CentrelineOnly(reason) => {
+                let fitting_parts = section_fitting_parts_of(&noun, el, cache, &mut notes)?;
+                if fitting_parts.is_empty() {
+                    return Ok(Modeled::Skipped {
+                        kind: SkipKind::CentrelineOnly,
+                        reason: format!("{reason}; {}", notes.join("; ")),
+                    });
+                }
+                notes.push(format!("{noun} 本体仅中心线：{reason}；保留 FITT 可见几何"));
+                let solid = match fitting_parts.as_slice() {
+                    [only] => only.clone(),
+                    many => Manifold::compose(many),
+                };
+                return Ok(Modeled::Solid(Box::new(GeneratedElement {
+                    geometry_id: GeometryId::Element {
+                        refno: el.refno().to_string(),
+                    },
+                    refno: el.refno(),
+                    noun,
+                    is_invalid_tubi: false,
+                    name: el.stored_name()?,
+                    solid,
+                    parts: Some(fitting_parts),
+                    world: world_matrix(el)?,
+                    primitive_instance: None,
+                    negatives_applied: 0,
+                    negatives_skipped: skipped,
+                    notes,
+                })));
+            }
+            SectionBody::ChainBroken(reason) => {
+                let fitting_parts = section_fitting_parts_of(&noun, el, cache, &mut notes)?;
+                if fitting_parts.is_empty() {
+                    return Ok(Modeled::Skipped {
+                        kind: SkipKind::CatalogueChainBroken,
+                        reason: format!("{reason}; {}", notes.join("; ")),
+                    });
+                }
+                notes.push(format!(
+                    "{noun} 本体目录链断开：{reason}；保留 FITT 可见几何"
+                ));
+                let solid = match fitting_parts.as_slice() {
+                    [only] => only.clone(),
+                    many => Manifold::compose(many),
+                };
+                return Ok(Modeled::Solid(Box::new(GeneratedElement {
+                    geometry_id: GeometryId::Element {
+                        refno: el.refno().to_string(),
+                    },
+                    refno: el.refno(),
+                    noun,
+                    is_invalid_tubi: false,
+                    name: el.stored_name()?,
+                    solid,
+                    parts: Some(fitting_parts),
+                    world: world_matrix(el)?,
+                    primitive_instance: None,
+                    negatives_applied: 0,
+                    negatives_skipped: skipped,
+                    notes,
+                })));
+            }
+        },
         other => {
             return Ok(Modeled::Skipped {
+                kind: SkipKind::NoShape,
                 reason: format!("类别 {other:?} 不产正实体"),
             });
         }
     };
+    drop(local_timing);
 
-    let world = if category == Category::Catalog && noun == "SBFI" {
+    let world = if let Some(frame) = section_frame {
+        world_matrix(el)? * frame
+    } else if category == Category::Catalog && noun == "SBFI" {
         world_matrix(el)? * sbfitting_catalogue_alignment(el)?
     } else {
         world_matrix(el)?
     };
+    let place_timing = crate::perf::place_world_scope();
     let pos_world = placed(&local, world);
+    drop(place_timing);
 
+    let negatives_timing = crate::perf::negatives_scope();
     // 负几何（LNEGIT）：直属负体 + 直属 CMPF 里的深层负体。
     // 刀的线性尺寸以宿主尺度封顶（E3D 拿 3.2e14 mm 当「无限长」哨兵，Manifold 的
     // epsilon 跟运算数包围盒走，一把哨兵刀会让整组布尔在 320 mm 精度下失稳）。
@@ -437,9 +613,14 @@ pub fn model_element_with_cache(
     if noun == "FLOOR" {
         solid = cleanup_floor_boolean_components(solid, negatives_applied);
     }
-    if solid.is_empty() || solid.num_tri() == 0 {
+    drop(negatives_timing);
+    let materialize_timing = crate::perf::materialize_scope();
+    let is_empty = solid.is_empty() || solid.num_tri() == 0;
+    drop(materialize_timing);
+    if is_empty {
         if had_negative_members {
             return Ok(Modeled::Skipped {
+                kind: SkipKind::NoShape,
                 reason: format!(
                     "应用 {negatives_applied} 个负体后可见实体为空（Core3D 同样无可显示几何）"
                 ),
@@ -450,15 +631,32 @@ pub fn model_element_with_cache(
         }));
     }
 
+    // SCTN 的 FITT 是 graphicsBehaviour=1 属主下面的数据，不是独立模型单元；
+    // 全量遍历会有意剪掉它，增量也会把 FITT 的变化上卷到 SCTN。因此必须在 SCTN
+    // builder 内复用目录求值器，并把可见目录图元作为同一根的组件保留下来。
+    let parts = if noun == "SCTN" {
+        let mut section_parts = vec![solid.clone()];
+        section_parts.extend(section_fitting_parts(el, cache, &mut notes)?);
+        if section_parts.len() > 1 {
+            solid = Manifold::compose(&section_parts);
+            Some(section_parts)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     Ok(Modeled::Solid(Box::new(GeneratedElement {
         geometry_id: GeometryId::Element {
             refno: el.refno().to_string(),
         },
         refno: el.refno(),
         noun,
+        is_invalid_tubi: false,
         name: el.stored_name()?,
         solid,
-        parts: None,
+        parts,
         world,
         primitive_instance: (!had_negative_members)
             .then_some(primitive_instance)
@@ -467,6 +665,170 @@ pub fn model_element_with_cache(
         negatives_skipped: skipped,
         notes,
     })))
+}
+
+/// 走 [`section_body`] 那条截面链的 noun：`SPRE` 目录截面挤成直段、两端切平面。
+///
+/// `SCTN` 与 `GENSEC` 是原住民；`STWALL`（直墙）2026-09-06 按 recheck-4 §十接进来——
+/// 语料里它的形状与 SCTN 逐条同型：`SPRE → SPRO`（`PX/PY = ATTRIB DESP[n]`，按设计件
+/// 自己的 `DESP` 参数化的矩形）、`POSS → POSE`、`DRNS`/`DRNE` 端向。它**不是** `WALL`：
+/// `WALL` 没有 SPRE，是 SPINE 弧上扫 DESP 矩形（[`wall_local_solid`]）。
+///
+/// 这份名单与 [`crate::category::is_model_unit`] 的 `Catalog` 臂必须逐项对齐：
+/// 那边多认一个、这边没有臂，落到 `other` 臂是 `Skipped(NoShape)`，账面上看着像
+/// 「E3D 也不出几何」，实际是没接线。
+fn is_section_like(noun: &str) -> bool {
+    matches!(noun, "SCTN" | "GENSEC" | "STWALL")
+}
+
+/// 截面链本体建不出来时，还要不要把成员 FITT 的目录几何留下。
+///
+/// `SCTN` 的 FITT 是 graphicsBehaviour=1 属主下面的数据（见 [`section_fitting_parts`]），
+/// 本体退化也要保留它们。`STWALL` 的成员（ams1112：FITT 86 / CMFI 3 / SNOD 2）**不**并进
+/// 本体：E3D 的 RVM 导出里 `STWALL n of CWALL /1RS-WF03-W-C-RR001` 每条都是 6 面 24 顶点
+/// 的裸盒（`test_data/rvm/1RS-WF03-W-C-RR001.rvm`），配件没有随墙一起画出来。
+/// 把 FITT 并进去会让对拍从 `exact` 变 `off`，而看起来像是墙本身算错了。
+fn section_fitting_parts_of(
+    noun: &str,
+    section: &DbElement,
+    cache: &mut CatalogueMeshCache,
+    notes: &mut Vec<String>,
+) -> Result<Vec<Manifold>, ModelError> {
+    if noun == "STWALL" {
+        return Ok(Vec::new());
+    }
+    section_fitting_parts(section, cache, notes)
+}
+
+/// [`section_body`] 的三种结局。三条各有各的账，混成一句话就分不出
+/// 「E3D 画了中心线我们没画」与「目录链根本走不通」。
+enum SectionBody {
+    /// 切完两端的裸梁 + 它的局部标架（要在属主世界系上右乘）。
+    Solid {
+        solid: Manifold,
+        frame: DMat4,
+    },
+    CentrelineOnly(String),
+    ChainBroken(String),
+}
+
+/// 求值 SCTN 直属 FITT 的目录几何。FITT 位于 graphicsBehaviour=1 容器之下，
+/// 所以只从 SCTN builder 进入；返回的每一块已经处于世界坐标系。
+fn section_fitting_parts(
+    section: &DbElement,
+    cache: &mut CatalogueMeshCache,
+    notes: &mut Vec<String>,
+) -> Result<Vec<Manifold>, ModelError> {
+    let mut parts = Vec::new();
+    let section_world = world_matrix(section)?;
+    for member in section.members()? {
+        if member.element_type()? != "FITT" {
+            continue;
+        }
+        let build = model_catalogue_member_with_cache(&member, cache)?;
+        for diagnostic in build.diagnostics {
+            notes.push(format!("FITT {}: {diagnostic}", member.refno()));
+        }
+        match build.generated {
+            Some(generated) => {
+                let fitting_world =
+                    section_world * crate::section::section_fitting_placement(section, &member)?;
+                let correction = fitting_world * generated.world.inverse();
+                match generated.parts {
+                    Some(fitting_parts) => parts.extend(
+                        fitting_parts
+                            .into_iter()
+                            .map(|part| placed(&part, correction)),
+                    ),
+                    None => parts.push(placed(&generated.solid, correction)),
+                }
+            }
+            None => notes.push(format!(
+                "FITT {} 无可见目录几何：{}",
+                member.refno(),
+                build.no_shape.unwrap_or_else(|| "原因未记".to_string())
+            )),
+        }
+    }
+    Ok(parts)
+}
+
+/// SCTN 直段（G1-1a 第 2 + 3 步）：目录截面 → GTSTDT 标架 → 挤出 → 两端切平面。
+///
+/// 四段对标 `DB_Sctn::DB_makeCSG@0x10738C30` 的前两个阶段（调试串 `profile` → `xsec1`）：
+/// 截面子树逐 GMSS 成员建体并集，再由 `DB_Scan_to_GML` 槽 28 拿两张切面切。
+///
+/// **第 4 阶段（负体）还没接**：JOIS/JOIE 关节负体与成员链上的 FITT / CMFI(+SBFI) /
+/// SNOD→SJOI / SCOJ→SUBJ 都要先有 G1-1c 的目录路（负几何自己也走 `NGMR → NGMS`），
+/// 排在它之后。所以现在这根梁是「没扣关节与配件的毛坯」，RVM 对拍时端部会偏胖。
+fn section_body(el: &DbElement, notes: &mut Vec<String>) -> Result<SectionBody, ModelError> {
+    let catalogue = match section_catalogue(el)? {
+        SectionChain::NoSpre => {
+            return Ok(SectionBody::CentrelineOnly(
+                "无 SPRE：E3D 只画中心线，不出实体".to_string(),
+            ));
+        }
+        SectionChain::Broken { hop, at, why } => {
+            return Ok(SectionBody::ChainBroken(format!(
+                "SPRE 链第 {hop} 跳断在 {at}：{why}"
+            )));
+        }
+        SectionChain::Resolved(catalogue) => catalogue,
+    };
+    let profile = evaluate_section_profile(el, &catalogue)?;
+    notes.extend(profile.notes.iter().cloned());
+    if profile.is_empty() {
+        return Ok(SectionBody::CentrelineOnly(
+            "目录截面一个成员都出不了形状（全被显示筛掉或是空占位），E3D 同样只画中心线"
+                .to_string(),
+        ));
+    }
+    // SCTN 走 `POSS→POSE` + `DRNS`/`DRNE` 斜切；GENSEC 没有这四条属性，路径在 SPINE 上
+    // （直段 + THRU/FILL/CENT 弧），截面沿路径扫掠（`DB_Gensec@0x10730090` /
+    // `sub_107318E0`，见 [`crate::section::spine_swept_solid`]）。截面链两边共用。
+    if el.element_type()? == "GENSEC" {
+        let Some(path) = spine_path(el)? else {
+            return Ok(SectionBody::CentrelineOnly(
+                "没有 SPINE：E3D 同样不出实体".to_string(),
+            ));
+        };
+        if path.segments.is_empty() {
+            return Ok(SectionBody::CentrelineOnly(format!(
+                "SPINE 建不出任何一段（E3D 同样报错不出实体）：{}",
+                path.problems.join("；")
+            )));
+        }
+        notes.extend(path.problems.iter().cloned());
+        if path.has_arc() {
+            notes.push(format!(
+                "GENSEC 曲线扫掠：{} 段（弧型 {}）",
+                path.segments.len(),
+                path.curve_types.join(",")
+            ));
+        }
+        let bang_deg = el.get_double("BANG")?.unwrap_or(0.0);
+        // 实体已在 GENSEC 自身局部系里（SPINE 点经 SPINE 的 POS/ORI 折算），标架取单位阵。
+        return match spine_swept_solid(&profile, &path, bang_deg, notes)? {
+            Some(solid) => Ok(SectionBody::Solid {
+                solid,
+                frame: DMat4::IDENTITY,
+            }),
+            None => Ok(SectionBody::CentrelineOnly(
+                "截面折线化 / 沿 SPINE 扫掠之后没有实体".to_string(),
+            )),
+        };
+    }
+    let placement = section_placement(el, &profile)?;
+    let cuts = section_cut_planes(el, &placement)?;
+    match section_local_solid(&profile, &placement, &cuts, notes)? {
+        Some(solid) => Ok(SectionBody::Solid {
+            solid,
+            frame: placement.local,
+        }),
+        None => Ok(SectionBody::CentrelineOnly(
+            "截面折线化 / 挤出 / 端切之后没有实体".to_string(),
+        )),
+    }
 }
 
 /// Build a design WALL from its SPINE.  The wall profile is the catalogue
@@ -572,16 +934,55 @@ fn wall_local_solid(el: &DbElement, notes: &mut Vec<String>) -> Result<Manifold,
             ),
         }));
     }
-    let torus = rect_torus_solid(inner, radius, height, sweep.to_degrees())?;
+    // WALL is emitted as a baked FacetGroup. Core3D builds the curved path
+    // through the profile tessellator (10 mm chord grid), rather than the
+    // 0.5 mm analytic-primitive grid used by RTOR. RR001 WALL 2 therefore has
+    // 15 equal sweep intervals and WALL 4 has three.
+    let sweep_deg = sweep.to_degrees();
+    let sweep_segments = negative_part_rev_segments(radius, sweep_deg);
+    let mut torus =
+        rect_torus_solid_with_segments(inner, radius, height, sweep_deg, sweep_segments)?;
     let local = DMat4::from_translation(DVec3::new(center.x, center.y, height * 0.5))
         * DMat4::from_rotation_z(a0);
+    torus = placed(&torus, local);
+
+    // ACC_MDR_CSGWall starts an unjoined short CURVE with its default profile
+    // Y direction (global +Y), then rotates the following curve profiles onto
+    // the radial direction. The transition is a ruled triangular end piece.
+    // Core3D's `ACC_CSGWallJoiner::calculateYDir` initializes that direction to
+    // (0,+1); RR001 WALL 4 is the three-interval specimen exercising this path.
+    if sweep_segments == 3 {
+        if let Some(profile) = default_wall_start_wedge(points[0], center, inner, thickness) {
+            let wedge = extrude_rings(vec![profile], height)?;
+            torus = &torus + &wedge;
+        }
+    }
     notes.push(format!(
         "WALL circular SPINE center=({:.6},{:.6}) radius={radius:.6} sweep={:.6}deg",
         center.x,
         center.y,
         sweep.to_degrees()
     ));
-    Ok(placed(&torus, local))
+    Ok(torus)
+}
+
+fn default_wall_start_wedge(
+    outer_start: DVec3,
+    center: DVec3,
+    inner_radius: f64,
+    thickness: f64,
+) -> Option<Vec<[f64; 2]>> {
+    let radial = (outer_start - center).normalize_or_zero();
+    if radial.y.abs() <= 1e-9 {
+        return None;
+    }
+    let inner_start = center + radial * inner_radius;
+    let default_start = outer_start - DVec3::Y * (thickness / radial.y);
+    Some(vec![
+        [outer_start.x, outer_start.y],
+        [inner_start.x, inner_start.y],
+        [default_start.x, default_start.y],
+    ])
 }
 
 fn circular_spine_geometry(points: &[DVec3]) -> Result<(DVec3, f64, f64, f64), ModelError> {
@@ -790,9 +1191,13 @@ fn sbfitting_local_solid(el: &DbElement, notes: &mut Vec<String>) -> Result<Mani
 /// SBFI's facet coordinates are catalogue coordinates. `ZDIR` is the catalogue
 /// Z axis expressed in the design element frame; E3D completes the right-handed
 /// frame from the design Z-up direction. For 17496/152095 this maps catalogue
-/// X/Y/Z to design +Z/-Y/+X, exactly the transform stored in the RVM group.
+/// transverse axes with Core3D's `ORIMAT` rule.
 fn sbfitting_catalogue_alignment(el: &DbElement) -> Result<DMat4, ModelError> {
     let raw = el.get_direction("ZDIR")?.unwrap_or([0.0, 0.0, 1.0]);
+    sbfitting_alignment_from_zdir(raw)
+}
+
+fn sbfitting_alignment_from_zdir(raw: [f64; 3]) -> Result<DMat4, ModelError> {
     // Descriptor direction triples use E3D's bearing handedness; the second
     // component is opposite to the right-handed design-frame Y used by glam.
     let z = DVec3::new(raw[0], -raw[1], raw[2]).normalize_or_zero();
@@ -802,12 +1207,17 @@ fn sbfitting_catalogue_alignment(el: &DbElement) -> Result<DMat4, ModelError> {
             detail: format!("ZDIR = {raw:?}"),
         }));
     }
-    let reference = if z.dot(DVec3::Z).abs() < 0.999_999 {
-        DVec3::Z
-    } else {
-        DVec3::X
-    };
-    let x = (reference - z * reference.dot(z)).normalize();
+    // core.dll!ORIMAT (0x526D674) tries VUNIT(1..3), takes
+    // X = normalize(Z cross unit), then Y = Z cross X. VUNIT(1) is north/Y;
+    // when Z is parallel to it the next candidate is up/Z, then east/X.
+    // Choosing projected global Z unconditionally loses both the hemisphere
+    // sign and the cardinal-direction fallback, moving off-axis DESP sleeves
+    // to the opposite side of their host wall.
+    let candidate = [DVec3::Y, DVec3::Z, DVec3::X]
+        .into_iter()
+        .find(|candidate| z.dot(*candidate).abs() < 0.999_999)
+        .expect("a finite unit vector cannot be parallel to all basis axes");
+    let x = z.cross(candidate).normalize();
     let y = z.cross(x).normalize();
     Ok(DMat4::from_cols(
         x.extend(0.0),
@@ -991,7 +1401,10 @@ fn primitive_local_solid(
             let d = require_double(el, noun, "DIAM", "cylinder")?;
             let h = require_double(el, noun, "HEIG", "cylinder")?;
             if allow_instance {
-                Ok(instantiate_cylinder(d, h, true)?)
+                // A standalone design CYLI uses the same centered Z frame as
+                // the Cylinder RVM record (AMS 8000, 24384/26294). The legacy
+                // gm_CreateCylinder helper instead starts at the local Y base.
+                Ok(instantiate_centered_cylinder(d, h)?)
             } else {
                 Ok(PrimitiveBuild {
                     // E3D emits the final LNEGIT result as a coarse FacetGroup.
@@ -1008,12 +1421,13 @@ fn primitive_local_solid(
             }
         }
         Prim::Cone => Ok(PrimitiveBuild {
-            solid: snout_solid(
+            solid: design_snout_solid(
                 require_double(el, noun, "DBOT", "cone")?,
                 require_double(el, noun, "DTOP", "cone")?,
                 require_double(el, noun, "HEIG", "cone")?,
                 0.0,
                 0.0,
+                !allow_instance,
             )?,
             instance: None,
         }),
@@ -1053,12 +1467,13 @@ fn primitive_local_solid(
             })
         }
         Prim::Snout => Ok(PrimitiveBuild {
-            solid: snout_solid(
+            solid: design_snout_solid(
                 require_double(el, noun, "DBOT", "snout")?,
                 require_double(el, noun, "DTOP", "snout")?,
                 require_double(el, noun, "HEIG", "snout")?,
                 default_zero(el, "XOFF")?,
                 default_zero(el, "YOFF")?,
+                !allow_instance,
             )?,
             instance: None,
         }),
@@ -1091,6 +1506,25 @@ fn primitive_local_solid(
             })
         }
     }
+}
+
+/// Standalone AMS 8000 CONE/SNOU export as analytic Snout records. Boolean
+/// results instead bake a 10 mm circle grid (250 mm radius: 12 vertices).
+fn design_snout_solid(
+    dbot: f64,
+    dtop: f64,
+    height: f64,
+    xoff: f64,
+    yoff: f64,
+    boolean_operand: bool,
+) -> Result<Manifold, SolidError> {
+    let radius = dbot.max(dtop) * 0.5;
+    let segments = if boolean_operand {
+        negative_cylinder_segments(radius)
+    } else {
+        cylinder_segments(radius)
+    };
+    snout_solid_with_segments(dbot, dtop, height, xoff, yoff, segments)
 }
 
 /// 设计侧 DISH 的三路（`CSG_BasicDIS::getPrimGeom@0x10726d10`，旧路 `CRDESI@0x10343b80`
@@ -1153,6 +1587,9 @@ fn fold_shear_angle(deg: f64) -> f64 {
 /// 退化面记 `notes`；壳不闭合按数据坏上抛（= `gm_ValidateObject` 不过即弃的口径）。
 fn polyhedron_local_solid(el: &DbElement, notes: &mut Vec<String>) -> Result<Manifold, ModelError> {
     let faces = polyhedron_faces(el)?;
+    if el.element_type()? == "POHE" {
+        return Ok(legacy_polygon_panels(&faces, notes)?);
+    }
     Ok(polyhedron_solid(&faces, notes)?)
 }
 
@@ -1177,7 +1614,9 @@ fn revolution_local_solid(
     } else {
         angle
     };
-    Ok(revolve_rings_inflated(rings, angle, grow)?)
+    // Both REVO and NREV are baked profile FacetGroups in AMS 8000:
+    // R=500, ANGL=180 gives eight sweep intervals, including after edits.
+    Ok(revolve_rings_profile_faceted_inflated(rings, angle, grow)?)
 }
 
 /// PDMS 缺省语义：属性未设（省存）或该 noun 模板里没有 → 取 0。
@@ -1416,6 +1855,21 @@ fn negative_world_solid(
             )?;
             inflate_about_center(&cutter, MANIFOLD_NUDGE_MM)
         }
+        Category::NegPrimitive(Prim::CircTorus) => {
+            let rins = default_zero(neg, "RINS")?;
+            let rout = require_double(neg, &noun, "ROUT", "circular torus")?;
+            let angle = require_double(neg, &noun, "ANGL", "circular torus")?;
+            // AMS 8000 HOST_NCTO: ROUT=520, RINS=250, ANGL=180 has
+            // eight sweep intervals and twelve tube intervals in its RVM.
+            let cutter = circ_torus_solid_with_segments(
+                rins,
+                rout,
+                angle,
+                negative_part_rev_segments(rout, angle),
+                negative_cylinder_segments((rout - rins) * 0.5),
+            )?;
+            inflate_about_center(&cutter, MANIFOLD_NUDGE_MM)
+        }
         Category::NegPrimitive(prim) => inflate_about_center(
             &primitive_local_solid(neg, &noun, prim, false)?.solid,
             MANIFOLD_NUDGE_MM,
@@ -1469,6 +1923,30 @@ pub fn world_with_sjus(world: DMat4, sjus_drop: f64) -> DMat4 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn design_snout_uses_analytic_or_boolean_grid_from_ams8000() {
+        let standalone = design_snout_solid(500.0, 320.0, 600.0, 0.0, 0.0, false).unwrap();
+        let cutter = design_snout_solid(500.0, 320.0, 600.0, 0.0, 0.0, true).unwrap();
+        // Saved standalone RVM Snout and the cavity in HOST_NCON, after resize.
+        assert!((standalone.volume() - 80_358_356.1773).abs() / 80_358_356.1773 < 0.01);
+        let rvm_cavity_volume = 1200.0 * 1200.0 * 800.0 - 1_075_139_827.1983;
+        assert!((cutter.volume() - rvm_cavity_volume).abs() / rvm_cavity_volume < 0.0001);
+        assert!(standalone.volume() > cutter.volume());
+    }
+
+    #[test]
+    fn design_revolution_matches_ams8000_baked_profile_volume() {
+        let profile = vec![vec![
+            [0.0, 200.0],
+            [500.0, 200.0],
+            [500.0, 500.0],
+            [0.0, 500.0],
+        ]];
+        let solid = revolve_rings_profile_faceted_inflated(profile, 180.0, 0.0).unwrap();
+        let rvm_volume = 160_726_996.3865;
+        assert!((solid.volume() - rvm_volume).abs() / rvm_volume < 0.0001);
+    }
 
     #[test]
     fn the_design_negative_level_gate_is_drwand_closed_interval() {
@@ -1593,6 +2071,20 @@ mod tests {
     }
 
     #[test]
+    fn short_wall_curve_default_start_profile_matches_rr001_rvm() {
+        let center = DVec3::new(0.1140846, 0.4991176, 0.0);
+        let outer = DVec3::new(-5058.21875, -16648.55664, 0.0);
+        let profile = default_wall_start_wedge(outer, center, 16100.51116, 1300.0)
+            .expect("start radial is not perpendicular to global Y");
+        let inner = profile[1];
+        let default_start = profile[2];
+        assert!((inner[0] - -4680.3086).abs() < 0.01);
+        assert!((inner[1] - -15404.699).abs() < 0.01);
+        assert!((default_start[0] - -5058.2188).abs() < 0.01);
+        assert!((default_start[1] - -15289.8818).abs() < 0.01);
+    }
+
+    #[test]
     fn only_dimensionally_empty_primitives_are_no_shape_results() {
         let bad_height = ModelError::Solid(SolidError::BadHeight {
             what: "pyramid",
@@ -1689,5 +2181,22 @@ mod tests {
         assert!((bounds.max()[1] - 62.0).abs() < 1e-9);
         assert!(bounds.max()[2].abs() < 1e-9);
         assert!(notes.is_empty());
+    }
+
+    #[test]
+    fn sbfitting_alignment_matches_rvm_catalogue_axes() {
+        // AMS 1112 SBFI 17496/124197: descriptor ZDIR becomes
+        // (-0.258819,+0.965926,0). RVM maps catalogue X to -Z and keeps that
+        // direction as catalogue Z.
+        let m = sbfitting_alignment_from_zdir([-0.258819, -0.965926, 0.0]).expect("valid ZDIR");
+        assert!((m.x_axis.truncate() - DVec3::NEG_Z).length() < 1e-12);
+        assert!((m.z_axis.truncate() - DVec3::new(-0.258819, 0.965926, 0.0)).length() < 1e-6);
+
+        // ORIMAT's singular branch: Z=-Y cannot cross the first Y candidate,
+        // so it advances to global Z and obtains X=-X, Y=-Z.
+        let cardinal = sbfitting_alignment_from_zdir([0.0, 1.0, 0.0]).expect("valid ZDIR");
+        assert!((cardinal.x_axis.truncate() - DVec3::NEG_X).length() < 1e-12);
+        assert!((cardinal.y_axis.truncate() - DVec3::NEG_Z).length() < 1e-12);
+        assert!((cardinal.z_axis.truncate() - DVec3::NEG_Y).length() < 1e-12);
     }
 }

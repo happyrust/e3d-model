@@ -16,6 +16,7 @@ pub struct TriMesh {
 
 impl TriMesh {
     pub fn from_manifold(solid: &Manifold) -> Self {
+        let _timing = crate::perf::tri_mesh_scope();
         let (props, n_props, tri) = solid.to_mesh_f64();
         if n_props < 3 || props.is_empty() {
             return Self::default();

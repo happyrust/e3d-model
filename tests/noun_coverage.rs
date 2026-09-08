@@ -12,6 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use e3d_model::category::{Category, classify, is_model_unit};
+use e3d_model::core3d_registry::{core3d_paths, is_not_wired, registered_nouns};
 
 #[derive(serde::Deserialize)]
 struct Matrix {
@@ -295,6 +296,126 @@ fn the_n2_class28_fix_is_closed_and_spine_is_still_evidence_pending() {
         Category::ProfileData,
         "SPINE 判词已改，把 N2 的取证结论一起写进来"
     );
+}
+
+/// 第二个分母：**Core3D 的 builder 注册表**。
+///
+/// 上面那条覆盖率钉拿 `GTGEOM` 级联家族位当分母，它断言 `unknown.len() == 0` 且今天是绿的。
+/// 但那个分母看不见现代 CSG 路：`CSG_TreeBuilder::getCSGTree@0x10715b30` 按
+/// `actualType → type → hardType` 三查 noun→builder 注册表，**不看家族位**。
+/// 于是「有专用 builder、没有级联家族位」的 noun 落在那个分母之外——
+/// `HANDRA` / `RAIL` / `KICKPL` / `STRLNG` 判 `Unknown`，覆盖率钉照样绿。
+///
+/// 这条用独立来源的第二个分母去照同一片地方：
+/// `data/core3d-builder-registry.json`（`evidence/20260905-core3d-csg-registry/` 枚举活体 IDB 生成）。
+/// 判据是——**注册表里有它，我们却判 `Unknown` 或 `NonGraphic`**：
+///
+/// - `Unknown` = 「还没搞清楚」。注册表里有它就说明搞清楚了：E3D 有名有姓的 builder 会建它。
+/// - `NonGraphic` = 「**E3D 也不画**」。这是一句关于 E3D 的正面断言，注册表直接反驳它。
+///   这一类比 `Unknown` 更严重：`Unknown` 至少还挂在欠账上，`NonGraphic` 是**主动**把件
+///   记进「不欠账」那本，于是它永远不会出现在任何欠账数里，`accounts_for` 照平、报告全绿。
+///   总纲 §六 红线 1「静默缺件」的最纯形态。
+///
+/// # 这是特征化基线，不是通过/失败的判据
+///
+/// 与 `cascade_coverage_matches_the_recorded_baseline` 同一套路：名单写死，
+/// **它只该因为有人真的改了覆盖面而变**。少一个是好事——把那一行删掉；
+/// 多一个说明有 noun 掉出去了。这份名单就是 recheck-4 §五 W4 的工作队列本身。
+///
+/// 判据本身在 [`e3d_model::core3d_registry::is_not_wired`]，与实跑件数
+/// （`pipeline::Report::not_wired`）同一份——这份基线数的 noun 和报告上数的件，
+/// 必须是同一批。
+#[test]
+fn nouns_core3d_builds_that_we_have_not_accounted_for() {
+    let mut gaps: Vec<String> = Vec::new();
+    for noun in registered_nouns() {
+        if !is_not_wired(noun) {
+            continue;
+        }
+        let kind = if matches!(classify(noun), Category::NonGraphic) {
+            "NonGraphic"
+        } else {
+            "Unknown"
+        };
+        gaps.push(format!("{noun}({kind})"));
+    }
+    gaps.sort();
+
+    // 2026-09-05 基线，分组见 recheck-4 §三。逐条的 Core3D 出处在
+    // data/core3d-builder-registry.json 里，断言失败时下面会把它打出来。
+    let expected: Vec<&str> = vec![
+        // §3.5 制图辅助（结构标注 / 辅助线 / 网格线）——建不建是产品决定，recheck-4 §七-3 待拍板。
+        "AIDARC(Unknown)",
+        "AIDCIR(Unknown)",
+        "AIDLIN(Unknown)",
+        "AIDPOI(Unknown)",
+        "BOUN(Unknown)",
+        // §3.3 舱室装修：属性派生路，与已有三条路都不同形。
+        // BNDLIN / INSURQ 的 noun 由 builder 类名 + 同函数内 DB_AttPluggerHelper::addPlug
+        // (`ATT_BNDARE, NOUN_BNDLIN` / `ATT_INSARE, NOUN_INSURQ`) 互证，不是从 NOUN_* 全局读的。
+        "BNDLIN(Unknown)",
+        "INSURQ(Unknown)",
+        "CLNTIL(Unknown)",
+        // §3.1 判据反了：CAB_CSGControlNode::getCSGTree 有 1438 字节。
+        "CNODE(NonGraphic)",
+        "DATU(Unknown)",
+        "DRAW(Unknown)",
+        "DTPROF(Unknown)",
+        "FLRLAY(Unknown)",
+        "GRDM(Unknown)",
+        "GRIDLN(Unknown)",
+        // §3.2 通道钢结构（ASL）：九个 noun 九个具名 builder，四个连账本都没进对。
+        // 2026-09-06 三个一起退出——HANDRA 接了布局式 builder，RAIL / KICKPL 接了详图式
+        // （目录截面沿属主 RPATH 扫一段，`crate::handrail::detailed_item_local_solid`）。
+        // 这一族在这张表上只剩 STRLNG（六库零件）。
+        "IPOI(Unknown)",
+        "LINDIM(Unknown)",
+        "MLABEL(Unknown)",
+        // §3.1 同型：旧路 CRDESI 有臂。
+        "PNOD(NonGraphic)",
+        // POINTR：CAB_CSGRoutePoint 那 311 字节给孤立显示的路由点画 10mm 记号；语料里它
+        // 全是 RPATH 的路径点（aps250110 3366 / aps250209 352），2026-09-06 判 ProfileData
+        // 由 HANDRA/STRFLT/BPANEL 消费，从这里退出。
+        "PVOL(Unknown)",
+        "REFGAR(Unknown)",
+        "REFGLN(Unknown)",
+        // §3.1 判据反了：CAB_CSGRouteNode::getCSGTree 有 1909 字节。
+        "RNODE(NonGraphic)",
+        "RPLA(Unknown)",
+        // §二 旧路唯一一对整族不存在的 noun（gml_bkend/CRRSLD）。**别照着它去补分类**：
+        // 这两个 noun 不在 E3D 3.1 字典里（`out/noun-categories.json` 的 1931 条 verdict
+        // 里查无此名），六库 N0-1 复跑也是零件——`CRDESI` 那条臂是 PDMS 遗留。
+        // 写进 `classify()` 会让 `every_noun_named_in_the_classifier_actually_exists_in_the_dictionary`
+        // 变红，而那条钉是对的。它们留在这里只是让注册表与分类表的差集闭合。
+        "RULS(Unknown)",
+        "NRUL(Unknown)",
+        "SNOD(NonGraphic)",
+        "STRLNG(Unknown)",
+        "SUBCOM(Unknown)",
+        "TPOI(Unknown)",
+        "TRNCUR(Unknown)",
+    ];
+    let mut expected: Vec<String> = expected.into_iter().map(str::to_string).collect();
+    expected.sort();
+
+    if gaps != expected {
+        let mut detail = String::new();
+        for gap in &gaps {
+            let noun = gap.split('(').next().unwrap_or(gap);
+            for path in core3d_paths(noun) {
+                detail.push_str(&format!("\n  {noun}: {}", path.evidence()));
+            }
+        }
+        panic!(
+            "Core3D 建、我们没认领的 noun 集合变了。\n\
+             少了是好事——把对应行从基线里删掉；多了说明又有 noun 掉出分类表。\n\
+             实得 {} 个：{gaps:?}\n\
+             期望 {} 个：{expected:?}\n\
+             Core3D 出处：{detail}",
+            gaps.len(),
+            expected.len(),
+        );
+    }
 }
 
 /// 会被属主消费剪掉的 noun，永远不能同时是模型单元。

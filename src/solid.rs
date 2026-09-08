@@ -21,7 +21,7 @@
 //!    逐轴缩放对这种边的外推量趋近 0，差完留下一根 0.01mm 厚、贯穿全高的针，
 //!    把 AABB 顶出去 63.5mm。截面 offset 是**平行外扩**，斜边不转动，不吃摆放角度。
 
-use glam::DMat4;
+use glam::{DMat3, DMat4, DVec3};
 use manifold_csg::{CrossSection, FillRule, JoinType, Manifold};
 
 use crate::discretise::{PROFILE_CHORD_TOL_MM, circle_segments_uncapped, signed_area};
@@ -430,6 +430,23 @@ pub fn rect_torus_solid_with_segments(
 /// 两个方向喂**两个不同的半径**（libgm §7.9.1 点名最容易照抄错的一条）：
 /// 环向喂 ROUT，管截面喂管半径。
 pub fn circ_torus_solid(rins: f64, rout: f64, angle_deg: f64) -> Result<Manifold, SolidError> {
+    circ_torus_solid_with_segments(
+        rins,
+        rout,
+        angle_deg,
+        part_rev_segments(rout, angle_deg),
+        circular_torus_tube_segments(rins, rout),
+    )
+}
+
+/// Explicit sweep and tube grids for baked boolean torus facets.
+pub fn circ_torus_solid_with_segments(
+    rins: f64,
+    rout: f64,
+    angle_deg: f64,
+    ring_segments: i32,
+    tube_segments: i32,
+) -> Result<Manifold, SolidError> {
     const WHAT: &str = "circular torus";
     let rins = rins.max(0.0);
     let tube_r = (rout - rins) / 2.0;
@@ -440,7 +457,7 @@ pub fn circ_torus_solid(rins: f64, rout: f64, angle_deg: f64) -> Result<Manifold
         });
     }
     let center_r = (rout + rins) / 2.0;
-    let n = circular_torus_tube_segments(rins, rout);
+    let n = tube_segments.max(4);
     let tube: Vec<[f64; 2]> = (0..n)
         .map(|k| {
             let a = std::f64::consts::TAU * f64::from(k) / f64::from(n);
@@ -449,7 +466,7 @@ pub fn circ_torus_solid(rins: f64, rout: f64, angle_deg: f64) -> Result<Manifold
             [(center_r + tube_r * a.cos()).max(0.0), tube_r * a.sin()]
         })
         .collect();
-    swept_solid(vec![tube], rout, angle_deg, WHAT)
+    swept_solid_with_segments(vec![tube], angle_deg, ring_segments, WHAT)
 }
 
 /// `gm_CreateRevolution`：环剖面绕**局部 X 轴**（过原点）回转 ANGL 度
@@ -472,7 +489,16 @@ pub fn circ_torus_solid(rins: f64, rout: f64, angle_deg: f64) -> Result<Manifold
 ///    相位尚无 RVM 数据坐实——ams1112 仅 2 件 NREV 且为坏数据；出现可对拍的 partial
 ///    负回转再核 `off` 约定。
 pub fn revolve_rings(rings: Vec<Vec<[f64; 2]>>, angle_deg: f64) -> Result<Manifold, SolidError> {
-    revolve_rings_grown(rings, angle_deg, 0.0)
+    revolve_rings_grown(rings, angle_deg, 0.0, false)
+}
+
+/// Catalogue SREV is exported as a baked profile FacetGroup and therefore
+/// follows the 10 mm profile chord grid instead of the 0.5 mm primitive grid.
+pub fn revolve_rings_profile_faceted(
+    rings: Vec<Vec<[f64; 2]>>,
+    angle_deg: f64,
+) -> Result<Manifold, SolidError> {
+    revolve_rings_grown(rings, angle_deg, 0.0, true)
 }
 
 /// 负体版回转：剖面在（半径, 轴向）平面里 miter offset 外扩 `grow` 再回转。
@@ -484,13 +510,24 @@ pub fn revolve_rings_inflated(
     angle_deg: f64,
     grow: f64,
 ) -> Result<Manifold, SolidError> {
-    revolve_rings_grown(rings, angle_deg, grow)
+    revolve_rings_grown(rings, angle_deg, grow, false)
+}
+
+/// Design REVO/NREV use the baked profile grid, with the same negative
+/// profile offset as other boolean operands.
+pub fn revolve_rings_profile_faceted_inflated(
+    rings: Vec<Vec<[f64; 2]>>,
+    angle_deg: f64,
+    grow: f64,
+) -> Result<Manifold, SolidError> {
+    revolve_rings_grown(rings, angle_deg, grow, true)
 }
 
 fn revolve_rings_grown(
     mut rings: Vec<Vec<[f64; 2]>>,
     angle_deg: f64,
     grow: f64,
+    profile_faceted: bool,
 ) -> Result<Manifold, SolidError> {
     const WHAT: &str = "revolution";
     if rings.is_empty() || rings[0].len() < 3 {
@@ -538,7 +575,8 @@ fn revolve_rings_grown(
         }
     }
 
-    let solid = swept_solid_grown(rings, max_radius, angle_deg, grow, None, WHAT)?;
+    let segments = profile_faceted.then(|| negative_part_rev_segments(max_radius, angle_deg));
+    let solid = swept_solid_grown(rings, max_radius, angle_deg, grow, segments, WHAT)?;
     // manifold 交回来的是「轴在 +Z、半径铺在 XY」。摆回局部系：
     // +X → 局部 +Y（半径方向），+Y → 出平面，+Z → 局部 +X（回转轴）。
     let frame = DMat4::from_cols(
@@ -572,6 +610,70 @@ fn swept_solid_with_segments(
     swept_solid_grown(section, 0.0, angle_deg, 0.0, Some(segments), what)
 }
 
+/// Manifold treats `circular_segments <= 2` as "automatic", while libgm's
+/// coarse profile grid legitimately emits a two-segment partial revolution.
+/// Build that one narrow case directly so the three angular rings remain
+/// exactly the ones present in E3D's RVM FacetGroup.
+fn two_segment_revolve_single_ring(
+    ring: &[[f64; 2]],
+    sweep_deg: f64,
+    what: &'static str,
+) -> Result<Manifold, SolidError> {
+    if ring.len() < 3 {
+        return Err(SolidError::Degenerate {
+            what,
+            detail: format!("two-segment profile has {} vertices", ring.len()),
+        });
+    }
+    let mut flat = Vec::with_capacity(ring.len() * 2);
+    for point in ring {
+        flat.extend_from_slice(point);
+    }
+    let cap = earcutr::earcut(&flat, &[], 2).map_err(|error| SolidError::Degenerate {
+        what,
+        detail: format!("two-segment cap triangulation: {error}"),
+    })?;
+    let n = ring.len();
+    let mut vertices = Vec::with_capacity(3 * n * 3);
+    for step in 0..=2 {
+        let phi = sweep_deg.to_radians() * f64::from(step) / 2.0;
+        let (sin, cos) = phi.sin_cos();
+        for [radius, axial] in ring {
+            vertices.extend_from_slice(&[radius * cos, radius * sin, *axial]);
+        }
+    }
+    let mut triangles: Vec<u64> = Vec::with_capacity((4 * n + 2 * (n - 2)) * 3);
+    for step in 0..2 {
+        let base = step * n;
+        let next = (step + 1) * n;
+        for i in 0..n {
+            let j = (i + 1) % n;
+            let (a, b, c, d) = (base + i, base + j, next + i, next + j);
+            triangles.extend([a as u64, c as u64, d as u64]);
+            triangles.extend([a as u64, d as u64, b as u64]);
+        }
+    }
+    for tri in cap.chunks_exact(3) {
+        let mut ids = [tri[0], tri[1], tri[2]];
+        let a = ring[ids[0]];
+        let b = ring[ids[1]];
+        let c = ring[ids[2]];
+        if (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]) < 0.0 {
+            ids.swap(1, 2);
+        }
+        triangles.extend(ids.map(|id| id as u64));
+        triangles.extend([
+            (2 * n + ids[0]) as u64,
+            (2 * n + ids[2]) as u64,
+            (2 * n + ids[1]) as u64,
+        ]);
+    }
+    Manifold::from_mesh_f64(&vertices, 3, &triangles).map_err(|error| SolidError::Degenerate {
+        what,
+        detail: format!("two-segment manifold: {error}"),
+    })
+}
+
 fn swept_solid_grown(
     section: Vec<Vec<[f64; 2]>>,
     radius_for_segments: f64,
@@ -602,7 +704,11 @@ fn swept_solid_grown(
     // then truncates `default * sweep / 360`. A valid narrow E3D sweep can
     // therefore become zero divisions (AMS7997 BEND 24381/104871). Three is
     // the smallest explicit division count accepted by that API.
-    let solid = Manifold::revolve(&cross, segments.max(3), sweep);
+    let solid = if segments == 2 && grow == 0.0 && section.len() == 1 {
+        two_segment_revolve_single_ring(&section[0], sweep, what)?
+    } else {
+        Manifold::revolve(&cross, segments.max(3), sweep)
+    };
     let solid = if angle_deg < 0.0 {
         solid.rotate(0.0, 0.0, -sweep)
     } else {
@@ -1000,6 +1106,53 @@ pub fn inflate_about_center(solid: &Manifold, grow: f64) -> Manifold {
         * DMat4::from_scale(scale)
         * DMat4::from_translation(-center);
     solid.transform(&dmat4_to_affine4x3(m))
+}
+
+/// 半空间求交：只留下 `(p − point) · normal >= 0` 的那一半。
+///
+/// 对标 libgm 的切面（`DB_Scan_to_GML` 槽 28 `sub_1072BA70`：`gm_CreateSection(树, op 3, 0)`
+/// + `gm_CreateCutSurface`，切面局部 +X = −法向，去掉法向背面那半空间）。
+///
+/// libgm 的切面是一张无限大的平面，manifold 没有半空间原语，**也不能拿哨兵尺寸的盒子
+/// 去交**：它的判定 epsilon 跟运算数包围盒走（见模块文档），一只 3.2e14 mm 的盒子会把
+/// 320 mm 尺度的布尔整组带垮。所以盒子按被切体自己的包围盒定尺——覆盖住 `solid` 落在
+/// 保留侧的全部点即可，多留 1 mm 让盒侧面不与体表面严格相切。
+///
+/// 法向全零时原样返回：`sub_1072BA70` 对全零法向直接返回 0（不切）。
+pub fn cut_by_plane(solid: &Manifold, point: DVec3, normal: DVec3) -> Manifold {
+    let normal = normal.normalize_or_zero();
+    let Some(bounds) = solid.bounding_box() else {
+        return solid.clone();
+    };
+    if normal.length_squared() <= f64::EPSILON {
+        return solid.clone();
+    }
+    let (lo, hi) = (bounds.min(), bounds.max());
+    let radius = (0..8)
+        .map(|corner| {
+            let pick = |axis: usize| {
+                if (corner >> axis) & 1 == 0 {
+                    lo[axis]
+                } else {
+                    hi[axis]
+                }
+            };
+            (DVec3::new(pick(0), pick(1), pick(2)) - point).length()
+        })
+        .fold(0.0f64, f64::max);
+    let size = 2.0 * radius + 1.0;
+    // 盒子在自己的局部系里占 x/y ∈ [−size/2, size/2]、z ∈ [0, size]；把局部 +Z 转到
+    // 法向、原点摆到基点，它就是这张平面保留侧的有限截断。
+    let reference = if normal.z.abs() < 0.9 {
+        DVec3::Z
+    } else {
+        DVec3::X
+    };
+    let x = reference.cross(normal).normalize();
+    let y = normal.cross(x);
+    let frame = DMat4::from_translation(point) * DMat4::from_mat3(DMat3::from_cols(x, y, normal));
+    let half_space = Manifold::cube(size, size, size, true).translate(0.0, 0.0, size * 0.5);
+    solid.intersection(&placed(&half_space, frame))
 }
 
 /// 正体 − 负体组（都已在世界系）。
