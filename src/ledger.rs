@@ -264,6 +264,9 @@ impl ChangeLedger {
             self.unchanged += 1;
             return;
         }
+        if diff.is_placement_only() {
+            self.placement_only.insert((refno.word0, refno.word1));
+        }
         let noun = diff.noun.clone();
         let mut push = |kind: ChangeKind, detail: String| {
             self.entries.push(LedgerEntry {
@@ -343,6 +346,13 @@ impl ChangeLedger {
 
     pub fn entries(&self) -> &[LedgerEntry] {
         &self.entries
+    }
+
+    /// 这一窗**只**动了摆放（`POS` / `ORI`）的候选——[`ElementDiff::is_placement_only`] 为真的那些，
+    /// `(word0, word1)` 键。它只说「谁只动了摆放」，不说「能不能刚体前移」：路由容器 / 点容器 /
+    /// `CWBRAN` 那三条排除要看 T 端的属主链，由消费者（gen-model 窗口规划器，ADR-066）自己判。
+    pub fn placement_only(&self) -> &BTreeSet<(u32, u32)> {
+        &self.placement_only
     }
 
     pub fn of_kind(&self, kind: ChangeKind) -> impl Iterator<Item = &LedgerEntry> {
@@ -446,6 +456,52 @@ mod tests {
             .map(|entry| entry.noun.as_str())
             .collect();
         assert_eq!(preempted, vec!["PANE", "PLOO"]);
+    }
+
+    /// 只动摆放的候选另记一份索引（gen-model 刚体前移的入口条件）：`POS` / `ORI` 进，掺了
+    /// 别的属性不进，改挂不进，删除不进，没变的不进；账本条目照记一条不少。
+    #[test]
+    fn the_ledger_keeps_placement_only_candidates_apart() {
+        let mut ledger = ChangeLedger::new();
+        ledger.record(
+            RefNo::new(1, 1),
+            &ElementDiff {
+                attributes: vec!["POS".into()],
+                ..diff("EQUI")
+            },
+        );
+        ledger.record(
+            RefNo::new(1, 2),
+            &ElementDiff {
+                attributes: vec!["ORI".into(), "POS".into()],
+                ..diff("ZONE")
+            },
+        );
+        ledger.record(
+            RefNo::new(1, 3),
+            &ElementDiff {
+                attributes: vec!["DIAM".into(), "POS".into()],
+                ..diff("ELBO")
+            },
+        );
+        ledger.record(
+            RefNo::new(1, 4),
+            &ElementDiff {
+                owner_changed: Some((Some("1/7".into()), Some("1/8".into()))),
+                attributes: vec!["POS".into()],
+                ..diff("PANE")
+            },
+        );
+        ledger.deleted(RefNo::new(1, 5), "BOX".into(), None);
+        ledger.record(RefNo::new(1, 6), &diff("PANE"));
+        ledger.finish();
+
+        assert_eq!(ledger.placement_only(), &BTreeSet::from([(1, 1), (1, 2)]));
+        assert_eq!(
+            ledger.entries().len(),
+            6,
+            "摆放集只是另一份索引，账本条目照记"
+        );
     }
 
     /// 新建与删除各算各的：属主在**另一个**桶里不算抢占。
