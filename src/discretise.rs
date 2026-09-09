@@ -1,7 +1,8 @@
 //! 带倒圆的环折线化（对标 libgm `GM_Profile` 的轮廓离散）。
 //!
-//! 输入是 PLOO/LOOP 的顶点序列，每个顶点 `(x, y, frad)`：`frad > 0` 表示该角
-//! 用半径 `frad` 的圆弧倒掉。输出平面多边形（顶点序保持输入绕向）。
+//! 输入是 PLOO/LOOP 的顶点序列，每个顶点 `(x, y, frad)`：`frad > 0` 表示该角用
+//! 半径 `frad` 的相切**凸**圆角倒掉，`frad < 0` 是以角点为心、半径 `|frad|` 的
+//! **凹**圆角（见下第 4 条）。输出平面多边形（顶点序保持输入绕向）。
 //!
 //! 离散口径：轮廓弦高容差 [`PROFILE_CHORD_TOL_MM`]，段数走 [`circle_segments_uncapped`]
 //! ——`d2_numberOfSegmentsForCircle` 的公式；弧内点再按 libgm
@@ -20,6 +21,14 @@
 //! 3. 若一个孤立**凸**倒圆的两个理论切点都只给相邻直线留下 `<= 0.1mm`，
 //!    Core3D 仍保留按理论切点构造的原圆弧；不能把整段弧当成 consumed 删除，也不能
 //!    把端点强吸到相邻 PAVE。凹角和真正越界仍走第 2 条。
+//! 4. 负 FRAD 走 `mth::mthArcRadius`（libgeom 3.1 `0x10042ba0`）而非 `mthArcFillet`：
+//!    Core3D `MDR_Point` 倒角方法（3.1 `sub_10621980`）按 FRAD 符号分流，负支把角点
+//!    沿两条单位邻边向量各退 `|FRAD|` 得弧的两个端点、取劣弧，圆心恰落在**角点**上
+//!    ——凹圆角，与正 FRAD 同一张弦、反向鼓。门槛照同一处反编译：`fabs(FRAD) < 0.1`
+//!    与近共线（单位邻边叉积 `sin 2α ≤ 0.1`）不倒角。**这两道门只加在负支**：正支的
+//!    微小半径与近共线行为是 RVM 对拍钉住的既有口径，原样不动（见 `NEG_FRAD_EPS`）。
+//!    取证：gen-model `docs/evidence/2026-09-09-ida-negative-frad-mtharcradius.md`；
+//!    真实负 FRAD 只在 ZDJ（甲板板 PANE −25、支座 SBFR −5），AVEVA 样例库全零。
 
 /// 曲面基本体的弦高容差（mm），绝对量。
 ///
@@ -37,8 +46,18 @@ const EDGE_EPS: f64 = 1e-9;
 const PROFILE_LINK_TOL_MM: f64 = 0.1;
 /// libgeom 判断角度格点是否严格落在弧内时使用的容差（弧度）。
 const SPAN_EPS: f64 = 0.0000306;
+/// Core3D `MDR_Point` 倒角方法（3.1 `sub_10621980`）开头的
+/// `if (fabs(radius) < 0.1) return 0`：`|FRAD|` 不足 0.1mm 不倒角。**只用于负 FRAD
+/// 支**——正支维持本文件既有的 `EDGE_EPS` 门（微小正 FRAD 照发亚 0.1mm 小弧），那是
+/// RVM 对拍钉住的行为，语料 FRAD 直方图里「近零」一档又占绝大多数，动它是另一个决定。
+const NEG_FRAD_EPS: f64 = 0.1;
+/// 同一方法在符号分流前的 `D3_Vector::equals(cross(d0, d1), 0, 0.1, 0.1)`：单位邻边
+/// 叉积（= `sin 2α`）不足它就不倒角——夹角离 0°/180° 不到约 5.74° 的角全挡掉。
+/// 同样只用于负支，理由同上。
+const NEG_CROSS_EPS: f64 = 0.1;
 
-/// 环顶点：xy 坐标 + 倒圆半径。
+/// 环顶点：xy 坐标 + 倒圆半径（正 = 相切凸圆角，负 = 以角点为心的凹圆角，
+/// 见模块文档第 4 条）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FilletVertex {
     pub x: f64,
@@ -97,6 +116,11 @@ pub fn flatten_ring(ring: &[FilletVertex]) -> Option<(Vec<[f64; 2]>, FlattenNote
             out.push([p.x, p.y]);
             continue;
         }
+        // 负支的 `fabs(radius) < 0.1` 门（`NEG_FRAD_EPS`）：不足门槛原样留尖角。
+        if p.frad < 0.0 && requested_radius < NEG_FRAD_EPS {
+            out.push([p.x, p.y]);
+            continue;
+        }
         let prev = ring[(i + n - 1) % n];
         let next = ring[(i + 1) % n];
         let corner = [p.x, p.y];
@@ -118,6 +142,53 @@ pub fn flatten_ring(ring: &[FilletVertex]) -> Option<(Vec<[f64; 2]>, FlattenNote
         if two_alpha <= 1e-9 || (std::f64::consts::PI - two_alpha) <= 1e-9 {
             notes.degenerate_corners.push(i);
             out.push(corner);
+            continue;
+        }
+        if p.frad < 0.0 {
+            // 负 FRAD 走 `mth::mthArcRadius`（模块文档第 4 条）：角点沿两条单位邻边
+            // 向量各退 `|FRAD|` 得弧的两个端点，弧以**角点为心**、半径 `|FRAD|`、取
+            // 劣弧（扫角 = 2α < π，归一到 (−π, π] 的最小转角就是它）——凹圆角，与正
+            // FRAD 同一张弦、反向鼓。
+            if two_alpha.sin() <= NEG_CROSS_EPS {
+                // Core3D 分流前的 cross 门：近共线不倒角。少这道门，一个几乎拉直的
+                // 角会被展开成接近半圈的大凹弧，凭空挖走一大块材料。
+                notes.degenerate_corners.push(i);
+                out.push(corner);
+                continue;
+            }
+            // 退距恒为 `|FRAD|`（不是正支的 R/tanα）。`mthArcRadius` 不裁不吸附，
+            // 端点越过邻点只记账——语料里的负 FRAD（ZDJ 甲板板 −25、支座 −5）都远
+            // 小于邻边，越界支路没有实测样例，不套用正支那套近越界吸附。
+            if requested_radius > len_prev || requested_radius > len_next {
+                notes.overshoot_fillets.push(i);
+            }
+            let start = [
+                corner[0] + u[0] * requested_radius,
+                corner[1] + u[1] * requested_radius,
+            ];
+            let end = [
+                corner[0] + w[0] * requested_radius,
+                corner[1] + w[1] * requested_radius,
+            ];
+            let a0 = (start[1] - corner[1]).atan2(start[0] - corner[0]);
+            let a1 = (end[1] - corner[1]).atan2(end[0] - corner[0]);
+            let mut delta = a1 - a0;
+            while delta > std::f64::consts::PI {
+                delta -= 2.0 * std::f64::consts::PI;
+            }
+            while delta < -std::f64::consts::PI {
+                delta += 2.0 * std::f64::consts::PI;
+            }
+            let segments = circle_segments_uncapped(requested_radius, PROFILE_CHORD_TOL_MM);
+            out.extend(phase_locked_arc_points(
+                start,
+                end,
+                corner,
+                requested_radius,
+                a0,
+                delta,
+                segments,
+            ));
             continue;
         }
         let alpha = two_alpha / 2.0;
@@ -542,5 +613,220 @@ mod tests {
         let (poly, notes) = flatten_ring(&ring).unwrap();
         assert!(notes.consumed_fillets.is_empty(), "{notes:?}");
         assert!(poly.len() > ring.len(), "凹角圆弧必须离散保留: {poly:?}");
+    }
+
+    // ─── 负 FRAD（`mthArcRadius` 凹圆角，模块文档第 4 条）────────────────────
+
+    /// 负 FRAD 的弧以角点为心、半径 `|FRAD|`、取劣弧：端点各距角点 `|FRAD|` 落在两邻边
+    /// 上，弧上每个点到角点等距，没有点钻进半径以内。100×100 正方形右下角 FRAD=−25 挖掉
+    /// 的正是「角点为心的内接扇」——直角劣弧落在 45° 相位格上恰是两段，扇面积
+    /// `½R²·2·sin(π/4)`。
+    #[test]
+    fn negative_frad_is_a_concave_arc_centred_on_the_vertex() {
+        let ring = [
+            v(0.0, 0.0),
+            FilletVertex {
+                x: 100.0,
+                y: 0.0,
+                frad: -25.0,
+            },
+            v(100.0, 100.0),
+            v(0.0, 100.0),
+        ];
+        let (poly, notes) = flatten_ring(&ring).unwrap();
+        assert!(notes.overshoot_fillets.is_empty(), "{notes:?}");
+        assert!(notes.degenerate_corners.is_empty(), "{notes:?}");
+        // 端点 = 角点沿两邻边各退 25。
+        assert!(
+            poly.iter()
+                .any(|p| (p[0] - 75.0).abs() < 1e-9 && p[1].abs() < 1e-9)
+        );
+        assert!(
+            poly.iter()
+                .any(|p| (p[0] - 100.0).abs() < 1e-9 && (p[1] - 25.0).abs() < 1e-9)
+        );
+        let corner = [100.0_f64, 0.0];
+        for p in &poly {
+            let d = (p[0] - corner[0]).hypot(p[1] - corner[1]);
+            assert!(d > 25.0 - 1e-6, "凹弧内侧不许有点：{p:?} 距角点 {d}");
+            assert!(
+                d > 99.0 || (d - 25.0).abs() < 1e-6,
+                "弧点必须落在以角点为心 R=25 的圆上：{p:?} 距角点 {d}"
+            );
+        }
+        // 挖掉的面积 = 从角点扇出的两个三角形（相位格把 90° 劣弧分在 135° 一个格点上）。
+        let removed = 10_000.0 - signed_area(&poly);
+        let expected = 0.5 * 625.0 * 2.0 * std::f64::consts::FRAC_PI_4.sin();
+        assert!(
+            (removed - expected).abs() < 1e-6,
+            "挖掉 {removed}，期望内接扇 {expected}"
+        );
+    }
+
+    /// 正 / 负 FRAD 在直角处退距相同（`R·cot45° = |FRAD|`）：同一张弦、反向鼓——
+    /// 凸弧的弧内点比 R 更靠角点，凹弧的弧内点恒在 R 上；凸圆角留下的材料更多。
+    #[test]
+    fn positive_and_negative_frad_bulge_opposite_on_the_same_chord() {
+        let with_frad = |frad: f64| {
+            [
+                v(0.0, 0.0),
+                FilletVertex {
+                    x: 100.0,
+                    y: 0.0,
+                    frad,
+                },
+                v(100.0, 100.0),
+                v(0.0, 100.0),
+            ]
+        };
+        let (pos, _) = flatten_ring(&with_frad(25.0)).unwrap();
+        let (neg, _) = flatten_ring(&with_frad(-25.0)).unwrap();
+        // 同一张弦：两个端点在两条折线里都原样出现。
+        for target in [[75.0, 0.0], [100.0, 25.0]] {
+            for poly in [&pos, &neg] {
+                assert!(
+                    poly.iter()
+                        .any(|p| (p[0] - target[0]).abs() < 1e-9
+                            && (p[1] - target[1]).abs() < 1e-9),
+                    "弦端点 {target:?} 必须保留"
+                );
+            }
+        }
+        // 反向鼓（用到角点的距离判）：弧内点凸支 < 25、凹支 = 25。
+        let corner = [100.0_f64, 0.0];
+        let arc_interior = |poly: &[[f64; 2]]| -> Vec<f64> {
+            poly.iter()
+                .map(|p| (p[0] - corner[0]).hypot(p[1] - corner[1]))
+                .filter(|d| *d < 99.0 && (*d - 25.0).abs() > 1e-9)
+                .collect()
+        };
+        let pos_interior = arc_interior(&pos);
+        let neg_interior = arc_interior(&neg);
+        assert!(!pos_interior.is_empty(), "凸弧应有弧内点");
+        assert!(pos_interior.iter().all(|d| *d < 25.0 - 1e-6));
+        assert!(neg_interior.is_empty(), "凹弧所有点都该在 R=25 上：{neg:?}");
+        assert!(
+            signed_area(&pos) > signed_area(&neg) + 100.0,
+            "凸圆角留下的材料必须多于凹圆角"
+        );
+    }
+
+    /// `|FRAD| < 0.1` 的负倒角照 Core3D 的 `fabs` 门槛不倒角，顶点原样留下
+    /// （正支的微小半径行为不在本条约束里，维持既有 RVM 口径）。
+    #[test]
+    fn a_tiny_negative_frad_stays_sharp() {
+        let ring = [
+            v(0.0, 0.0),
+            FilletVertex {
+                x: 100.0,
+                y: 0.0,
+                frad: -0.05,
+            },
+            v(100.0, 100.0),
+            v(0.0, 100.0),
+        ];
+        let (poly, notes) = flatten_ring(&ring).unwrap();
+        assert_eq!(poly.len(), 4, "|FRAD|=0.05 < 0.1，四个顶点原样留下");
+        assert!(poly.contains(&[100.0, 0.0]));
+        assert!((signed_area(&poly) - 10_000.0).abs() < 1e-9);
+        assert!(notes.degenerate_corners.is_empty());
+    }
+
+    /// 近共线（`sin 2α ≤ 0.1`，Core3D 分流前的 cross 门）的负倒角不倒——不然一个几乎
+    /// 拉直的角会被展开成接近半圈的大凹弧，凭空挖走一大块材料。
+    #[test]
+    fn a_near_collinear_negative_frad_stays_sharp() {
+        // 中间顶点两邻边夹角约 176°：sin ≈ 0.07 < 0.1。
+        let (sin4, cos4) = (4.0_f64).to_radians().sin_cos();
+        let ring = [
+            v(-100.0, 0.0),
+            FilletVertex {
+                x: 0.0,
+                y: 0.0,
+                frad: -25.0,
+            },
+            v(100.0 * cos4, 100.0 * sin4),
+            v(0.0, 200.0),
+        ];
+        let (poly, notes) = flatten_ring(&ring).unwrap();
+        assert_eq!(poly.len(), 4, "近共线负倒角必须留尖角：{poly:?}");
+        assert!(poly.contains(&[0.0, 0.0]));
+        assert_eq!(notes.degenerate_corners, vec![1]);
+    }
+
+    /// 负倒角的退距就是 `|FRAD|` 本身：超过邻边长时照 `mthArcRadius` 原样展开
+    /// （不裁、不吸附——负支没有正支那套近越界吸附的实测依据），只记账。
+    #[test]
+    fn an_oversized_negative_frad_is_kept_unclipped_and_reported() {
+        let ring = [
+            v(0.0, 0.0),
+            FilletVertex {
+                x: 100.0,
+                y: 0.0,
+                frad: -150.0,
+            },
+            v(100.0, 100.0),
+            v(0.0, 100.0),
+        ];
+        let (poly, notes) = flatten_ring(&ring).unwrap();
+        assert_eq!(notes.overshoot_fillets, vec![1]);
+        // 两个端点越过邻点也原样保留：(100,0)−(150,0) 与 (100,0)+(0,150)。
+        assert!(
+            poly.iter()
+                .any(|p| (p[0] + 50.0).abs() < 1e-9 && p[1].abs() < 1e-9)
+        );
+        assert!(
+            poly.iter()
+                .any(|p| (p[0] - 100.0).abs() < 1e-9 && (p[1] - 150.0).abs() < 1e-9)
+        );
+    }
+
+    /// 真实数据钉：ZDJ 甲板板 PANE `/DK_11000_TOS_P01`（zdj7150，refno 15342/605）的
+    /// 外环——语料里仅有的负 FRAD 家族之一（AVEVA 样例库全零），顶点
+    /// (402.105, 299.084) FRAD=−25。凹弧以该顶点为心、半径 25，绕向不翻转，挖掉的
+    /// 面积不超过以角点为心的理论扇形。数据来自 gen-model
+    /// `examples/verify_neg_frad_panel` 的同源导出（`out/neg-frad-verify/`）。
+    #[test]
+    fn zdj_deck_panel_negative_frad_carves_a_concave_arc() {
+        let corner = [402.105_010_986_328_1, 299.084_014_892_578_1];
+        let ring = [
+            v(0.0, 0.0),
+            v(-16.419_000_625_610_35, 24.927_000_045_776_367),
+            FilletVertex {
+                x: corner[0],
+                y: corner[1],
+                frad: -25.0,
+            },
+            v(402.104_003_906_25, 0.0),
+        ];
+        let sharp: Vec<[f64; 2]> = ring.iter().map(|p| [p.x, p.y]).collect();
+        let (poly, notes) = flatten_ring(&ring).unwrap();
+        assert!(notes.overshoot_fillets.is_empty(), "{notes:?}");
+        assert!(notes.degenerate_corners.is_empty(), "{notes:?}");
+        // 角点消失，弧点全部落在以角点为心 R=25 的圆上（其余顶点都离角点 ≥ 300）。
+        for p in &poly {
+            let d = (p[0] - corner[0]).hypot(p[1] - corner[1]);
+            assert!(d > 25.0 - 1e-6, "凹弧内侧不许有点：{p:?} 距角点 {d}");
+            assert!(
+                d > 299.0 || (d - 25.0).abs() < 1e-6,
+                "弧点必须落在 R=25 上：{p:?} 距角点 {d}"
+            );
+        }
+        // 这条环是顺时针（有向面积为负）；凹圆角挖料，|面积| 变小、绕向不变，
+        // 挖掉的量在 (0, 理论扇形 ½R²·2α] 之间。
+        let area_sharp = signed_area(&sharp);
+        let area_fixed = signed_area(&poly);
+        assert!(area_sharp < 0.0 && area_fixed < 0.0, "绕向必须保持顺时针");
+        let removed = area_sharp.abs() - area_fixed.abs();
+        let u = [ring[1].x - corner[0], ring[1].y - corner[1]];
+        let w = [ring[3].x - corner[0], ring[3].y - corner[1]];
+        let two_alpha = ((u[0] * w[0] + u[1] * w[1]) / (u[0].hypot(u[1]) * w[0].hypot(w[1])))
+            .clamp(-1.0, 1.0)
+            .acos();
+        let sector = 0.5 * 625.0 * two_alpha;
+        assert!(
+            removed > 0.8 * sector && removed <= sector + 1e-9,
+            "挖掉 {removed}，理论扇形 {sector}（内接扇应略小于它）"
+        );
     }
 }

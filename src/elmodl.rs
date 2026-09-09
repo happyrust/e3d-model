@@ -489,15 +489,20 @@ pub fn model_element_with_cache(
                 section_frame = Some(frame);
                 (solid, None)
             }
-            SectionBody::CentrelineOnly(reason) => {
+            body @ (SectionBody::CentrelineOnly(_) | SectionBody::NoShape(_)) => {
+                let (kind, reason) = match body {
+                    SectionBody::CentrelineOnly(reason) => (SkipKind::CentrelineOnly, reason),
+                    SectionBody::NoShape(reason) => (SkipKind::NoShape, reason),
+                    _ => unreachable!(),
+                };
                 let fitting_parts = section_fitting_parts_of(&noun, el, cache, &mut notes)?;
                 if fitting_parts.is_empty() {
                     return Ok(Modeled::Skipped {
-                        kind: SkipKind::CentrelineOnly,
+                        kind,
                         reason: format!("{reason}; {}", notes.join("; ")),
                     });
                 }
-                notes.push(format!("{noun} 本体仅中心线：{reason}；保留 FITT 可见几何"));
+                notes.push(format!("{noun} 本体无实体：{reason}；保留 FITT 可见几何"));
                 let solid = match fitting_parts.as_slice() {
                     [only] => only.clone(),
                     many => Manifold::compose(many),
@@ -703,6 +708,8 @@ fn section_fitting_parts_of(
 /// [`section_body`] 的三种结局。三条各有各的账，混成一句话就分不出
 /// 「E3D 画了中心线我们没画」与「目录链根本走不通」。
 enum SectionBody {
+    /// Authoritatively empty finite dimensions, distinct from malformed input.
+    NoShape(String),
     /// 切完两端的裸梁 + 它的局部标架（要在属主世界系上右乘）。
     Solid {
         solid: Manifold,
@@ -818,7 +825,12 @@ fn section_body(el: &DbElement, notes: &mut Vec<String>) -> Result<SectionBody, 
             )),
         };
     }
-    let placement = section_placement(el, &profile)?;
+    let placement = match section_placement(el, &profile) {
+        Ok(placement) => placement,
+        Err(error @ crate::section::SectionError::EmptyLength { .. }) =>
+            return Ok(SectionBody::NoShape(error.to_string())),
+        Err(error) => return Err(error.into()),
+    };
     let cuts = section_cut_planes(el, &placement)?;
     match section_local_solid(&profile, &placement, &cuts, notes)? {
         Some(solid) => Ok(SectionBody::Solid {

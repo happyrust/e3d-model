@@ -1859,7 +1859,10 @@ fn profile_rings(
             vertices.push(FilletVertex {
                 x: required_number(&vertex, "PX", env, "catalogue profile vertex")?,
                 y: required_number(&vertex, "PY", env, "catalogue profile vertex")?,
-                frad: optional_number(&vertex, "PRAD", env).unwrap_or(0.0).abs(),
+                // PRAD 语义同设计侧 FRAD：负 = 以顶点为心的凹圆角（discretise 模块
+                // 文档第 4 条）。旧 `.abs()` 会把负值翻成凸圆角——摘除；全库 124 条
+                // 环 PRAD 全 0（上面那份 evidence），摘除不改变现有输出。
+                frad: optional_number(&vertex, "PRAD", env).unwrap_or(0.0),
             });
         }
         let Some((ring, _notes)) = flatten_ring(&vertices) else {

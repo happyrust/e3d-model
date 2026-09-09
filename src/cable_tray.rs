@@ -33,8 +33,8 @@
 //! 拐点（`PPOS[5]`/`FSTART` 语义未钉死）碰到就报 [`DbElementError::PseudoAttribute`]，不猜。
 //!
 //! Core 在几种数据关系断掉的情形下（`CWBRAN` 下没有 `RPATH`、`POSREF` 链落到别的 `CWBRAN`、
-//! 路径只有一个点）会**成功返回 (0,0,0)**——托盘画在 CWBRAN 原点。这里一律报错：几何画在错的地方
-//! 是最高级别缺陷，报告里一条 `failed` 比一只静默落在原点的托盘便宜得多。
+//! 路径只有一个点）会**成功返回 (0,0,0)**——托盘画在 CWBRAN 原点。无 POSREF 且无 RPATH
+//! 的分支遵循该默认放置，带独立 anchor 以便诊断；其他断链仍保留原有错误。
 //!
 //! # 增量级联的欠账
 //!
@@ -116,12 +116,24 @@ pub fn placement(el: &DbElement) -> Result<CableTrayPlacement, DbElementError> {
 
     // 方向判定：直件/变径/接头在 PKDI = 0 时一律向前；其余看 PKDI、ZDIS 的符号。
     let forward_when_zero = matches!(noun.as_str(), "CTSTRA" | "CTREDU" | "CTCOUP");
-    let (path, anchor) = match reference(el, "POSREF")? {
+    let posref = reference(el, "POSREF")?;
+    // readMiddleFormDB (0x109E7B60) returns success when the RPATH search
+    // reaches null. No endpoint was installed, so calculatePOS/ORI keep
+    // their initial zero/identity values; the wrapper still applies angles.
+    // Do not swallow errors for a present but broken POSREF or malformed path.
+    if posref.is_none() && crate::rpath::first_rpath(&cwbran)?.is_none() {
+        return Ok(CableTrayPlacement {
+            position: DVec3::ZERO,
+            rotation: apply_angles(el, DMat3::IDENTITY)?,
+            anchor: Anchor::MissingRouteOrigin,
+        });
+    }
+    let (path, anchor) = match posref {
         Some(posref) => resolve_anchor(el, &cwbran, posref, pkdi, zdis, forward_when_zero)?,
         None => resolve_without_posref(el, &cwbran, pkdi, zdis)?,
     };
 
-    let (position, mut rotation) = match anchor {
+    let (position, rotation) = match anchor {
         Resolved::Segment { a, b, pkdi, zdis } => {
             let point = straight_point(&path, a, b, pkdi, zdis, zoff, jusl);
             let mut position = point.position;
@@ -140,6 +152,14 @@ pub fn placement(el: &DbElement) -> Result<CableTrayPlacement, DbElementError> {
         ),
     };
 
+    Ok(CableTrayPlacement {
+        position,
+        rotation: apply_angles(el, rotation)?,
+        anchor: anchor.anchor(&path),
+    })
+}
+
+fn apply_angles(el: &DbElement, mut rotation: DMat3) -> Result<DMat3, DbElementError> {
     // CAB_DB_PseudoORIonCTELE::getAtt 尾巴：BANG 绕局部 Y（路径方向）、GANGLE 绕局部 Z，
     // 都是右乘（在局部系里转）。库里存的是度；Core 这里把读到的值直接喂给吃弧度的
     // `D3_Matrix::rotateY`（libgeom `sub_10035660` 直接 sincos），而同一个 BANG 在
@@ -156,11 +176,7 @@ pub fn placement(el: &DbElement) -> Result<CableTrayPlacement, DbElementError> {
         rotation *= DMat3::from_rotation_z(gradient.to_radians());
     }
 
-    Ok(CableTrayPlacement {
-        position,
-        rotation,
-        anchor: anchor.anchor(&path),
-    })
+    Ok(rotation)
 }
 
 /// `readMiddleFormDB` 里 `XOFF` 那一格的口径：noun 上**有** `XOFF` 属性就把对正偏移置 0

@@ -43,6 +43,8 @@ pub(crate) const VECTOR_TOL: f64 = 1e-12;
 /// 落点在路径上的位置。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Anchor {
+    /// Core3D succeeds with the initial placement when CTMTRL has no route.
+    MissingRouteOrigin,
     /// 落在 A→B 这条直线段上（含两端；`ZDIS` 越界时钉在端点）。
     Segment { a: RefNo, b: RefNo },
     /// 路径在这一侧没有下一个点（Core `readFormDB` 的端点兜底）：
@@ -53,6 +55,7 @@ pub enum Anchor {
 impl fmt::Display for Anchor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Anchor::MissingRouteOrigin => write!(f, "无路径原点"),
             Anchor::Segment { a, b } => write!(f, "{a}→{b}"),
             Anchor::EndPoint(point) => write!(f, "端点 {point}"),
         }

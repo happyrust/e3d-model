@@ -54,6 +54,8 @@ pub const DEFAULT_JUSTIFICATION_LINE: &str = "NA";
 
 #[derive(Debug, thiserror::Error)]
 pub enum SectionError {
+    #[error("{refno}（{noun}）有限端点间长 {length} mm 不超过 GTDIRS 的 0.001 mm 门，没有截面实体")]
+    EmptyLength { refno: String, noun: String, length: f64 },
     #[error(transparent)]
     Db(#[from] DbElementError),
     #[error(transparent)]
@@ -443,7 +445,11 @@ fn spro_rings(
         }
         let x = required_number(&spve, "PX", env, "section vertex")?;
         let y = required_number(&spve, "PY", env, "section vertex")?;
-        let frad = optional_number(&spve, "PRAD", env).unwrap_or(0.0).max(0.0);
+        // PRAD 与设计侧 PAVE 的 FRAD 同义（模块文档第 4 条）：负 = 以顶点为心的凹圆角，
+        // 由 `flatten_ring` 按 Core3D 的符号分流展开（discretise 模块文档第 4 条）。
+        // 旧 `.max(0.0)` 把负值夹成尖角——那是 flatten_ring 还不认负号时的止血带；
+        // 语料截面 PRAD 未见负值，摘除不改变现有输出。
+        let frad = optional_number(&spve, "PRAD", env).unwrap_or(0.0);
         ring.push(vertex(frame, x, y, frad));
     }
     if ring.is_empty() {
@@ -857,7 +863,12 @@ pub fn placement_between(
 ) -> Result<SectionPlacement, SectionError> {
     let axis = pose - poss;
     let length = axis.length();
-    if !(length > 0.001) || !length.is_finite() {
+    if length.is_finite() && length <= 0.001 {
+        return Err(SectionError::EmptyLength {
+            refno: refno.to_string(), noun: noun.to_string(), length,
+        });
+    }
+    if !length.is_finite() {
         return Err(SectionError::Degenerate {
             refno: refno.to_string(),
             noun: noun.to_string(),
@@ -1711,6 +1722,25 @@ pub fn section_local_solid(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn finite_empty_length_is_distinct_from_invalid_coordinates() {
+        use super::*;
+        let profile = SectionProfile {
+            members: Vec::new(), justification: [0.0; 2],
+            justification_line: "NA".into(), justification_found: false,
+            neutral_axis_spin: 0.0, level: 0, mirrored: false, notes: Vec::new(),
+        };
+        for length in [0.0, 0.0005, 0.001] {
+            assert!(matches!(placement_between("1/1", "SCTN", DVec3::ZERO,
+                DVec3::new(length, 0.0, 0.0), 0.0, &profile), Err(SectionError::EmptyLength { .. })));
+        }
+        for length in [f64::NAN, f64::INFINITY] {
+            assert!(matches!(placement_between("1/1", "SCTN", DVec3::ZERO,
+                DVec3::new(length, 0.0, 0.0), 0.0, &profile), Err(SectionError::Degenerate { .. })));
+        }
+        assert!(placement_between("1/1", "SCTN", DVec3::ZERO,
+            DVec3::new(0.0011, 0.0, 0.0), 0.0, &profile).is_ok());
+    }
     #[test]
     fn fitting_mount_matches_cam_native_axes_and_origin() {
         // RVM: SCTN 24381/47187 and FITT 24381/47188. The former fixed Rx(90)
