@@ -144,6 +144,104 @@ enum PointPart {
     Direction,
 }
 
+/// One catalogue P point of a design member, resolved in the member's
+/// **local** frame (mm; direction normalised). World coordinates are
+/// `world_matrix(member)` applied on top — position with the translation,
+/// direction with the rotation only — exactly as [`resolve`] does for the
+/// route endpoints.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CataloguePoint {
+    /// The point's own `NUMB` (`P1`, `P2`, …).
+    pub number: u32,
+    /// `PTAX` / `PTCA` / `PTMI`.
+    pub noun: String,
+    pub pos: DVec3,
+    pub dir: DVec3,
+    /// `PBOR` when it evaluates.
+    pub bore: Option<f64>,
+}
+
+/// A catalogue P point that exists in the `PTSE` but did not resolve; the
+/// reason is [`CatalogueAxisFailure`]'s text so consumers can tell decoder
+/// gaps from genuinely absent data.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnresolvedCataloguePoint {
+    pub number: u32,
+    pub reason: String,
+}
+
+/// The whole `PTSE` of a design member: every point the catalogue declares,
+/// resolved or not. `component` / `point_set` are `None` when the member has
+/// no `SPRE` chain to a component (or the component has no `PTRE`) — that is
+/// "this element has no P points", not an error; E3D shows none either.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CataloguePointSet {
+    pub component: Option<e3d_io::refno::RefNo>,
+    pub point_set: Option<e3d_io::refno::RefNo>,
+    /// In `PTSE` member order (file order, like E3D's `Q PTSE`).
+    pub points: Vec<CataloguePoint>,
+    pub unresolved: Vec<UnresolvedCataloguePoint>,
+}
+
+/// Enumerate every catalogue P point of `member` (the E3D `PTSET` the
+/// measurement / snapping UIs list), each in the member's local frame.
+///
+/// The route builder only asks for the two endpoints named by `LEAV` /
+/// `ARRI`; this walks the same `SPRE → SCOM → PTRE → PTSE` chain and evaluates
+/// **all** members of the point set with the same expression environment, so
+/// the numbers here are the very ones the implied tubes were attached to.
+///
+/// Only genuine read failures come back as `Err`; a missing chain, an empty
+/// set, or points whose expressions do not evaluate are all reported in the
+/// returned set.
+pub fn catalogue_point_set(member: &DbElement) -> Result<CataloguePointSet, DbElementError> {
+    // 路由端点只对带 LEAV / ARRI 的管件解 P 点，那些 noun 的模板都有 SPRE；这里任何构件
+    // 都可能进来（BRAN、ZONE、STRU…），模板里没有 SPRE 就是「没有目录链」，不是读坏。
+    let component = match catalogue_component(member) {
+        Ok(component) => component,
+        Err(DbElementError::UnknownAttribute { .. }) => None,
+        Err(error) => return Err(error),
+    };
+    let Some(component) = component else {
+        return Ok(CataloguePointSet::default());
+    };
+    let set = match component.get_element(POINT_SET_REF) {
+        Ok(set) => set,
+        Err(DbElementError::UnknownAttribute { .. }) => None,
+        Err(error) => return Err(error),
+    };
+    let Some(set) = set else {
+        return Ok(CataloguePointSet {
+            component: Some(component.refno()),
+            ..CataloguePointSet::default()
+        });
+    };
+    let mut out = CataloguePointSet {
+        component: Some(component.refno()),
+        point_set: Some(set.refno()),
+        ..CataloguePointSet::default()
+    };
+    for point in set.members()? {
+        let Some(number) = point_number(&point) else {
+            continue;
+        };
+        match catalogue_point_local_checked(member, &component, number)? {
+            Ok(local) => out.points.push(CataloguePoint {
+                number,
+                noun: point.element_type()?,
+                pos: local.pos,
+                dir: local.dir,
+                bore: local.bore,
+            }),
+            Err(failure) => out.unresolved.push(UnresolvedCataloguePoint {
+                number,
+                reason: failure.to_string(),
+            }),
+        }
+    }
+    Ok(out)
+}
+
 impl PPointResolver for CataloguePoints {
     fn leave(
         &self,
@@ -631,6 +729,21 @@ mod tests {
         )));
         let member = set.element(e3d_io::refno::RefNo::new(0, 0));
         assert_eq!(resolve(&member, None).unwrap(), None);
+    }
+
+    /// 读库失败（库没注册）要原样上浮成 `Err`，不能被吞成「这个构件没有 P 点」——
+    /// 空集是数据事实，读不到库是故障，两者对消费方是两种回答。
+    #[test]
+    fn an_unreadable_member_is_an_error_not_an_empty_point_set() {
+        let set = std::sync::Arc::new(e3d_io::db_element::DbSet::new(std::sync::Arc::new(
+            e3d_attlib::AttlibData::default(),
+        )));
+        let member = set.element(e3d_io::refno::RefNo::new(0, 0));
+        assert!(matches!(
+            catalogue_point_set(&member),
+            Err(DbElementError::DbNotRegistered { dbno: 0 })
+        ));
+        assert_eq!(CataloguePointSet::default().points.len(), 0);
     }
 
     /// trait 是对象安全的，用起来才能塞进 `&dyn PPointResolver`。

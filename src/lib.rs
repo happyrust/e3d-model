@@ -63,7 +63,10 @@ pub use catalogue::{
     CatalogueMeshCache, CatalogueMeshCacheStats, model_catalogue_member,
     model_catalogue_member_with_cache,
 };
-pub use catalogue_point::CataloguePoints;
+pub use catalogue_point::{
+    CataloguePoint, CataloguePointSet, CataloguePoints, UnresolvedCataloguePoint,
+    catalogue_point_set,
+};
 pub use category::{
     BuildDisposition, Category, CompositeFamily, NounDecision, classify, decision,
     route_container_nouns, route_member_nouns,
