@@ -38,7 +38,9 @@ fn pool() -> Arc<DbSet> {
         file: ams.join("ams8000_0001"),
         template: template_file_for(&template, "DESI").unwrap(),
         db_type: Some("DESI".into()),
-        sesno: None,
+        // The native RVM fixture was exported from this frozen AMS snapshot.
+        // Keep the differential regression independent from later SAVEWORKs.
+        sesno: Some(281),
     })
     .unwrap();
     set
@@ -84,15 +86,6 @@ fn tray_bends_match_native_e3d_rvm_and_application_filters() {
     ];
     for (word1, expected_lo, expected_hi, expected_components) in cases {
         let (lo, hi, components, diagnostics) = local_bounds(&set, word1);
-        assert!(
-            lo.abs_diff_eq(expected_lo, 0.60),
-            "{word1}: lo={lo}, components={components}"
-        );
-        assert!(
-            hi.abs_diff_eq(expected_hi, 0.60),
-            "{word1}: hi={hi}, components={components}"
-        );
-        assert_eq!(components, expected_components, "{word1}: component count");
         if word1 == 22406 {
             assert!(
                 diagnostics.iter().any(|line| line.contains("rpro-outa")),
@@ -103,6 +96,15 @@ fn tray_bends_match_native_e3d_rvm_and_application_filters() {
                 "OUTB filter missing: {diagnostics:?}"
             );
         }
+        assert!(
+            lo.abs_diff_eq(expected_lo, 0.60),
+            "{word1}: lo={lo}, components={components}"
+        );
+        assert!(
+            hi.abs_diff_eq(expected_hi, 0.60),
+            "{word1}: hi={hi}, components={components}"
+        );
+        assert_eq!(components, expected_components, "{word1}: component count");
     }
 }
 
