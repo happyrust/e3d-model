@@ -386,6 +386,7 @@ fn probe_ctele(
                 let anchor_kind = match placed.anchor {
                     cable_tray::Anchor::Segment { .. } => "segment",
                     cable_tray::Anchor::EndPoint(_) => "endpoint",
+                    cable_tray::Anchor::MissingRouteOrigin => "missing-route-origin",
                 };
                 *census
                     .placement_anchor
