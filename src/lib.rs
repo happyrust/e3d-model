@@ -57,6 +57,7 @@ pub mod rvm_write;
 pub mod section;
 pub mod solid;
 pub mod transform;
+pub mod udet;
 
 pub use cable_tray::{CABLE_TRAY_ELEMENT_NOUNS, CableTrayPlacement, is_cable_tray_element};
 pub use catalogue::{

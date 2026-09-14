@@ -261,6 +261,25 @@ impl DirectoryDbResolver {
         out
     }
 
+    /// 可解析的库里类型是 `db_type` 的那些，升序。
+    ///
+    /// 消费方按类型挑库用：`gen_ams` 的 UDET 名字表要先找出目录里的 DICT 库
+    /// （见 [`crate::udet::UdetCatalog::scan`]），而工程目录里躺着哪些库是这里才知道的。
+    pub fn dbnos_of_type(&self, db_type: &str) -> Vec<u32> {
+        let mut out: Vec<u32> = self
+            .pins
+            .iter()
+            .filter(|(_, pin)| {
+                pin.db_type
+                    .as_deref()
+                    .is_some_and(|actual| actual.eq_ignore_ascii_case(db_type))
+            })
+            .map(|(dbno, _)| *dbno)
+            .collect();
+        out.sort_unstable();
+        out
+    }
+
     /// 一行人话总结，给 CLI 开场打印。
     pub fn summary(&self) -> String {
         let mut by_type: BTreeMap<&str, usize> = BTreeMap::new();
@@ -462,6 +481,10 @@ mod tests {
         assert_eq!(pin.template, template_dir.join("catvir.dat"));
 
         assert!(resolver.resolve(4242).is_none(), "没扫到的库不猜");
+
+        assert_eq!(resolver.dbnos_of_type("CATA"), vec![5052]);
+        assert_eq!(resolver.dbnos_of_type("desi"), vec![8000], "类型名不分大小写");
+        assert!(resolver.dbnos_of_type("DICT").is_empty());
     }
 
     /// extent 文件不单独外交：它由主文件按命名约定附挂。
