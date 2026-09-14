@@ -523,9 +523,11 @@ pub fn is_model_unit(noun: &str) -> bool {
         // `section_body`。它与 `WALL` 不是一回事——`WALL` 没有 SPRE，沿 SPINE 弧扫 DESP 矩形。
         // `RAIL` / `KICKPL` 共用那条截面链，只是路径在属主 HANDRA 的 RPATH 上、按
         // `STAREF`/`ENDREF` 取一段（`crate::handrail::detailed_item_local_solid`）。
+        // `FIXING` 是第八个例外，走的却不是截面链而是目录构件 GMRE 求值那条
+        // （与路由成员同一个求值器，见 [`builds_from_catalogue_component`]）。
         Category::Catalog => matches!(
             noun,
-            "SBFI" | "WALL" | "SCTN" | "GENSEC" | "STWALL" | "RAIL" | "KICKPL"
+            "SBFI" | "WALL" | "SCTN" | "GENSEC" | "STWALL" | "RAIL" | "KICKPL" | "FIXING"
         ),
 
         // 路由成员的实体 = 目录 GMRE 程序求值（`crate::catalogue`），键正是
@@ -556,6 +558,12 @@ pub fn is_model_unit(noun: &str) -> bool {
             noun.trim().eq_ignore_ascii_case("HANDRA")
         }
 
+        // 类 28：`NOZZ` 的实体是它 `CATR` 那只目录件的 GMRE 求值结果，键就是
+        // element:refno——与路由成员同型，只是入口换了一跳
+        // （[`enters_catalogue_by_catref`]）。同族的 ELCONN / EQUCOM 还没有语料，
+        // 留在待建账上。
+        Category::Composite(CompositeFamily::CoreClass28) => enters_catalogue_by_catref(noun),
+
         // 以下都不产出挂在自己 refno 上的实体。逐条列而不是一个 `_ => false`：
         // 见上面那段——通配符会把「新变体默认不是单元」这个危险假设变成沉默的默认值。
         Category::List
@@ -574,6 +582,39 @@ pub fn is_model_unit(noun: &str) -> bool {
         | Category::Unsupported(_)
         | Category::Unknown => false,
     }
+}
+
+/// 这个 noun 的目录件直接挂在 `CATR` 上，没有 `SPRE` 那一跳。
+///
+/// 路由成员的目录链从规格起跳（`SPRE → SPCO --CATR--> SCOM`），`NOZZ` 不是：设计侧
+/// 存的就是 `CATREF`，`SPREF` 整个属性都不在它的 attlist 上（SLYK `38293/8889`：
+/// `Catref /ZSYKCLASS150/ZSYK-AAZFBB0YY`、`Cref`/`Ispec` 皆 `Nulref`）。换掉入口那一跳
+/// 之后，后面 `SPCO/GPART/PRTELE --CATR-->`、`TABITEM --PRTREF-->` 的归一循环与
+/// GMRE 求值与路由成员逐句共用。
+///
+/// 只认 `NOZZ`：类 28 另外两个 noun（`ELCONN` / `EQUCOM`）手上还没有语料，把它们
+/// 一并放进来等于拿一条没验过的入口去换它们账上那笔如实的欠款。
+pub fn enters_catalogue_by_catref(noun: &str) -> bool {
+    noun.trim().eq_ignore_ascii_case("NOZZ")
+}
+
+/// 这个目录件的整件几何**就是目录构件 GMRE 的求值结果**，与路由成员逐句同形
+/// （`SPRE → SPCO --CATR--> SCOM --GMRE-->`，设计侧 `DESP` 当参数）。
+///
+/// 与同属 [`Category::Catalog`] 的型材族（`SCTN`/`GENSEC`/`STWALL`/`RAIL`/`KICKPL`）
+/// 分开：那一族走的是 `SPRE→SPCO→CATR→SPRF→GSTR→GMSS` 取**截面**，再沿
+/// `POSS→POSE`（或 SPINE / RPATH）挤成一段。`FIXING` 身上没有路径可挤——它是一件
+/// 就地摆放的参数化构件，`POS`/`ORI` 直接给世界位姿。
+///
+/// 只认 `FIXING`：`FITT`/`PFIT`/`CMFI` 手上还没有对得上的语料，把它们一并放进来
+/// 等于拿一条没验过的入口去换它们账上那笔如实的欠款。
+///
+/// 取证（SLYK `/石楼装卸车-SUPP1`，2026-09-14）：69 只 FIXING 全部 `SPRE` 有值，
+/// 指向 `/FHG-PLAT-RECT(G)-C`（`DESP=[200,200,10]`，E3D 导的是 Box 200×200×10）
+/// 与 `/FHG-ExpansionBolt(S)-M12`（`DESP=[160]`，E3D 导的是 Snout + FacetGroup +
+/// Cylinder×2 一套膨胀螺栓）。两条 SPCO 都带 `CATR`，后面那一段与路由成员共用。
+pub fn builds_from_catalogue_component(noun: &str) -> bool {
+    noun.trim().eq_ignore_ascii_case("FIXING")
 }
 
 /// 这个 noun 会不会**在自己名下派生出一批几何**——即全量管线不为它本身出实体，
@@ -1401,6 +1442,12 @@ mod tests {
         assert_eq!(classify("STWALL"), Category::Catalog);
         assert!(!classify("STWALL").is_positive_solid());
         assert!(is_model_unit("STWALL"));
+        // FIXING：也是目录件，但走的是目录构件 GMRE 求值那条（与路由成员同一个
+        // 求值器），不是截面链——实体照样挂在自己的 refno 上。
+        assert_eq!(classify("FIXING"), Category::Catalog);
+        assert!(!classify("FIXING").is_positive_solid());
+        assert!(is_model_unit("FIXING"));
+        assert!(builds_from_catalogue_component("FIXING"));
         // HANDRA（recheck-4 W4-1）：布局式扶手的栏杆与立柱挂在 HANDRA 自己的 refno 上；
         // 同族的 HRPOST/STRFLT 还没有 builder，不能顺手一起认成单元。
         assert_eq!(
@@ -1426,10 +1473,12 @@ mod tests {
             assert!(is_model_unit(noun), "{noun} 是正体，必然是模型单元");
         }
         // 其余目录件本期不出几何，不能被顺手一起认成单元——那会让增量对着一批
-        // 模型集里根本不存在的 refno 发 Remove。
-        for noun in ["FITT", "PFIT", "CMFI", "FIXING"] {
+        // 模型集里根本不存在的 refno 发 Remove。`FIXING` 与它们同族同入口
+        // （都是 `SPRE`），语料只覆盖了 `FIXING`，另外三个照旧欠着。
+        for noun in ["FITT", "PFIT", "CMFI"] {
             assert_eq!(classify(noun), Category::Catalog, "{noun}");
             assert!(!is_model_unit(noun), "{noun} 本期不产实体");
+            assert!(!builds_from_catalogue_component(noun), "{noun} 还没有语料");
         }
         // 路由容器会产出隐式管身，但那些几何不按容器 refno 索引，见判据文档。
         for noun in ["BRAN", "HANG", "LUG", "SUPC", "TRUNNI"] {
@@ -1494,9 +1543,44 @@ mod tests {
                 "{noun} 只算放置，几何在它下面的 CTRAY 上"
             );
         }
-        // 别的复合族照旧不是单元：它们的 builder 还没有，全量也不为它们出实体。
-        for noun in ["NOZZ", "ELCONN", "EQUCOM"] {
+        // 类 28 剩下两个照旧不是单元：它们的 builder 还没有，全量也不为它们出实体。
+        // `NOZZ` 2026-09-14 起是单元，见
+        // [`the_nozzle_enters_its_catalogue_by_catref_and_is_a_unit`]。
+        for noun in ["ELCONN", "EQUCOM"] {
             assert!(!is_model_unit(noun), "{noun}");
+        }
+    }
+
+    /// `NOZZ` 的目录件挂在 `CATR` 上，不是 `SPRE`——它是一件模型单元，同族另外两个不是。
+    ///
+    /// 这条钉的是 SLYK 上一次实跑：`/泵房设备` 那 9 台设备名下 34 只 NOZZ 一只都不出
+    /// 几何，报告四本账（skipped / failed / unsupported / unknown）全是空的，只在
+    /// `evidence_pending` 上挂着——而 E3D 自己的窄口径 RVM 里那 29 只带几何的一只不少。
+    /// 病灶是分类到了 `Composite(CoreClass28)` 之后掉进那条什么都不做的臂；接上目录
+    /// 求值后 29 只逐件对上 RVM（exact 16 / chord 13 / off 0）。
+    ///
+    /// 单元判据与管线产出必须同进同退：只接管线那一侧，被删的 NOZZ 就永远不出 Remove
+    /// ——`is_model_unit` 文档里 SBFI 那次事故的机理。
+    #[test]
+    fn the_nozzle_enters_its_catalogue_by_catref_and_is_a_unit() {
+        assert!(enters_catalogue_by_catref("NOZZ"));
+        assert!(
+            enters_catalogue_by_catref(" nozz "),
+            "口径要 trim + 忽略大小写"
+        );
+        assert_eq!(
+            classify("NOZZ"),
+            Category::Composite(CompositeFamily::CoreClass28)
+        );
+        assert!(is_model_unit("NOZZ"), "NOZZ 的目录实体挂在自己 refno 上");
+        assert!(!is_derived_unit("NOZZ"), "NOZZ 名下不派生别的键");
+        // 同族另外两个还没有语料：入口那一跳没验过，账上那笔欠款要留着。
+        for noun in ["ELCONN", "EQUCOM"] {
+            assert!(!enters_catalogue_by_catref(noun), "{noun}");
+        }
+        // 路由成员照旧从 SPRE 起跳，这次改动不许动它们的入口。
+        for noun in ["ELBO", "FTUB", "VALV", "FLAN"] {
+            assert!(!enters_catalogue_by_catref(noun), "{noun}");
         }
     }
 

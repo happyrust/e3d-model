@@ -307,7 +307,20 @@ pub fn model_element_with_cache(
     // 有意不走下面共享的负体扣减路：成员的负体语义在目录侧（SBOX 底下的
     // NSCY/NSBO/NLCY，已在求值臂内扣完），设计侧子负体在全量管线里同样不由
     // 路由成员消费，两边照旧各记各的账。
-    if category == Category::RouteMember {
+    //
+    // `NOZZ` 走同一条：它的实体同样是目录件 GMRE 的求值结果，只是入口那一跳是
+    // `CATR`（`category::enters_catalogue_by_catref`）。全量在管线里与路由成员共用
+    // 那条臂，增量就得在这里共用同一份答案，否则又是一次 SBFI 同型缺口。
+    //
+    // `FIXING` 也走这一条：它同属目录件，但几何不是型材截面而是目录构件的 GMRE
+    // 求值结果，入口与路由成员一样是 `SPRE`（`category::builds_from_catalogue_component`）。
+    let noun = el.element_type()?;
+    if category == Category::RouteMember
+        || (matches!(category, Category::Composite(CompositeFamily::CoreClass28))
+            && crate::category::enters_catalogue_by_catref(&noun))
+        || (category == Category::Catalog
+            && crate::category::builds_from_catalogue_component(&noun))
+    {
         let build = model_catalogue_member_with_cache(el, cache)?;
         return Ok(match build.generated {
             Some(generated) => Modeled::Solid(Box::new(generated)),
@@ -317,13 +330,12 @@ pub fn model_element_with_cache(
                     "目录侧无可见几何，E3D 同样不出几何：{}（局部失败 {} 条）",
                     build
                         .no_shape
-                        .unwrap_or_else(|| "无 SPRE/GMRE 或成员全退化".to_string()),
+                        .unwrap_or_else(|| "无 SPRE/CATR/GMRE 或成员全退化".to_string()),
                     build.diagnostics.len()
                 ),
             },
         });
     }
-    let noun = el.element_type()?;
     // 电缆桥架托盘：与管线 `Composite(CableTray) if noun == "CTRAY"` 臂同一份目录求值。
     // 判据在 `category::is_model_unit`（CTRAY 是单元、桥架件不是），这里只是它的执行臂
     // ——少了它，增量上卷到 CTRAY 之后就掉进下面的设计侧正体路，对着一个没有
@@ -348,6 +360,21 @@ pub fn model_element_with_cache(
             },
         });
     }
+    // DRWAND 的表现级门对**正体**同样成立，不只对刀。SLYK `/Big-HS-SEED-ZONE` 里十只
+    // 种子盒写的是 `LEVE=[7,10]`，TTY 会话停在 `LEVEL 0`，E3D 的窄口径 RVM 里它们连
+    // 一个组都没有；我们照建不误，十只凭空多出来。门只挡这一只元素的几何，不剪它的
+    // 成员——E3D 也照样把上面的 STRU 容器导了出来，只是空的。
+    let level = repre_level_of(el)?;
+    let (leve_lo, leve_hi) = negative_leve(el);
+    if !design_leve_admits(leve_lo, leve_hi, level) {
+        return Ok(Modeled::Skipped {
+            kind: SkipKind::NoShape,
+            reason: format!(
+                "LEVE=[{leve_lo},{leve_hi}] 不含表现级 {level}（DRWAND 门，E3D 同样不画）"
+            ),
+        });
+    }
+
     let mut notes = Vec::new();
     // Decide the instancing boundary before constructing the positive body.
     // Any boolean operand stays at real dimensions: unit scaling can differ by
@@ -827,8 +854,9 @@ fn section_body(el: &DbElement, notes: &mut Vec<String>) -> Result<SectionBody, 
     }
     let placement = match section_placement(el, &profile) {
         Ok(placement) => placement,
-        Err(error @ crate::section::SectionError::EmptyLength { .. }) =>
-            return Ok(SectionBody::NoShape(error.to_string())),
+        Err(error @ crate::section::SectionError::EmptyLength { .. }) => {
+            return Ok(SectionBody::NoShape(error.to_string()));
+        }
         Err(error) => return Err(error.into()),
     };
     let cuts = section_cut_planes(el, &placement)?;

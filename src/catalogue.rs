@@ -17,7 +17,9 @@ use e3d_io::db_param_env::DbElementParamEnv;
 use e3d_io::record::catalogue_eval::AttributeNumber;
 use e3d_io::record::descriptor::DescriptorValue;
 
-use crate::catalogue_point::{CatalogueAxis, catalogue_component, resolve_catalogue_axis};
+use crate::catalogue_point::{
+    CatalogueAxis, catalogue_component, catalogue_entry_attribute, resolve_catalogue_axis,
+};
 use crate::category::{RepreDiscipline, repre_discipline};
 use crate::discretise::{FilletVertex, flatten_ring};
 use crate::elmodl::{GeneratedElement, GeometryId, ModelError};
@@ -699,6 +701,11 @@ pub(crate) fn repre_obst_on() -> bool {
 /// 有的藏掉。SDIS 233/233、LSNO 1142、SCON 128、LCYL 156、SSPH 64（`TUFL=false/CLFL=true`）
 /// 与 SCYL 100、DAMP `/RVCD-CLASH` 盒（`OBST 1/TUFL=false/CLFL=false`）在 RVM 里一件都没有。
 ///
+/// **`OBST` 不是「画不画」的旗**：`OBST=2`（硬障碍）正是普通实心构件的常态值。2026-09-14
+/// 试过把 `OBST=2 ∧ TUFL=true` 也按障碍体收走，SLYK 80 个 ZONE 当场 26 个从 PASS 掉到 OFF，
+/// `/Copy-of-装卸车PI` 一个 ZONE 就少了 1490 件（ELBOW / FLANGE / FILTER 的本体），
+/// 8729 只图元被误筛。要判「这只图元画不画」只看 TUFL / CLFL / LEVE 这三样。
+///
 /// 曾经的反例已经消化：`C-IY` 基准里 `OBST=1/TUFL=false` 的净空盒被 E3D 导出，是因为那份
 /// addin 导出开着一级 `REPRE OBST`（TTY 基线宏是 `repre obst off`）。DR3DWA / DRWANT 的公式是
 /// `in_level ∧ (OBST>0 ∧ obst_level>=OBST ∨ TUFL ∧ tube_on ∨ CLFL ∧ cl_on)`——`TUFL=false`
@@ -706,6 +713,12 @@ pub(crate) fn repre_obst_on() -> bool {
 /// `E3D_REPRE_OBST=on`，需要二级障碍体时设 `all`。
 /// HANG 24381/177986 的 HELEMENT 把 `CLFL=true` 的三个 SCYL 和一个 SEXT 全部导出——
 /// 它们 `TUFL=true`，本筛照画；"CLFL 即隐藏"仍然是错的读法。
+///
+/// 曾经的反例已经消化：`C-IY` 基准里 `OBST=1/TUFL=false` 的净空盒被 E3D 导出，是因为那份
+/// addin 导出开着一级 `REPRE OBST`（TTY 基线宏是 `repre obst off`）——对拍托盘语料时设
+/// `E3D_REPRE_OBST=on`，需要二级障碍体时设 `all`。
+/// HANG 24381/177986 的 HELEMENT 把 `CLFL=true` 的三个 SCYL 和一个 SEXT 全部导出——
+/// 它们 `OBST=0 ∧ TUFL=true`，本筛照画；"CLFL 即隐藏"仍然是错的读法。
 ///
 /// `level` 是**成员**那一档的表现级（[`repre_level_of`]）：同一 GMSE 被管道构件与风管构件
 /// 共用时，两边按各自的 `LEVEL PIPE` / `LEVEL HVAC` 筛。
@@ -798,12 +811,13 @@ pub fn model_catalogue_member_with_cache(
     let component = catalogue_component(member)?;
     drop(chain);
     let Some(component) = component else {
-        // 两种没形状要分开记：没有 SPRE 是设计数据没给规格（E3D 同样不出几何）；有 SPRE
+        // 两种没形状要分开记：没有入口属性是设计数据没给规格（E3D 同样不出几何）；有了
         // 却走不到 SCOM 是链断（SPCO 无 CATR/PRTREF、引用悬空、库没开），得指出从哪儿断。
-        let no_shape = match member.get_element("SPRE")? {
-            None => "路由成员无 SPRE：没有目录链，无几何（E3D 同样不出）".to_string(),
+        let entry = catalogue_entry_attribute(&member.element_type()?);
+        let no_shape = match member.get_element(entry)? {
+            None => format!("设计件无 {entry}：没有目录链，无几何（E3D 同样不出）"),
             Some(spec) => format!(
-                "目录链从 SPRE {} 走不到 SCOM（SPCO 无 CATR/PRTREF 或引用悬空），无几何",
+                "目录链从 {entry} {} 走不到 SCOM（SPCO 无 CATR/PRTREF 或引用悬空），无几何",
                 spec.refno()
             ),
         };
@@ -1508,7 +1522,15 @@ fn preserves_catalogue_components(saw_display_primitive: bool) -> bool {
 fn model_hvac_rectangular_basic(
     member: &DbElement,
 ) -> Result<Option<CatalogueMemberBuild>, ModelError> {
-    let Some(spec) = member.get_element("SPRE")? else {
+    // 模板里根本没有 `SPRE` 的 noun（`NOZZ` 就是）不是风管构件，与「有这个属性但空着」
+    // 同样直接出局。缺属性在这里当错误抛，会让所有从 `CATR` 起跳的设计件在读到风管
+    // 捷径这一步就整只失败——错误说的还是一个它本来就不该有的属性。
+    let spec = match member.get_element("SPRE") {
+        Ok(spec) => spec,
+        Err(e3d_io::db_element::DbElementError::UnknownAttribute { .. }) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let Some(spec) = spec else {
         return Ok(None);
     };
     let Some(spec_name) = spec.stored_name()? else {

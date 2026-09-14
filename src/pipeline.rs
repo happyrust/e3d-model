@@ -38,7 +38,7 @@ use crate::catalogue::{
 use crate::catalogue_point::{CataloguePoints, tube_outer_diameter_from_stub};
 use crate::category::{
     BuildDisposition, Category, CompositeFamily, decision, derives_implied_tubes,
-    graphics_ignored_below, is_model_unit,
+    enters_catalogue_by_catref, graphics_ignored_below, is_model_unit,
 };
 use crate::elmodl::{GeneratedElement, GeometryId, Modeled, SkipKind, model_element_with_cache};
 use crate::extrusion_reuse::ExtrusionReuseStats;
@@ -464,50 +464,32 @@ pub fn generate_subtree_with_cache(
             }
             Category::RouteMember => {
                 *report.route_members.entry(noun.clone()).or_insert(0) += 1;
-                match model_catalogue_member_with_cache(&el, catalogue_mesh_cache) {
-                    Ok(build) => {
-                        for detail in &build.diagnostics {
-                            report.notes.push(Incident {
-                                refno: refno.clone(),
-                                noun: noun.clone(),
-                                detail: detail.clone(),
-                            });
-                        }
-                        match build.generated {
-                            Some(generated) => {
-                                for note in &generated.notes {
-                                    report.notes.push(Incident {
-                                        refno: refno.clone(),
-                                        noun: noun.clone(),
-                                        detail: note.clone(),
-                                    });
-                                }
-                                record_generated(&mut report, &noun, 1);
-                                elements.push(generated);
-                            }
-                            // 路由成员没形状是常态（无 SPRE 的 FTUB、无 GMRE 的 MDS 支撑
-                            // 参考、全零高的目录件），不进 skipped；但**依据**必须留在 notes 里，
-                            // 否则报告上分不出「有意不画」与「漏建」（ams8000 体检 105 件）。
-                            //
-                            // 这一支**不**回冲 evidence_pending：没出形状的那几件是否真该没有，
-                            // 还没有对着 E3D 逐件核过，账上留着才看得见。
-                            None => {
-                                if let Some(reason) = build.no_shape {
-                                    report.notes.push(Incident {
-                                        refno: refno.clone(),
-                                        noun: noun.clone(),
-                                        detail: reason,
-                                    });
-                                }
-                            }
-                        }
-                    }
-                    Err(error) => report.failed.push(Incident {
-                        refno,
-                        noun,
-                        detail: error.to_string(),
-                    }),
-                }
+                build_catalogue_geometry(
+                    &el,
+                    &refno,
+                    &noun,
+                    false,
+                    catalogue_mesh_cache,
+                    &mut report,
+                    &mut elements,
+                );
+            }
+            // 类 28 的 `NOZZ` 与路由成员**几何同源**：实体都是目录件 GMRE 的求值结果，
+            // 只是入口从 `SPRE` 换成 `CATR`（[`enters_catalogue_by_catref`]），所以共用同一个
+            // 执行体而不是再抄一份求值。它自己的成员聚合（`sub_107210A0` 那条 builder 链）
+            // 是另一半，还没有——SLYK 那 34 只 NOZZ 一个成员都没有，这一半就是全部。
+            Category::Composite(CompositeFamily::CoreClass28)
+                if enters_catalogue_by_catref(&noun) =>
+            {
+                build_catalogue_geometry(
+                    &el,
+                    &refno,
+                    &noun,
+                    true,
+                    catalogue_mesh_cache,
+                    &mut report,
+                    &mut elements,
+                );
             }
             Category::PrimitiveContainer => {
                 *report.primitive_containers.entry(noun.clone()).or_insert(0) += 1;
@@ -660,7 +642,11 @@ pub fn generate_subtree_with_cache(
 /// 库类型只问池里**已经开着**的库（读过的元素所在库必然开着），按 dbno 记一次；
 /// 类型字解不出来的库当非目录——宁少不多是这里的口径：这份名单是对拍 oracle 的
 /// 「实读」一侧，把一个非目录元素混进去会让闭包对拍误报「漏」。
-fn catalogue_reads(set: &e3d_io::db_element::DbSet, root_dbno: u32, reads: Vec<RefNo>) -> Vec<RefNo> {
+fn catalogue_reads(
+    set: &e3d_io::db_element::DbSet,
+    root_dbno: u32,
+    reads: Vec<RefNo>,
+) -> Vec<RefNo> {
     let mut is_catalogue: BTreeMap<u32, bool> = BTreeMap::new();
     reads
         .into_iter()
@@ -706,6 +692,74 @@ fn decrement(ledger: &mut BTreeMap<String, usize>, noun: &str) {
         if *count == 0 {
             ledger.remove(noun);
         }
+    }
+}
+
+/// 目录件 GMRE 求值那条臂的执行体：路由成员与类 28 的 `NOZZ` 共用。
+///
+/// 两者的几何是同一件事——设计件指到一只目录件，实体由它的 GMRE 程序求值得出，键就是
+/// 设计件自己的 refno。差别只有两处，都由 `class28` 这一个参数说清：入口属性在
+/// [`crate::category::enters_catalogue_by_catref`] 里分岔，产出记在哪本账上在这里分岔
+/// （NOZZ 不是路由成员，记 `composites_built`，与 CTRAY 同档）。
+///
+/// 抽成函数而不是让两条臂共用一个带 guard 的或模式：`Category::RouteMember | …
+/// if guard` 的 guard 盖住整个模式，编译器不认它必然覆盖 `RouteMember`，match 当场
+/// 不完备。
+fn build_catalogue_geometry(
+    el: &DbElement,
+    refno: &str,
+    noun: &str,
+    class28: bool,
+    cache: &mut CatalogueMeshCache,
+    report: &mut Report,
+    elements: &mut Vec<GeneratedElement>,
+) {
+    match model_catalogue_member_with_cache(el, cache) {
+        Ok(build) => {
+            for detail in &build.diagnostics {
+                report.notes.push(Incident {
+                    refno: refno.to_string(),
+                    noun: noun.to_string(),
+                    detail: detail.clone(),
+                });
+            }
+            match build.generated {
+                Some(generated) => {
+                    for note in &generated.notes {
+                        report.notes.push(Incident {
+                            refno: refno.to_string(),
+                            noun: noun.to_string(),
+                            detail: note.clone(),
+                        });
+                    }
+                    record_generated(report, noun, 1);
+                    if class28 {
+                        *report.composites_built.entry(noun.to_string()).or_insert(0) += 1;
+                    }
+                    elements.push(generated);
+                }
+                // 路由成员没形状是常态（无 SPRE 的 FTUB、无 GMRE 的 MDS 支撑参考、全零高
+                // 的目录件），不进 skipped；但**依据**必须留在 notes 里，否则报告上分不出
+                // 「有意不画」与「漏建」（ams8000 体检 105 件）。
+                //
+                // 这一支**不**回冲 evidence_pending：没出形状的那几件是否真该没有，还没有
+                // 对着 E3D 逐件核过，账上留着才看得见。
+                None => {
+                    if let Some(reason) = build.no_shape {
+                        report.notes.push(Incident {
+                            refno: refno.to_string(),
+                            noun: noun.to_string(),
+                            detail: reason,
+                        });
+                    }
+                }
+            }
+        }
+        Err(error) => report.failed.push(Incident {
+            refno: refno.to_string(),
+            noun: noun.to_string(),
+            detail: error.to_string(),
+        }),
     }
 }
 
@@ -1270,12 +1324,16 @@ mod tests {
         let stack_built = body
             .find("let mut stack: Vec<DbElement> = vec![root];")
             .expect("显式栈");
-        let finished = body
-            .find("read_trace.finish()")
-            .expect("DFS 后要收账");
+        let finished = body.find("read_trace.finish()").expect("DFS 后要收账");
         let outcome = body.find("Ok(GenerationOutcome {").expect("回执");
-        assert!(opened < stack_built, "记录器要在压栈之前打开，根自己的读也在作用域里");
-        assert!(stack_built < finished && finished < outcome, "收账在 DFS 之后、回执之前");
+        assert!(
+            opened < stack_built,
+            "记录器要在压栈之前打开，根自己的读也在作用域里"
+        );
+        assert!(
+            stack_built < finished && finished < outcome,
+            "收账在 DFS 之后、回执之前"
+        );
         assert!(
             body.contains("catalogue_visited,") || body.contains("catalogue_visited:"),
             "回执里要带 catalogue_visited"

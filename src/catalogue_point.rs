@@ -457,12 +457,24 @@ fn mixed(point: &DbElement, env: &DbElementParamEnv) -> Result<(DVec3, DVec3), P
     Ok((pos, DVec3::from_array(dir)))
 }
 
-/// `SPRE`（→ `CATR`）→ 目录件。
+/// `SPRE`（→ `CATR`）→ 目录件；`NOZZ` 那一族从 `CATR` 直接起跳，见
+/// [`catalogue_entry_attribute`]。
 pub(crate) fn catalogue_component(member: &DbElement) -> Result<Option<DbElement>, DbElementError> {
-    let Some(current) = member.get_element(SPEC_REF)? else {
+    let entry = catalogue_entry_attribute(&member.element_type()?);
+    let Some(current) = member.get_element(entry)? else {
         return Ok(None);
     };
     follow_catalogue_component(current)
+}
+
+/// 这个设计 noun 的目录链从哪个属性起跳。报告里那句「没有 X」也拿它取名——写死
+/// `SPRE` 会让一只没有目录件的 NOZZ 被指控缺一个它本来就不该有的属性。
+pub(crate) fn catalogue_entry_attribute(noun: &str) -> &'static str {
+    if crate::category::enters_catalogue_by_catref(noun) {
+        CATALOGUE_REF
+    } else {
+        SPEC_REF
+    }
 }
 
 /// Resolve a catalogue axis, including Core's `Pn` form.
