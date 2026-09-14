@@ -194,6 +194,33 @@ fn rvm_component_geometry(
     })
 }
 
+/// E3D 把这些元素**当拉伸体导出**，一律 `FacetGroup`——识别器再认得出盒子也不能写 `Box`。
+///
+/// 依据在 RVM 驱动里：`expdri/DRWEXT`（拉伸体写出器）写的记录种类是常数 11 = FacetGroup
+/// （`unk_1000D394`），顶盖、N 张侧面、底盖各一条多边形；没有「截面恰好是矩形就改写 Box」
+/// 这一条——盒子走的是另一条 `DRBOX`，只有真图元（设计 BOX / 目录 SBOX）才到得了那里。
+/// 80 根严尺子印证（2026-09-14 实测）：名词认得出来的这一族 1 168 件，E3D 侧写的是
+/// 1 223 条 `FacetGroup` 与 52 条 `Pyramid`（空心矩形 SCTN 的壁板），**一条 `Box` 都没有**；
+/// 我们的网格识别器不知来历，把其中的矩形截面认成 `Box`、棱台形管墩认成 `Pyramid`——
+/// 几何 exact、种类却不一致。接上这一条之后严尺子的 kind 不一致从 1 383 件降到 799 件。
+///
+/// 名单 = 设计侧环拉伸（[`e3d_model::category::Category::LoopExtrusion`]：PANE / FLOOR / EXTR /
+/// AEXTR / SCREED / GWALL）+ 型材扫掠（SCTN / GENSEC / STWALL / WALL / RAIL / KICKPL）。
+/// 目录构件（FITT / FIXING / SBFI / PCOM…）**不在**名单里：它们由 GMSE 图元拼成，E3D 走
+/// DRBOX / DRCYL 等图元写出器——`:SDS_Entity 3` 那块底板就是 E3D 自己写的 `Pyramid`。
+///
+/// 空心矩形 SCTN（E3D 拆成 4 条 `Pyramid` 壁板）不受影响：本来就是一条面片对 4 条 Pyramid，
+/// 那是另一件事（拆板）。
+fn e3d_exports_as_extrusion(noun: &str) -> bool {
+    matches!(
+        e3d_model::category::classify(noun),
+        e3d_model::category::Category::LoopExtrusion
+    ) || matches!(
+        noun,
+        "SCTN" | "GENSEC" | "STWALL" | "WALL" | "RAIL" | "KICKPL"
+    )
+}
+
 /// E3D 给 RVM 组用的显示名：命名元素直接是 `/NAME`，无名元素是
 /// `<NOUN> <n> of <OWNER 显示名>`。
 ///
@@ -590,6 +617,8 @@ fn main() -> anyhow::Result<()> {
     )];
     // 写成解析图元的件数 / 有可复用基本体但自校没过、退回 FacetGroup 的件数。
     let (mut rvm_analytic, mut rvm_analytic_rejected) = (0usize, 0usize);
+    // 拉伸体族（SCTN / FLOOR / PANE…）不进识别器、照 E3D 直接写面片的组件数。
+    let mut rvm_extrusion_facets = 0usize;
     let obj_path = args.out.join("model.obj");
     let mut obj = std::io::BufWriter::new(
         std::fs::File::create(&obj_path).with_context(|| format!("建 {}", obj_path.display()))?,
@@ -781,9 +810,11 @@ fn main() -> anyhow::Result<()> {
                     .map(TriMesh::from_manifold)
                     .filter(|m| !m.indices.is_empty())
                     .collect();
+                // 拉伸体族照 E3D 的写法一律面片，不进识别器（见 [`e3d_exports_as_extrusion`]）。
+                let facets_only = e3d_exports_as_extrusion(&generated.noun);
                 // `PrimitiveInstance` 描述的是**整个元素**（`local_transform` 在元素局部系里），
                 // 所以只有单组件时它才说得准；多组件的逐块自己认几何。
-                let whole_element_instance = (component_meshes.len() == 1)
+                let whole_element_instance = (!facets_only && component_meshes.len() == 1)
                     .then_some(generated.primitive_instance.as_ref())
                     .flatten()
                     .and_then(|instance| {
@@ -801,6 +832,18 @@ fn main() -> anyhow::Result<()> {
                         let local: Vec<[f64; 3]> =
                             component.vertices.iter().map(to_local).collect();
                         let tris: Vec<[u32; 3]> = component.indices.as_chunks::<3>().0.to_vec();
+                        if facets_only {
+                            rvm_extrusion_facets += 1;
+                            geometries.push(
+                                e3d_model::rvm_write::facet_group_from_world_triangles(
+                                    rotation,
+                                    world.w_axis.truncate().to_array(),
+                                    &local,
+                                    &tris,
+                                ),
+                            );
+                            continue;
+                        }
                         let (clo, chi) = component.aabb().unwrap_or(([0.0; 3], [0.0; 3]));
                         geometries.push(rvm_component_geometry(
                             world,
@@ -895,7 +938,7 @@ fn main() -> anyhow::Result<()> {
         };
         file.write(&rvm_path)?;
         println!(
-            "RVM: {} 个成员（解析图元 {rvm_analytic} / 自校未过退回面片 {rvm_analytic_rejected}）-> {}",
+            "RVM: {} 个成员（解析图元 {rvm_analytic} / 自校未过退回面片 {rvm_analytic_rejected} / 拉伸体照 E3D 写面片 {rvm_extrusion_facets}）-> {}",
             file.members.len() - 1,
             rvm_path.display()
         );
