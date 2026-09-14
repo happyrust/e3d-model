@@ -118,6 +118,10 @@ enum Recogniser {
     Cylinder,
     Snout,
     CircularTorus,
+    /// **只由出身挑中**（`SRTO`），不进 [`RECOGNISER_ORDER`]：矩形轮廓的 `SREV` / 设计
+    /// `REVO` 回转出来的网格与矩形环一模一样，而 E3D 对那两族写的是烘好的 `FacetGroup`
+    /// ——按长相轮到它，就把那些面片写成了 `RectangularTorus`。
+    RectangularTorus,
     Pyramid,
     Sphere,
     SphericalDish,
@@ -127,6 +131,7 @@ enum Recogniser {
 /// 没有出身可依时的兜底次序。**次序有讲究**：等径不偏心的圆台让给圆柱、同形不偏心的
 /// 棱台让给盒子，顶点恰好共球的正棱柱先被圆柱接走，球的识别器再靠内切比把剩下的多面体
 /// 挡在外面；折边碟排在球形碟后面——球形碟的顶点全在冠球上，先被那一条认走。
+/// `RectangularTorus` 不在这里，见它自己那条注释。
 const RECOGNISER_ORDER: [Recogniser; 8] = [
     Recogniser::Box,
     Recogniser::Cylinder,
@@ -147,16 +152,19 @@ const RECOGNISER_ORDER: [Recogniser; 8] = [
 /// 是 302 件（300 只阀门的手轮座 + 2 只等径 LSNO）。
 ///
 /// 名单只列**一个目录图元对一种记录**的那几族。`SDSH` 不在里面：它按 r/h 分成折边碟、
-/// 球形碟与退化成圆盘三种结局，一个 noun 对不上一把识别器，仍交给兜底次序。`SRTO` 也不在：
-/// E3D 写的是 `RectangularTorus`，而这边还没有那把识别器（19 件仍挂着）。
+/// 球形碟与退化成圆盘三种结局，一个 noun 对不上一把识别器，仍交给兜底次序。
 ///
-/// 挑中的那把**先试**，认不出来照旧走兜底次序——自校闸一道没少。
+/// 挑中的那把**先试**，认不出来照旧走兜底次序——自校闸一道没少。`SRTO` 那把是例外中的
+/// 例外：它**只有**出身这一条路上场（见 [`Recogniser::RectangularTorus`]），兜底次序里没有它。
 fn recogniser_for_catalogue_noun(noun: &str) -> Option<Recogniser> {
     match noun {
         "SBOX" => Some(Recogniser::Box),
         "SCYL" | "LCYL" => Some(Recogniser::Cylinder),
         "LSNO" | "SCON" => Some(Recogniser::Snout),
         "SCTO" => Some(Recogniser::CircularTorus),
+        // E3D 的 DRRTO：`/TT-0301` 那一族两只 180° 的半环各写一条 `RectangularTorus`
+        // （inner 45 / outer 55 / height 25 / angle π），我们此前只能交面片——19 件。
+        "SRTO" => Some(Recogniser::RectangularTorus),
         // `LPYR` 是目录图元；`SREC` 是型材截面的矩形成员，挤出来是一根棱柱，E3D 的
         // `DB_Sctn` 逐成员走 DRPYR 写它——**同样是看名词，不看长相**：`/CS001` 的截面也是
         // 矩形，只因为写成 `SPRO` + 4 个 `SPVE`，E3D 出的就是一条 `FacetGroup`。
@@ -204,6 +212,10 @@ fn analytic_candidate(
         Recogniser::CircularTorus => {
             let torus = write::torus_from_local_mesh(local_vertices, triangles)?;
             Some(write::circular_torus_geometry(world, &torus))
+        }
+        Recogniser::RectangularTorus => {
+            let torus = write::rect_torus_from_local_mesh(local_vertices, triangles)?;
+            Some(write::rectangular_torus_geometry(world, &torus))
         }
         Recogniser::Pyramid => {
             let pyramid = if by_provenance {

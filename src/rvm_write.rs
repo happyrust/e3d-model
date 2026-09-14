@@ -1085,6 +1085,373 @@ pub fn circular_torus_geometry(world: &glam::DMat4, torus: &RecognisedTorus) -> 
     }
 }
 
+/// 一段矩形环（目录 `SRTO` / 设计 `RTOR`）的识别结果，全在局部系 mm。
+#[derive(Debug, Clone, Copy)]
+pub struct RecognisedRectTorus {
+    /// 内半径，对应 RVM 的 `inner`。`RINS` 被内核夹成 0（内缘贴轴）时就是 0。
+    pub inner: f64,
+    /// 外半径，对应 RVM 的 `outer`。
+    pub outer: f64,
+    /// 截面高（沿扫掠轴），对应 RVM 的 `height`。
+    pub height: f64,
+    /// 包角（弧度）；整圈是 `TAU`。
+    pub angle: f64,
+    /// 扫掠中心，落在截面高度的中平面上。
+    pub centre: glam::DVec3,
+    /// 扫掠轴（RVM 的局部 +Z）：从 `start` 起绕它右手转 `angle`，正好盖住实体。
+    pub axis: glam::DVec3,
+    /// 起始径向（RVM 的局部 +X）。
+    pub start: glam::DVec3,
+    /// 扫掠折线的段数：部分环的顶点分布在 `sweep_steps + 1` 圈截面上，整圈是 `sweep_steps` 圈。
+    pub sweep_steps: usize,
+}
+
+impl RecognisedRectTorus {
+    /// 环面与它的内接网格之间的缺口。
+    ///
+    /// 截面本身是矩形、没有离散化，只剩扫掠折线那一处；按外半径算——AABB 的极值
+    /// 只可能落在外弧上，内弧的弦离真面再远也顶不到盒边。
+    pub fn sagitta_mm(&self) -> f64 {
+        chord_sagitta_mm(self.outer, self.angle / self.sweep_steps as f64)
+    }
+}
+
+/// 网格是一段**矩形环**（矩形截面绕轴扫过 `angle`）时把它解出来；整圈也认。
+///
+/// 认法**先定轴、再定心**，不靠端盖：整圈没有端盖，半圈的两个端盖又反向平行
+/// （`/TT-0301` 那一族 18 件全是 180°），圆环那把靠端盖叉乘定轴的路子在这里两头都走不通。
+///
+/// 1. 环的顶面 / 底面是两张平面环带，法向就是轴向——候选轴取自面法向，三角面多的先试；
+/// 2. 沿轴所有顶点恰落两档 → 截面高 `h`；
+/// 3. 顶面边界多边形上相邻三点共圆，外接圆心就是扫掠中心——三点里混进径向边的那几组
+///    给出的圆心过不了下一步，跳过就是；
+/// 4. 每个顶点到轴的距离必须恰好只有两档（`inner` / `outer`），轴向恰好 `±h/2`，
+///    且每一圈截面四个角都在；
+/// 5. 顶点按角位分圈，相邻两圈之间有三角面相连才算实体走过那一段：一段都没断就是整圈
+///    （`angle = 2π`），断开一处就是从它下一圈起、转到它上一圈止；断开两处不是一段环。
+///
+/// 每一步都能被下一步证伪，对不上就返回 None；调用方的 AABB 自校闸再兜一道。
+///
+/// **只该由出身（`SRTO`）挑中它上场，别放进按长相轮的兜底次序**：矩形轮廓的 `SREV` /
+/// 设计 `REVO` 回转出来的网格与它一模一样，而 E3D 对那两族写的是烘好的 `FacetGroup`。
+pub fn rect_torus_from_local_mesh(
+    vertices: &[[f64; 3]],
+    triangles: &[[u32; 3]],
+) -> Option<RecognisedRectTorus> {
+    use glam::DVec3;
+    let points: Vec<DVec3> = vertices.iter().copied().map(DVec3::from_array).collect();
+    if points.len() < 8 || triangles.len() < 12 {
+        return None;
+    }
+
+    // 候选轴：面法向去重（正反算同一个方向），三角面多的先试——顶面 / 底面各有 2N 个
+    // 三角面，侧面每段只有 2 个，通常第一个候选就中。
+    let mut groups: Vec<(DVec3, usize)> = Vec::new();
+    for tri in triangles {
+        let [a, b, c] = tri.map(|i| points[i as usize]);
+        let normal = (b - a).cross(c - a);
+        if normal.length_squared() <= 0.0 {
+            continue;
+        }
+        let normal = normal.normalize();
+        match groups
+            .iter_mut()
+            .find(|(n, _)| (*n - normal).length() < 1e-7 || (*n + normal).length() < 1e-7)
+        {
+            Some((_, count)) => *count += 1,
+            None => groups.push((normal, 1)),
+        }
+    }
+    groups.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+    groups
+        .iter()
+        .find_map(|(axis, _)| rect_torus_about_axis(&points, triangles, *axis))
+}
+
+/// [`rect_torus_from_local_mesh`] 的第 2、3 步：按给定的轴向定截面高与扫掠中心。
+fn rect_torus_about_axis(
+    points: &[glam::DVec3],
+    triangles: &[[u32; 3]],
+    axis: glam::DVec3,
+) -> Option<RecognisedRectTorus> {
+    let origin = points[0];
+    let (lo, hi) = two_levels_along(points, axis, origin)?;
+    let height = hi - lo;
+    if !(height > 1e-6) {
+        return None;
+    }
+    let mid = origin + axis * ((lo + hi) / 2.0);
+
+    // 顶面 = 三个顶点都落在高档的三角面。侧面与端盖的每个三角面都跨两档，混不进来。
+    let top: Vec<[u32; 3]> = triangles
+        .iter()
+        .copied()
+        .filter(|tri| {
+            tri.iter()
+                .all(|i| ((points[*i as usize] - origin).dot(axis) - hi).abs() <= 1e-6)
+        })
+        .collect();
+    if top.len() < 2 {
+        return None;
+    }
+    // 顶面的边界边 = 只在一个三角面里出现的边。
+    let mut edge_counts: Vec<((u32, u32), usize)> = Vec::new();
+    for tri in &top {
+        for k in 0..3 {
+            let (a, b) = (tri[k], tri[(k + 1) % 3]);
+            let key = (a.min(b), a.max(b));
+            match edge_counts.iter_mut().find(|(e, _)| *e == key) {
+                Some((_, n)) => *n += 1,
+                None => edge_counts.push((key, 1)),
+            }
+        }
+    }
+    let boundary: Vec<(u32, u32)> = edge_counts
+        .into_iter()
+        .filter(|(_, n)| *n == 1)
+        .map(|(e, _)| e)
+        .collect();
+    let mut boundary_vertices: Vec<u32> = boundary.iter().flat_map(|(a, b)| [*a, *b]).collect();
+    boundary_vertices.sort_unstable();
+    boundary_vertices.dedup();
+
+    // 边界上每个顶点恰有两个邻点；(邻点, 顶点, 邻点) 共圆时外接圆心就是扫掠中心。
+    // 顶点是端盖角上那四个时三点跨了径向边，算出来的圆心过不了校验，换下一个。
+    for &v in &boundary_vertices {
+        let mut neighbours = boundary.iter().filter_map(|(a, b)| {
+            if *a == v {
+                Some(*b)
+            } else if *b == v {
+                Some(*a)
+            } else {
+                None
+            }
+        });
+        let (Some(p), Some(r), None) = (neighbours.next(), neighbours.next(), neighbours.next())
+        else {
+            continue;
+        };
+        let Some(centre) = circumcentre(points[p as usize], points[v as usize], points[r as usize])
+        else {
+            continue;
+        };
+        // 圆心落回中平面：三点都在高档，算出来的圆心也在高档。
+        let centre = centre - axis * (centre - mid).dot(axis);
+        if let Some(found) = rect_torus_about(points, triangles, axis, centre, height) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// [`rect_torus_from_local_mesh`] 的第 4、5 步：轴与中心都定了，校验每个顶点并量出包角。
+fn rect_torus_about(
+    points: &[glam::DVec3],
+    triangles: &[[u32; 3]],
+    axis: glam::DVec3,
+    centre: glam::DVec3,
+    height: f64,
+) -> Option<RecognisedRectTorus> {
+    use glam::DVec3;
+    let h2 = height / 2.0;
+
+    // 逐顶点：轴向 ±h/2，径向只许两档。贴轴的顶点（内半径夹成 0 那一档）没有角位。
+    let mut radii: Vec<f64> = Vec::with_capacity(2);
+    let mut reference: Option<DVec3> = None;
+    let mut cylindrical: Vec<(f64, f64, DVec3)> = Vec::with_capacity(points.len());
+    for p in points {
+        let w = *p - centre;
+        let z = w.dot(axis);
+        if (z.abs() - h2).abs() > 1e-6 {
+            return None;
+        }
+        let planar = w - axis * z;
+        let rho = planar.length();
+        if !radii.iter().any(|r| (r - rho).abs() <= 1e-6) {
+            radii.push(rho);
+            if radii.len() > 2 {
+                return None;
+            }
+        }
+        if rho > 1e-6 && reference.is_none() {
+            reference = Some(planar / rho);
+        }
+        cylindrical.push((rho, z, planar));
+    }
+    if radii.len() != 2 {
+        return None;
+    }
+    let inner = radii[0].min(radii[1]);
+    let outer = radii[0].max(radii[1]);
+    let inner = if inner <= 1e-6 { 0.0 } else { inner };
+    if !(outer > inner) {
+        return None;
+    }
+    let x0 = reference?;
+    let y0 = axis.cross(x0);
+
+    // 顶点按角位分圈。`ring_of[i]` 是顶点 i 所在的圈；贴轴的顶点记 None。
+    let mut ring_angles: Vec<f64> = Vec::new();
+    let mut ring_of: Vec<Option<usize>> = Vec::with_capacity(points.len());
+    // 每圈四个角（外低、外高、内低、内高）都得在；内半径为 0 时只查外侧两个。
+    let mut corners: Vec<[bool; 4]> = Vec::new();
+    for (rho, z, planar) in &cylindrical {
+        if *rho <= 1e-6 {
+            ring_of.push(None);
+            continue;
+        }
+        let mut phi = planar.dot(y0).atan2(planar.dot(x0));
+        if phi < -1e-7 {
+            phi += std::f64::consts::TAU;
+        } else if phi < 0.0 {
+            phi = 0.0;
+        }
+        let ring = match ring_angles.iter().position(|a| (a - phi).abs() <= 1e-7) {
+            Some(index) => index,
+            None => {
+                ring_angles.push(phi);
+                corners.push([false; 4]);
+                ring_angles.len() - 1
+            }
+        };
+        let slot = usize::from((rho - outer).abs() > 1e-6) * 2 + usize::from(*z > 0.0);
+        corners[ring][slot] = true;
+        ring_of.push(Some(ring));
+    }
+    if ring_angles.len() < 3 {
+        return None;
+    }
+    let required = if inner > 0.0 { 4 } else { 2 };
+    if corners
+        .iter()
+        .any(|slots| slots.iter().take(required).any(|present| !present))
+    {
+        return None;
+    }
+
+    // 圈按角位排序；相邻两圈（含末圈接首圈）之间要有跨这两圈的三角面才算实体走过那一段。
+    let mut order: Vec<usize> = (0..ring_angles.len()).collect();
+    order.sort_by(|a, b| ring_angles[*a].total_cmp(&ring_angles[*b]));
+    let mut rank = vec![0usize; ring_angles.len()];
+    for (position, ring) in order.iter().enumerate() {
+        rank[*ring] = position;
+    }
+    let count = order.len();
+    let mut linked = vec![false; count];
+    for tri in triangles {
+        let mut spanned: [Option<usize>; 2] = [None, None];
+        let mut ok = true;
+        for i in tri {
+            let Some(ring) = ring_of[*i as usize] else {
+                continue;
+            };
+            let position = rank[ring];
+            match spanned {
+                [Some(a), _] if a == position => {}
+                [_, Some(b)] if b == position => {}
+                [None, _] => spanned[0] = Some(position),
+                [Some(_), None] => spanned[1] = Some(position),
+                _ => {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        if !ok {
+            continue;
+        }
+        if let [Some(a), Some(b)] = spanned {
+            let (lo, hi) = (a.min(b), a.max(b));
+            if hi - lo == 1 {
+                linked[lo] = true;
+            } else if lo == 0 && hi == count - 1 {
+                linked[count - 1] = true;
+            }
+        }
+    }
+    let gaps: Vec<usize> = (0..count).filter(|k| !linked[*k]).collect();
+    let (start_position, angle, sweep_steps) = match gaps[..] {
+        // 一段都没断：整圈。起点随便取一圈——记录绕回来是同一只环。
+        [] => (0, std::f64::consts::TAU, count),
+        // 断开一处：从它下一圈起，转到它上一圈止。
+        [gap] => {
+            let start = (gap + 1) % count;
+            let sweep = (ring_angles[order[gap]] - ring_angles[order[start]])
+                .rem_euclid(std::f64::consts::TAU);
+            (start, sweep, count - 1)
+        }
+        _ => return None,
+    };
+    if !(angle > 0.0) {
+        return None;
+    }
+    let phi_start = ring_angles[order[start_position]];
+    let start = x0 * phi_start.cos() + y0 * phi_start.sin();
+
+    Some(RecognisedRectTorus {
+        inner,
+        outer,
+        height,
+        angle,
+        centre,
+        axis,
+        start,
+        sweep_steps,
+    })
+}
+
+/// 三点的外接圆心（三维，落在三点所在的平面内）。共线时 None。
+fn circumcentre(p: glam::DVec3, q: glam::DVec3, r: glam::DVec3) -> Option<glam::DVec3> {
+    let a = p - r;
+    let b = q - r;
+    let cross = a.cross(b);
+    let denom = 2.0 * cross.length_squared();
+    if denom < 1e-18 {
+        return None;
+    }
+    Some(r + (b * a.length_squared() - a * b.length_squared()).cross(cross) / denom)
+}
+
+/// 由 [`rect_torus_from_local_mesh`] 认出来的矩形环造一条 `RectangularTorus` 记录。
+///
+/// RVM 的局部帧与圆环同款：扫掠绕 **+Z**、从 **+X** 起转；截面沿 Z 居中（±h/2）。
+pub fn rectangular_torus_geometry(
+    world: &glam::DMat4,
+    torus: &RecognisedRectTorus,
+) -> AnalyticCandidate {
+    let x = torus.start;
+    let z = torus.axis;
+    let y = z.cross(x);
+    let frame = glam::DMat4::from_cols(
+        x.extend(0.0),
+        y.extend(0.0),
+        z.extend(0.0),
+        torus.centre.extend(1.0),
+    );
+    let placed = *world * frame;
+    let cols = placed.to_cols_array();
+    let matrix3 = [
+        cols[0], cols[1], cols[2], cols[4], cols[5], cols[6], cols[8], cols[9], cols[10],
+    ]
+    .map(|value| value / M_TO_MM);
+    let primitive =
+        Primitive::RectangularTorus([torus.inner, torus.outer, torus.height, torus.angle]);
+    let record_bbox = primitive.local_aabb_mm().unwrap_or([0.0; 6]);
+    AnalyticCandidate {
+        geometry: RvmGeometry {
+            tag: "PRIM".to_string(),
+            flags: 1,
+            primitive,
+            matrix3,
+            translation_mm: [cols[12], cols[13], cols[14]],
+            record_bbox,
+            bbox_frame: crate::rvm_read::BboxFrame::Local,
+            level: None,
+        },
+        sagitta_mm: torus.sagitta_mm(),
+    }
+}
+
 /// 由 [`cylinder_from_local_mesh`] 认出来的圆柱造一条 `Cylinder` 记录。
 ///
 /// RVM 的 `Cylinder` 轴向是**局部 Z、沿 Z 居中**，所以要把识别出来的轴转到 Z。
@@ -2318,6 +2685,60 @@ mod tests {
             (torus.radius - (outer - inner) / 2.0).abs() < 1e-6,
             "{torus:?}"
         );
+    }
+
+    /// 拿 `rect_torus_solid` 自己造几段矩形环再认回来——半圈（`/TT-0301` 那一族的 180°）、
+    /// 四分之一、过半（270°：包角得取实体走过的那一侧，不是端盖夹的锐角）、整圈、贴轴。
+    #[test]
+    fn recognises_rectangular_tori_built_by_the_solid_kernel() {
+        for (rins, rout, height, sweep_deg) in [
+            (45.0_f64, 55.0_f64, 25.0_f64, 180.0_f64),
+            (200.0, 260.0, 40.0, 90.0),
+            (300.0, 500.0, 200.0, 270.0),
+            (90.0, 110.0, 10.0, 360.0),
+            (0.0, 50.0, 20.0, 120.0),
+        ] {
+            let solid = crate::solid::rect_torus_solid(rins, rout, height, sweep_deg).unwrap();
+            let mesh = crate::mesh::TriMesh::from_manifold(&solid);
+            let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
+            let torus = rect_torus_from_local_mesh(&mesh.vertices, &triangles)
+                .unwrap_or_else(|| panic!("矩形环应认得回来: {rins}/{rout}/{height}/{sweep_deg}"));
+            assert!((torus.inner - rins).abs() < 1e-6, "{torus:?}");
+            assert!((torus.outer - rout).abs() < 1e-6, "{torus:?}");
+            assert!((torus.height - height).abs() < 1e-6, "{torus:?}");
+            assert!(
+                (torus.angle.to_degrees() - sweep_deg).abs() < 1e-6,
+                "{sweep_deg}°: {torus:?}"
+            );
+            assert!(torus.centre.length() < 1e-6, "{torus:?}");
+            assert!((torus.axis.z.abs() - 1.0).abs() < 1e-9, "{torus:?}");
+
+            // 写出来的记录必须过自校闸——起点或轴向取反了，部分环的 AABB 立刻翻到另一侧。
+            let world = glam::DMat4::from_rotation_z(0.4) * glam::DMat4::from_rotation_x(0.7);
+            let (lo, hi) = world_aabb_of(&mesh.vertices, &world);
+            let candidate = rectangular_torus_geometry(&world, &torus);
+            assert!(
+                candidate.matches_mesh_aabb(lo, hi, 0.01),
+                "{rins}/{rout}/{height}/{sweep_deg}: sagitta={} 候选={:?} 网格=({lo:?}, {hi:?})",
+                candidate.sagitta_mm,
+                candidate.world_aabb_mm()
+            );
+            assert_eq!(candidate.geometry.primitive.kind_id(), 3);
+        }
+    }
+
+    /// 弯头、直管、盒子都不是矩形环：弯头的顶点不落两档，直管与盒子的顶面顶点只有一个半径。
+    #[test]
+    fn other_shapes_are_not_mistaken_for_a_rectangular_torus() {
+        for solid in [
+            crate::solid::circ_torus_solid(95.0, 105.0, 90.0).unwrap(),
+            crate::solid::csg_cylinder_solid(100.0, 400.0).unwrap(),
+            crate::solid::box_solid(100.0, 60.0, 40.0).unwrap(),
+        ] {
+            let mesh = crate::mesh::TriMesh::from_manifold(&solid);
+            let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
+            assert!(rect_torus_from_local_mesh(&mesh.vertices, &triangles).is_none());
+        }
     }
 
     #[test]
