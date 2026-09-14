@@ -411,6 +411,8 @@ pub fn model_element_with_cache(
     // JUSL p-line 推出来的，要在**属主**世界系上右乘。拿到值的那一路在这里留一手，
     // 下面算 `world` 时用。
     let mut section_frame: Option<DMat4> = None;
+    // 截面本体并集前的那几块（局部系）。RVM 的记录单位是 GMSS 成员，不是并集后的一块。
+    let mut section_members: Vec<Manifold> = Vec::new();
 
     let local_timing = crate::perf::local_solid_scope();
     let (local, primitive_instance) = match category {
@@ -512,8 +514,13 @@ pub fn model_element_with_cache(
             }
         }
         Category::Catalog if is_section_like(&noun) => match section_body(el, &mut notes)? {
-            SectionBody::Solid { solid, frame } => {
+            SectionBody::Solid {
+                solid,
+                members,
+                frame,
+            } => {
                 section_frame = Some(frame);
+                section_members = members;
                 (solid, None)
             }
             body @ (SectionBody::CentrelineOnly(_) | SectionBody::NoShape(_)) => {
@@ -667,10 +674,26 @@ pub fn model_element_with_cache(
     // 全量遍历会有意剪掉它，增量也会把 FITT 的变化上卷到 SCTN。因此必须在 SCTN
     // builder 内复用目录求值器，并把可见目录图元作为同一根的组件保留下来。
     let parts = if noun == "SCTN" {
-        let mut section_parts = vec![solid.clone()];
-        section_parts.extend(section_fitting_parts(el, cache, &mut notes)?);
+        // 本体那几块：E3D 逐 GMSS 成员写记录（管型材的截面是两个 `PANG=180` 的 SANN 半环，
+        // 基准 RVM 里就是同心反向的两条面片），所以记录单位取并集前的成员，而不是并集后的
+        // 一块。带负体时只有并集体是可见结果——`parts` 按定义是「非布尔」的那一份，退回整只。
+        let mut section_parts = if negatives_applied == 0 && section_members.len() > 1 {
+            section_members
+                .iter()
+                .map(|member| placed(member, world))
+                .collect()
+        } else {
+            vec![solid.clone()]
+        };
+        let fittings = section_fitting_parts(el, cache, &mut notes)?;
+        if !fittings.is_empty() {
+            // FITT 不在 `solid` 里，得并进可见实体；本体那几块本来就在，别重复并。
+            let mut composed = vec![solid.clone()];
+            composed.extend(fittings.iter().cloned());
+            solid = Manifold::compose(&composed);
+            section_parts.extend(fittings);
+        }
         if section_parts.len() > 1 {
-            solid = Manifold::compose(&section_parts);
             Some(section_parts)
         } else {
             None
@@ -740,6 +763,9 @@ enum SectionBody {
     /// 切完两端的裸梁 + 它的局部标架（要在属主世界系上右乘）。
     Solid {
         solid: Manifold,
+        /// 并集前的逐 GMSS 成员实体（与 `solid` 同一局部系），RVM 按它们写记录。
+        /// GENSEC 的扫掠还没按成员拆，那一支交空表 = 「只有整只一块」。
+        members: Vec<Manifold>,
         frame: DMat4,
     },
     CentrelineOnly(String),
@@ -843,8 +869,10 @@ fn section_body(el: &DbElement, notes: &mut Vec<String>) -> Result<SectionBody, 
         let bang_deg = el.get_double("BANG")?.unwrap_or(0.0);
         // 实体已在 GENSEC 自身局部系里（SPINE 点经 SPINE 的 POS/ORI 折算），标架取单位阵。
         return match spine_swept_solid(&profile, &path, bang_deg, notes)? {
+            // 扫掠是逐成员**再逐路径段**并起来的，拆回记录单位是另一件事，这里先不拆。
             Some(solid) => Ok(SectionBody::Solid {
                 solid,
+                members: Vec::new(),
                 frame: DMat4::IDENTITY,
             }),
             None => Ok(SectionBody::CentrelineOnly(
@@ -861,8 +889,9 @@ fn section_body(el: &DbElement, notes: &mut Vec<String>) -> Result<SectionBody, 
     };
     let cuts = section_cut_planes(el, &placement)?;
     match section_local_solid(&profile, &placement, &cuts, notes)? {
-        Some(solid) => Ok(SectionBody::Solid {
-            solid,
+        Some(built) => Ok(SectionBody::Solid {
+            solid: built.body,
+            members: built.members,
             frame: placement.local,
         }),
         None => Ok(SectionBody::CentrelineOnly(

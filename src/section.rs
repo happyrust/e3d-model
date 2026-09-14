@@ -1675,23 +1675,39 @@ pub fn cut_plane_normal(to_local: DMat3, raw: DVec3, inward_z: f64) -> DVec3 {
     normal
 }
 
+/// [`section_local_solid`] 的成品：可见实体，加上并集**之前**的那几块。
+///
+/// 两样都要交出去，是因为 RVM 的记录单位不是 `body`：E3D 逐 GMSS 成员建体，**一个成员
+/// 写一条记录**。管型材的截面就是两个 `PANG=180` 的 SANN 半环（见 [`SectionProfile`]），
+/// 基准 RVM 里它是同心、互转 180° 的两条面片；并成一块之后 `Manifold` 再也分不回来
+/// ——两个半环焊成一只整圈管，`decompose()` 拆出来仍旧是一块。
+pub struct SectionSolid {
+    /// 逐成员挤出、各自端切、再并起来的可见实体。
+    pub body: Manifold,
+    /// 与 `body` 同一局部系的逐成员实体；`body` 就是它们的并集，至少一块。
+    pub members: Vec<Manifold>,
+}
+
 /// 直段实体（局部系 = [`SectionPlacement::local`] 的截面平面，沿 +Z 挤出）：
-/// 每个 GMSS 成员各挤一根后并集，再拿两端切平面各切一刀
+/// 每个 GMSS 成员各挤一根、各自拿两端切平面切一刀，再并起来
 /// （`DB_makeCSG` 的 `profile` → `xsec1` 两阶段）。
+///
+/// 端切在并集**之前**逐成员做：半空间求交对并集可分配，成品与「先并后切」同形，而逐成员
+/// 那几块得以留到 [`SectionSolid::members`] 里——RVM 要按它们写记录。
 ///
 /// 环先减 JUSL 偏移再按 [`crate::discretise::flatten_ring`] 折线化（PRAD 倒圆在这里变成弧点）；
 /// 挤出区间按 [`SectionCuts::extrusion_range`] 先拉到两平面之外（XSPYR），**这一步不能省**
 /// ——只在 `[0, L]` 里切，斜切面的远侧会缺掉一块本该长出来的材料。
 ///
-/// 全部成员都折不出环、或两平面把梁切空时交 `Ok(None)`，由调用方按
+/// 全部成员都折不出环、或两平面把每一块都切空时交 `Ok(None)`，由调用方按
 /// 「E3D 同样只画中心线」记账。
 pub fn section_local_solid(
     profile: &SectionProfile,
     placement: &SectionPlacement,
     cuts: &SectionCuts,
     notes: &mut Vec<String>,
-) -> Result<Option<Manifold>, SectionError> {
-    let mut solids: Vec<Manifold> = Vec::new();
+) -> Result<Option<SectionSolid>, SectionError> {
+    let mut members: Vec<Manifold> = Vec::new();
     for (member_refno, rings) in placed_profile_rings(profile, notes) {
         let (z_min, z_max) = cuts.extrusion_range(&rings, placement.length);
         if z_min < 0.0 || z_max > placement.length {
@@ -1700,30 +1716,35 @@ pub fn section_local_solid(
                 placement.length
             ));
         }
-        match extrude_rings(rings, z_max - z_min) {
-            Ok(solid) => solids.push(solid.translate(0.0, 0.0, z_min)),
-            Err(error) => notes.push(format!("截面成员 {member_refno} 挤出失败：{error}")),
+        let mut solid = match extrude_rings(rings, z_max - z_min) {
+            Ok(solid) => solid.translate(0.0, 0.0, z_min),
+            Err(error) => {
+                notes.push(format!("截面成员 {member_refno} 挤出失败：{error}"));
+                continue;
+            }
+        };
+        for (end, plane) in [("POSS", cuts.start), ("POSE", cuts.end)] {
+            if plane.is_axial() {
+                continue;
+            }
+            solid = cut_by_plane(&solid, plane.point, plane.normal);
+            if solid.is_empty() {
+                notes.push(format!(
+                    "{end} 端切面（法向 {:?}）把截面成员 {member_refno} 切空",
+                    plane.normal.to_array()
+                ));
+                break;
+            }
+        }
+        if !solid.is_empty() {
+            members.push(solid);
         }
     }
-    let mut iter = solids.into_iter();
-    let Some(first) = iter.next() else {
+    let Some((first, rest)) = members.split_first() else {
         return Ok(None);
     };
-    let mut body = iter.fold(first, |acc, next| acc.union(&next));
-    for (end, plane) in [("POSS", cuts.start), ("POSE", cuts.end)] {
-        if plane.is_axial() {
-            continue;
-        }
-        body = cut_by_plane(&body, plane.point, plane.normal);
-        if body.is_empty() {
-            notes.push(format!(
-                "{end} 端切面（法向 {:?}）把梁切空",
-                plane.normal.to_array()
-            ));
-            return Ok(None);
-        }
-    }
-    Ok(Some(body))
+    let body = rest.iter().fold(first.clone(), |acc, next| acc.union(next));
+    Ok(Some(SectionSolid { body, members }))
 }
 
 #[cfg(test)]
@@ -2057,7 +2078,8 @@ mod tests {
         let mut notes = Vec::new();
         let solid = section_local_solid(&profile, &placement, &cuts, &mut notes)
             .expect("斜切梁应当建得出来")
-            .expect("两端 45° 平行斜切不会把梁切空");
+            .expect("两端 45° 平行斜切不会把梁切空")
+            .body;
         assert!(
             (solid.volume() - 40_000.0).abs() < 1e-3,
             "体积 {}，期望 40000（不延伸就切会掉到 36000）",
@@ -2130,7 +2152,8 @@ mod tests {
         let mut notes = Vec::new();
         let solid = section_local_solid(&profile, &placement, &cuts, &mut notes)
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .body;
         assert_eq!(solid.num_tri(), 12, "六面盒子 12 个三角形，切面会加面");
         assert!(
             (solid.volume() - 40.0 * 40.0 * 387.5).abs() < 1e-6,
@@ -2138,6 +2161,75 @@ mod tests {
             solid.volume()
         );
         assert!(notes.is_empty(), "平头梁不该有延伸留痕：{notes:?}");
+    }
+
+    /// RVM 的记录单位是 GMSS 成员，不是并集后的那一块——所以 `members` 不能在并集里丢掉。
+    ///
+    /// 管型材（`/CHN/CONCRETE_PROFILES/.../cs035`，设计侧 `DESP=[1000, 900]`）的截面在目录里
+    /// 是两个 `PANG=180` 的 SANN 半环。两个半环挤出来贴面相接，一并就焊成一只整圈管，
+    /// `decompose()` 再也拆不回两块；而基准 RVM 里它是**两条**面片记录（同心、互转 180°、
+    /// 各 20 个多边形 108 顶点，`30101/13283` 等 68 根皆然）。只交并集体出去，这 68 根就
+    /// 永远是「E3D 2 条对我们 1 条」。
+    #[test]
+    fn a_tube_profile_keeps_its_two_half_annuli_after_the_union_welds_them_into_one() {
+        let upper = MemberFrame {
+            offset: [0.0, 0.0],
+            rotation: 0.0,
+        };
+        let lower = MemberFrame {
+            offset: [0.0, 0.0],
+            rotation: plax_rotation(plax_angle(&[2, 2]).unwrap()),
+        };
+        let half = |refno: &str, frame: &MemberFrame| SectionMember {
+            source: SectionSource::Sann,
+            member_refno: refno.to_string(),
+            rings: annulus_rings(frame, 500.0, Some(450.0), 180.0),
+        };
+        let profile = SectionProfile {
+            members: vec![half("test/sann-up", &upper), half("test/sann-down", &lower)],
+            justification: [0.0, 0.0],
+            justification_line: DEFAULT_JUSTIFICATION_LINE.to_string(),
+            justification_found: true,
+            neutral_axis_spin: 0.0,
+            level: 0,
+            mirrored: false,
+            notes: Vec::new(),
+        };
+        let placement = SectionPlacement {
+            local: DMat4::IDENTITY,
+            length: 1500.0,
+            bang_deg: 0.0,
+        };
+        let cuts = SectionCuts {
+            start: SectionCutPlane {
+                point: DVec3::ZERO,
+                normal: DVec3::Z,
+            },
+            end: SectionCutPlane {
+                point: DVec3::new(0.0, 0.0, 1500.0),
+                normal: DVec3::NEG_Z,
+            },
+        };
+        let mut notes = Vec::new();
+        let built = section_local_solid(&profile, &placement, &cuts, &mut notes)
+            .expect("管型材应当建得出来")
+            .expect("平头管不会被端切切空");
+        assert_eq!(built.members.len(), 2, "两个 SANN 成员各留一块：{notes:?}");
+        for piece in &built.members {
+            assert_eq!(piece.genus(), 0, "半环是个 C 形，没有环柄");
+        }
+        assert_eq!(built.body.genus(), 1, "两个半环焊成整圈管，并集是亏格 1");
+        assert_eq!(
+            built.body.decompose().len(),
+            1,
+            "焊完只剩一块——记录数塌成 1 的由来就在这里"
+        );
+        let halves: f64 = built.members.iter().map(Manifold::volume).sum();
+        assert!(
+            (built.body.volume() - halves).abs() < 1e-3,
+            "贴面相接不重叠：并集 {} 该等于两半之和 {halves}",
+            built.body.volume()
+        );
     }
 
     fn curve(curtyp: &str, pos: [f64; 3], radius: f64) -> SpineNode {

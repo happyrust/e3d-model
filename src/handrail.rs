@@ -826,7 +826,9 @@ pub fn detailed_item_local_solid(
                 },
             };
             match section_local_solid(&profile, &placement, &cuts, notes)? {
-                Some(body) => pieces.push(placed(&body, placement.local)),
+                // 详图式扶手一段一块并列，RVM 那边也没有按 GMSS 成员分条的取证，
+                // 逐成员那几块这里用不上。
+                Some(built) => pieces.push(placed(&built.body, placement.local)),
                 None => notes.push(format!("路径第 {index} 段扫不出实体")),
             }
         }
