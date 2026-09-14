@@ -74,6 +74,9 @@ pub struct FlattenNotes {
     pub degenerate_corners: Vec<usize>,
     /// 两侧剩余直线都不超过 Core3D 门槛、但仍按理论切点保留的孤立倒圆。
     pub consumed_fillets: Vec<usize>,
+    /// 与下一个角的倒圆在共用边上撞上、已按两条弦的交点接起来的角
+    /// （见 [`trim_overlapping_fillets`]）。
+    pub merged_fillets: Vec<usize>,
 }
 
 /// 原始 PAVE 环是否含 Core3D `sub_106200B0` 不会发出的退化 line span。
@@ -103,13 +106,18 @@ pub fn flatten_ring(ring: &[FilletVertex]) -> Option<(Vec<[f64; 2]>, FlattenNote
         })
         .sum::<f64>()
         * 0.5;
-    let mut out: Vec<[f64; 2]> = Vec::with_capacity(n * 4);
+    // 逐角分开收：相邻两个倒圆在同一条边上吃过头时要按弧与弧的交点拼接，
+    // 那一步得知道哪几个点属于哪个角（见 [`trim_overlapping_fillets`]）。
+    let mut arcs: Vec<Vec<[f64; 2]>> = vec![Vec::new(); n];
+    // 每个角的切点离角点多远（不倒圆的是 0）。判断两个倒圆有没有在共用边上撞上就看它。
+    let mut tangent_of: Vec<f64> = vec![0.0; n];
     let mut notes = FlattenNotes::default();
     // Core3D 在相邻端点距离 <= 0.1mm 时不发该直线 span。这样的原始链由后续
     // 轮廓组装重新接续；AMS1112 WF05 两个大 FRAD FLOOR 正是这条路径。
     let has_skipped_link = has_core3d_skipped_link(ring);
 
     for i in 0..n {
+        let out = &mut arcs[i];
         let p = ring[i];
         let requested_radius = p.frad.abs();
         if requested_radius <= EDGE_EPS {
@@ -264,10 +272,14 @@ pub fn flatten_ring(ring: &[FilletVertex]) -> Option<(Vec<[f64; 2]>, FlattenNote
             delta += 2.0 * std::f64::consts::PI;
         }
         let segments = circle_segments_uncapped(radius, PROFILE_CHORD_TOL_MM);
+        tangent_of[i] = t;
         out.extend(phase_locked_arc_points(
             start, end, center, radius, a0, delta, segments,
         ));
     }
+
+    trim_overlapping_fillets(ring, &tangent_of, &mut arcs, &mut notes);
+    let out: Vec<[f64; 2]> = arcs.into_iter().flatten().collect();
 
     // 相邻重复点焊掉（倒角吃光整条边时切点会与邻角切点重合）。
     let mut welded: Vec<[f64; 2]> = Vec::with_capacity(out.len());
@@ -295,6 +307,90 @@ pub fn flatten_ring(ring: &[FilletVertex]) -> Option<(Vec<[f64; 2]>, FlattenNote
     Some((welded, notes))
 }
 
+/// 共用一条边的两个倒圆吃过了头时，把两条折线在**交点**处接起来。
+///
+/// 一条边上两个角各吃掉 `t` 长，`t_i + t_j` 超过边长时两个切点就换了位置：这条边的
+/// 直线段方向反过来，轮廓折回去，多出一个绕向相反的小耳朵。Core3D 不在这里裁——
+/// `sub_106200B0` 只在两点相距 `<= 0.1mm` 时跳过那条直线 span，反向照发；耳朵是后面
+/// 铺面片时按填充规则消掉的。落到我们这条路上，网格器把它当成两块独立实体留了下来。
+///
+/// 取证（SLYK `/Copy-of-立柱` 的 FLOOR，3500×16000、四角 `FRAD=2000`，短边上两个倒圆
+/// 重叠 500mm）：E3D 自己导出的 RVM 顶点串在两条弧之间只有一个点 `(-1750, 24.62)`，
+/// 正是两条**折线**（不是两个圆）末尾那对弦的交点——按 11.25° 相位格算出来是
+/// `(-1750, 24.622)`。我们没裁，于是在 x∈[-2000,-1500] 上多出两块 500×24.62 的小舌头，
+/// 两端各把 AABB 顶出 24.625mm。
+///
+/// 交点取「从 i 的尾巴往回、从 j 的头往前」第一对真相交的弦；找不到就原样留着并记账，
+/// 不猜。
+fn trim_overlapping_fillets(
+    ring: &[FilletVertex],
+    tangent_of: &[f64],
+    arcs: &mut [Vec<[f64; 2]>],
+    notes: &mut FlattenNotes,
+) {
+    let n = ring.len();
+    for i in 0..n {
+        let j = (i + 1) % n;
+        if tangent_of[i] <= 0.0 || tangent_of[j] <= 0.0 {
+            continue;
+        }
+        let edge = (ring[j].x - ring[i].x).hypot(ring[j].y - ring[i].y);
+        if tangent_of[i] + tangent_of[j] <= edge + EDGE_EPS {
+            continue;
+        }
+        let Some((cut_i, cut_j, crossing)) = first_chord_crossing(&arcs[i], &arcs[j]) else {
+            notes.overshoot_fillets.push(i);
+            continue;
+        };
+        arcs[i].truncate(cut_i + 1);
+        arcs[i].push(crossing);
+        arcs[j].drain(..=cut_j);
+        notes.merged_fillets.push(i);
+    }
+}
+
+/// 两条折线首尾相撞的那一对弦：`a` 从尾巴往回数，`b` 从头往前数，取先撞上的。
+///
+/// 返回 `(a 上保留到的点下标, b 上丢弃到的点下标, 交点)`。
+fn first_chord_crossing(
+    a: &[[f64; 2]],
+    b: &[[f64; 2]],
+) -> Option<(usize, usize, [f64; 2])> {
+    if a.len() < 2 || b.len() < 2 {
+        return None;
+    }
+    // 先按「离接缝多远」排，越靠近接缝的那一对越先试——重叠只发生在接缝附近。
+    for depth in 0..(a.len() - 1) + (b.len() - 1) {
+        for back in 0..=depth {
+            let forward = depth - back;
+            if back >= a.len() - 1 || forward >= b.len() - 1 {
+                continue;
+            }
+            let ai = a.len() - 2 - back;
+            if let Some(point) = segment_crossing(a[ai], a[ai + 1], b[forward], b[forward + 1]) {
+                return Some((ai, forward, point));
+            }
+        }
+    }
+    None
+}
+
+/// 两条线段的真交点（含端点，不含平行/共线）。
+fn segment_crossing(p0: [f64; 2], p1: [f64; 2], q0: [f64; 2], q1: [f64; 2]) -> Option<[f64; 2]> {
+    let r = [p1[0] - p0[0], p1[1] - p0[1]];
+    let s = [q1[0] - q0[0], q1[1] - q0[1]];
+    let denom = r[0] * s[1] - r[1] * s[0];
+    if denom.abs() <= EDGE_EPS {
+        return None;
+    }
+    let d = [q0[0] - p0[0], q0[1] - p0[1]];
+    let t = (d[0] * s[1] - d[1] * s[0]) / denom;
+    let u = (d[0] * r[1] - d[1] * r[0]) / denom;
+    (0.0..=1.0).contains(&t)
+        .then(|| ())
+        .and_then(|()| (0.0..=1.0).contains(&u).then_some([p0[0] + r[0] * t, p0[1] + r[1] * t]))
+}
+
 /// `d2_numberOfSegmentsForCircle(radius, tol)`（libgeom 3.1 `0x1002BA70`）：整圆分几段。
 ///
 /// ```text
@@ -308,6 +404,14 @@ pub fn flatten_ring(ring: &[FilletVertex]) -> Option<(Vec<[f64; 2]>, FlattenNote
 /// `GM_*::calcFacets` 各自加的（曲面原语 1000，见 [`crate::solid::cylinder_segments`]），
 /// 而挤出截面那条路（`GM_Extrusion::calcFacets` → `D2_Span::getApproxPolyLine`）
 /// 压根不封顶——倒角弧走的就是这一支。
+/// 整圆最少分成几段。45° 的步长封顶（见 [`circle_segments_uncapped`]）决定了这个数，
+/// 与容差、半径都无关——`cylinder_segments(1.0)` 撞的就是它。
+///
+/// 反过来用是它的另一半价值：**端盖少于 8 个顶点的网格不可能是离散出来的圆**，
+/// 那是一个真多边形。`rvm_write` 的圆柱 / 圆台识别拿它当下限，见
+/// [`crate::rvm_write::MIN_CIRCLE_SEGMENTS`]。
+pub const MIN_CIRCLE_SEGMENTS: i32 = 8;
+
 pub fn circle_segments_uncapped(radius: f64, chord_tol: f64) -> i32 {
     if !(radius > 0.0) {
         return 1;
@@ -501,6 +605,54 @@ mod tests {
             .iter()
             .any(|p| (p[0] + 50.0).abs() < 1e-6 && p[1].abs() < 1e-6);
         assert!(has_start, "显著越界倒角的切点必须保留");
+    }
+
+    /// SLYK `/Copy-of-立柱` 的 FLOOR：3500×16000 的板，四角 `FRAD=2000`，短边只有
+    /// 3500——两个倒圆在它上面重叠 500mm。两条折线要在交点处接起来，不能各自把切点
+    /// 铺到对面去，否则短边上会多出一个绕向相反的小耳朵，AABB 两端各被顶出 24.625mm。
+    ///
+    /// `(-1750, 24.62)` 是 E3D 自己导出的 RVM 里那一段的唯一顶点（`output/slyk-rvm`
+    /// 的 21491-11385 基准），按 11.25° 相位格算出来是 24.622。
+    #[test]
+    fn overlapping_fillets_on_a_short_edge_meet_at_the_chord_crossing() {
+        let r = |x: f64, y: f64| FilletVertex {
+            x,
+            y,
+            frad: 2000.0,
+        };
+        let ring = [
+            r(0.0, 0.0),
+            r(0.0, 16000.0),
+            r(-3500.0, 16000.0),
+            r(-3500.0, 0.0),
+        ];
+        let (poly, notes) = flatten_ring(&ring).unwrap();
+        assert_eq!(notes.merged_fillets.len(), 2, "两条短边各接一次");
+
+        // 板不许越过原始矩形，也不许在短边上留下折回去的耳朵。
+        let y_min = poly.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min);
+        let y_max = poly.iter().map(|p| p[1]).fold(f64::NEG_INFINITY, f64::max);
+        assert!(
+            (y_min - 24.622).abs() < 0.01,
+            "短边最低点应落在两条弦的交点上，得到 {y_min}"
+        );
+        assert!(
+            (y_max - (16000.0 - 24.622)).abs() < 0.01,
+            "另一条短边同理，得到 {y_max}"
+        );
+        // 长边方向不受影响：切点 2000 远小于 16000。
+        let x_min = poly.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min);
+        let x_max = poly.iter().map(|p| p[0]).fold(f64::NEG_INFINITY, f64::max);
+        assert!((x_min + 3500.0).abs() < 1e-6, "{x_min}");
+        assert!(x_max.abs() < 1e-6, "{x_max}");
+        // 交点两侧的那两个格点也要在，它们是 E3D 顶点串里紧挨着的两个。
+        for x in [-1890.2, -1609.8] {
+            assert!(
+                poly.iter()
+                    .any(|p| (p[0] - x).abs() < 0.1 && (p[1] - 38.43).abs() < 0.1),
+                "缺 E3D 顶点 ({x}, 38.43)"
+            );
+        }
     }
 
     #[test]
