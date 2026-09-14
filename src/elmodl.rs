@@ -32,7 +32,7 @@ use crate::primitive_instance::{
 };
 use crate::profile::{LoopProfile, ProfileError, loop_profile};
 use crate::section::{
-    SectionChain, evaluate_section_profile, section_catalogue, section_cut_planes,
+    SectionChain, SectionSource, evaluate_section_profile, section_catalogue, section_cut_planes,
     section_local_solid, section_placement, spine_path, spine_swept_solid,
 };
 use crate::solid::{
@@ -440,6 +440,7 @@ pub fn model_element_with_cache(
     let mut section_frame: Option<DMat4> = None;
     // 截面本体并集前的那几块（局部系）。RVM 的记录单位是 GMSS 成员，不是并集后的一块。
     let mut section_members: Vec<Manifold> = Vec::new();
+    let mut section_member_sources: Vec<SectionSource> = Vec::new();
 
     let local_timing = crate::perf::local_solid_scope();
     let (local, primitive_instance) = match category {
@@ -544,10 +545,12 @@ pub fn model_element_with_cache(
             SectionBody::Solid {
                 solid,
                 members,
+                member_sources,
                 frame,
             } => {
                 section_frame = Some(frame);
                 section_members = members;
+                section_member_sources = member_sources;
                 (solid, None)
             }
             body @ (SectionBody::CentrelineOnly(_) | SectionBody::NoShape(_)) => {
@@ -704,11 +707,18 @@ pub fn model_element_with_cache(
     // SCTN 的 FITT 是 graphicsBehaviour=1 属主下面的数据，不是独立模型单元；
     // 全量遍历会有意剪掉它，增量也会把 FITT 的变化上卷到 SCTN。因此必须在 SCTN
     // builder 内复用目录求值器，并把可见目录图元作为同一根的组件保留下来。
+    let mut part_catalogue_nouns: Vec<String> = Vec::new();
     let parts = if noun == "SCTN" {
         // 本体那几块：E3D 逐 GMSS 成员写记录（管型材的截面是两个 `PANG=180` 的 SANN 半环，
         // 基准 RVM 里就是同心反向的两条面片），所以记录单位取并集前的成员，而不是并集后的
         // 一块。带负体时只有并集体是可见结果——`parts` 按定义是「非布尔」的那一份，退回整只。
         let mut section_parts = if negatives_applied == 0 && section_members.len() > 1 {
+            // 逐块的出身跟着一起交出去：E3D 对 `SREC` 成员走 DRPYR，对 `SPRO` / `SANN`
+            // 才走拉伸体的面片（见 [`GeneratedElement::part_catalogue_nouns`]）。
+            part_catalogue_nouns = section_member_sources
+                .iter()
+                .map(|source| section_source_noun(*source).to_string())
+                .collect();
             section_members
                 .iter()
                 .map(|member| placed(member, world))
@@ -723,10 +733,15 @@ pub fn model_element_with_cache(
             composed.extend(fittings.iter().cloned());
             solid = Manifold::compose(&composed);
             section_parts.extend(fittings);
+            // FITT 那几块是目录构件拼出来的，出身与本体成员不是一回事，留空。
+            if !part_catalogue_nouns.is_empty() {
+                part_catalogue_nouns.resize(section_parts.len(), String::new());
+            }
         }
         if section_parts.len() > 1 {
             Some(section_parts)
         } else {
+            part_catalogue_nouns.clear();
             None
         }
     } else {
@@ -743,7 +758,7 @@ pub fn model_element_with_cache(
         name: el.stored_name()?,
         solid,
         parts,
-        part_catalogue_nouns: Vec::new(),
+        part_catalogue_nouns,
         degenerate_parts: Vec::new(),
         world,
         primitive_instance: (!had_negative_members)
@@ -799,10 +814,21 @@ enum SectionBody {
         /// 并集前的逐 GMSS 成员实体（与 `solid` 同一局部系），RVM 按它们写记录。
         /// GENSEC 的扫掠还没按成员拆，那一支交空表 = 「只有整只一块」。
         members: Vec<Manifold>,
+        /// 与 `members` 逐块对齐的出身，见 [`crate::section::SectionSolid::member_sources`]。
+        member_sources: Vec<SectionSource>,
         frame: DMat4,
     },
     CentrelineOnly(String),
     ChainBroken(String),
+}
+
+/// 截面成员的出身写成目录名词，交给 RVM 写出器挑写出器用。
+fn section_source_noun(source: SectionSource) -> &'static str {
+    match source {
+        SectionSource::Srec => "SREC",
+        SectionSource::Sann => "SANN",
+        SectionSource::Spro { .. } => "SPRO",
+    }
 }
 
 /// 求值 SCTN 直属 FITT 的目录几何。FITT 位于 graphicsBehaviour=1 容器之下，
@@ -906,6 +932,7 @@ fn section_body(el: &DbElement, notes: &mut Vec<String>) -> Result<SectionBody, 
             Some(solid) => Ok(SectionBody::Solid {
                 solid,
                 members: Vec::new(),
+                member_sources: Vec::new(),
                 frame: DMat4::IDENTITY,
             }),
             None => Ok(SectionBody::CentrelineOnly(
@@ -925,6 +952,7 @@ fn section_body(el: &DbElement, notes: &mut Vec<String>) -> Result<SectionBody, 
         Some(built) => Ok(SectionBody::Solid {
             solid: built.body,
             members: built.members,
+            member_sources: built.member_sources,
             frame: placement.local,
         }),
         None => Ok(SectionBody::CentrelineOnly(

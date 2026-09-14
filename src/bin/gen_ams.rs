@@ -157,7 +157,10 @@ fn recogniser_for_catalogue_noun(noun: &str) -> Option<Recogniser> {
         "SCYL" | "LCYL" => Some(Recogniser::Cylinder),
         "LSNO" | "SCON" => Some(Recogniser::Snout),
         "SCTO" => Some(Recogniser::CircularTorus),
-        "LPYR" => Some(Recogniser::Pyramid),
+        // `LPYR` 是目录图元；`SREC` 是型材截面的矩形成员，挤出来是一根棱柱，E3D 的
+        // `DB_Sctn` 逐成员走 DRPYR 写它——**同样是看名词，不看长相**：`/CS001` 的截面也是
+        // 矩形，只因为写成 `SPRO` + 4 个 `SPVE`，E3D 出的就是一条 `FacetGroup`。
+        "LPYR" | "SREC" => Some(Recogniser::Pyramid),
         "SSPH" => Some(Recogniser::Sphere),
         _ => None,
     }
@@ -230,7 +233,9 @@ fn analytic_candidate(
 /// 一个组件 → 一条 RVM 记录。能认成解析图元就写解析图元，否则写 FacetGroup。
 ///
 /// 有目录出身就先试出身那把（[`recogniser_for_catalogue_noun`]），没有或认不出来再按
-/// [`RECOGNISER_ORDER`] 逐个试，先认出来的算。
+/// [`RECOGNISER_ORDER`] 逐个试，先认出来的算。`provenance_only` = 只许出身那一把上场
+/// （拉伸体族：E3D 对它们只有「出身是 SREC 就 DRPYR，否则面片」这一条，按长相轮一遍
+/// 会把矩形截面写成 `Box`，那正是 64f3f01 挡掉的）。
 ///
 /// **自校闸**：解析候选算出来的世界 AABB 必须与这块网格实算的一致，否则退回面片。
 /// 规范体约定写错了照样能写出一份解析得开但几何是错的 RVM，这种错不该靠人眼发现。
@@ -244,6 +249,7 @@ fn rvm_component_geometry(
     world_lo: [f64; 3],
     world_hi: [f64; 3],
     catalogue_noun: Option<&str>,
+    provenance_only: bool,
     analytic_count: &mut usize,
     rejected_count: &mut usize,
 ) -> e3d_model::rvm_read::RvmGeometry {
@@ -253,6 +259,9 @@ fn rvm_component_geometry(
             analytic_candidate(recogniser, world, local_vertices, triangles, true)
         })
         .or_else(|| {
+            if provenance_only {
+                return None;
+            }
             RECOGNISER_ORDER
                 .iter()
                 .copied()
@@ -942,7 +951,17 @@ fn main() -> anyhow::Result<()> {
                         let local: Vec<[f64; 3]> =
                             component.vertices.iter().map(to_local).collect();
                         let tris: Vec<[u32; 3]> = component.indices.as_chunks::<3>().0.to_vec();
-                        if facets_only {
+                        let catalogue_noun = component_nouns.get(index).map(String::as_str);
+                        // 拉伸体族一律面片，**除非这一块的出身另有说法**：SCTN 的 `SREC`
+                        // 成员 E3D 走 DRPYR，不进拉伸体写出器（见 `e3d_exports_as_extrusion`）。
+                        // 这一族只认出身挑的那一把，认不出来就是面片——按长相轮一遍正是
+                        // 64f3f01 挡掉的那件事（矩形截面写成 `Box`）。
+                        let provenance_only = facets_only;
+                        if provenance_only
+                            && catalogue_noun
+                                .and_then(recogniser_for_catalogue_noun)
+                                .is_none()
+                        {
                             rvm_extrusion_facets += 1;
                             geometries.push(
                                 e3d_model::rvm_write::facet_group_from_world_triangles(
@@ -962,7 +981,8 @@ fn main() -> anyhow::Result<()> {
                             &tris,
                             clo,
                             chi,
-                            component_nouns.get(index).map(String::as_str),
+                            catalogue_noun,
+                            provenance_only,
                             &mut rvm_analytic,
                             &mut rvm_analytic_rejected,
                         ));

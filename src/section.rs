@@ -1464,7 +1464,7 @@ fn circumcentre(a: DVec3, b: DVec3, c: DVec3) -> DVec3 {
 fn placed_profile_rings(
     profile: &SectionProfile,
     notes: &mut Vec<String>,
-) -> Vec<(String, Vec<Vec<[f64; 2]>>)> {
+) -> Vec<(String, SectionSource, Vec<Vec<[f64; 2]>>)> {
     let [jx, jy] = profile.justification;
     // `LMIRR`：整张截面连同 p-line 一起沿 x 镜像，所以镜的是**对齐之后**的点。
     // 取负会把环的绕向也翻过来，`extrude_rings` 认绕向，所以顺序一并倒过来。
@@ -1502,7 +1502,7 @@ fn placed_profile_rings(
             }
         }
         if !rings.is_empty() {
-            out.push((member.member_refno.clone(), rings));
+            out.push((member.member_refno.clone(), member.source, rings));
         }
     }
     out
@@ -1570,7 +1570,7 @@ pub fn spine_swept_solid(
         match segment {
             SpineSegment::Straight { .. } => {
                 let length = segment.length();
-                for (member, rings) in &members {
+                for (member, _, rings) in &members {
                     match extrude_rings(rings.clone(), length) {
                         Ok(solid) => pieces.push(placed(&solid, frame)),
                         Err(error) => notes.push(format!(
@@ -1628,7 +1628,7 @@ pub fn spine_swept_solid(
                     glam::DVec4::Z,
                     centre_2d.truncate().extend(0.0).extend(1.0),
                 );
-                for (member, rings) in &members {
+                for (member, _, rings) in &members {
                     let crosses_axis = rings.iter().flatten().any(|&[x, y]| {
                         (glam::DVec2::new(x, y) - centre_2d.truncate()).dot(outward) <= 0.0
                     });
@@ -1686,6 +1686,11 @@ pub struct SectionSolid {
     pub body: Manifold,
     /// 与 `body` 同一局部系的逐成员实体；`body` 就是它们的并集，至少一块。
     pub members: Vec<Manifold>,
+    /// 与 `members` 逐块对齐的出身。RVM 的记录种类照它挑写出器：E3D 对 `SREC` 成员走
+    /// DRPYR（`/CS036` 空心矩形的四张壁板就是四条 `Pyramid`），`SPRO` / `SANN` 才走
+    /// DRWEXT 的面片——**看的是目录名词，不是截面长相**：`/CS001` 的截面同样是个矩形，
+    /// 只因为它写成 `SPRO` + 4 个 `SPVE`，E3D 出的就是一条 `FacetGroup`。
+    pub member_sources: Vec<SectionSource>,
 }
 
 /// 直段实体（局部系 = [`SectionPlacement::local`] 的截面平面，沿 +Z 挤出）：
@@ -1708,7 +1713,8 @@ pub fn section_local_solid(
     notes: &mut Vec<String>,
 ) -> Result<Option<SectionSolid>, SectionError> {
     let mut members: Vec<Manifold> = Vec::new();
-    for (member_refno, rings) in placed_profile_rings(profile, notes) {
+    let mut member_sources: Vec<SectionSource> = Vec::new();
+    for (member_refno, source, rings) in placed_profile_rings(profile, notes) {
         let (z_min, z_max) = cuts.extrusion_range(&rings, placement.length);
         if z_min < 0.0 || z_max > placement.length {
             notes.push(format!(
@@ -1738,13 +1744,18 @@ pub fn section_local_solid(
         }
         if !solid.is_empty() {
             members.push(solid);
+            member_sources.push(source);
         }
     }
     let Some((first, rest)) = members.split_first() else {
         return Ok(None);
     };
     let body = rest.iter().fold(first.clone(), |acc, next| acc.union(next));
-    Ok(Some(SectionSolid { body, members }))
+    Ok(Some(SectionSolid {
+        body,
+        members,
+        member_sources,
+    }))
 }
 
 #[cfg(test)]
@@ -2215,6 +2226,11 @@ mod tests {
             .expect("管型材应当建得出来")
             .expect("平头管不会被端切切空");
         assert_eq!(built.members.len(), 2, "两个 SANN 成员各留一块：{notes:?}");
+        assert_eq!(
+            built.member_sources,
+            vec![SectionSource::Sann, SectionSource::Sann],
+            "出身与那几块逐块对齐——RVM 的记录种类照它挑写出器"
+        );
         for piece in &built.members {
             assert_eq!(piece.genus(), 0, "半环是个 C 形，没有环柄");
         }
@@ -2230,6 +2246,73 @@ mod tests {
             "贴面相接不重叠：并集 {} 该等于两半之和 {halves}",
             built.body.volume()
         );
+    }
+
+    /// 出身要与那几块**逐块对齐**，混在一起就写错记录种类。
+    ///
+    /// `/CS036` 空心矩形的四张壁板是 `SREC`（E3D 走 DRPYR），`/CS035` 管型材的两个半环是
+    /// `SANN`（走拉伸体的面片）。同一张截面里两种成员并排时，谁是谁只能靠这份对齐表说了算
+    /// ——按长相分不开：矩形截面的 `SPRO` 挤出来和 `SREC` 一模一样。
+    #[test]
+    fn member_sources_line_up_with_the_pieces_they_came_from() {
+        let frame = MemberFrame {
+            offset: [0.0, 0.0],
+            rotation: 0.0,
+        };
+        let plate = SectionMember {
+            source: SectionSource::Srec,
+            member_refno: "test/srec".to_string(),
+            rings: vec![vec![
+                vertex(&frame, -500.0, 900.0, 0.0),
+                vertex(&frame, 500.0, 900.0, 0.0),
+                vertex(&frame, 500.0, 950.0, 0.0),
+                vertex(&frame, -500.0, 950.0, 0.0),
+            ]],
+        };
+        let ring = SectionMember {
+            source: SectionSource::Sann,
+            member_refno: "test/sann".to_string(),
+            rings: annulus_rings(&frame, 500.0, Some(450.0), 360.0),
+        };
+        let profile = SectionProfile {
+            members: vec![plate, ring],
+            justification: [0.0, 0.0],
+            justification_line: DEFAULT_JUSTIFICATION_LINE.to_string(),
+            justification_found: true,
+            neutral_axis_spin: 0.0,
+            level: 0,
+            mirrored: false,
+            notes: Vec::new(),
+        };
+        let placement = SectionPlacement {
+            local: DMat4::IDENTITY,
+            length: 1500.0,
+            bang_deg: 0.0,
+        };
+        let cuts = SectionCuts {
+            start: SectionCutPlane {
+                point: DVec3::ZERO,
+                normal: DVec3::Z,
+            },
+            end: SectionCutPlane {
+                point: DVec3::new(0.0, 0.0, 1500.0),
+                normal: DVec3::NEG_Z,
+            },
+        };
+        let mut notes = Vec::new();
+        let built = section_local_solid(&profile, &placement, &cuts, &mut notes)
+            .expect("两个成员都建得出来")
+            .expect("平头不会被端切切空");
+        assert_eq!(built.members.len(), 2, "{notes:?}");
+        assert_eq!(
+            built.member_sources,
+            vec![SectionSource::Srec, SectionSource::Sann]
+        );
+        // 两块摆在不同高度上：顺序错了这两个包围盒立刻对调。
+        let plate_low = built.members[0].bounding_box().unwrap().min()[1];
+        let ring_low = built.members[1].bounding_box().unwrap().min()[1];
+        assert!(plate_low > 800.0, "板在 y≈900 那一档：{plate_low}");
+        assert!(ring_low < -400.0, "环跨到 y≈−500：{ring_low}");
     }
 
     fn curve(curtyp: &str, pos: [f64; 3], radius: f64) -> SpineNode {
