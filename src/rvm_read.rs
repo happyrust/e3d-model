@@ -160,10 +160,28 @@ impl Primitive {
                     .collect()
             }
             Self::EllipticalDish([r, h]) => {
-                // 底圈 + 半高一圈 + 顶点：碟面是单调外凸的，这三圈就把 AABB 卡死了。
-                let mid = std::f64::consts::FRAC_1_SQRT_2;
-                ring(*r, 0.0)
-                    .chain(ring(r * mid, h * mid))
+                // 半椭球面（`(r·sinθ, h·cosθ)`，θ 从顶点扫到底圈）按纬度逐圈采到底圆。
+                //
+                // 与 [`Self::SphericalDish`] 同一个坑、同一条改法：碟一倾斜，AABB 的极值
+                // 落在碟面中间某一圈上，光有底圈 + 顶点 + `(r/√2, h/√2)` 那一圈卡不住。
+                // r 225 / h 100 的碟转 `rot_z(0.4)·rot_x(0.7)` 实测因此**偏小 11.7 mm**
+                // （z 上界 156.6 对真值 168.3），生成侧的解析记录过不了自校闸。
+                //
+                // 这只是**采样**密度，不是形状口径：RVM 的 `EllipticalDish` 就是一只
+                // z 向缩放的四分之一球（rvm-rs `impl Tessellate for EllipticalDish`），
+                // E3D 自己的 `GM_EDish` 是冠球 + 折边环的 torispherical 头，两者差着
+                // 一层导出损失——`expdri/DRDISH`（`0x10003fb8`）只写 (r, h)，折边半径
+                // 只用来在 5（椭圆碟）与 6（球形碟）之间选一个，形状本身不落盘。
+                const LATITUDES: usize = 64;
+                if !(*r > 0.0 && *h > 0.0) {
+                    return ring(*r, 0.0).chain(std::iter::once([0.0, 0.0, *h])).collect();
+                }
+                (1..LATITUDES)
+                    .flat_map(move |j| {
+                        let theta = std::f64::consts::FRAC_PI_2 * j as f64 / LATITUDES as f64;
+                        ring(r * theta.sin(), h * theta.cos())
+                    })
+                    .chain(ring(*r, 0.0))
                     .chain(std::iter::once([0.0, 0.0, *h]))
                     .collect()
             }
