@@ -1125,6 +1125,46 @@ pub fn cylinder_geometry(world: &glam::DMat4, cylinder: &RecognisedCylinder) -> 
     }
 }
 
+/// 给一只**没有体**的目录圆柱造一条 `Cylinder` 记录：半径与高里至少一个是 0，记录剩下的
+/// 只有它的放置。
+///
+/// 这不是我们发明的写法。Core 对零径 / 零高的 SCYL 不出体，E3D 的 RVM 驱动却照走 DRCYL：
+/// `/Copy-(2)-of-GV0406C` 那只格子全空的写成 `Cylinder[radius=0 height=-0]`（基准 80 根上
+/// 132 条），`/LA-0301` 第 45 条 `PHEI` 真解成 0 的写成 `Cylinder[radius=57 height=-0]`
+/// ——半径照留。不跟着写，两侧的记录条数就永远差这一条，而几何本来是一致的。
+///
+/// `local` 是图元在元素局部系里的放置（平移是原点，Z 是轴向），与
+/// [`crate::elmodl::DegenerateCataloguePart::local_transform`] 同一份。
+pub fn bodyless_cylinder_geometry(
+    world: &glam::DMat4,
+    local: &glam::DMat4,
+    radius: f64,
+    height: f64,
+) -> crate::rvm_read::RvmGeometry {
+    let cols = (*world * *local).to_cols_array();
+    let matrix3 = [
+        cols[0], cols[1], cols[2], cols[4], cols[5], cols[6], cols[8], cols[9], cols[10],
+    ]
+    .map(|value| value / M_TO_MM);
+    RvmGeometry {
+        tag: "PRIM".to_string(),
+        flags: 1,
+        primitive: Primitive::Cylinder([radius, height]),
+        matrix3,
+        translation_mm: [cols[12], cols[13], cols[14]],
+        record_bbox: [
+            -radius,
+            -radius,
+            -height / 2.0,
+            radius,
+            radius,
+            height / 2.0,
+        ],
+        bbox_frame: crate::rvm_read::BboxFrame::Local,
+        level: None,
+    }
+}
+
 /// 由 [`snout_from_local_mesh`] 认出来的圆台造一条 `Snout` 记录。
 ///
 /// RVM 的 `Snout`：轴向局部 **Z**、原点在两个面心的中点，`XOFF`/`YOFF` 是顶面中心相对
@@ -2360,6 +2400,26 @@ mod tests {
         let mesh = crate::mesh::TriMesh::from_manifold(&solid);
         let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
         assert!(snout_from_local_mesh(&mesh.vertices, &triangles).is_none());
+    }
+
+    #[test]
+    fn a_bodyless_cylinder_keeps_its_placement_and_whatever_parameters_it_had() {
+        // 没有体也要有位置与参数：`/Copy-(2)-of-GV0406C` 那条是 [0, 0]，`/LA-0301` 第 45 条
+        // 是 [57, 0]——半径照留，靠这一对与放置才对得上号。
+        let world = glam::DMat4::from_rotation_z(0.4) * glam::DMat4::from_rotation_x(0.7);
+        let local = glam::DMat4::from_translation(glam::DVec3::new(11.0, -22.0, 33.0));
+        let want = (world * local).w_axis.truncate();
+        for (radius, height) in [(0.0, 0.0), (57.0, 0.0)] {
+            let record = bodyless_cylinder_geometry(&world, &local, radius, height);
+            assert!(
+                matches!(record.primitive, Primitive::Cylinder([r, h]) if r == radius && h == height),
+                "{record:?}"
+            );
+            assert_eq!(record.record_bbox, [-radius, -radius, 0.0, radius, radius, 0.0]);
+            for axis in 0..3 {
+                assert!((record.translation_mm[axis] - want[axis]).abs() < 1e-9, "{record:?}");
+            }
+        }
     }
 
     #[test]

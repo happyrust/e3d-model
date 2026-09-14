@@ -22,7 +22,7 @@ use crate::catalogue_point::{
 };
 use crate::category::{RepreDiscipline, repre_discipline};
 use crate::discretise::{FilletVertex, flatten_ring};
-use crate::elmodl::{GeneratedElement, GeometryId, ModelError};
+use crate::elmodl::{DegenerateCataloguePart, GeneratedElement, GeometryId, ModelError};
 use crate::primitive_instance::instantiate_box;
 use crate::route::orimat;
 use crate::solid::{
@@ -454,6 +454,23 @@ struct EvaluatedCylinder {
     diagnostics: Vec<String>,
 }
 
+/// 一只 SCYL / LCYL 求值下来的两种结局。**「不出体」不等于「不出记录」**：零径或零高的
+/// 那只 Core 不出体，E3D 的 RVM 驱动照样按 DRCYL 落一条记录，参数就是算出来的那一对
+/// ——两种来路都见得到，一条都不少：
+///
+/// - 尺寸格子空着（`PDIA`/`PHEI` 是没填过的全零元组）：`/Copy-(2)-of-GV0406C` 的
+///   `Cylinder[radius=0 height=-0]`，基准 80 根上这样的有 132 条；
+/// - 参数真解成零高（`PDIA` 解出 114、`PHEI` 由 PARA 解出 0）：`/LA-0301` 第 45 条
+///   `Cylinder[radius=57 height=-0]`，半径照留。
+enum CylinderOutcome {
+    Built(EvaluatedCylinder),
+    Bodyless {
+        transform: DMat4,
+        radius: f64,
+        height: f64,
+    },
+}
+
 struct EvaluatedPyramid {
     mesh_key: CatalogueMeshKey,
     parameters: [f64; 7],
@@ -854,6 +871,8 @@ pub fn model_catalogue_member_with_cache(
     let mut degenerate_other = 0usize;
     let mut primitives = 0usize;
     let mut placed_parts = HashSet::new();
+    // 零尺寸的那几只：不进 `solids`（没体可建），但要跟着写记录。
+    let mut degenerate_parts: Vec<DegenerateCataloguePart> = Vec::new();
     let mut member_duplicates = 0usize;
     let mut catalogue_negatives = 0usize;
     // 过滤记录与 diagnostics 分开收：`failed` 的账目 = diagnostics.len()，
@@ -1131,7 +1150,7 @@ pub fn model_catalogue_member_with_cache(
                 }
                 match evaluate_catalogue_cylinder(member, &component, &primitive, &env, noun, cache)
                 {
-                    Ok(Some(mut evaluated)) => {
+                    Ok(CylinderOutcome::Built(mut evaluated)) => {
                         catalogue_negatives += evaluated.cutters.len();
                         diagnostics.append(&mut evaluated.diagnostics);
                         if noun == "SCYL" {
@@ -1171,7 +1190,19 @@ pub fn model_catalogue_member_with_cache(
                             noun: primitive_noun.clone(),
                         });
                     }
-                    Ok(None) => degenerate_other += 1,
+                    Ok(CylinderOutcome::Bodyless {
+                        transform,
+                        radius,
+                        height,
+                    }) => {
+                        degenerate_other += 1;
+                        degenerate_parts.push(DegenerateCataloguePart {
+                            noun: primitive_noun.clone(),
+                            local_transform: transform,
+                            radius_mm: radius,
+                            height_mm: height,
+                        });
+                    }
                     Err(error) => diagnostics.push(format!(
                         "catalogue primitive {} skipped by Core-style local failure: {error}",
                         primitive.refno()
@@ -1505,14 +1536,19 @@ pub fn model_catalogue_member_with_cache(
     } else {
         Vec::new()
     };
+    // 零尺寸记录跟 `parts` 同一条命：整只元素合成一条时，多挂一条零尺寸的没有对应物。
+    if !preserve_components {
+        degenerate_parts.clear();
+    }
     let world_solid = placed(&local, world);
     drop(compose_timing);
     let notes = vec![format!(
-        "catalogue assembly: built={} sext_total={} sext_zero_height={} degenerate_other={} failed={} centre_lines={} display_filtered={} duplicate_placements={} component={}",
+        "catalogue assembly: built={} sext_total={} sext_zero_height={} degenerate_other={} zero_size_records={} failed={} centre_lines={} display_filtered={} duplicate_placements={} component={}",
         solids.len(),
         sext_total,
         zero_height,
         degenerate_other,
+        degenerate_parts.len(),
         diagnostics.len(),
         ignored_lines,
         display_filtered_members,
@@ -1533,6 +1569,7 @@ pub fn model_catalogue_member_with_cache(
             solid: world_solid,
             parts,
             part_catalogue_nouns,
+            degenerate_parts,
             world,
             primitive_instance: None,
             negatives_applied: catalogue_negatives,
@@ -1599,6 +1636,7 @@ fn model_hvac_rectangular_basic(
             solid: placed(&built.solid, world),
             parts: None,
             part_catalogue_nouns: Vec::new(),
+            degenerate_parts: Vec::new(),
             world,
             primitive_instance: built.instance,
             negatives_applied: 0,
@@ -2588,7 +2626,7 @@ fn evaluate_catalogue_cylinder(
     env: &DbElementParamEnv,
     noun: &str,
     cache: &mut CatalogueMeshCache,
-) -> Result<Option<EvaluatedCylinder>, ModelError> {
+) -> Result<CylinderOutcome, ModelError> {
     let diameter = required_number(cylinder, "PDIA", env, "catalogue cylinder")?.abs();
     let mut axis = catalogue_axis_or_fail(
         member,
@@ -2612,17 +2650,24 @@ fn evaluate_catalogue_cylinder(
         let centre = (bottom + top) * 0.5;
         ((bottom - top).abs(), centre)
     };
-    // 零高与零径同一口径（`disc_at` / SSLC 那几条臂早就这么判）：都是 Core 不出体的合法
-    // 参数化关法，归零高或退化。零径此前漏判，放行到 `csg_cylinder_solid` 撞 `Degenerate`
-    // 被记成局部失败——ams7997 FLEX 的 40 只 `PDIA=0` LCYL 一库就是 480 条。
-    if height < HEIGHT_TOL_MM || diameter < HEIGHT_TOL_MM {
-        return Ok(None);
-    }
     let member_noun = member.element_type()?;
     let clfl = cylinder.get_bool("CLFL")? == Some(true);
     let (rotation, centre) =
         catalogue_cylinder_placement(&member_noun, noun, clfl, axis, centre_distance, height);
     let transform = DMat4::from_translation(centre) * DMat4::from_mat3(rotation);
+    // 零高与零径同一口径（`disc_at` / SSLC 那几条臂早就这么判）：都是 Core 不出体的合法
+    // 参数化关法，归零高或退化。零径此前漏判，放行到 `csg_cylinder_solid` 撞 `Degenerate`
+    // 被记成局部失败——ams7997 FLEX 的 40 只 `PDIA=0` LCYL 一库就是 480 条。
+    //
+    // 放置在这一步之前就算好：不出体的那只也要出记录，得把放置和参数一起交出去
+    // （见 [`CylinderOutcome`] 与 [`crate::elmodl::DegenerateCataloguePart`]）。
+    if height < HEIGHT_TOL_MM || diameter < HEIGHT_TOL_MM {
+        return Ok(CylinderOutcome::Bodyless {
+            transform,
+            radius: diameter * 0.5,
+            height,
+        });
+    }
     let rebase = transform.inverse();
     // 圆柱正体（SCYL/LCYL）名下的负体走 SREV/SEXT 同一份收集器：此前这条臂只认
     // NSCY/NLCY，其余（NSCT/NSRT/NSBO/NSEX/NLPY/NLSN/NSCO/NSRE）一律落
@@ -2645,7 +2690,7 @@ fn evaluate_catalogue_cylinder(
             cutters: catalogue_cut_keys(&cutters)?,
         }
     };
-    Ok(Some(EvaluatedCylinder {
+    Ok(CylinderOutcome::Built(EvaluatedCylinder {
         mesh_key,
         diameter,
         height,

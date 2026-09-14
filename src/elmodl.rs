@@ -200,6 +200,22 @@ impl std::fmt::Display for GeometryId {
     }
 }
 
+/// 一块**没有体**的目录图元：参数化算下来零径或零高，Core 不出体，我们也建不出网格。
+///
+/// 留着它是因为 E3D 的 RVM 驱动不在这一步收手——它照走 DRCYL 把算出来的那对参数写成一条
+/// 记录：格子空着的那只是 `Cylinder[radius=0 height=-0]`（基准 80 根上 132 条，全在阀门
+/// 身上），`PHEI` 真解成 0 的那只是 `Cylinder[radius=57 height=-0]`，半径照留。我们一条
+/// 不写，于是「两侧记录条数」对不上，而几何本来是一致的。
+pub struct DegenerateCataloguePart {
+    /// 目录图元的名词。现在只有 `SCYL` / `LCYL` 走到这里。
+    pub noun: String,
+    /// 图元在元素局部系里的放置：平移是图元原点，Z 轴是它的轴向。
+    pub local_transform: DMat4,
+    /// 算出来的半径与高，照原样写进记录——其中至少一个是 0，否则它就有体了。
+    pub radius_mm: f64,
+    pub height_mm: f64,
+}
+
 pub struct GeneratedElement {
     /// 几何缓存、RVM 配对和增量更新使用的稳定身份。
     pub geometry_id: GeometryId,
@@ -223,6 +239,9 @@ pub struct GeneratedElement {
     /// LPYR 照样写 `Pyramid`。网格识别器不知来历，只能按长相先中先得，于是 300 只阀门的
     /// 手轮座写成了 `Box`、等径 LSNO 写成了 `Cylinder`——几何 exact，种类却不一致。
     pub part_catalogue_nouns: Vec<String>,
+    /// 退化成零尺寸的目录图元。Core 与我们都不出体，**E3D 的 RVM 驱动照样落一条记录**，
+    /// 于是基准里凭空多出一条 `Cylinder[r=0 h=0]`。
+    pub degenerate_parts: Vec<DegenerateCataloguePart>,
     /// 本元素局部系到世界系的刚体变换。实体里的 SJUS 下移保留在局部几何中，
     /// 因而把最终网格乘这个矩阵的逆即可得到与 E3D facet 可比的元素局部坐标。
     pub world: DMat4,
@@ -560,6 +579,7 @@ pub fn model_element_with_cache(
                     solid,
                     parts: Some(fitting_parts),
                     part_catalogue_nouns: Vec::new(),
+                    degenerate_parts: Vec::new(),
                     world: world_matrix(el)?,
                     primitive_instance: None,
                     negatives_applied: 0,
@@ -593,6 +613,7 @@ pub fn model_element_with_cache(
                     solid,
                     parts: Some(fitting_parts),
                     part_catalogue_nouns: Vec::new(),
+                    degenerate_parts: Vec::new(),
                     world: world_matrix(el)?,
                     primitive_instance: None,
                     negatives_applied: 0,
@@ -723,6 +744,7 @@ pub fn model_element_with_cache(
         solid,
         parts,
         part_catalogue_nouns: Vec::new(),
+        degenerate_parts: Vec::new(),
         world,
         primitive_instance: (!had_negative_members)
             .then_some(primitive_instance)

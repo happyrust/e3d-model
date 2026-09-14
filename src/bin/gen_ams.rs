@@ -705,6 +705,8 @@ fn main() -> anyhow::Result<()> {
     let (mut rvm_analytic, mut rvm_analytic_rejected) = (0usize, 0usize);
     // 拉伸体族（SCTN / FLOOR / PANE…）不进识别器、照 E3D 直接写面片的组件数。
     let mut rvm_extrusion_facets = 0usize;
+    // 目录图元退化成零尺寸、跟着 E3D 照写的空记录数。
+    let mut rvm_zero_size = 0usize;
     let obj_path = args.out.join("model.obj");
     let mut obj = std::io::BufWriter::new(
         std::fs::File::create(&obj_path).with_context(|| format!("建 {}", obj_path.display()))?,
@@ -966,6 +968,18 @@ fn main() -> anyhow::Result<()> {
                         ));
                     }
                 }
+                // 没有体的目录图元：没有网格可认，记录却照写——E3D 就是这么写的
+                // （见 [`e3d_model::elmodl::DegenerateCataloguePart`]）。它不过自校闸：
+                // 闸门比的是解析候选与网格的 AABB，而这一条两样都没有。
+                for part in &generated.degenerate_parts {
+                    rvm_zero_size += 1;
+                    geometries.push(e3d_model::rvm_write::bodyless_cylinder_geometry(
+                        &generated.world,
+                        &part.local_transform,
+                        part.radius_mm,
+                        part.height_mm,
+                    ));
+                }
                 let name = rvm_display_name(
                     generated.name.as_ref(),
                     &identity_noun,
@@ -1047,7 +1061,7 @@ fn main() -> anyhow::Result<()> {
         };
         file.write(&rvm_path)?;
         println!(
-            "RVM: {} 个成员（解析图元 {rvm_analytic} / 自校未过退回面片 {rvm_analytic_rejected} / 拉伸体照 E3D 写面片 {rvm_extrusion_facets}）-> {}",
+            "RVM: {} 个成员（解析图元 {rvm_analytic} / 自校未过退回面片 {rvm_analytic_rejected} / 拉伸体照 E3D 写面片 {rvm_extrusion_facets} / 零尺寸空记录 {rvm_zero_size}）-> {}",
             file.members.len() - 1,
             rvm_path.display()
         );
