@@ -989,6 +989,7 @@ fn build_route_tubes(
                     name: None,
                     solid: tube.solid,
                     parts: None,
+                    part_catalogue_nouns: Vec::new(),
                     world: tube.placement,
                     primitive_instance: tube.primitive_instance,
                     negatives_applied: 0,

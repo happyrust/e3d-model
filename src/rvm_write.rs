@@ -710,6 +710,25 @@ pub fn snout_from_local_mesh(
     vertices: &[[f64; 3]],
     triangles: &[[u32; 3]],
 ) -> Option<RecognisedSnout> {
+    snout_from_local_mesh_inner(vertices, triangles, false)
+}
+
+/// 同 [`snout_from_local_mesh`]，但**不**把两端等径且不偏心的那只让给 `Cylinder`。
+///
+/// 出身是 `LSNO` / `SCON` 时用这一条：E3D 的 DRSNO 不看圆台退化成什么，照写 `Snout`
+/// ——按长相认时让给 `Cylinder` 是对的（长得像圆柱的多半就是 SCYL），按出身认时不是。
+pub fn snout_from_local_mesh_including_cylinders(
+    vertices: &[[f64; 3]],
+    triangles: &[[u32; 3]],
+) -> Option<RecognisedSnout> {
+    snout_from_local_mesh_inner(vertices, triangles, true)
+}
+
+fn snout_from_local_mesh_inner(
+    vertices: &[[f64; 3]],
+    triangles: &[[u32; 3]],
+    keep_cylinders: bool,
+) -> Option<RecognisedSnout> {
     use glam::DVec3;
     if triangles.len() < 8 || vertices.len() < 6 {
         return None;
@@ -754,7 +773,7 @@ pub fn snout_from_local_mesh(
         let arm = top_centre - bottom_centre;
         let lateral = arm - axis * arm.dot(axis);
         let offset = lateral.length();
-        if (bottom_radius - top_radius).abs() <= 1e-9 && offset <= 1e-9 {
+        if !keep_cylinders && (bottom_radius - top_radius).abs() <= 1e-9 && offset <= 1e-9 {
             return None; // 这是圆柱，让 `cylinder_from_local_mesh` 去接。
         }
         return Some(RecognisedSnout {
@@ -1220,6 +1239,26 @@ pub fn pyramid_from_local_mesh(
     vertices: &[[f64; 3]],
     triangles: &[[u32; 3]],
 ) -> Option<RecognisedPyramid> {
+    pyramid_from_local_mesh_inner(vertices, triangles, false)
+}
+
+/// 同 [`pyramid_from_local_mesh`]，但**不**把上下同形不偏心的那只让给 `Box`。
+///
+/// 出身是 `LPYR` 时用这一条：E3D 的 DRPYR 不看棱台退化成什么，照写 `Pyramid`。300 只
+/// 阀门的手轮座正是这一档——PAAX 与 PBAX 都解出 +X，轴由 Core 的 ORTHOG 补出来，成品是
+/// 一只正方盒；基准 RVM 里它仍是 `Pyramid`，我们按长相认就写成了 `Box`。
+pub fn pyramid_from_local_mesh_including_boxes(
+    vertices: &[[f64; 3]],
+    triangles: &[[u32; 3]],
+) -> Option<RecognisedPyramid> {
+    pyramid_from_local_mesh_inner(vertices, triangles, true)
+}
+
+fn pyramid_from_local_mesh_inner(
+    vertices: &[[f64; 3]],
+    triangles: &[[u32; 3]],
+    keep_boxes: bool,
+) -> Option<RecognisedPyramid> {
     use glam::DVec3;
     let mut points: Vec<DVec3> = Vec::with_capacity(8);
     for v in vertices {
@@ -1270,7 +1309,8 @@ pub fn pyramid_from_local_mesh(
         };
         let arm = top_centre - bottom_centre;
         let offset = [arm.dot(x), arm.dot(y)];
-        if (bottom_lengths[0] - top_lengths[0]).abs() <= 1e-9
+        if !keep_boxes
+            && (bottom_lengths[0] - top_lengths[0]).abs() <= 1e-9
             && (bottom_lengths[1] - top_lengths[1]).abs() <= 1e-9
             && offset.iter().all(|o| o.abs() <= 1e-9)
         {
@@ -2323,6 +2363,29 @@ mod tests {
     }
 
     #[test]
+    fn a_cylindrical_snout_is_kept_when_the_catalogue_says_it_came_from_an_lsno() {
+        // 同一只网格，按长相让给圆柱、按出身照认圆台：E3D 的 DRSNO 不看 LSNO 退化成什么。
+        let solid = crate::solid::csg_cylinder_solid(100.0, 400.0).unwrap();
+        let mesh = crate::mesh::TriMesh::from_manifold(&solid);
+        let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
+        let snout = snout_from_local_mesh_including_cylinders(&mesh.vertices, &triangles)
+            .expect("出身是 LSNO 的等径圆台");
+        assert!((snout.bottom_radius - 50.0).abs() < 1e-6, "{snout:?}");
+        assert!((snout.top_radius - 50.0).abs() < 1e-6, "{snout:?}");
+        assert!((snout.height - 400.0).abs() < 1e-6, "{snout:?}");
+        assert!(snout.offset.abs() < 1e-9, "{snout:?}");
+
+        let world = glam::DMat4::from_rotation_z(0.4) * glam::DMat4::from_rotation_x(0.7);
+        let (lo, hi) = world_aabb_of(&mesh.vertices, &world);
+        let candidate = snout_geometry(&world, &snout);
+        assert!(
+            candidate.matches_mesh_aabb(lo, hi, 0.01),
+            "sagitta={}",
+            candidate.sagitta_mm
+        );
+    }
+
+    #[test]
     fn chord_sagitta_is_the_gap_between_an_inscribed_polygon_and_its_circle() {
         // 独立量法：取圆上相邻两个格点，弦中点离圆心多远，缺口就是半径减它。
         let (radius, segments) = (5.0_f64, 8.0_f64);
@@ -2488,6 +2551,36 @@ mod tests {
         let world = glam::DMat4::from_rotation_z(0.4) * glam::DMat4::from_rotation_x(0.7);
         let (lo, hi) = world_aabb_of(&mesh.vertices, &world);
         assert!(pyramid_geometry(&world, &pyramid).matches_mesh_aabb(lo, hi, 0.01));
+    }
+
+    #[test]
+    fn a_box_shaped_pyramid_is_kept_when_the_catalogue_says_it_came_from_an_lpyr() {
+        // 300 只阀门的手轮座就是这一只：PAAX 与 PBAX 都解出 +X，成品是一只正方盒，
+        // 基准 RVM 里它仍是 `Pyramid`。按长相让给 `Box`，按出身照认棱台。
+        let solid = crate::solid::pyramid_solid(100.0, 100.0, 100.0, 100.0, 50.0, 0.0, 0.0).unwrap();
+        let mesh = crate::mesh::TriMesh::from_manifold(&solid);
+        let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
+        let pyramid = pyramid_from_local_mesh_including_boxes(&mesh.vertices, &triangles)
+            .expect("出身是 LPYR 的棱台");
+        // 盒子的三条棱都能当轴，认出来的是哪一条由面法向的先后决定；能钉的是「两端同形、
+        // 不偏心，三条边长就是这只盒子的」——记录写出去仍是同一只盒，只是躺法不同。
+        assert_pair_eq(pyramid.bottom, pyramid.top, "两端同形");
+        assert_pair_eq(pyramid.offset, [0.0, 0.0], "offset");
+        let mut edges = [pyramid.bottom[0], pyramid.bottom[1], pyramid.height];
+        edges.sort_by(f64::total_cmp);
+        assert!(
+            (edges[0] - 50.0).abs() < 1e-6
+                && (edges[1] - 100.0).abs() < 1e-6
+                && (edges[2] - 100.0).abs() < 1e-6,
+            "{edges:?}"
+        );
+
+        let world = glam::DMat4::from_rotation_z(0.4) * glam::DMat4::from_rotation_x(0.7);
+        let (lo, hi) = world_aabb_of(&mesh.vertices, &world);
+        let candidate = pyramid_geometry(&world, &pyramid);
+        assert_eq!(candidate.geometry.primitive.kind_id(), 1);
+        assert_eq!(candidate.sagitta_mm, 0.0);
+        assert!(candidate.matches_mesh_aabb(lo, hi, 0.01));
     }
 
     #[test]

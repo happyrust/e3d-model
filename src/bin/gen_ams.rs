@@ -111,11 +111,126 @@ fn parse_args() -> anyhow::Result<Args> {
 /// 全被当成「约定写错了」退回面片：几何没错，只是文件大了，圆柱也没写成圆柱。
 const ANALYTIC_TOL_MM: f64 = 0.01;
 
+/// 一把网格识别器。`rvm_component_geometry` 按 [`RECOGNISER_ORDER`] 逐个试。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Recogniser {
+    Box,
+    Cylinder,
+    Snout,
+    CircularTorus,
+    Pyramid,
+    Sphere,
+    SphericalDish,
+    EllipticalDish,
+}
+
+/// 没有出身可依时的兜底次序。**次序有讲究**：等径不偏心的圆台让给圆柱、同形不偏心的
+/// 棱台让给盒子，顶点恰好共球的正棱柱先被圆柱接走，球的识别器再靠内切比把剩下的多面体
+/// 挡在外面；折边碟排在球形碟后面——球形碟的顶点全在冠球上，先被那一条认走。
+const RECOGNISER_ORDER: [Recogniser; 8] = [
+    Recogniser::Box,
+    Recogniser::Cylinder,
+    Recogniser::Snout,
+    Recogniser::CircularTorus,
+    Recogniser::Pyramid,
+    Recogniser::Sphere,
+    Recogniser::SphericalDish,
+    Recogniser::EllipticalDish,
+];
+
+/// 目录图元 → 该用哪把识别器。**记录种类由出身定，不由网格长相定。**
+///
+/// E3D 的 RVM 驱动按目录图元挑写出器（`LPYR`→DRPYR、`LSNO`/`SCON`→DRSNO、`SBOX`→DRBOX、
+/// `SCYL`/`LCYL`→DRCYL、`SCTO`→DRCTO、`SSPH`→DRSPH），一只 PAAX/PBAX 退化成正方盒的
+/// `LPYR` 照样写 `Pyramid`、一只等径不偏心的 `LSNO` 照样写 `Snout`。我们的识别器不知来历，
+/// 先中先得就把它们写成了 `Box` 与 `Cylinder`——几何 exact、种类却不一致，80 根严尺子上
+/// 是 302 件（300 只阀门的手轮座 + 2 只等径 LSNO）。
+///
+/// 名单只列**一个目录图元对一种记录**的那几族。`SDSH` 不在里面：它按 r/h 分成折边碟、
+/// 球形碟与退化成圆盘三种结局，一个 noun 对不上一把识别器，仍交给兜底次序。`SRTO` 也不在：
+/// E3D 写的是 `RectangularTorus`，而这边还没有那把识别器（19 件仍挂着）。
+///
+/// 挑中的那把**先试**，认不出来照旧走兜底次序——自校闸一道没少。
+fn recogniser_for_catalogue_noun(noun: &str) -> Option<Recogniser> {
+    match noun {
+        "SBOX" => Some(Recogniser::Box),
+        "SCYL" | "LCYL" => Some(Recogniser::Cylinder),
+        "LSNO" | "SCON" => Some(Recogniser::Snout),
+        "SCTO" => Some(Recogniser::CircularTorus),
+        "LPYR" => Some(Recogniser::Pyramid),
+        "SSPH" => Some(Recogniser::Sphere),
+        _ => None,
+    }
+}
+
+/// `by_provenance` = 这把识别器是**出身**挑的，不是按长相轮到的。
+///
+/// 差别只在两处退化：按长相认时，长得像盒子的棱台让给 `Box`、两端等径的圆台让给
+/// `Cylinder`（长成那样的多半**就是** SBOX / SCYL）；按出身认时不让——E3D 的 DRPYR /
+/// DRSNO 不看退化成什么，LPYR 一律 `Pyramid`、LSNO 一律 `Snout`。
+fn analytic_candidate(
+    recogniser: Recogniser,
+    world: &glam::DMat4,
+    local_vertices: &[[f64; 3]],
+    triangles: &[[u32; 3]],
+    by_provenance: bool,
+) -> Option<e3d_model::rvm_write::AnalyticCandidate> {
+    use e3d_model::rvm_write as write;
+    match recogniser {
+        Recogniser::Box => {
+            let lengths = write::box_from_local_mesh(local_vertices, triangles)?;
+            let centre = [0, 1, 2].map(|axis| {
+                let lo = local_vertices.iter().fold(f64::MAX, |m, v| m.min(v[axis]));
+                let hi = local_vertices.iter().fold(f64::MIN, |m, v| m.max(v[axis]));
+                (lo + hi) / 2.0
+            });
+            Some(write::box_geometry(world, lengths, centre))
+        }
+        Recogniser::Cylinder => {
+            let cylinder = write::cylinder_from_local_mesh(local_vertices, triangles)?;
+            Some(write::cylinder_geometry(world, &cylinder))
+        }
+        Recogniser::Snout => {
+            let snout = if by_provenance {
+                write::snout_from_local_mesh_including_cylinders(local_vertices, triangles)?
+            } else {
+                write::snout_from_local_mesh(local_vertices, triangles)?
+            };
+            Some(write::snout_geometry(world, &snout))
+        }
+        Recogniser::CircularTorus => {
+            let torus = write::torus_from_local_mesh(local_vertices, triangles)?;
+            Some(write::circular_torus_geometry(world, &torus))
+        }
+        Recogniser::Pyramid => {
+            let pyramid = if by_provenance {
+                write::pyramid_from_local_mesh_including_boxes(local_vertices, triangles)?
+            } else {
+                write::pyramid_from_local_mesh(local_vertices, triangles)?
+            };
+            Some(write::pyramid_geometry(world, &pyramid))
+        }
+        Recogniser::Sphere => {
+            let sphere = write::sphere_from_local_mesh(local_vertices, triangles)?;
+            Some(write::sphere_geometry(world, &sphere))
+        }
+        Recogniser::SphericalDish => {
+            let dish = write::spherical_dish_from_local_mesh(local_vertices, triangles)?;
+            Some(write::spherical_dish_geometry(world, &dish))
+        }
+        // 折边碟写出去的是半椭球——照抄 E3D 导出时就做了的那层近似，好让两边 RVM 的图元
+        // 种类对得上；形状损失算进候选自己的 `sagitta_mm`，仍由自校闸按 r/h 算出来的量放行。
+        Recogniser::EllipticalDish => {
+            let dish = write::elliptical_dish_from_local_mesh(local_vertices, triangles)?;
+            Some(write::elliptical_dish_geometry(world, &dish))
+        }
+    }
+}
+
 /// 一个组件 → 一条 RVM 记录。能认成解析图元就写解析图元，否则写 FacetGroup。
 ///
-/// 识别器按 `Box → Cylinder → Snout → CircularTorus → Pyramid → Sphere → SphericalDish`
-/// 逐个试，先认出来的算。次序有讲究：等径不偏心的圆台让给圆柱、同形不偏心的棱台让给盒子，
-/// 顶点恰好共球的正棱柱先被圆柱接走，球的识别器再靠内切比把剩下的多面体挡在外面。
+/// 有目录出身就先试出身那把（[`recogniser_for_catalogue_noun`]），没有或认不出来再按
+/// [`RECOGNISER_ORDER`] 逐个试，先认出来的算。
 ///
 /// **自校闸**：解析候选算出来的世界 AABB 必须与这块网格实算的一致，否则退回面片。
 /// 规范体约定写错了照样能写出一份解析得开但几何是错的 RVM，这种错不该靠人眼发现。
@@ -128,52 +243,23 @@ fn rvm_component_geometry(
     triangles: &[[u32; 3]],
     world_lo: [f64; 3],
     world_hi: [f64; 3],
+    catalogue_noun: Option<&str>,
     analytic_count: &mut usize,
     rejected_count: &mut usize,
 ) -> e3d_model::rvm_read::RvmGeometry {
-    let candidate = e3d_model::rvm_write::box_from_local_mesh(local_vertices, triangles)
-        .map(|lengths| {
-            let centre = [0, 1, 2].map(|axis| {
-                let lo = local_vertices.iter().fold(f64::MAX, |m, v| m.min(v[axis]));
-                let hi = local_vertices.iter().fold(f64::MIN, |m, v| m.max(v[axis]));
-                (lo + hi) / 2.0
-            });
-            e3d_model::rvm_write::box_geometry(world, lengths, centre)
+    let preferred = catalogue_noun.and_then(recogniser_for_catalogue_noun);
+    let candidate = preferred
+        .and_then(|recogniser| {
+            analytic_candidate(recogniser, world, local_vertices, triangles, true)
         })
         .or_else(|| {
-            let cylinder =
-                e3d_model::rvm_write::cylinder_from_local_mesh(local_vertices, triangles)?;
-            Some(e3d_model::rvm_write::cylinder_geometry(world, &cylinder))
-        })
-        .or_else(|| {
-            let snout = e3d_model::rvm_write::snout_from_local_mesh(local_vertices, triangles)?;
-            Some(e3d_model::rvm_write::snout_geometry(world, &snout))
-        })
-        .or_else(|| {
-            let torus = e3d_model::rvm_write::torus_from_local_mesh(local_vertices, triangles)?;
-            Some(e3d_model::rvm_write::circular_torus_geometry(world, &torus))
-        })
-        .or_else(|| {
-            let pyramid =
-                e3d_model::rvm_write::pyramid_from_local_mesh(local_vertices, triangles)?;
-            Some(e3d_model::rvm_write::pyramid_geometry(world, &pyramid))
-        })
-        .or_else(|| {
-            let sphere = e3d_model::rvm_write::sphere_from_local_mesh(local_vertices, triangles)?;
-            Some(e3d_model::rvm_write::sphere_geometry(world, &sphere))
-        })
-        .or_else(|| {
-            let dish =
-                e3d_model::rvm_write::spherical_dish_from_local_mesh(local_vertices, triangles)?;
-            Some(e3d_model::rvm_write::spherical_dish_geometry(world, &dish))
-        })
-        // 折边碟排在球形碟后面：球形碟的顶点全在冠球上，先被那一条认走。写出去的是半椭球
-        // ——照抄 E3D 导出时就做了的那层近似，好让两边 RVM 的图元种类对得上；形状损失算进
-        // 候选自己的 `sagitta_mm`，仍由下面那道自校闸按 r/h 算出来的量放行。
-        .or_else(|| {
-            let dish =
-                e3d_model::rvm_write::elliptical_dish_from_local_mesh(local_vertices, triangles)?;
-            Some(e3d_model::rvm_write::elliptical_dish_geometry(world, &dish))
+            RECOGNISER_ORDER
+                .iter()
+                .copied()
+                .filter(|recogniser| Some(*recogniser) != preferred)
+                .find_map(|recogniser| {
+                    analytic_candidate(recogniser, world, local_vertices, triangles, false)
+                })
         });
     let had_candidate = candidate.is_some();
     let accepted = candidate
@@ -837,12 +923,20 @@ fn main() -> anyhow::Result<()> {
                     .filter(|candidate| candidate.matches_mesh_aabb(lo, hi, ANALYTIC_TOL_MM))
                     .map(|candidate| candidate.geometry);
 
+                // 逐块的目录出身。对不上号（长度不等 = 这几块不是目录图元一块一条，
+                // 比如按连通性拆出来的、或上面带负体那一支）就当出身不明，照旧靠长相认。
+                let component_nouns: &[String] =
+                    if component_meshes.len() == generated.part_catalogue_nouns.len() {
+                        &generated.part_catalogue_nouns
+                    } else {
+                        &[]
+                    };
                 let mut geometries = Vec::with_capacity(component_meshes.len());
                 if let Some(geometry) = whole_element_instance {
                     rvm_analytic += 1;
                     geometries.push(geometry);
                 } else {
-                    for component in &component_meshes {
+                    for (index, component) in component_meshes.iter().enumerate() {
                         let local: Vec<[f64; 3]> =
                             component.vertices.iter().map(to_local).collect();
                         let tris: Vec<[u32; 3]> = component.indices.as_chunks::<3>().0.to_vec();
@@ -866,6 +960,7 @@ fn main() -> anyhow::Result<()> {
                             &tris,
                             clo,
                             chi,
+                            component_nouns.get(index).map(String::as_str),
                             &mut rvm_analytic,
                             &mut rvm_analytic_rejected,
                         ));

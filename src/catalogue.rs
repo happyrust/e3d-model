@@ -927,7 +927,10 @@ pub fn model_catalogue_member_with_cache(
                             .get(&evaluated.mesh_key)
                             .expect("catalogue mesh inserted above")
                             .solid;
-                        solids.push(placed(local_mesh, evaluated.transform));
+                        solids.push(CataloguePart {
+                            solid: placed(local_mesh, evaluated.transform),
+                            noun: primitive_noun.clone(),
+                        });
                     }
                     Ok(None) => zero_height += 1,
                     Err(error) => diagnostics.push(format!(
@@ -970,7 +973,10 @@ pub fn model_catalogue_member_with_cache(
                             .get(&evaluated.mesh_key)
                             .expect("catalogue mesh inserted above")
                             .solid;
-                        solids.push(placed(local_mesh, evaluated.transform));
+                        solids.push(CataloguePart {
+                            solid: placed(local_mesh, evaluated.transform),
+                            noun: primitive_noun.clone(),
+                        });
                     }
                     Ok(None) => degenerate_other += 1,
                     Err(error) => diagnostics.push(format!(
@@ -1013,7 +1019,10 @@ pub fn model_catalogue_member_with_cache(
                             .get(&evaluated.mesh_key)
                             .expect("catalogue mesh inserted above")
                             .solid;
-                        solids.push(placed(local_mesh, evaluated.transform));
+                        solids.push(CataloguePart {
+                            solid: placed(local_mesh, evaluated.transform),
+                            noun: primitive_noun.clone(),
+                        });
                     }
                     Ok(None) => degenerate_other += 1,
                     Err(error) => diagnostics.push(format!(
@@ -1042,6 +1051,7 @@ pub fn model_catalogue_member_with_cache(
                             cache,
                             &mut placed_parts,
                             &mut solids,
+                            &primitive_noun,
                             &mesh_key,
                             evaluated.transform,
                             || {
@@ -1082,6 +1092,7 @@ pub fn model_catalogue_member_with_cache(
                             cache,
                             &mut placed_parts,
                             &mut solids,
+                            &primitive_noun,
                             &mesh_key,
                             evaluated.transform,
                             || {
@@ -1155,7 +1166,10 @@ pub fn model_catalogue_member_with_cache(
                             .get(&evaluated.mesh_key)
                             .expect("catalogue mesh inserted above")
                             .solid;
-                        solids.push(placed(local_mesh, evaluated.transform));
+                        solids.push(CataloguePart {
+                            solid: placed(local_mesh, evaluated.transform),
+                            noun: primitive_noun.clone(),
+                        });
                     }
                     Ok(None) => degenerate_other += 1,
                     Err(error) => diagnostics.push(format!(
@@ -1192,6 +1206,7 @@ pub fn model_catalogue_member_with_cache(
                             cache,
                             &mut placed_parts,
                             &mut solids,
+                            &primitive_noun,
                             &mesh_key,
                             evaluated.transform,
                             || {
@@ -1257,6 +1272,7 @@ pub fn model_catalogue_member_with_cache(
                             cache,
                             &mut placed_parts,
                             &mut solids,
+                            &primitive_noun,
                             &mesh_key,
                             evaluated.transform,
                             || {
@@ -1298,6 +1314,7 @@ pub fn model_catalogue_member_with_cache(
                             cache,
                             &mut placed_parts,
                             &mut solids,
+                            &primitive_noun,
                             &mesh_key,
                             evaluated.transform,
                             || {
@@ -1343,6 +1360,7 @@ pub fn model_catalogue_member_with_cache(
                             cache,
                             &mut placed_parts,
                             &mut solids,
+                            &primitive_noun,
                             &mesh_key,
                             transform,
                             || {
@@ -1389,6 +1407,7 @@ pub fn model_catalogue_member_with_cache(
                             cache,
                             &mut placed_parts,
                             &mut solids,
+                            &primitive_noun,
                             &mesh_key,
                             disc.transform,
                             || {
@@ -1457,8 +1476,13 @@ pub fn model_catalogue_member_with_cache(
     // （重算半边、重排顶点、重算包围盒），对单件是净浪费，而且它是**急切**的——
     // 那一下就把惰性变换逼成了真顶点。ams8000 每件平均 1.18 个图元。
     let local = match solids.as_slice() {
-        [only] => only.clone(),
-        many => Manifold::compose(many),
+        [only] => only.solid.clone(),
+        many => Manifold::compose(
+            &many
+                .iter()
+                .map(|part| part.solid.clone())
+                .collect::<Vec<_>>(),
+        ),
     };
     let world = world_matrix(member)?;
     let noun = member.element_type()?;
@@ -1471,9 +1495,16 @@ pub fn model_catalogue_member_with_cache(
     let parts = preserve_components.then(|| {
         solids
             .iter()
-            .map(|solid| placed(solid, world))
+            .map(|part| placed(&part.solid, world))
             .collect::<Vec<_>>()
     });
+    // 与 `parts` 逐块对齐的出身。RVM 的记录种类照它挑写出器，见
+    // [`crate::elmodl::GeneratedElement::part_catalogue_nouns`]。
+    let part_catalogue_nouns = if preserve_components {
+        solids.iter().map(|part| part.noun.clone()).collect()
+    } else {
+        Vec::new()
+    };
     let world_solid = placed(&local, world);
     drop(compose_timing);
     let notes = vec![format!(
@@ -1501,6 +1532,7 @@ pub fn model_catalogue_member_with_cache(
             name: member.stored_name()?,
             solid: world_solid,
             parts,
+            part_catalogue_nouns,
             world,
             primitive_instance: None,
             negatives_applied: catalogue_negatives,
@@ -1566,6 +1598,7 @@ fn model_hvac_rectangular_basic(
             name: member.stored_name()?,
             solid: placed(&built.solid, world),
             parts: None,
+            part_catalogue_nouns: Vec::new(),
             world,
             primitive_instance: built.instance,
             negatives_applied: 0,
@@ -2719,11 +2752,23 @@ fn evaluate_catalogue_sphere(
 // PXTS/PYTS/PXBS/PYBS），不是按形参猜的。形体本身见 `solid.rs` 同名 builder。
 // ---------------------------------------------------------------------------
 
+/// 一块建好的目录图元：实体，加上它出自哪个目录图元。
+///
+/// 出身要一路带到 RVM 写出器，因为**记录种类由目录图元定，不由网格长相定**：E3D 的
+/// LPYR 一律走 DRPYR、LSNO/SCON 一律走 DRSNO，一只 PAAX/PBAX 退化成正方盒的 LPYR
+/// 照样写 `Pyramid`。只交网格出去，下游的识别器就只能照长相猜，猜出来的是 `Box`。
+pub(crate) struct CataloguePart {
+    pub(crate) solid: Manifold,
+    /// 目录图元的名词（`SBOX` / `SCYL` / `LPYR` / `LSNO`…）。
+    pub(crate) noun: String,
+}
+
 /// 取网格 → 放置去重 → 摆放。G0-1c 三条臂共用这一份；其余臂的手抄版见计划 G2-5。
 fn place_cached_part(
     cache: &mut CatalogueMeshCache,
     placed_parts: &mut HashSet<PlacedPartKey>,
-    solids: &mut Vec<Manifold>,
+    solids: &mut Vec<CataloguePart>,
+    noun: &str,
     mesh_key: &CatalogueMeshKey,
     transform: DMat4,
     build: impl FnOnce() -> Result<Manifold, ModelError>,
@@ -2743,7 +2788,10 @@ fn place_cached_part(
         .get(mesh_key)
         .expect("catalogue mesh inserted above")
         .solid;
-    solids.push(placed(local_mesh, transform));
+    solids.push(CataloguePart {
+        solid: placed(local_mesh, transform),
+        noun: noun.to_string(),
+    });
     Ok(true)
 }
 

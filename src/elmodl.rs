@@ -215,6 +215,14 @@ pub struct GeneratedElement {
     /// RVM-compatible, non-boolean component list. Present for visible catalogue
     /// programs because E3D preserves their primitives as separate display meshes.
     pub parts: Option<Vec<Manifold>>,
+    /// 与 `parts` 逐块对齐的目录图元名词（`SBOX` / `SCYL` / `LPYR` / `LSNO`…）。
+    /// 空表 = 出身不明（设计侧实体、型材本体、FITT 拼出来的那几块都没有）。
+    ///
+    /// **RVM 的记录种类由出身定，不由网格长相定。** E3D 的写出器按目录图元挑
+    /// （LPYR→DRPYR、LSNO/SCON→DRSNO、SBOX→DRBOX…），一只 PAAX/PBAX 退化成正方盒的
+    /// LPYR 照样写 `Pyramid`。网格识别器不知来历，只能按长相先中先得，于是 300 只阀门的
+    /// 手轮座写成了 `Box`、等径 LSNO 写成了 `Cylinder`——几何 exact，种类却不一致。
+    pub part_catalogue_nouns: Vec<String>,
     /// 本元素局部系到世界系的刚体变换。实体里的 SJUS 下移保留在局部几何中，
     /// 因而把最终网格乘这个矩阵的逆即可得到与 E3D facet 可比的元素局部坐标。
     pub world: DMat4,
@@ -551,6 +559,7 @@ pub fn model_element_with_cache(
                     name: el.stored_name()?,
                     solid,
                     parts: Some(fitting_parts),
+                    part_catalogue_nouns: Vec::new(),
                     world: world_matrix(el)?,
                     primitive_instance: None,
                     negatives_applied: 0,
@@ -583,6 +592,7 @@ pub fn model_element_with_cache(
                     name: el.stored_name()?,
                     solid,
                     parts: Some(fitting_parts),
+                    part_catalogue_nouns: Vec::new(),
                     world: world_matrix(el)?,
                     primitive_instance: None,
                     negatives_applied: 0,
@@ -712,6 +722,7 @@ pub fn model_element_with_cache(
         name: el.stored_name()?,
         solid,
         parts,
+        part_catalogue_nouns: Vec::new(),
         world,
         primitive_instance: (!had_negative_members)
             .then_some(primitive_instance)
