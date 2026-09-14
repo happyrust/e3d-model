@@ -1648,21 +1648,7 @@ fn lpyr_geometry(
     if height < HEIGHT_TOL_MM {
         return Ok(None);
     }
-    let z = pa.direction.normalize_or_zero();
-    let x = pb.direction.normalize_or_zero();
-    let y = z.cross(x).normalize_or_zero();
-    if x.length_squared() <= AXIS_TOL
-        || y.length_squared() <= AXIS_TOL
-        || z.length_squared() <= AXIS_TOL
-    {
-        return Err(ModelError::Solid(SolidError::Degenerate {
-            what: "catalogue LPYR axes",
-            detail: format!(
-                "PAAX={:?}, PBAX={:?}, PCAX={:?}",
-                pa.direction, pb.direction, pc.direction
-            ),
-        }));
-    }
+    let (x, y, z) = orthog(pa.direction, pb.direction);
     if pc.direction.dot(y) < 0.0 {
         yoff = -yoff;
     }
@@ -1683,6 +1669,31 @@ fn lpyr_geometry(
         transform: DMat4::from_translation(pa.origin + rotation * centre)
             * DMat4::from_mat3(rotation),
     }))
+}
+
+/// Core `mathlib/ORTHOG`（`core.dll` `0x526B878`）：把 `(z, x)` 两根轴正交化成一套
+/// 右手标架，返回 `(x, y, z)`。**每一步退化都有替补，它不会失败**——错号是置了，
+/// 但 `QLPYRA` 读都不读（`Core3D.dll` `0x103C07B4`，`ORTHOG` 之后直接往下走）。
+///
+/// 逐条照抄：`z` 归一不了换 `(1,0,0)`，`x` 归一不了换 `(0,1,0)`；`y = z × x` 退化时
+/// 依次退到 `z × (0,1,0)`、`z × (1,0,0)`；最后 `x = y × z` 把 x 拉回垂直。
+///
+/// 这条闸此前是「三根轴有一根退化就整只图元报废」。SLYK 的
+/// `/Z9B43H-16C-FBP-GM` 手轮座 `LPYR 16596/10594` 正撞上它：`PAAX` 写 `P11` 取反、
+/// `PBAX` 写 `P1`，两根解出来都是 +X，`z × x` 是零。E3D 走 ORTHOG 退到 `z × (0,1,0)`，
+/// 照常写出 `Pyramid[315 × 198.125, h 263.1]`；我们整只丢掉——80 根严尺子的基准里
+/// 300 只阀门各少这么一块（`source_lpyr 7 / evaluated_lpyr 0`，见 21491/10802 的
+/// `report.json`）。
+fn orthog(z: DVec3, x: DVec3) -> (DVec3, DVec3, DVec3) {
+    let normalised = |v: DVec3| (v.length_squared() > AXIS_TOL).then(|| v.normalize());
+    let z = normalised(z).unwrap_or(DVec3::X);
+    let x = normalised(x).unwrap_or(DVec3::Y);
+    let y = normalised(z.cross(x))
+        .or_else(|| normalised(z.cross(DVec3::Y)))
+        .or_else(|| normalised(z.cross(DVec3::X)))
+        // z 是单位向量，`z × Y` 与 `z × X` 不会同时退化，这一支到不了。
+        .unwrap_or(DVec3::Y);
+    (y.cross(z), y, z)
 }
 
 fn lpyr_axial_and_offsets(
@@ -3632,6 +3643,49 @@ mod tests {
         assert!((bounds.max()[0] + 2.0).abs() < 1e-9, "{:?}", bounds);
         assert!((geometry.transform.z_axis.truncate() - DVec3::X).length() < 1e-12);
         assert!((geometry.transform.x_axis.truncate() - DVec3::Z).length() < 1e-12);
+    }
+
+    /// SLYK `/Z9B43H-16C-FBP-GM` 的手轮座 `LPYR 16596/10594`：`PAAX`（`P11` 取反）
+    /// 与 `PBAX` 解出来是同一根 +X，`z × x` 退化。Core 的 `ORTHOG` 退到 `z × (0,1,0)`，
+    /// 标架成 x=+Y、y=+Z、z=+X——E3D 那条 `Pyramid[bottom 315×198.125, h 263.1]` 的
+    /// 世界盒正是 263.1(X) × 315(Y) × 198.125(Z)。此前我们判轴退化、整只丢掉。
+    #[test]
+    fn parallel_lpyr_axes_go_through_cores_orthog_instead_of_failing() {
+        let axis = |direction| CatalogueAxis {
+            origin: DVec3::ZERO,
+            direction,
+        };
+        let geometry = lpyr_geometry(
+            [315.0, 198.125, 315.0, 198.125],
+            [131.55, -131.55, 0.0, 0.0],
+            axis(DVec3::X),
+            axis(DVec3::X),
+            axis(DVec3::Y),
+        )
+        .unwrap()
+        .unwrap();
+        let [xb, yb, xt, yt, h, xo, yo] = geometry.parameters;
+        assert!((h - 263.1).abs() < 1e-9, "height {h}");
+        let body = placed(
+            &pyramid_solid(xb, yb, xt, yt, h, xo, yo).unwrap(),
+            geometry.transform,
+        );
+        let bounds = body.bounding_box().unwrap();
+        let span = |axis: usize| bounds.max()[axis] - bounds.min()[axis];
+        assert!((span(0) - 263.1).abs() < 1e-6, "{bounds:?}");
+        assert!((span(1) - 315.0).abs() < 1e-6, "{bounds:?}");
+        assert!((span(2) - 198.125).abs() < 1e-6, "{bounds:?}");
+    }
+
+    /// 三根轴都解不出来时 Core 也不失败：z 换 `(1,0,0)`、x 换 `(0,1,0)`。
+    #[test]
+    fn orthog_substitutes_cores_fallback_axes() {
+        assert_eq!(
+            orthog(DVec3::ZERO, DVec3::ZERO),
+            (DVec3::Y, DVec3::Z, DVec3::X)
+        );
+        // x ∥ z：y 退到 z × (0,1,0) = −X，x 再由 y × z 拉成 +Y。
+        assert_eq!(orthog(DVec3::Z, DVec3::Z), (DVec3::Y, -DVec3::X, DVec3::Z));
     }
 
     #[test]
