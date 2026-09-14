@@ -129,9 +129,8 @@ impl Primitive {
     /// 八个角转出去的 AABB 会比真实几何大一圈——`1RCV0101` 的 `CircularTorus` 弯头
     /// 实测因此虚高 **56.7 mm**，把本来 `chord` 的件判成 `off`。曲面必须按面采样。
     ///
-    /// **偏心 `Snout` 的记录 bbox 本身就不是紧盒**（`ox 12.06` 的实例写成 `x ∈ ±48.24`、
-    /// `y ∈ [−42.21, 48.24]`，`oy = 0` 却上下不对称），那是 E3D 放宽过的估计，
-    /// 这里给的是真几何，两者对不上是**预期**，靠 `detect_bbox_frame` 的容差吸收。
+    /// **偏心 `Snout` 的记录 bbox 与这里给的真几何对不上是预期**：E3D 那只盒按另一条
+    /// 公式写，见 [`declared_box_mm`](Self::declared_box_mm)，判帧由它兜住。
     pub fn local_hull_points_mm(&self) -> Vec<[f64; 3]> {
         // 圆周采样密度。采样点撑不到真实极值，AABB 会**偏小** r·(1−cos(π/n))，
         // 这个误差必须压到判档最细的一档 `EXACT_MM = 0.05 mm` 以下，否则本该 `exact`
@@ -160,7 +159,7 @@ impl Primitive {
                     .chain(ring(*rt, h / 2.0).map(|p| [p[0] + ox / 2.0, p[1] + oy / 2.0, p[2]]))
                     .collect()
             }
-            Self::EllipticalDish([r, h]) | Self::SphericalDish([r, h]) => {
+            Self::EllipticalDish([r, h]) => {
                 // 底圈 + 半高一圈 + 顶点：碟面是单调外凸的，这三圈就把 AABB 卡死了。
                 let mid = std::f64::consts::FRAC_1_SQRT_2;
                 ring(*r, 0.0)
@@ -168,14 +167,47 @@ impl Primitive {
                     .chain(std::iter::once([0.0, 0.0, *h]))
                     .collect()
             }
+            Self::SphericalDish([r, h]) => {
+                // 球冠按纬度逐圈采到底圆：`R = (r² + h²) / 2h`，球心 (0, 0, h − R)。
+                //
+                // 碟一旦倾斜，AABB 的极值落在冠面中间某一圈上，光有底圈 + 顶点卡不住；
+                // 而拿 (r/√2, h/√2) 那一圈顶替只对半球成立——浅碟的冠面在那个半径上要低得多，
+                // r 225 / h 100 的 DISH 转 40° 时盒子因此虚高 8.9 mm，生成侧的解析记录
+                // 过不了自校闸。纬向 64 圈：半球一档的采样误差 7.5e-5·R，与周向 256 段同量级
+                //（`r·(1 − cos(π/256))` 也是 7.5e-5·r），不另开一档精度。
+                const LATITUDES: usize = 64;
+                if !(*r > 0.0 && *h > 0.0) {
+                    return ring(*r, 0.0).chain(std::iter::once([0.0, 0.0, *h])).collect();
+                }
+                let sphere_radius = (r * r + h * h) / (2.0 * h);
+                let phi_max = ((sphere_radius - h) / sphere_radius)
+                    .clamp(-1.0, 1.0)
+                    .acos();
+                let centre_z = h - sphere_radius;
+                (1..LATITUDES)
+                    .flat_map(move |j| {
+                        let phi = phi_max * j as f64 / LATITUDES as f64;
+                        ring(sphere_radius * phi.sin(), centre_z + sphere_radius * phi.cos())
+                    })
+                    .chain(ring(*r, 0.0))
+                    .chain(std::iter::once([0.0, 0.0, *h]))
+                    .collect()
+            }
             Self::Pyramid([bx, by, tx, ty, ox, oy, h]) => {
+                // XOFF/YOFF 与 `Snout` 同一约定：两端各摊一半，底面心 (−ox/2, −oy/2)、
+                // 顶面心 (+ox/2, +oy/2)。出处是 libgm.dll `GM_Pyramid::calcFacets`
+                // （0x10094b10）：底面四点取 ±xbot/2 − xoff/2、±ybot/2 − yoff/2，
+                // 顶面四点取 ±xtop/2 + xoff/2、±ytop/2 + yoff/2。
+                //
+                // 把偏心整个记到顶面会让盒子沿偏心方向整体涨 |off|/2：`/TEMP_EQUIP`
+                // PIPE 2 的弯头（YOFF 50）因此虚高 25 mm，基准侧被判成 off。
                 let quad = |sx: f64, sy: f64, cx: f64, cy: f64, z: f64| {
                     [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]]
                         .map(|[u, v]| [cx + u * sx / 2.0, cy + v * sy / 2.0, z])
                 };
-                quad(*bx, *by, 0.0, 0.0, -h / 2.0)
+                quad(*bx, *by, -ox / 2.0, -oy / 2.0, -h / 2.0)
                     .into_iter()
-                    .chain(quad(*tx, *ty, *ox, *oy, h / 2.0))
+                    .chain(quad(*tx, *ty, ox / 2.0, oy / 2.0, h / 2.0))
                     .collect()
             }
             Self::CircularTorus([offset, radius, angle]) => {
@@ -212,6 +244,40 @@ impl Primitive {
     /// 规范局部盒（mm）。认不出形状或没有体积（`Line`）时 None。
     pub fn local_aabb_mm(&self) -> Option<[f64; 6]> {
         aabb_of(self.local_hull_points_mm().into_iter())
+    }
+
+    /// E3D **自己往记录里写 bbox 时用的那只盒**（局部 mm），只在它与真几何不同的形状上给。
+    ///
+    /// 只服务 [`detect_bbox_frame`]：判帧问的是「记录里那 6 个数落在哪个帧」，
+    /// 要拿 E3D 的口径去对；空间判定一律走 [`local_hull_points_mm`](Self::local_hull_points_mm)
+    /// 的真几何，**不许**改用这里的盒——偏心 `Snout` 这一档它比真实体还小。
+    ///
+    /// 目前只有偏心 `Snout`（`XOFF`/`YOFF` 非零）。E3D 写的是一只**对称**盒，
+    /// 半跨取两端「带符号盖心 + 该端半径」的较大者：
+    ///
+    /// ```text
+    /// hx = max(rb − ox/2, rt + ox/2)      hy = max(rb − oy/2, rt + oy/2)
+    /// 盒 = [−hx, −hy, −h/2] .. [hx, hy, h/2]
+    /// ```
+    ///
+    /// 也就是说它只算了 `+` 那一侧、再镜像过去，`−` 侧的盖心偏出去的部分被吃掉了。
+    /// 一只 `rb 136.5 / rt 109.55 / h 178 / ox 26.95` 的同心异径管接头（273.1×219.1 偏心大小头）
+    /// 真几何是 `x ∈ [−149.975, 123.025]`，E3D 写的是 `x ∈ ±123.025`——**比实体还窄 26.95 mm**，
+    /// 差值恰好等于 `XOFF`。所以它不是「放宽过的估计」，是一条算漏了的公式，凑不出、也不该凑。
+    ///
+    /// 证据是全量实测：`output/slyk-rvm/sweep` 的 80 份 E3D 3.1 导出物、5565 条 `Snout` 记录
+    /// （其中 51 条偏心），上面这条公式**逐条**对得上（残差 ≤ 0.01 mm）；真几何那条只对上
+    /// 非偏心的 5514 条，51 条偏心的残差恰好是 `|XOFF|`，大到顶穿容差时整份文件的判帧就塌了
+    /// （`/1#罐组管线` 等 10 个 ZONE 的 REDUCER 因此被判 `Unknown`，严尺子对拍直接拒判）。
+    pub fn declared_box_mm(&self) -> Option<[f64; 6]> {
+        match self {
+            Self::Snout([rb, rt, h, ox, oy, ..]) if *ox != 0.0 || *oy != 0.0 => {
+                let hx = (rb - ox / 2.0).max(rt + ox / 2.0);
+                let hy = (rb - oy / 2.0).max(rt + oy / 2.0);
+                Some([-hx, -hy, -h / 2.0, hx, hy, h / 2.0])
+            }
+            _ => None,
+        }
     }
 }
 
@@ -630,9 +696,6 @@ fn detect_bbox_frame(geometry: &RvmGeometry) -> BboxFrame {
     if points.is_empty() {
         return BboxFrame::Unknown;
     }
-    let Some(local) = aabb_of(points.iter().copied()) else {
-        return BboxFrame::Unknown;
-    };
     let m = &geometry.matrix3;
     let rotate = |v: &[f64; 3]| {
         [
@@ -641,9 +704,6 @@ fn detect_bbox_frame(geometry: &RvmGeometry) -> BboxFrame {
             (m[2] * v[0] + m[5] * v[1] + m[8] * v[2]) * M_TO_MM,
         ]
     };
-    let Some(rotated) = aabb_of(points.iter().map(rotate)) else {
-        return BboxFrame::Unknown;
-    };
 
     let record = &geometry.record_bbox;
     let residual = |a: &[f64; 6]| {
@@ -651,18 +711,39 @@ fn detect_bbox_frame(geometry: &RvmGeometry) -> BboxFrame {
             .zip(record.iter())
             .fold(0.0f64, |acc, (x, y)| acc.max((x - y).abs()))
     };
-    let (d_local, d_rotated) = (residual(&local), residual(&rotated));
-    // 1mm + 该轴 8% 跨度：圆周按 1mm 弦高最少 8 段，极值角上没有顶点时最多缩进 7.6%；
-    // 偏心 Snout 的记录盒本就不紧（见 `Primitive::local_aabb_mm`），也靠这条吸收。
+    // 两套点云各判一次，取更贴的那一档：真几何，以及 E3D 写 bbox 时另算的那只盒
+    // （见 `Primitive::declared_box_mm`，只有偏心 `Snout` 有）。E3D 哪天把那条公式
+    // 补齐了，真几何这一套自己就会重新贴上，这里不用回来改。
+    let mut best: Option<(f64, BboxFrame)> = None;
+    let hulls = std::iter::once(points).chain(
+        geometry
+            .primitive
+            .declared_box_mm()
+            .map(|box_mm| corners(&box_mm).to_vec()),
+    );
+    for hull in hulls {
+        for (aabb, frame) in [
+            (aabb_of(hull.iter().copied()), BboxFrame::Local),
+            (aabb_of(hull.iter().map(rotate)), BboxFrame::Rotated),
+        ] {
+            let Some(aabb) = aabb else { continue };
+            let d = residual(&aabb);
+            // 同样贴时取 Local：轴对齐的记录两个帧本就相等，别让它在两档之间来回跳。
+            if best.is_none_or(|(best_d, _)| d < best_d) {
+                best = Some((d, frame));
+            }
+        }
+    }
+    let Some((d_best, frame)) = best else {
+        return BboxFrame::Unknown;
+    };
+    // 1mm + 该轴 8% 跨度：圆周按 1mm 弦高最少 8 段，极值角上没有顶点时最多缩进 7.6%。
     let span = (0..3).fold(0.0f64, |acc, a| acc.max((record[a + 3] - record[a]).abs()));
     let tolerance = 1.0 + 0.08 * span;
-    match (d_local <= tolerance, d_rotated <= tolerance) {
-        (true, false) => BboxFrame::Local,
-        (false, true) => BboxFrame::Rotated,
-        // 两个都在容差内（轴对齐时它们本就相等），取更贴的那个。
-        (true, true) if d_local <= d_rotated => BboxFrame::Local,
-        (true, true) => BboxFrame::Rotated,
-        (false, false) => BboxFrame::Unknown,
+    if d_best <= tolerance {
+        frame
+    } else {
+        BboxFrame::Unknown
     }
 }
 
@@ -786,6 +867,44 @@ mod tests {
         )
         .unwrap();
         assert!(naive[3] > 140.0, "{naive:?}");
+    }
+
+    #[test]
+    fn pyramid_splits_the_shift_between_the_two_faces() {
+        // `/TEMP_EQUIP` PIPE 2 弯头的实测记录：bottom/top 都是 12×50、YOFF 50、高 50，
+        // E3D 自己写进 RVM 的记录盒是 [−6, −50, −25, 6, 50, 25]。偏心整个记到顶面
+        // 会得到 [−6, −25, −25, 6, 75, 25]，沿 Y 整体错 25 mm。
+        let pyramid = Primitive::Pyramid([12.0, 50.0, 12.0, 50.0, 0.0, 50.0, 50.0]);
+        let aabb = pyramid.local_aabb_mm().unwrap();
+        assert_eq!(aabb, [-6.0, -50.0, -25.0, 6.0, 50.0, 25.0], "{aabb:?}");
+    }
+
+    #[test]
+    fn eccentric_snout_declares_a_box_narrower_than_the_solid() {
+        // `/装卸车汇管PI` 里 `/250-CGA-0311-B1/B1` 那只 REDUCER 的实测记录：
+        // rb 136.5 / rt 109.55 / h 178 / XOFF 26.95，E3D 写的盒是 X ∈ ±123.025。
+        let snout = Primitive::Snout([136.5, 109.55, 178.0, 26.95, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        let declared = snout.declared_box_mm().unwrap();
+        assert_close(
+            &declared,
+            &[-123.025, -136.5, -89.0, 123.025, 136.5, 89.0],
+            1e-9,
+        );
+        // 真几何在 −X 上比 E3D 那只盒宽出整整一个 XOFF——判帧拿 declared 去对，
+        // 空间判定仍旧只认这一只。
+        let hull = snout.local_aabb_mm().unwrap();
+        assert_close(
+            &hull,
+            &[-149.975, -136.5, -89.0, 123.025, 136.5, 89.0],
+            0.01,
+        );
+    }
+
+    #[test]
+    fn concentric_snout_has_no_separate_declared_box() {
+        // 不偏心时 E3D 那条公式与真几何重合，5514 条实测记录都靠原路判帧，别多给一个候选。
+        let snout = Primitive::Snout([136.5, 109.55, 178.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(snout.declared_box_mm(), None);
     }
 
     #[test]

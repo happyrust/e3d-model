@@ -55,25 +55,56 @@ fn as_is(tri: &rvm_rs::export::Triangulation) -> Vec<[f32; 3]> {
     tri.vertices.as_chunks::<3>().0.to_vec()
 }
 
-/// 选出与记录 bbox 同口径的那份局部顶点；`Some(true)` = 原样就对，`Some(false)` = 用了 Y→Z
-/// 转换，`None` = 两种都对不上（照原样倒出）。
+/// rvm-rs 的 `Pyramid::tessellate` 把 XOFF/YOFF **整个**记到顶面（底面心钉在原点）。
+/// E3D 是两端各摊一半：libgm.dll `GM_Pyramid::calcFacets`（0x10094b10）底面四点取
+/// ±xbot/2 − xoff/2、±ybot/2 − yoff/2，顶面四点取 ±xtop/2 + xoff/2、±ytop/2 + yoff/2。
+/// 形状一模一样，只差一个整体平移 (+ox/2, +oy/2)——减掉它就回到记录帧。
+///
+/// 不减的后果：盒子沿偏心方向整体涨 |off|/2。`/TEMP_EQUIP` PIPE 2 的弯头（两只 YOFF 50
+/// 的棱台）因此让基准 AABB 虚高 25 mm，我们本来画对的几何被判成 off。
+///
+/// 与 [`y_up_to_record_frame`] 同一条原则：这里只是**多给一个候选**，选不选由记录
+/// bbox 说了算。上游改好后这一档匹配不上，自然不会被选中，本文件一行不用动。
+fn undo_pyramid_shift(kind: &GeometryKind, points: &[[f32; 3]]) -> Option<Vec<[f32; 3]>> {
+    let GeometryKind::Pyramid(pyramid) = kind else {
+        return None;
+    };
+    let [ox, oy] = pyramid.offset;
+    if ox == 0.0 && oy == 0.0 {
+        return None;
+    }
+    Some(
+        points
+            .iter()
+            .map(|[x, y, z]| [x - ox / 2.0, y - oy / 2.0, *z])
+            .collect(),
+    )
+}
+
+/// 选出与记录 bbox 同口径的那份局部顶点；`Some(true)` = 原样（或只去掉棱台偏心）就对，
+/// `Some(false)` = 还用了 Y→Z 转换，`None` = 都对不上（照原样倒出）。
 fn rvm_local_vertices(
     kind: &GeometryKind,
     tri: &rvm_rs::export::Triangulation,
     record: &[f32; 6],
 ) -> (Vec<[f32; 3]>, Option<bool>) {
-    let identity = as_is(tri);
-    let Some(identity_aabb) = aabb_of(&identity) else {
-        return (identity, None);
-    };
-    if matches_record_bbox(&identity_aabb, record) {
-        return (identity, Some(true));
+    // 顺序即优先级：先不转帧、后转帧，每一档后面紧跟它去掉棱台偏心的版本。
+    let mut candidates = Vec::with_capacity(4);
+    for (points, in_record_frame) in [
+        (as_is(tri), Some(true)),
+        (y_up_to_record_frame(kind, tri), Some(false)),
+    ] {
+        let deshifted = undo_pyramid_shift(kind, &points);
+        candidates.push((points, in_record_frame));
+        candidates.extend(deshifted.map(|points| (points, in_record_frame)));
     }
-    let converted = y_up_to_record_frame(kind, tri);
-    match aabb_of(&converted) {
-        Some(aabb) if matches_record_bbox(&aabb, record) => (converted, Some(false)),
-        _ => (identity, None),
+    let fallback = candidates[0].0.clone();
+    for (points, in_record_frame) in candidates {
+        if aabb_of(&points).is_some_and(|aabb| matches_record_bbox(&aabb, record)) {
+            return (points, in_record_frame);
+        }
     }
+    (fallback, None)
 }
 
 fn aabb_of(points: &[[f32; 3]]) -> Option<[f32; 6]> {
@@ -97,6 +128,115 @@ fn matches_record_bbox(tessellated: &[f32; 6], record: &[f32; 6]) -> bool {
         (tessellated[axis] - record[axis]).abs() <= tolerance
             && (tessellated[axis + 3] - record[axis + 3]).abs() <= tolerance
     })
+}
+
+/// 补密后每一圈允许的弦高（mm）。补密带来的残差要落在判据的噪声底下。
+const RING_SAG_MM: f64 = 0.05;
+/// 原采样弦高不超过它就不补：`rvm_compare` 的基本体弦高容差是 0.5mm，比它小一半以上
+/// 的圈根本判不出差别，补了只是把产物撑大（一个 2684 件的 ZONE 从 1MB 撑到 19MB）。
+const RING_SKIP_SAG_MM: f64 = 0.2;
+/// 一圈最多补到多少个点。半径再大也不让产物失控；14 m 的罐顶按 0.05mm 弦高要 1176 个，
+/// 封到 1200 刚好够，且 1200 是 4 的倍数，四个象限点必在网格上。
+const RING_MAX_SAMPLES: usize = 1200;
+
+/// 只补**回转体**。盒与棱锥的等高点不在一个圆上，三点定圆会把外接圆的极值补出去——
+/// 实测一只 `BOX` 会被撑大 360 mm。下面每一圈还要再过一道残差门，双保险。
+fn is_body_of_revolution(kind: &GeometryKind) -> bool {
+    matches!(
+        kind,
+        GeometryKind::Cylinder(_)
+            | GeometryKind::Sphere(_)
+            | GeometryKind::SphericalDish(_)
+            | GeometryKind::EllipticalDish(_)
+            | GeometryKind::Snout(_)
+    )
+}
+
+/// 把回转图元采样太稀的圈**补密**（记录帧，只补顶点不补面）。
+///
+/// rvm-rs 的 `sagitta_based_segment_count(..., 8, 64)` 把整圈采样数**封顶 64**，回转体
+/// 每一圈还按 `sin θ` 再往下减。半径一大，容差就说了不算：`SphericalDish`
+/// `base_radius=14000` 的底圈实测只有二十几个点，某个方向上没采到极值角，AABB 比真圆
+/// 缩进 **94.7 mm**——而 E3D 在 PRIM 记录里写的 bbox 正是 ±14000，一分不差。那 94.7 mm
+/// 是我们这套基准工具铺出来的，不是 E3D 的几何。
+///
+/// 每一圈按三点定圆求出**精确**的圆心与半径，采样不够密就按 [`RING_SAG_MM`] 重铺。
+/// 补进去的点都严格落在解析面上，AABB 只会更接近真值，不会撑大。
+///
+/// 为什么不只补「每根轴上那两个极值点」（那样只要十几个点）：`rvm_compare` 是在
+/// **元素局部帧**里比的，这里却只看得见世界帧，按世界轴算出来的极值点换个帧就不再是
+/// 极值。同一个 ZONE 里六只一模一样的罐顶，只有机位正好轴对齐的那两只被修好——
+/// 就是这么露的馅。
+fn ring_densification(local: &[[f32; 3]]) -> Vec<[f32; 3]> {
+    // 按 z 分圈：回转体的采样点天然落在若干等高圈上。
+    let mut rings: Vec<(f32, Vec<[f32; 3]>)> = Vec::new();
+    for &p in local {
+        match rings.iter_mut().find(|(z, _)| (z - p[2]).abs() <= 1.0e-6) {
+            Some((_, bag)) => bag.push(p),
+            None => rings.push((p[2], vec![p])),
+        }
+    }
+    let mut out = Vec::new();
+    for (z, bag) in &rings {
+        let Some((centre, radius)) = circle_through_spread_triple(bag) else {
+            continue;
+        };
+        // 这一圈真的是个圆吗：所有点到拟合圆心的距离都得等于半径。不等就别补。
+        let residual = bag
+            .iter()
+            .map(|p| {
+                ((f64::from(p[0]) - centre[0]).hypot(f64::from(p[1]) - centre[1]) - radius).abs()
+            })
+            .fold(0.0_f64, f64::max);
+        if residual > radius * 1.0e-4 + 1.0e-9 {
+            continue;
+        }
+        // 原采样的弦高 r(1 − cos(π/n))；判据看不出差别就别补。
+        let have = radius * (1.0 - (std::f64::consts::PI / bag.len() as f64).cos());
+        if have <= RING_SKIP_SAG_MM {
+            continue;
+        }
+        // 弦高 r(1 − cos(π/n)) ≤ RING_SAG_MM 要的最少段数；本来就够密就别动。
+        let ratio = (1.0 - RING_SAG_MM / radius).clamp(-1.0, 1.0);
+        let wanted = (std::f64::consts::PI / ratio.acos()).ceil();
+        if !wanted.is_finite() {
+            continue;
+        }
+        let wanted = (wanted as usize).min(RING_MAX_SAMPLES);
+        if wanted <= bag.len() {
+            continue;
+        }
+        for i in 0..wanted {
+            let angle = std::f64::consts::TAU * i as f64 / wanted as f64;
+            out.push([
+                (centre[0] + radius * angle.cos()) as f32,
+                (centre[1] + radius * angle.sin()) as f32,
+                *z,
+            ]);
+        }
+    }
+    out
+}
+
+/// 三点定圆，挑面积最大的那一组三点以免共线病态。点都在同一个圆上时结果是精确的。
+fn circle_through_spread_triple(ring: &[[f32; 3]]) -> Option<([f64; 2], f64)> {
+    if ring.len() < 3 {
+        return None;
+    }
+    let p = |i: usize| [f64::from(ring[i][0]), f64::from(ring[i][1])];
+    let n = ring.len();
+    let (a, b, c) = (p(0), p(n / 3), p(2 * n / 3));
+    let d = 2.0 * (a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1]));
+    if d.abs() <= 1.0e-9 {
+        return None;
+    }
+    let sq = |v: [f64; 2]| v[0] * v[0] + v[1] * v[1];
+    let centre = [
+        (sq(a) * (b[1] - c[1]) + sq(b) * (c[1] - a[1]) + sq(c) * (a[1] - b[1])) / d,
+        (sq(a) * (c[0] - b[0]) + sq(b) * (a[0] - c[0]) + sq(c) * (b[0] - a[0])) / d,
+    ];
+    let radius = (a[0] - centre[0]).hypot(a[1] - centre[1]);
+    radius.is_finite().then_some((centre, radius))
 }
 
 fn triangulation_world_polygons(
@@ -290,11 +430,41 @@ fn main() -> anyhow::Result<()> {
                             }
                             record_match = Some(frame.is_some());
                             tessellated_local_aabb = local_aabb;
-                            (
-                                kind_name,
-                                Some(format!("{other:?}")),
-                                Some(triangulation_world_polygons(&tri.indices, &local, &cols)),
-                            )
+                            let mut polys = triangulation_world_polygons(&tri.indices, &local, &cols);
+                            // rvm-rs 的采样封顶会让大半径回转体缩进（见 [`ring_extremes`]）；
+                            // 把每一圈的精确极值点补成一条附加多边形，AABB 才是解析值。
+                            let extremes = if is_body_of_revolution(other) {
+                                ring_densification(&local)
+                            } else {
+                                Vec::new()
+                            };
+                            if !extremes.is_empty() {
+                                polys.push(vec![
+                                    extremes
+                                        .iter()
+                                        .map(|v| {
+                                            [
+                                                (cols[0] * v[0]
+                                                    + cols[3] * v[1]
+                                                    + cols[6] * v[2]
+                                                    + cols[9])
+                                                    * M_TO_MM,
+                                                (cols[1] * v[0]
+                                                    + cols[4] * v[1]
+                                                    + cols[7] * v[2]
+                                                    + cols[10])
+                                                    * M_TO_MM,
+                                                (cols[2] * v[0]
+                                                    + cols[5] * v[1]
+                                                    + cols[8] * v[2]
+                                                    + cols[11])
+                                                    * M_TO_MM,
+                                            ]
+                                        })
+                                        .collect(),
+                                ]);
+                            }
+                            (kind_name, Some(format!("{other:?}")), Some(polys))
                         }
                     };
                     geometries.push(DumpedGeometry {
