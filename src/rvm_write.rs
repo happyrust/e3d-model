@@ -557,6 +557,28 @@ fn circular_cap(
     Some((centre, radius, unique.len()))
 }
 
+/// 落在 `axis` 上 `level` 那一档的顶点去重后只剩**一个**时给出它——圆锥的锥顶。
+/// 一个都没有、或不止一个，都是 None。
+fn lone_vertex_at(
+    points: &[glam::DVec3],
+    axis: glam::DVec3,
+    origin: glam::DVec3,
+    level: f64,
+) -> Option<glam::DVec3> {
+    let mut lone: Option<glam::DVec3> = None;
+    for p in points {
+        if ((*p - origin).dot(axis) - level).abs() > 1e-6 {
+            continue;
+        }
+        match lone {
+            Some(q) if (q - *p).length() <= 1e-6 => {}
+            Some(_) => return None,
+            None => lone = Some(*p),
+        }
+    }
+    lone
+}
+
 /// 一根圆柱的识别结果，全在局部系 mm。
 #[derive(Debug, Clone, Copy)]
 pub struct RecognisedCylinder {
@@ -676,9 +698,14 @@ impl RecognisedSnout {
 ///
 /// 三条成立时顶点集合恰好是两个圆，闭合网格只能是它们张成的那只圆台。
 ///
-/// 三种情况**故意**认不出来，退回面片：两端等径且不偏心的是圆柱，`Cylinder` 更贴 E3D；
-/// 带剪切的端面不垂直于轴，第 1 条就过不去；锥顶退化成一点的圆锥只有一个顶点，
-/// 撑不起「共圆」这句判断。
+/// **圆锥**也在这儿认：一端是整圈端盖、另一端去重后只剩锥顶一个点（第 2 条对那一端
+/// 退化成「半径 0」）。E3D 把目录 SCON 写成 `Snout`，锥顶那头半径 0 且在**底**
+/// （`gm_CreateSnout(0, PDIA/2, PDIS)`，见 `catalogue.rs` 的 `scone_frame`），这里照样把
+/// 锥顶放到底端，记录与 E3D 同一个朝向。2026-09-14 之前圆锥在这儿认不出来，落到后面的
+/// [`spherical_dish_from_local_mesh`]——底环加锥顶恰好共一只球——7 只 PCOM 的圆锥被写成了碟。
+///
+/// 两种情况**故意**认不出来，退回面片：两端等径且不偏心的是圆柱，`Cylinder` 更贴 E3D；
+/// 带剪切的端面不垂直于轴，第 1 条就过不去。
 pub fn snout_from_local_mesh(
     vertices: &[[f64; 3]],
     triangles: &[[u32; 3]],
@@ -698,14 +725,26 @@ pub fn snout_from_local_mesh(
         if !(height > 0.0) {
             continue;
         }
-        let (Some(bottom), Some(top)) = (
-            circular_cap(&points, axis, centroid, low),
-            circular_cap(&points, axis, centroid, high),
-        ) else {
-            continue;
+        let bottom = circular_cap(&points, axis, centroid, low);
+        let top = circular_cap(&points, axis, centroid, high);
+        // 圆锥：锥顶那一档不是圆盘，是孤零零一个点。轴的正负由面法向定，锥顶落在哪一端
+        // 都可能；统一把它翻到底端（`-axis`），让 `bottom_radius == 0`。
+        let (
+            axis,
+            (bottom_centre, bottom_radius, segments),
+            (top_centre, top_radius, top_segments),
+        ) = match (bottom, top) {
+            (Some(bottom), Some(top)) => (axis, bottom, top),
+            (Some(cap), None) => match lone_vertex_at(&points, axis, centroid, high) {
+                Some(apex) => (-axis, (apex, 0.0, cap.2), cap),
+                None => continue,
+            },
+            (None, Some(cap)) => match lone_vertex_at(&points, axis, centroid, low) {
+                Some(apex) => (axis, (apex, 0.0, cap.2), cap),
+                None => continue,
+            },
+            (None, None) => continue,
         };
-        let ((bottom_centre, bottom_radius, segments), (top_centre, top_radius, top_segments)) =
-            (bottom, top);
         if segments != top_segments {
             continue; // 两端段数不同，不是一次回转扫出来的。
         }
@@ -1499,8 +1538,17 @@ pub fn spherical_dish_from_local_mesh(
         return None;
     }
     let points: Vec<DVec3> = vertices.iter().copied().map(DVec3::from_array).collect();
+    base_plane_candidates(&points, triangles)
+        .into_iter()
+        .find_map(|normal| spherical_dish_on_base(&points, triangles, normal))
+}
 
-    // 面法向排序后同法向的连成一段；底盘的每一片法向逐位相同，落不到别处去。
+/// 碟类网格共用的第一步：底盘那张平面圆盘的法向候选，按共面片数从多到少取前两个。
+///
+/// 底盘是网格里唯一一张平面圆盘，它的三角面共享同一个法向，数量至少
+/// [`MIN_CIRCLE_SEGMENTS`]；曲面上的面片法向各不相同，凑不出这么大一组。
+fn base_plane_candidates(points: &[glam::DVec3], triangles: &[[u32; 3]]) -> Vec<glam::DVec3> {
+    use glam::DVec3;
     let mut normals: Vec<DVec3> = triangles
         .iter()
         .filter_map(|tri| {
@@ -1528,15 +1576,45 @@ pub fn spherical_dish_from_local_mesh(
     candidates
         .into_iter()
         .take(2)
-        .find_map(|(normal, _)| spherical_dish_on_base(&points, triangles, normal))
+        .map(|(normal, _)| normal)
+        .collect()
 }
 
-/// [`spherical_dish_from_local_mesh`] 的后半段：底盘法向已定，把碟解出来或否掉。
-fn spherical_dish_on_base(
-    points: &[glam::DVec3],
-    triangles: &[[u32; 3]],
-    normal: glam::DVec3,
-) -> Option<RecognisedSphericalDish> {
+/// 碟类网格共用的第二步：底盘法向定了之后的底圆、碟顶与轴。曲面本身留给调用方判。
+struct DishBase {
+    centre: glam::DVec3,
+    axis: glam::DVec3,
+    base_radius: f64,
+    height: f64,
+    segments: usize,
+    base_level: f64,
+    levels: Vec<f64>,
+}
+
+impl DishBase {
+    /// 每个顶点配一个「是不是盘心」的标记——盘心不在任何一段曲面上，判曲面时要跳过。
+    fn surface_points<'a>(
+        &'a self,
+        points: &'a [glam::DVec3],
+    ) -> impl Iterator<Item = (glam::DVec3, bool)> + 'a {
+        points.iter().zip(self.levels.iter()).map(|(p, t)| {
+            let on_base_hub =
+                (*t - self.base_level).abs() <= 1e-6 && (*p - self.centre).length() <= 1e-6;
+            (*p, on_base_hub)
+        })
+    }
+
+    /// 顶点在碟自己那套柱坐标里的 `(离轴距, 离底面高)`。
+    fn cylindrical(&self, p: glam::DVec3) -> (f64, f64) {
+        let arm = p - self.centre;
+        let axial = arm.dot(self.axis);
+        ((arm - self.axis * axial).length(), axial)
+    }
+}
+
+/// 底盘法向已定时解出底圆、碟顶与轴；不是碟的形状（两端都是整圈、只有两档高度、碟顶
+/// 不唯一或不在轴上、底面不是圆盘）一律否掉。
+fn dish_base_and_apex(points: &[glam::DVec3], normal: glam::DVec3) -> Option<DishBase> {
     use glam::DVec3;
     let levels: Vec<f64> = points.iter().map(|p| p.dot(normal)).collect();
     let (lowest, highest) = levels
@@ -1556,6 +1634,15 @@ fn spherical_dish_on_base(
     if !(height > 0.0) {
         return None;
     }
+    // 碟的曲面在底环与碟顶之间至少还有一圈纬线。顶点只落两档的是**圆锥**：底环加锥顶
+    // 恰好也共一只球，冠球那条判据挡不住它，得在这儿先否掉——圆锥归
+    // [`snout_from_local_mesh`]。
+    if !levels
+        .iter()
+        .any(|t| (*t - base_level).abs() > 1e-6 && (*t - apex_level).abs() > 1e-6)
+    {
+        return None;
+    }
 
     let unique_at = |level: f64| -> Vec<DVec3> {
         let mut out: Vec<DVec3> = Vec::new();
@@ -1566,7 +1653,7 @@ fn spherical_dish_on_base(
         }
         out
     };
-    // 1. 底环 + 至多一个盘心。
+    // 底环 + 至多一个盘心。
     let base = unique_at(base_level);
     let centre = base.iter().copied().sum::<DVec3>() / base.len() as f64;
     let base_radius = base
@@ -1588,7 +1675,7 @@ fn spherical_dish_on_base(
     if segments < MIN_CIRCLE_SEGMENTS {
         return None;
     }
-    // 2. 碟顶：唯一一个顶点，且在轴上。
+    // 碟顶：唯一一个顶点，且在轴上。
     let apex = unique_at(apex_level);
     let [apex] = apex[..] else {
         return None;
@@ -1597,23 +1684,43 @@ fn spherical_dish_on_base(
     if (arm - axis * arm.dot(axis)).length() > 1e-6 {
         return None;
     }
-    // 3. 过底圆与碟顶的球。
+    Some(DishBase {
+        centre,
+        axis,
+        base_radius,
+        height,
+        segments,
+        base_level,
+        levels,
+    })
+}
+
+/// [`spherical_dish_from_local_mesh`] 的后半段：底盘法向已定，把碟解出来或否掉。
+fn spherical_dish_on_base(
+    points: &[glam::DVec3],
+    triangles: &[[u32; 3]],
+    normal: glam::DVec3,
+) -> Option<RecognisedSphericalDish> {
+    let base = dish_base_and_apex(points, normal)?;
+    let (base_radius, height) = (base.base_radius, base.height);
+    // 过底圆与碟顶、球心在轴上的球是唯一的：`R = (r² + h²) / 2h`，球心在底圆心上方 `h − R`；
+    // 除盘心以外的**每个**顶点都得在这只球上。带折边的碟折边环上的顶点不在冠球上，在这儿
+    // 被挡回去，归 [`elliptical_dish_from_local_mesh`]。
     let sphere_radius = (base_radius * base_radius + height * height) / (2.0 * height);
-    let sphere_centre = centre + axis * (height - sphere_radius);
-    let is_base_hub = |p: &DVec3, t: f64| (t - base_level).abs() <= 1e-6 && (*p - centre).length() <= 1e-6;
-    if points.iter().zip(levels.iter()).any(|(p, t)| {
-        !is_base_hub(p, *t) && ((*p - sphere_centre).length() - sphere_radius).abs() > 1e-6
+    let sphere_centre = base.centre + base.axis * (height - sphere_radius);
+    if base.surface_points(points).any(|(p, on_base_hub)| {
+        !on_base_hub && ((p - sphere_centre).length() - sphere_radius).abs() > 1e-6
     }) {
         return None;
     }
 
     // 缺口：底环的弦高，与球冠面片到球心的欠缺，取大。底盘那些片不算（它们本来就是平的）。
-    let rim_gap = chord_sagitta_mm(base_radius, std::f64::consts::TAU / segments as f64);
+    let rim_gap = chord_sagitta_mm(base_radius, std::f64::consts::TAU / base.segments as f64);
     let mut cap_gap = 0.0f64;
     for tri in triangles {
         if tri
             .iter()
-            .all(|i| (levels[*i as usize] - base_level).abs() <= 1e-6)
+            .all(|i| (base.levels[*i as usize] - base.base_level).abs() <= 1e-6)
         {
             continue;
         }
@@ -1627,9 +1734,9 @@ fn spherical_dish_on_base(
     Some(RecognisedSphericalDish {
         base_radius,
         height,
-        centre,
-        axis,
-        segments,
+        centre: base.centre,
+        axis: base.axis,
+        segments: base.segments,
         sagitta_mm: rim_gap.max(cap_gap),
     })
 }
@@ -1643,14 +1750,31 @@ pub fn spherical_dish_geometry(
     world: &glam::DMat4,
     dish: &RecognisedSphericalDish,
 ) -> AnalyticCandidate {
-    let z = dish.axis;
+    dish_geometry(
+        world,
+        dish.axis,
+        dish.centre,
+        Primitive::SphericalDish([dish.base_radius, dish.height]),
+        dish.sagitta_mm,
+    )
+}
+
+/// 两种碟共用的记录：原点放在底圆心、局部 +Z 沿轴指向碟顶，绕轴对称所以局部 X 随便取一个。
+fn dish_geometry(
+    world: &glam::DMat4,
+    axis: glam::DVec3,
+    centre: glam::DVec3,
+    primitive: Primitive,
+    sagitta_mm: f64,
+) -> AnalyticCandidate {
+    let z = axis;
     let x = z.any_orthonormal_vector();
     let y = z.cross(x);
     let frame = glam::DMat4::from_cols(
         x.extend(0.0),
         y.extend(0.0),
         z.extend(0.0),
-        dish.centre.extend(1.0),
+        centre.extend(1.0),
     );
     let placed = *world * frame;
     let cols = placed.to_cols_array();
@@ -1658,7 +1782,6 @@ pub fn spherical_dish_geometry(
         cols[0], cols[1], cols[2], cols[4], cols[5], cols[6], cols[8], cols[9], cols[10],
     ]
     .map(|value| value / M_TO_MM);
-    let primitive = Primitive::SphericalDish([dish.base_radius, dish.height]);
     let record_bbox = primitive.local_aabb_mm().unwrap_or([0.0; 6]);
     AnalyticCandidate {
         geometry: RvmGeometry {
@@ -1671,8 +1794,129 @@ pub fn spherical_dish_geometry(
             bbox_frame: crate::rvm_read::BboxFrame::Local,
             level: None,
         },
-        sagitta_mm: dish.sagitta_mm,
+        sagitta_mm,
     }
+}
+
+/// 一只折边碟（RVM 的 `EllipticalDish`）的识别结果，全在局部系 mm。
+#[derive(Debug, Clone, Copy)]
+pub struct RecognisedEllipticalDish {
+    /// 底圆半径。
+    pub base_radius: f64,
+    /// 底圆到顶点的高。
+    pub height: f64,
+    /// 底圆圆心（RVM 原点）。
+    pub centre: glam::DVec3,
+    /// 底面法向、指向顶点（RVM 的局部 +Z）。
+    pub axis: glam::DVec3,
+    /// 底环多边形的边数。
+    pub segments: usize,
+    /// 网格与解析碟之间系统差的上界，见 [`elliptical_dish_from_local_mesh`]。
+    pub sagitta_mm: f64,
+}
+
+/// 网格是一只折边碟（[`crate::solid::elliptical_dish_solid`] 的形体）时把它解出来。
+///
+/// E3D 所谓 elliptical dish 不是椭球，是**冠球 + 折边环**的 torispherical 头：冠球半径
+/// Rc =（`GM_EDish::radiusOfHub`），折边是绕 z 轴、管半径 k、中心圆半径 r − k 的环
+/// （`GM_EDish::calcFacetsWithoutSurfaces`，libgm `0x10054ab0`）。两段在极角
+/// φt = acos(1 − (h − k)/(Rc − k)) 处相切。
+///
+/// 折边半径不进 RVM，也不必从网格量：目录那条路（CRCATI 碟形臂 → `CREDSH`）的 `PRAD`
+/// 只当开关，k 由 r / h 算出（[`crate::solid::dish_knuckle_radius`] 再过
+/// `knuckleRadiusToUse` 的夹取）。所以这里拿底圆半径与高把 k、Rc **重算**一遍，再要求
+/// 每个顶点都落在冠球或折边环上——量不出来的东西不猜，猜错了就是一只解析得开、形状却
+/// 不对的碟。
+///
+/// 顺序上它排在 [`spherical_dish_from_local_mesh`] 后面：球形碟的顶点全在冠球上，先被
+/// 那一条认走；折边碟在那里因折边环的顶点不在冠球上被挡回来，才轮到这里。
+///
+/// **认不出半球形的折边碟。** r 与 h 相等时 `GM_EDish` 退化成整个半球
+/// （`isSpherical`），与 `GM_SDish` 逐点相同，上一条会先把它认成 `SphericalDish`；
+/// 而 E3D 写的是 `EllipticalDish`——`expdri/DRDISH`（`0x10003fb8`）只看折边半径是不是
+/// 零来选 5（椭圆碟）还是 6（球形碟），不看形状。网格里没有这个信息，只能等写侧能拿到
+/// 模型那一侧的碟种类时才分得开。
+pub fn elliptical_dish_from_local_mesh(
+    vertices: &[[f64; 3]],
+    triangles: &[[u32; 3]],
+) -> Option<RecognisedEllipticalDish> {
+    use glam::DVec3;
+    if vertices.len() < MIN_CIRCLE_SEGMENTS + 2 || triangles.len() < 2 * MIN_CIRCLE_SEGMENTS {
+        return None;
+    }
+    let points: Vec<DVec3> = vertices.iter().copied().map(DVec3::from_array).collect();
+    base_plane_candidates(&points, triangles)
+        .into_iter()
+        .find_map(|normal| elliptical_dish_on_base(&points, normal))
+}
+
+/// [`elliptical_dish_from_local_mesh`] 的后半段：底盘法向已定，把碟解出来或否掉。
+fn elliptical_dish_on_base(
+    points: &[glam::DVec3],
+    normal: glam::DVec3,
+) -> Option<RecognisedEllipticalDish> {
+    let base = dish_base_and_apex(points, normal)?;
+    let (base_radius, height) = (base.base_radius, base.height);
+    // 半球那一档归球形碟认（见函数文档）：这里认下来只会写出同一个形状、另一个种类。
+    if (base_radius - height).abs() <= 1e-6 {
+        return None;
+    }
+    // 折边与冠球按建模那一侧同一条公式重算，不从网格里猜。
+    let knuckle = crate::solid::edish_knuckle_to_use(
+        base_radius,
+        height,
+        crate::solid::dish_knuckle_radius(base_radius, height),
+    );
+    let hub = crate::solid::edish_radius_of_hub(base_radius, height, knuckle);
+    if !hub.is_finite()
+        || !(knuckle > 0.0)
+        || (hub - knuckle).abs() <= f64::EPSILON
+        || (height - knuckle).abs() <= f64::EPSILON
+    {
+        return None;
+    }
+    // 冠球心在轴上 h − Rc 处；折边环的中心圆半径 r − k、在底面上。
+    let hub_centre_z = height - hub;
+    let knuckle_ring = base_radius - knuckle;
+    for (p, on_base_hub) in base.surface_points(points) {
+        if on_base_hub {
+            continue; // 盘心不在任何一段曲面上。
+        }
+        let (radial, axial) = base.cylindrical(p);
+        let on_hub = ((radial * radial + (axial - hub_centre_z).powi(2)).sqrt() - hub).abs();
+        let on_knuckle =
+            (((radial - knuckle_ring).powi(2) + axial * axial).sqrt() - knuckle).abs();
+        if on_hub.min(on_knuckle) > 1e-6 {
+            return None;
+        }
+    }
+    Some(RecognisedEllipticalDish {
+        base_radius,
+        height,
+        centre: base.centre,
+        axis: base.axis,
+        segments: base.segments,
+        // 记录盒最宽处是底圆，网格那一圈是它的内接多边形；顶点与底面都是精确点，
+        // 所以 AABB 的系统差就是这一条弦高。
+        sagitta_mm: chord_sagitta_mm(base_radius, std::f64::consts::TAU / base.segments as f64),
+    })
+}
+
+/// 由 [`elliptical_dish_from_local_mesh`] 认出来的碟造一条 `EllipticalDish` 记录。
+///
+/// RVM 的 `EllipticalDish` 与 `SphericalDish` 同形：参数 `[底圆半径, 高]`，原点在底圆
+/// 圆心、底圆在 z = 0、顶点在 z = +h。折边半径不落盘——`expdri/DRDISH` 只写这两个数。
+pub fn elliptical_dish_geometry(
+    world: &glam::DMat4,
+    dish: &RecognisedEllipticalDish,
+) -> AnalyticCandidate {
+    dish_geometry(
+        world,
+        dish.axis,
+        dish.centre,
+        Primitive::EllipticalDish([dish.base_radius, dish.height]),
+        dish.sagitta_mm,
+    )
 }
 
 /// 生成侧的 `HEAD` / `MODL`。banner 刻意不像 E3D，好让快照一眼看出来源。
@@ -1977,6 +2221,46 @@ mod tests {
                 candidate.matches_mesh_aabb(lo, hi, 0.01),
                 "{dbot}/{dtop}/{height}/{xoff}: sagitta={}",
                 candidate.sagitta_mm
+            );
+        }
+    }
+
+    /// `/OILSTD-COUPLING-QUICKFIT-SWF` 的 SCON：E3D 写 `Snout[rb=0, rt=33, h=42]`，锥顶在底。
+    /// 我们的圆锥网格是 `snout_solid(dbot, 0, h)`——锥顶在内核的 +Z——认回来后记录里
+    /// 锥顶照样得在底端，且不论内核把它放在哪一头。
+    #[test]
+    fn recognises_a_cone_as_a_snout_with_the_apex_at_the_bottom() {
+        for (dbot, height) in [(66.0, 42.0), (114.0, 60.0)] {
+            let solid = crate::solid::snout_solid(dbot, 0.0, height, 0.0, 0.0).unwrap();
+            let mesh = crate::mesh::TriMesh::from_manifold(&solid);
+            let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
+            let snout = snout_from_local_mesh(&mesh.vertices, &triangles)
+                .unwrap_or_else(|| panic!("圆锥应认成半径 0 的圆台: {dbot}/0/{height}"));
+            assert_eq!(snout.bottom_radius, 0.0, "{snout:?}");
+            assert!((snout.top_radius - dbot / 2.0).abs() < 1e-6, "{snout:?}");
+            assert!((snout.height - height).abs() < 1e-6, "{snout:?}");
+            assert!(snout.offset.abs() < 1e-9, "{snout:?}");
+            // 内核的锥顶在 +Z：底 → 顶的轴必须指向 −Z，锥顶才落在底端。
+            assert!(snout.axis.z < -0.999, "{snout:?}");
+            assert!(snout.segments >= MIN_CIRCLE_SEGMENTS, "{snout:?}");
+
+            let world = glam::DMat4::from_rotation_z(0.4) * glam::DMat4::from_rotation_x(0.7);
+            let (lo, hi) = world_aabb_of(&mesh.vertices, &world);
+            let candidate = snout_geometry(&world, &snout);
+            assert!(
+                matches!(candidate.geometry.primitive, Primitive::Snout(p) if p[0] == 0.0 && (p[1] - dbot / 2.0).abs() < 1e-6),
+                "{:?}",
+                candidate.geometry.primitive
+            );
+            assert!(
+                candidate.matches_mesh_aabb(lo, hi, 0.01),
+                "{dbot}/0/{height}: sagitta={}",
+                candidate.sagitta_mm
+            );
+            // 圆锥不是碟：底环加锥顶恰好共球，靠「冠面至少一圈纬线」这条挡下。
+            assert!(
+                spherical_dish_from_local_mesh(&mesh.vertices, &triangles).is_none(),
+                "{dbot}/0/{height} 被认成了碟"
             );
         }
     }
@@ -2290,5 +2574,92 @@ mod tests {
         let mesh = crate::mesh::TriMesh::from_manifold(&solid);
         let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
         assert!(spherical_dish_from_local_mesh(&mesh.vertices, &triangles).is_none());
+    }
+
+    /// 拿 `elliptical_dish_solid` 造几只折边碟再认回来，落盘写成 `EllipticalDish`（5）。
+    ///
+    /// 折边半径按目录那条路来（`PRAD` 只是开关，k 由 r / h 算出），与识别侧重算的那一份
+    /// 必须是同一个数——不然冠球半径就错了，每个顶点都判不在面上。
+    #[test]
+    fn recognises_knuckled_dishes_built_by_the_solid_kernel() {
+        // `VALV 1 /Copy-of-7#管线-1/B1` 那一族：E3D 写 EllipticalDish，我们原先退回面片。
+        for (radius, height) in [(225.0_f64, 100.0_f64), (158.0, 90.0), (60.0, 15.0)] {
+            let knuckle = crate::solid::dish_knuckle_radius(radius, height);
+            let solid = crate::solid::elliptical_dish_solid(radius, height, knuckle).unwrap();
+            let mesh = crate::mesh::TriMesh::from_manifold(&solid);
+            let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
+            let dish = elliptical_dish_from_local_mesh(&mesh.vertices, &triangles)
+                .unwrap_or_else(|| panic!("折边碟应认得回来: {radius}/{height}"));
+            assert!((dish.base_radius - radius).abs() < 1e-6, "{dish:?}");
+            assert!((dish.height - height).abs() < 1e-6, "{dish:?}");
+            assert!(dish.axis.z > 1.0 - 1e-9, "{dish:?}");
+            assert!(dish.centre.length() < 1e-6, "{dish:?}");
+            assert_eq!(
+                elliptical_dish_geometry(&glam::DMat4::IDENTITY, &dish)
+                    .geometry
+                    .primitive
+                    .kind_id(),
+                5,
+                "RVM 的椭圆碟是 5"
+            );
+        }
+    }
+
+    /// 认出来是一回事，**落不落盘是另一回事**：这一条钉的是「为什么现在还不落」。
+    ///
+    /// RVM 的 `EllipticalDish` 是一只 z 向缩放的四分之一球（rvm-rs
+    /// `impl Tessellate for EllipticalDish`），而 E3D 自己的 `GM_EDish` 是冠球 + 折边环的
+    /// torispherical 头（libgm `0x10054ab0`）。`expdri/DRDISH`（`0x10003fb8`）只写 (r, h)、
+    /// 折边半径只用来在 5 与 6 之间选一个——形状本身在导出那一步就丢了。
+    ///
+    /// 所以拿 `EllipticalDish` 记我们这只真折边碟，落盘的形状与自己的网格差着好几毫米，
+    /// 自校闸照判不过。闸没有判错：它拦的正是「解析得开、几何却不是这一只」。
+    /// 要让两边的 kind 对上，得先决定我们的 RVM 是忠于自己的网格、还是照抄 E3D 那份损失。
+    #[test]
+    fn a_knuckled_dish_written_as_an_ellipsoid_does_not_clear_the_self_check() {
+        let (radius, height) = (225.0_f64, 100.0_f64);
+        let knuckle = crate::solid::dish_knuckle_radius(radius, height);
+        let solid = crate::solid::elliptical_dish_solid(radius, height, knuckle).unwrap();
+        let mesh = crate::mesh::TriMesh::from_manifold(&solid);
+        let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
+        let dish = elliptical_dish_from_local_mesh(&mesh.vertices, &triangles).unwrap();
+
+        let world = glam::DMat4::from_rotation_z(0.4) * glam::DMat4::from_rotation_x(0.7);
+        let (lo, hi) = world_aabb_of(&mesh.vertices, &world);
+        let candidate = elliptical_dish_geometry(&world, &dish);
+        assert!(
+            !candidate.matches_mesh_aabb(lo, hi, 0.01),
+            "半椭球与折边头差得过闸就说明闸松了：{:?} vs {lo:?}..{hi:?}",
+            candidate.geometry.world_aabb_mm()
+        );
+        // 差多少：这只 225/100 的碟在这个姿态上是几毫米量级，不是弦高那一档。
+        let analytic = candidate.geometry.world_aabb_mm().unwrap();
+        let worst = (0..3)
+            .map(|a| (analytic[a] - lo[a]).abs().max((analytic[a + 3] - hi[a]).abs()))
+            .fold(0.0_f64, f64::max);
+        assert!(
+            (1.0..12.0).contains(&worst),
+            "与网格的最大轴差应是毫米量级，得到 {worst}"
+        );
+    }
+
+    /// 球形碟不能被折边碟这一条顺手认走：两条都认得下来时写出的种类不一样，
+    /// 而 E3D 是按折边半径是不是零来选的（`expdri/DRDISH` `0x10003fb8`）。
+    #[test]
+    fn a_plain_spherical_dish_is_not_offered_as_a_knuckled_one() {
+        for (radius, height) in [(225.0_f64, 100.0_f64), (60.0, 15.0)] {
+            let solid = crate::solid::spherical_dish_solid(radius, height).unwrap();
+            let mesh = crate::mesh::TriMesh::from_manifold(&solid);
+            let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
+            assert!(
+                elliptical_dish_from_local_mesh(&mesh.vertices, &triangles).is_none(),
+                "{radius}/{height} 是球形碟"
+            );
+        }
+        // 半球：两种碟逐点相同，归球形碟那一条（函数文档里记着这笔认不出的账）。
+        let solid = crate::solid::elliptical_dish_solid(100.0, 100.0, 100.0).unwrap();
+        let mesh = crate::mesh::TriMesh::from_manifold(&solid);
+        let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
+        assert!(elliptical_dish_from_local_mesh(&mesh.vertices, &triangles).is_none());
     }
 }

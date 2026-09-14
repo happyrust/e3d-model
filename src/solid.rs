@@ -1037,7 +1037,7 @@ pub fn elliptical_dish_solid_with_segments(
 
 /// `GM_EDish::knuckleRadiusToUse`（`0x100556a0`）：请求的折边半径与几何上限之间的取舍，
 /// 分支照抄（含 r ≤ h 那条看着反直觉的臂）。
-fn edish_knuckle_to_use(radius: f64, height: f64, requested: f64) -> f64 {
+pub(crate) fn edish_knuckle_to_use(radius: f64, height: f64, requested: f64) -> f64 {
     let limit = dish_knuckle_radius(radius, height);
     if (radius - height).abs() <= 1e-6 {
         return height;
@@ -1053,7 +1053,7 @@ fn edish_knuckle_to_use(radius: f64, height: f64, requested: f64) -> f64 {
 }
 
 /// `GM_EDish::radiusOfHub`（`0x10055750`）：冠球半径 (r² + h² − 2rk) / (2(h − k))。
-fn edish_radius_of_hub(radius: f64, height: f64, knuckle: f64) -> f64 {
+pub(crate) fn edish_radius_of_hub(radius: f64, height: f64, knuckle: f64) -> f64 {
     (radius * radius + height * height - 2.0 * radius * knuckle) * (0.5 / (height - knuckle))
 }
 
