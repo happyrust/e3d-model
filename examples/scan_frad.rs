@@ -29,7 +29,11 @@ fn named_ancestor(el: &DbElement) -> (String, String, usize) {
             _ => break,
         }
     }
-    ("<无名>".to_string(), el.element_type().unwrap_or_default(), 0)
+    (
+        "<无名>".to_string(),
+        el.element_type().unwrap_or_default(),
+        0,
+    )
 }
 
 fn main() -> anyhow::Result<()> {
@@ -85,7 +89,13 @@ fn main() -> anyhow::Result<()> {
             let noun = el.element_type().unwrap_or_default();
             let (name, anc_noun, depth) = named_ancestor(&el);
             if hits.len() < 500 {
-                hits.push((format!("{} {noun}", el.refno()), name, anc_noun, depth, frad));
+                hits.push((
+                    format!("{} {noun}", el.refno()),
+                    name,
+                    anc_noun,
+                    depth,
+                    frad,
+                ));
             }
         } else if frad >= 0.1 {
             pos += 1;

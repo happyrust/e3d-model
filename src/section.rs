@@ -55,7 +55,11 @@ pub const DEFAULT_JUSTIFICATION_LINE: &str = "NA";
 #[derive(Debug, thiserror::Error)]
 pub enum SectionError {
     #[error("{refno}（{noun}）有限端点间长 {length} mm 不超过 GTDIRS 的 0.001 mm 门，没有截面实体")]
-    EmptyLength { refno: String, noun: String, length: f64 },
+    EmptyLength {
+        refno: String,
+        noun: String,
+        length: f64,
+    },
     #[error(transparent)]
     Db(#[from] DbElementError),
     #[error(transparent)]
@@ -865,7 +869,9 @@ pub fn placement_between(
     let length = axis.length();
     if length.is_finite() && length <= 0.001 {
         return Err(SectionError::EmptyLength {
-            refno: refno.to_string(), noun: noun.to_string(), length,
+            refno: refno.to_string(),
+            noun: noun.to_string(),
+            length,
         });
     }
     if !length.is_finite() {
@@ -1726,20 +1732,52 @@ mod tests {
     fn finite_empty_length_is_distinct_from_invalid_coordinates() {
         use super::*;
         let profile = SectionProfile {
-            members: Vec::new(), justification: [0.0; 2],
-            justification_line: "NA".into(), justification_found: false,
-            neutral_axis_spin: 0.0, level: 0, mirrored: false, notes: Vec::new(),
+            members: Vec::new(),
+            justification: [0.0; 2],
+            justification_line: "NA".into(),
+            justification_found: false,
+            neutral_axis_spin: 0.0,
+            level: 0,
+            mirrored: false,
+            notes: Vec::new(),
         };
         for length in [0.0, 0.0005, 0.001] {
-            assert!(matches!(placement_between("1/1", "SCTN", DVec3::ZERO,
-                DVec3::new(length, 0.0, 0.0), 0.0, &profile), Err(SectionError::EmptyLength { .. })));
+            assert!(matches!(
+                placement_between(
+                    "1/1",
+                    "SCTN",
+                    DVec3::ZERO,
+                    DVec3::new(length, 0.0, 0.0),
+                    0.0,
+                    &profile
+                ),
+                Err(SectionError::EmptyLength { .. })
+            ));
         }
         for length in [f64::NAN, f64::INFINITY] {
-            assert!(matches!(placement_between("1/1", "SCTN", DVec3::ZERO,
-                DVec3::new(length, 0.0, 0.0), 0.0, &profile), Err(SectionError::Degenerate { .. })));
+            assert!(matches!(
+                placement_between(
+                    "1/1",
+                    "SCTN",
+                    DVec3::ZERO,
+                    DVec3::new(length, 0.0, 0.0),
+                    0.0,
+                    &profile
+                ),
+                Err(SectionError::Degenerate { .. })
+            ));
         }
-        assert!(placement_between("1/1", "SCTN", DVec3::ZERO,
-            DVec3::new(0.0011, 0.0, 0.0), 0.0, &profile).is_ok());
+        assert!(
+            placement_between(
+                "1/1",
+                "SCTN",
+                DVec3::ZERO,
+                DVec3::new(0.0011, 0.0, 0.0),
+                0.0,
+                &profile
+            )
+            .is_ok()
+        );
     }
     #[test]
     fn fitting_mount_matches_cam_native_axes_and_origin() {

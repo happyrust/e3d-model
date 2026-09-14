@@ -34,16 +34,24 @@ const TEMPLATE_DIR: &str = r"E:\reverse\e3d\shadow_e3d31_aps_all";
 
 fn fixtures_present() -> bool {
     let design = Path::new(AMS_DIR).join(DESIGN_DB);
-    let missing: Vec<String> = [Path::new(AMS_DIR), design.as_path(), Path::new(ATTLIB), Path::new(TEMPLATE_DIR)]
-        .into_iter()
-        .filter(|path| !path.exists())
-        .map(|path| path.display().to_string())
-        .collect();
+    let missing: Vec<String> = [
+        Path::new(AMS_DIR),
+        design.as_path(),
+        Path::new(ATTLIB),
+        Path::new(TEMPLATE_DIR),
+    ]
+    .into_iter()
+    .filter(|path| !path.exists())
+    .map(|path| path.display().to_string())
+    .collect();
     if missing.is_empty() {
         return true;
     }
     if std::env::var_os("E3D_SKIP_REAL_GATES").is_some() {
-        eprintln!("跳过（E3D_SKIP_REAL_GATES 已设）：缺 {}", missing.join("、"));
+        eprintln!(
+            "跳过（E3D_SKIP_REAL_GATES 已设）：缺 {}",
+            missing.join("、")
+        );
         return false;
     }
     panic!(
@@ -68,11 +76,15 @@ fn open_design_set() -> (Arc<DbSet>, PathBuf, u32) {
         dirs.push(PathBuf::from(ACP_DIR));
     }
     let resolver = Arc::new(
-        DirectoryDbResolver::scan(&dirs, Path::new(TEMPLATE_DIR)).expect("扫库目录建 dbno → 文件表"),
+        DirectoryDbResolver::scan(&dirs, Path::new(TEMPLATE_DIR))
+            .expect("扫库目录建 dbno → 文件表"),
     );
     println!("{}", resolver.summary());
     let attlib = Arc::new(AttlibData::parse_file(ATTLIB).expect("attlib 解析得开"));
-    let set = Arc::new(DbSet::with_resolver(attlib, Box::new(SharedResolver(resolver))));
+    let set = Arc::new(DbSet::with_resolver(
+        attlib,
+        Box::new(SharedResolver(resolver)),
+    ));
     let design = Path::new(AMS_DIR).join(DESIGN_DB);
     let dbno = set
         .add_db(DbFilePin {
@@ -137,20 +149,35 @@ fn catalogue_visited_is_exactly_the_catalogue_side_of_what_generation_read() {
         // 名单自己不重复。
         let mut seen = HashSet::new();
         for refno in &outcome.catalogue_visited {
-            assert!(seen.insert(*refno), "{root} 的 catalogue_visited 里 {refno} 出现了两次");
+            assert!(
+                seen.insert(*refno),
+                "{root} 的 catalogue_visited 里 {refno} 出现了两次"
+            );
         }
         visited.extend(outcome.visited);
         catalogue.extend(outcome.catalogue_visited);
     }
-    println!("roots={} visited={} catalogue_visited={}", roots.len(), visited.len(), catalogue.len());
+    println!(
+        "roots={} visited={} catalogue_visited={}",
+        roots.len(),
+        visited.len(),
+        catalogue.len()
+    );
     for (root, (visited, catalogue)) in &per_root {
         println!("  {root}: visited {visited}, catalogue {catalogue}");
     }
-    assert!(!catalogue.is_empty(), "ams8000 有几百条管线，目录实读集不可能为空");
+    assert!(
+        !catalogue.is_empty(),
+        "ams8000 有几百条管线，目录实读集不可能为空"
+    );
 
     // 1. 只有目录侧。
     for refno in &catalogue {
-        assert_ne!(refno.dbno(), design_dbno, "{refno} 在设计库自己里，却被记成目录实读");
+        assert_ne!(
+            refno.dbno(),
+            design_dbno,
+            "{refno} 在设计库自己里，却被记成目录实读"
+        );
         let db_type = set.db_type(refno.dbno());
         assert_eq!(
             db_type.as_deref(),
@@ -166,11 +193,15 @@ fn catalogue_visited_is_exactly_the_catalogue_side_of_what_generation_read() {
     let mut by_noun: BTreeMap<String, usize> = BTreeMap::new();
     for refno in &visited {
         let el = set.element(*refno);
-        let Ok(Some(owner)) = el.owner() else { continue };
+        let Ok(Some(owner)) = el.owner() else {
+            continue;
+        };
         if owner.element_type().ok().as_deref() != Some("BRAN") {
             continue;
         }
-        let Ok(Some(spre)) = el.get_ref("SPRE") else { continue };
+        let Ok(Some(spre)) = el.get_ref("SPRE") else {
+            continue;
+        };
         // 目录库没开（resolver 供不出）的引用两边都读不到，不在这条断言的射程内。
         if set.db_type(spre.dbno()).as_deref() != Some("CATA") {
             continue;
@@ -183,7 +214,10 @@ fn catalogue_visited_is_exactly_the_catalogue_side_of_what_generation_read() {
         }
     }
     println!("BRAN 成员 SPRE 抽查 {checked} 条，按 noun：{by_noun:?}");
-    assert!(checked > 0, "没有一个 BRAN 成员带指向已开目录库的 SPRE，门没有判别力");
+    assert!(
+        checked > 0,
+        "没有一个 BRAN 成员带指向已开目录库的 SPRE，门没有判别力"
+    );
     assert!(
         missing.is_empty(),
         "{} 个 BRAN 成员的 SPCO 没进 catalogue_visited（路由走查必经 SPRE→SPCO，少了就是读入口漏记）：{:?}",
@@ -194,7 +228,10 @@ fn catalogue_visited_is_exactly_the_catalogue_side_of_what_generation_read() {
     // 3. 链走到底：不止 SPCO。
     let mut nouns: BTreeMap<String, usize> = BTreeMap::new();
     for refno in &catalogue {
-        let noun = set.element(*refno).element_type().unwrap_or_else(|_| "?".into());
+        let noun = set
+            .element(*refno)
+            .element_type()
+            .unwrap_or_else(|_| "?".into());
         *nouns.entry(noun).or_insert(0) += 1;
     }
     println!("catalogue_visited 按 noun：{nouns:?}");
@@ -205,7 +242,9 @@ fn catalogue_visited_is_exactly_the_catalogue_side_of_what_generation_read() {
         );
     }
     assert!(
-        ["PTSE", "GMSE", "GMSS", "NGMS"].iter().any(|noun| nouns.contains_key(*noun)),
+        ["PTSE", "GMSE", "GMSS", "NGMS"]
+            .iter()
+            .any(|noun| nouns.contains_key(*noun)),
         "目录实读集里没有点集 / 几何集元素（PTSE / GMSE / GMSS / NGMS），P 点与几何求值没读到目录：{nouns:?}"
     );
 }
