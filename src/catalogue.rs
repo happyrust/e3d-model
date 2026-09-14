@@ -1704,26 +1704,9 @@ fn evaluate_catalogue_snout(
     let (dbot, dtop, height, xoff, centre, rotation) = if noun == "SCON" {
         let diameter = required_number(snout, "PDIA", env, "catalogue SCON")?.abs();
         let distance = required_number(snout, "PDIS", env, "catalogue SCON")?;
-        let mut axis =
-            catalogue_axis_or_fail(member, component, snout, "PAXI", "catalogue SCON axis")?;
-        if distance < 0.0 {
-            axis.direction = -axis.direction;
-        }
-        let height = distance.abs();
-        let rotation = orimat(axis.direction).ok_or_else(|| {
-            ModelError::Solid(SolidError::Degenerate {
-                what: "catalogue SCON axis",
-                detail: format!("PAXI={:?}", axis.direction),
-            })
-        })?;
-        (
-            diameter,
-            0.0,
-            height,
-            0.0,
-            axis.origin + axis.direction.normalize() * (height * 0.5),
-            rotation,
-        )
+        let axis = catalogue_axis_or_fail(member, component, snout, "PAXI", "catalogue SCON axis")?;
+        let (dbot, dtop, height, centre, rotation) = scone_frame(diameter, distance, axis)?;
+        (dbot, dtop, height, 0.0, centre, rotation)
     } else {
         let dbot = required_number(snout, "PBDM", env, "catalogue LSNO")?.abs();
         let dtop = required_number(snout, "PTDM", env, "catalogue LSNO")?.abs();
@@ -1754,6 +1737,44 @@ fn evaluate_catalogue_snout(
         parameters,
         transform: DMat4::from_translation(centre) * DMat4::from_mat3(rotation),
     }))
+}
+
+/// 目录 SCON 的形体与放置：`(DBOT, DTOP, 高, 中心, 标架)`。
+///
+/// Core3D `pplib/QSCONE`（`0x103BFE40`）读带符号 `PDIS`、`|PDIA|`、`PAXI`；`PDIS ≤ 0` 走
+/// `HCHECK`（高度取反、轴反向）；中心 = 轴原点 + 轴向 × PDIS/2。CRCATI（`0x10345ACC`）的
+/// 818038/829400 臂随后 `ORIMAT(轴)`，再 `gm_CreateSnout(0, PDIA/2, PDIS)`——**底半径 0**。
+///
+/// 也就是：**锥顶坐在 PAXI 的原点（局部 −Z 端），底圆在沿轴 PDIS 处（局部 +Z 端）**。
+/// PARAGON 手册 §7.4.3 只说 `PDIS` 是「vertex 高出 base 的高度」，没说哪头在原点；E3D 自己的
+/// RVM 导出定了这件事：`/OILSTD-COUPLING-QUICKFIT-SWF/GMSE_001` 的 SCON（`PAXI P2 PDIS 42
+/// PDIA 66`）写成 `Snout[rb=0, rt=33, h=42]`，锥顶就压在 P2 上、底圆朝构件里缩 42 mm。
+///
+/// 2026-09-14 之前这里反着放（底圆在原点、锥顶在 PDIS）：AABB 一模一样，整只锥却调了个头，
+/// 80 根严尺子里 7 只 PCOM 的圆锥都是这一条——对拍量 AABB 看不出来，是写出器把它认成
+/// `SphericalDish` 才露出来。
+fn scone_frame(
+    diameter: f64,
+    distance: f64,
+    mut axis: crate::catalogue_point::CatalogueAxis,
+) -> Result<(f64, f64, f64, DVec3, DMat3), ModelError> {
+    if distance < 0.0 {
+        axis.direction = -axis.direction;
+    }
+    let height = distance.abs();
+    let rotation = orimat(axis.direction).ok_or_else(|| {
+        ModelError::Solid(SolidError::Degenerate {
+            what: "catalogue SCON axis",
+            detail: format!("PAXI={:?}", axis.direction),
+        })
+    })?;
+    Ok((
+        0.0,
+        diameter,
+        height,
+        axis.origin + axis.direction.normalize() * (height * 0.5),
+        rotation,
+    ))
 }
 
 fn normalize_lsnout_span(
@@ -3834,6 +3855,36 @@ mod tests {
         .unwrap();
         assert!(centre.abs_diff_eq(DVec3::new(72.0, 0.0, 6.03), 1.0e-9));
         assert!(rotation.z_axis.abs_diff_eq(-DVec3::X, 1.0e-9));
+    }
+
+    /// `/OILSTD-COUPLING-QUICKFIT-SWF/GMSE_001` 的 SCON：`PAXI P2 PDIS 42 PDIA 66`，P2 在
+    /// 构件 +X 端、轴朝构件里（−X）。E3D 写 `Snout[rb=0, rt=33, h=42]`、局部 +Z = −X：
+    /// 锥顶压在 P2 上，底圆在 42 mm 深处。
+    #[test]
+    fn scone_puts_the_apex_on_the_paxi_origin_and_the_base_at_pdis() {
+        let axis = crate::catalogue_point::CatalogueAxis {
+            origin: DVec3::new(70.0, 0.0, 0.0),
+            direction: -DVec3::X,
+        };
+        let (dbot, dtop, height, centre, rotation) = scone_frame(66.0, 42.0, axis).unwrap();
+        assert_eq!((dbot, dtop, height), (0.0, 66.0, 42.0));
+        assert!(rotation.z_axis.abs_diff_eq(-DVec3::X, 1.0e-9));
+        assert!(centre.abs_diff_eq(DVec3::new(49.0, 0.0, 0.0), 1.0e-9));
+        // 局部 −Z 端（底、半径 0）落回轴原点，+Z 端（顶、底圆）在 PDIS 处。
+        let apex = centre - rotation.z_axis * (height * 0.5);
+        let base = centre + rotation.z_axis * (height * 0.5);
+        assert!(apex.abs_diff_eq(axis.origin, 1.0e-9));
+        assert!(base.abs_diff_eq(DVec3::new(28.0, 0.0, 0.0), 1.0e-9));
+
+        // `PDIS < 0` 走 HCHECK：轴反向、高度取正，锥顶照样在原点，底圆挪到另一侧。
+        let (dbot, dtop, height, centre, rotation) = scone_frame(66.0, -42.0, axis).unwrap();
+        assert_eq!((dbot, dtop, height), (0.0, 66.0, 42.0));
+        assert!(rotation.z_axis.abs_diff_eq(DVec3::X, 1.0e-9));
+        assert!((centre - rotation.z_axis * (height * 0.5)).abs_diff_eq(axis.origin, 1.0e-9));
+        assert!(
+            (centre + rotation.z_axis * (height * 0.5))
+                .abs_diff_eq(DVec3::new(112.0, 0.0, 0.0), 1.0e-9)
+        );
     }
 
     #[test]
