@@ -274,6 +274,24 @@ fn face_normal(v: &[[f64; 3]; 3]) -> [f64; 3] {
 /// 定段数的）：同一份网格可能出自不同口径——曲面 0.5 mm、轮廓
 /// [`PROFILE_CHORD_TOL_MM`](crate::discretise::PROFILE_CHORD_TOL_MM)、SNOU 5 mm，
 /// 而且 45° 封顶一生效实际弦高就比容差小一截。从网格自己的段数回算，不用猜它出自哪一档。
+/// 端盖多边形至少要有几个顶点，才可能是一个**离散出来的圆**。
+///
+/// 值来自 libgeom 自己的规则：`d2_numberOfSegmentsForCircle`（`0x1002BA70`）把步长
+/// 封顶在 45°，所以整圆最少 8 段，而且还要向上取到 4 的倍数——见
+/// [`crate::discretise::circle_segments_uncapped`] 与 `cylinder_segments(1.0) == 8`。
+/// 我们自己的每一条曲面口径（曲面 0.5 mm、轮廓 10 mm、SNOU 5 mm）都从那个公式出，
+/// 没有一条能产出 4 段或 6 段的圆。
+///
+/// **没有下限时这道自校闸是形同虚设的**，因为它放行的弦高与半径成正比：
+/// 4 段时 `r(1 − cos45°) = 0.293 r`，正好是它本该拦住的那个量级。2026-09-14 实测，
+/// SLYK `/石楼装卸车-SUPP1` 的 17 块支架底板（E3D 写 `Pyramid`，230×230 → 200×200）
+/// 被认成了 `Snout`：半径取了正方形的外接圆 162.63 mm（真值 ±115），
+/// 而 4 段允许的弦高恰好是 47.63 mm，于是 47.63 mm 的错误**一字不差地**从闸门下走过去。
+/// 同一条缝还让 35 只六角螺母（E3D 写 `FacetGroup`）写成了圆柱。
+///
+/// 卡住之后这两族退回 `FacetGroup`——面片带的是真顶点，宁可文件大一点。
+pub const MIN_CIRCLE_SEGMENTS: usize = crate::discretise::MIN_CIRCLE_SEGMENTS as usize;
+
 pub fn chord_sagitta_mm(radius: f64, step: f64) -> f64 {
     if !(radius > 0.0) || !(step > 0.0) || !step.is_finite() {
         return 0.0;
@@ -302,12 +320,28 @@ impl AnalyticCandidate {
     /// `tol_mm`（f32 落盘那一档）加一个弦高（实测 ≤ 0.5 mm），两者差两三个数量级。
     pub fn matches_mesh_aabb(&self, mesh_lo: [f64; 3], mesh_hi: [f64; 3], tol_mm: f64) -> bool {
         let slack = tol_mm + self.sagitta_mm;
-        match self.geometry.world_aabb_mm() {
+        match self.world_aabb_mm() {
             Some(a) => (0..3).all(|axis| {
                 (a[axis] - mesh_lo[axis]).abs() <= slack
                     && (a[axis + 3] - mesh_hi[axis]).abs() <= slack
             }),
             None => false,
+        }
+    }
+
+    /// 候选记录的世界 AABB（mm）。
+    ///
+    /// 球单独算：读侧给球的采样点是规范盒的八个角，只在记录自己的帧里才紧
+    /// （[`crate::rvm_read::Primitive::local_hull_points_mm`]）；而球的记录跟别的图元一样
+    /// 带元素的旋转（E3D 就是这么写的，对拍取局部帧靠它），八个角一转世界盒就大一圈，
+    /// 元素转 45° 时多出 `(√2 − 1)·r`。球的世界盒就是球心 ± r，不必绕采样点。
+    pub fn world_aabb_mm(&self) -> Option<[f64; 6]> {
+        match self.geometry.primitive {
+            Primitive::Sphere([r]) => {
+                let c = self.geometry.translation_mm;
+                Some([c[0] - r, c[1] - r, c[2] - r, c[0] + r, c[1] + r, c[2] + r])
+            }
+            _ => self.geometry.world_aabb_mm(),
         }
     }
 }
@@ -588,6 +622,9 @@ pub fn cylinder_from_local_mesh(
         // 段数 = 落在一侧端盖上的不同顶点数。自校闸要拿它回算弦高，
         // 「网格比解析面细多少」这件事只有这块网格自己说得准。
         let (_, _, segments) = circular_cap(&points, axis, centroid, low)?;
+        if segments < MIN_CIRCLE_SEGMENTS {
+            continue; // 六棱柱不是圆柱，见 [`MIN_CIRCLE_SEGMENTS`]。
+        }
         return Some(RecognisedCylinder {
             radius,
             height,
@@ -671,6 +708,9 @@ pub fn snout_from_local_mesh(
             (bottom, top);
         if segments != top_segments {
             continue; // 两端段数不同，不是一次回转扫出来的。
+        }
+        if segments < MIN_CIRCLE_SEGMENTS {
+            continue; // 四棱台不是圆台，见 [`MIN_CIRCLE_SEGMENTS`]。
         }
         let arm = top_centre - bottom_centre;
         let lateral = arm - axis * arm.dot(axis);
@@ -1106,6 +1146,535 @@ pub fn box_geometry(
     }
 }
 
+/// 一只四棱台（`Pyramid`）的识别结果，全在局部系 mm。
+#[derive(Debug, Clone, Copy)]
+pub struct RecognisedPyramid {
+    /// 底面（`axis` 负向那一端）沿局部 X / Y 的边长。
+    pub bottom: [f64; 2],
+    /// 顶面沿局部 X / Y 的边长；退化成一条线或一个点时对应的边为 0。
+    pub top: [f64; 2],
+    pub height: f64,
+    /// 顶面心相对底面心的横向偏移（局部 X / Y 分量），对应 RVM 的 `XOFF` / `YOFF`。
+    pub offset: [f64; 2],
+    /// 两个面心的中点（RVM 原点）。
+    pub centre: glam::DVec3,
+    /// 底 → 顶（RVM 的局部 +Z）。
+    pub axis: glam::DVec3,
+    /// 底面一条边的方向（RVM 的局部 +X）。
+    pub x: glam::DVec3,
+}
+
+/// 网格是一只四棱台（= `Pyramid`，含退化成楔形 / 四棱锥的）时把它解出来。
+///
+/// 认法：两个端面平行（顶点沿端面法向只落在**两个**档位上），每一档的顶点各自是一个
+/// **矩形**（4 点）、一条线（2 点）或一个点，而且两端的边**同向**——上下两条边平行，
+/// 四个侧面才各自共面，8 个角点的凸包才恰好是那只棱台（[`crate::solid::pyramid_solid`]
+/// 就是这么建的）。两个面心的横向错位就是 `XOFF` / `YOFF`，上下各摊一半。
+///
+/// 顶点数只能是 5 / 6 / 8（至少一端是完整的矩形），三角面数 `2V − 4`：凸包不会多铺一片。
+/// 侧面法向也会被当轴试一遍，但侧面是梯形，过不了矩形那一关；等边不偏心的侧面是矩形，
+/// 那时认出来的是同一只实体的另一种参数写法，几何不变。
+///
+/// **上下同形且不偏心的一律不认**（返回 None）：那是一只盒子，`Box` 那条记录才贴 E3D。
+/// 轴对齐的盒子 [`box_from_local_mesh`] 早一步就接了；转过角度的暂时仍退面片。
+pub fn pyramid_from_local_mesh(
+    vertices: &[[f64; 3]],
+    triangles: &[[u32; 3]],
+) -> Option<RecognisedPyramid> {
+    use glam::DVec3;
+    let mut points: Vec<DVec3> = Vec::with_capacity(8);
+    for v in vertices {
+        let p = DVec3::from_array(*v);
+        if !points.iter().any(|q| (*q - p).length() <= 1e-6) {
+            points.push(p);
+            if points.len() > 8 {
+                return None;
+            }
+        }
+    }
+    if points.len() < 5 || triangles.len() != 2 * points.len() - 4 {
+        return None;
+    }
+    let centroid = points.iter().copied().sum::<DVec3>() / points.len() as f64;
+
+    for axis in face_normal_axes(&points, triangles) {
+        let Some((low, high)) = two_levels_along(&points, axis, centroid) else {
+            continue;
+        };
+        let height = high - low;
+        if !(height > 0.0) {
+            continue;
+        }
+        let at_level = |level: f64| -> Vec<DVec3> {
+            points
+                .iter()
+                .copied()
+                .filter(|p| ((*p - centroid).dot(axis) - level).abs() <= 1e-6)
+                .collect()
+        };
+        let (bottom, top) = (at_level(low), at_level(high));
+        // 边的方向从完整的那个矩形上取；两端都退化就撑不起「同向」这句判断。
+        let Some(edge) =
+            rectangle_edge_direction(&bottom).or_else(|| rectangle_edge_direction(&top))
+        else {
+            continue;
+        };
+        let x = (edge - axis * edge.dot(axis)).normalize();
+        let y = axis.cross(x);
+        let bottom_centre = bottom.iter().copied().sum::<DVec3>() / bottom.len() as f64;
+        let top_centre = top.iter().copied().sum::<DVec3>() / top.len() as f64;
+        let (Some(bottom_lengths), Some(top_lengths)) = (
+            rectangle_extents(&bottom, bottom_centre, x, y),
+            rectangle_extents(&top, top_centre, x, y),
+        ) else {
+            continue;
+        };
+        let arm = top_centre - bottom_centre;
+        let offset = [arm.dot(x), arm.dot(y)];
+        if (bottom_lengths[0] - top_lengths[0]).abs() <= 1e-9
+            && (bottom_lengths[1] - top_lengths[1]).abs() <= 1e-9
+            && offset.iter().all(|o| o.abs() <= 1e-9)
+        {
+            return None; // 这是盒子，不抢 `Box` 的记录。
+        }
+        return Some(RecognisedPyramid {
+            bottom: bottom_lengths,
+            top: top_lengths,
+            height,
+            offset,
+            centre: (bottom_centre + top_centre) / 2.0,
+            axis,
+            x,
+        });
+    }
+    None
+}
+
+/// 四个共面点是一个矩形时给出它的一条边方向；不是四个点、或不是矩形（梯形、菱形、
+/// 一般四边形）时 None。
+fn rectangle_edge_direction(cap: &[glam::DVec3]) -> Option<glam::DVec3> {
+    let [p0, rest @ ..] = cap else {
+        return None;
+    };
+    let [a, b, c] = rest else {
+        return None;
+    };
+    // 离 p0 最远的是对角，其余两个是邻点。
+    let mut rest = [*a, *b, *c];
+    rest.sort_by(|a, b| (*a - *p0).length().total_cmp(&(*b - *p0).length()));
+    let [n1, n2, diagonal] = rest;
+    let (e1, e2) = (n1 - *p0, n2 - *p0);
+    let (l1, l2) = (e1.length(), e2.length());
+    if !(l1 > 0.0 && l2 > 0.0) {
+        return None;
+    }
+    // 邻边垂直、第四个点落在 p0 + e1 + e2：两句合起来就是「矩形」。
+    if e1.dot(e2).abs() > 1e-9 * l1 * l2 || (*p0 + e1 + e2 - diagonal).length() > 1e-6 {
+        return None;
+    }
+    Some(e1 / l1)
+}
+
+/// 一档顶点在 `(u, v)` 里的边长 `[沿 u, 沿 v]`：每个点到档心的 u / v 分量的绝对值必须
+/// 各自恒定，点数必须与「几条边非零」对得上（4 / 2 / 1），否则 None。
+fn rectangle_extents(
+    cap: &[glam::DVec3],
+    centre: glam::DVec3,
+    u: glam::DVec3,
+    v: glam::DVec3,
+) -> Option<[f64; 2]> {
+    let first = *cap.first()? - centre;
+    let (eu, ev) = (first.dot(u).abs(), first.dot(v).abs());
+    if cap.iter().any(|p| {
+        let d = *p - centre;
+        (d.dot(u).abs() - eu).abs() > 1e-6 || (d.dot(v).abs() - ev).abs() > 1e-6
+    }) {
+        return None;
+    }
+    let snap = |e: f64| if e <= 1e-6 { 0.0 } else { e };
+    let (eu, ev) = (snap(eu), snap(ev));
+    let expected = match (eu > 0.0, ev > 0.0) {
+        (true, true) => 4,
+        (false, false) => 1,
+        _ => 2,
+    };
+    (cap.len() == expected).then_some([2.0 * eu, 2.0 * ev])
+}
+
+/// 由 [`pyramid_from_local_mesh`] 认出来的四棱台造一条 `Pyramid` 记录。
+///
+/// RVM 的 `Pyramid`：轴向局部 **Z**、原点在两个面心的中点，底面心 (−XOFF/2, −YOFF/2, −H/2)、
+/// 顶面心 (+XOFF/2, +YOFF/2, +H/2)（`GM_Pyramid::calcFacets`，见
+/// [`crate::rvm_read::Primitive::local_hull_points_mm`]）。多面体就是形体本身，缺口为 0。
+pub fn pyramid_geometry(world: &glam::DMat4, pyramid: &RecognisedPyramid) -> AnalyticCandidate {
+    let x = pyramid.x;
+    let z = pyramid.axis;
+    let y = z.cross(x);
+    let frame = glam::DMat4::from_cols(
+        x.extend(0.0),
+        y.extend(0.0),
+        z.extend(0.0),
+        pyramid.centre.extend(1.0),
+    );
+    let placed = *world * frame;
+    let cols = placed.to_cols_array();
+    let matrix3 = [
+        cols[0], cols[1], cols[2], cols[4], cols[5], cols[6], cols[8], cols[9], cols[10],
+    ]
+    .map(|value| value / M_TO_MM);
+    let primitive = Primitive::Pyramid([
+        pyramid.bottom[0],
+        pyramid.bottom[1],
+        pyramid.top[0],
+        pyramid.top[1],
+        pyramid.offset[0],
+        pyramid.offset[1],
+        pyramid.height,
+    ]);
+    let record_bbox = primitive.local_aabb_mm().unwrap_or([0.0; 6]);
+    AnalyticCandidate {
+        geometry: RvmGeometry {
+            tag: "PRIM".to_string(),
+            flags: 1,
+            primitive,
+            matrix3,
+            translation_mm: [cols[12], cols[13], cols[14]],
+            record_bbox,
+            bbox_frame: crate::rvm_read::BboxFrame::Local,
+            level: None,
+        },
+        sagitta_mm: 0.0,
+    }
+}
+
+/// 一只球的识别结果，全在局部系 mm。
+#[derive(Debug, Clone, Copy)]
+pub struct RecognisedSphere {
+    pub radius: f64,
+    pub centre: glam::DVec3,
+    /// 内接多面体离球面最远处的缺口 = 半径 − 内切球半径，见 [`sphere_from_local_mesh`]。
+    pub sagitta_mm: f64,
+}
+
+/// 一只离散球至少有几个顶点。
+///
+/// 球走 `Manifold::sphere`（manifold `constructors.cpp`：八面体每条边分 `n = ⌈段数/4⌉` 段
+/// 再投到球面上，顶点 `4n² + 2`），段数走 [`crate::solid::cylinder_segments`]，
+/// 与圆柱同一条 45° 封顶、最少 8 段的规则——`n ≥ 2`，顶点至少 18 个。
+/// 立方体（8）、八面体（6）、正十二面体（20 但内切比不够，见下）在这儿或下一道被挡下。
+pub const MIN_SPHERE_VERTICES: usize = 18;
+
+/// 内切球半径与外接球半径之比的下限——「所有顶点与中心等距」这一句单独不够：
+/// 立方体、正多面体、以及任何高度凑成 `h²/4 + r² = R²` 的正棱柱，顶点也全在一只球上。
+///
+/// 最粗的那只合法的球（8 段，八面体每边一分为二）里，三个棱中点张成的那一片到球心
+/// `√(2/3)·r ≈ 0.8165 r`；而正十二面体是 0.7947，内接于球的正棱柱不到 `1/√2`，
+/// 立方体 0.5774。0.8 落在两边之间。
+pub const MIN_SPHERE_INRADIUS_RATIO: f64 = 0.8;
+
+/// 网格是一只离散球时把它解出来。
+///
+/// 1. 所有顶点到中心**等距**（= 半径）。中心取顶点云 AABB 的中心：离散球的顶点集中心对称，
+///    AABB 中心就是球心，重复顶点也带不偏它；
+/// 2. 顶点至少 [`MIN_SPHERE_VERTICES`] 个，内切比至少 [`MIN_SPHERE_INRADIUS_RATIO`]，
+///    把恰好也满足第 1 条的多面体挡在外面。
+///
+/// 缺口直接从网格量：凸多面体在任何方向上的支撑值都不小于它的内切球半径，所以
+/// `半径 − 内切球半径` 就是它与球面之间**最大**的系统差——不必知道这块网格是怎么离散的。
+pub fn sphere_from_local_mesh(
+    vertices: &[[f64; 3]],
+    triangles: &[[u32; 3]],
+) -> Option<RecognisedSphere> {
+    use glam::DVec3;
+    if vertices.len() < MIN_SPHERE_VERTICES || triangles.len() < 2 * MIN_SPHERE_VERTICES - 4 {
+        return None;
+    }
+    let points: Vec<DVec3> = vertices.iter().copied().map(DVec3::from_array).collect();
+    let (lo, hi) = points.iter().fold((points[0], points[0]), |(lo, hi), p| {
+        (lo.min(*p), hi.max(*p))
+    });
+    let centre = (lo + hi) / 2.0;
+    let radius = (points[0] - centre).length();
+    if !(radius > 0.0)
+        || points
+            .iter()
+            .any(|p| ((*p - centre).length() - radius).abs() > 1e-6)
+    {
+        return None;
+    }
+    let inradius = inscribed_radius(&points, triangles, centre)?;
+    if !(inradius >= MIN_SPHERE_INRADIUS_RATIO * radius) {
+        return None;
+    }
+    Some(RecognisedSphere {
+        radius,
+        centre,
+        sagitta_mm: radius - inradius,
+    })
+}
+
+/// 多面体的内切球半径：每张面的平面到 `centre` 的距离取最小。退化面跳过；一张都没有时 None。
+fn inscribed_radius(
+    points: &[glam::DVec3],
+    triangles: &[[u32; 3]],
+    centre: glam::DVec3,
+) -> Option<f64> {
+    let mut inradius = f64::MAX;
+    for tri in triangles {
+        let [a, b, c] = tri.map(|i| points[i as usize]);
+        let normal = (b - a).cross(c - a);
+        if normal.length_squared() <= 0.0 {
+            continue;
+        }
+        inradius = inradius.min(normal.normalize().dot(a - centre).abs());
+    }
+    (inradius < f64::MAX).then_some(inradius)
+}
+
+/// 由 [`sphere_from_local_mesh`] 认出来的球造一条 `Sphere` 记录。
+///
+/// 球没有朝向，但记录**照样带元素的旋转**（E3D 就是这么写的：`/PS-0001` 那条 `Sphere`
+/// 的矩阵是元素的 90° 置换）。`rvm_compare` 拿成员第一条几何的旋转当局部帧，球若写成
+/// 不转的，轮到它排第一时两侧的帧就对不上——2026-09-14 实测 16 只阀球被判 off，
+/// 差的正是 `(√2 − 1)·r`。世界盒不受影响：[`AnalyticCandidate::world_aabb_mm`] 给球单独算。
+pub fn sphere_geometry(world: &glam::DMat4, sphere: &RecognisedSphere) -> AnalyticCandidate {
+    let placed = *world * glam::DMat4::from_translation(sphere.centre);
+    let cols = placed.to_cols_array();
+    let matrix3 = [
+        cols[0], cols[1], cols[2], cols[4], cols[5], cols[6], cols[8], cols[9], cols[10],
+    ]
+    .map(|value| value / M_TO_MM);
+    let r = sphere.radius;
+    AnalyticCandidate {
+        geometry: RvmGeometry {
+            tag: "PRIM".to_string(),
+            flags: 1,
+            primitive: Primitive::Sphere([r]),
+            matrix3,
+            translation_mm: [cols[12], cols[13], cols[14]],
+            record_bbox: [-r, -r, -r, r, r, r],
+            bbox_frame: crate::rvm_read::BboxFrame::Local,
+            level: None,
+        },
+        sagitta_mm: sphere.sagitta_mm,
+    }
+}
+
+/// 一只球形碟（`SphericalDish`）的识别结果，全在局部系 mm。
+#[derive(Debug, Clone, Copy)]
+pub struct RecognisedSphericalDish {
+    /// 底圆半径。
+    pub base_radius: f64,
+    /// 底圆到顶点的高。
+    pub height: f64,
+    /// 底圆圆心（RVM 原点）。
+    pub centre: glam::DVec3,
+    /// 底面法向、指向顶点（RVM 的局部 +Z）。
+    pub axis: glam::DVec3,
+    /// 底环多边形的边数。
+    pub segments: usize,
+    /// 网格与解析碟之间系统差的上界，见 [`spherical_dish_from_local_mesh`]。
+    pub sagitta_mm: f64,
+}
+
+/// 网格是一只球形碟（球冠 + 平底，[`crate::solid::spherical_dish_solid`] 的形体）时把它解出来。
+///
+/// 认法从**底盘**入手：它是网格里唯一一张平面圆盘，它的三角面共享同一个法向，数量至少
+/// [`MIN_CIRCLE_SEGMENTS`]；球冠上的面片法向各不相同。所以按法向排序、取共面片最多的那一两组当候选：
+///
+/// 1. 顶点沿候选法向全在一侧，落在底面那一档的是底环（共圆、给出底圆半径与圆心）加至多一个盘心；
+/// 2. 另一端只有**一个**顶点且在轴上，那是碟顶，给出高；
+/// 3. 过底圆与碟顶、球心在轴上的球是唯一的：`R = (r² + h²) / 2h`，球心在底圆心上方 `h − R`；
+///    除盘心以外的**每个**顶点都得在这只球上。带折边的碟（`EllipticalDish`）折边环上的顶点
+///    不在冠球上，在这儿被挡回去。
+///
+/// 缺口两处都算、取大：底环是内接多边形（[`chord_sagitta_mm`]）；球冠是内接面片，
+/// 凸体在任何方向的支撑值不小于它到球心最近的那张面片，所以 `R − min(面片到球心距离)` 是上界。
+pub fn spherical_dish_from_local_mesh(
+    vertices: &[[f64; 3]],
+    triangles: &[[u32; 3]],
+) -> Option<RecognisedSphericalDish> {
+    use glam::DVec3;
+    if vertices.len() < MIN_CIRCLE_SEGMENTS + 2 || triangles.len() < 2 * MIN_CIRCLE_SEGMENTS {
+        return None;
+    }
+    let points: Vec<DVec3> = vertices.iter().copied().map(DVec3::from_array).collect();
+
+    // 面法向排序后同法向的连成一段；底盘的每一片法向逐位相同，落不到别处去。
+    let mut normals: Vec<DVec3> = triangles
+        .iter()
+        .filter_map(|tri| {
+            let [a, b, c] = tri.map(|i| points[i as usize]);
+            let n = (b - a).cross(c - a);
+            (n.length_squared() > 0.0).then(|| n.normalize())
+        })
+        .collect();
+    normals.sort_by(|a, b| {
+        a.x.total_cmp(&b.x)
+            .then(a.y.total_cmp(&b.y))
+            .then(a.z.total_cmp(&b.z))
+    });
+    let mut candidates: Vec<(DVec3, usize)> = Vec::new();
+    let mut start = 0;
+    for i in 1..=normals.len() {
+        if i == normals.len() || (normals[i] - normals[start]).length() > 1e-7 {
+            if i - start >= MIN_CIRCLE_SEGMENTS {
+                candidates.push((normals[start], i - start));
+            }
+            start = i;
+        }
+    }
+    candidates.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+    candidates
+        .into_iter()
+        .take(2)
+        .find_map(|(normal, _)| spherical_dish_on_base(&points, triangles, normal))
+}
+
+/// [`spherical_dish_from_local_mesh`] 的后半段：底盘法向已定，把碟解出来或否掉。
+fn spherical_dish_on_base(
+    points: &[glam::DVec3],
+    triangles: &[[u32; 3]],
+    normal: glam::DVec3,
+) -> Option<RecognisedSphericalDish> {
+    use glam::DVec3;
+    let levels: Vec<f64> = points.iter().map(|p| p.dot(normal)).collect();
+    let (lowest, highest) = levels
+        .iter()
+        .fold((f64::MAX, f64::MIN), |(lo, hi), t| (lo.min(*t), hi.max(*t)));
+    let count_at = |level: f64| levels.iter().filter(|t| (*t - level).abs() <= 1e-6).count();
+    // 底盘坐在哪一端：整圈顶点的那一端。两端都是整圈的（圆柱）不是碟。
+    let (axis, base_level, apex_level) = match (
+        count_at(lowest) >= MIN_CIRCLE_SEGMENTS,
+        count_at(highest) >= MIN_CIRCLE_SEGMENTS,
+    ) {
+        (true, false) => (normal, lowest, highest),
+        (false, true) => (-normal, highest, lowest),
+        _ => return None,
+    };
+    let height = (apex_level - base_level).abs();
+    if !(height > 0.0) {
+        return None;
+    }
+
+    let unique_at = |level: f64| -> Vec<DVec3> {
+        let mut out: Vec<DVec3> = Vec::new();
+        for (p, t) in points.iter().zip(levels.iter()) {
+            if (*t - level).abs() <= 1e-6 && !out.iter().any(|q| (*q - *p).length() <= 1e-6) {
+                out.push(*p);
+            }
+        }
+        out
+    };
+    // 1. 底环 + 至多一个盘心。
+    let base = unique_at(base_level);
+    let centre = base.iter().copied().sum::<DVec3>() / base.len() as f64;
+    let base_radius = base
+        .iter()
+        .map(|p| (*p - centre).length())
+        .fold(0.0, f64::max);
+    if !(base_radius > 0.0) {
+        return None;
+    }
+    let mut segments = 0usize;
+    for p in &base {
+        let d = (*p - centre).length();
+        if (d - base_radius).abs() <= 1e-6 {
+            segments += 1;
+        } else if d > 1e-6 {
+            return None; // 既不在环上也不是盘心，底面不是圆盘。
+        }
+    }
+    if segments < MIN_CIRCLE_SEGMENTS {
+        return None;
+    }
+    // 2. 碟顶：唯一一个顶点，且在轴上。
+    let apex = unique_at(apex_level);
+    let [apex] = apex[..] else {
+        return None;
+    };
+    let arm = apex - centre;
+    if (arm - axis * arm.dot(axis)).length() > 1e-6 {
+        return None;
+    }
+    // 3. 过底圆与碟顶的球。
+    let sphere_radius = (base_radius * base_radius + height * height) / (2.0 * height);
+    let sphere_centre = centre + axis * (height - sphere_radius);
+    let is_base_hub = |p: &DVec3, t: f64| (t - base_level).abs() <= 1e-6 && (*p - centre).length() <= 1e-6;
+    if points.iter().zip(levels.iter()).any(|(p, t)| {
+        !is_base_hub(p, *t) && ((*p - sphere_centre).length() - sphere_radius).abs() > 1e-6
+    }) {
+        return None;
+    }
+
+    // 缺口：底环的弦高，与球冠面片到球心的欠缺，取大。底盘那些片不算（它们本来就是平的）。
+    let rim_gap = chord_sagitta_mm(base_radius, std::f64::consts::TAU / segments as f64);
+    let mut cap_gap = 0.0f64;
+    for tri in triangles {
+        if tri
+            .iter()
+            .all(|i| (levels[*i as usize] - base_level).abs() <= 1e-6)
+        {
+            continue;
+        }
+        let [a, b, c] = tri.map(|i| points[i as usize]);
+        let n = (b - a).cross(c - a);
+        if n.length_squared() <= 0.0 {
+            continue;
+        }
+        cap_gap = cap_gap.max(sphere_radius - n.normalize().dot(a - sphere_centre).abs());
+    }
+    Some(RecognisedSphericalDish {
+        base_radius,
+        height,
+        centre,
+        axis,
+        segments,
+        sagitta_mm: rim_gap.max(cap_gap),
+    })
+}
+
+/// 由 [`spherical_dish_from_local_mesh`] 认出来的碟造一条 `SphericalDish` 记录。
+///
+/// RVM 的 `SphericalDish`：参数 `[底圆半径, 高]`，原点在**底圆圆心**、底圆在 z = 0、
+/// 顶点在 z = +h（E3D 实测：`DISH 1 of EQUIPMENT 1 of ZONE 3 of /Copy-of-泵棚B版`
+/// 记录平移正是底圆心，世界盒 z 从平移起往上 100）。绕轴对称，局部 X 随便取一个。
+pub fn spherical_dish_geometry(
+    world: &glam::DMat4,
+    dish: &RecognisedSphericalDish,
+) -> AnalyticCandidate {
+    let z = dish.axis;
+    let x = z.any_orthonormal_vector();
+    let y = z.cross(x);
+    let frame = glam::DMat4::from_cols(
+        x.extend(0.0),
+        y.extend(0.0),
+        z.extend(0.0),
+        dish.centre.extend(1.0),
+    );
+    let placed = *world * frame;
+    let cols = placed.to_cols_array();
+    let matrix3 = [
+        cols[0], cols[1], cols[2], cols[4], cols[5], cols[6], cols[8], cols[9], cols[10],
+    ]
+    .map(|value| value / M_TO_MM);
+    let primitive = Primitive::SphericalDish([dish.base_radius, dish.height]);
+    let record_bbox = primitive.local_aabb_mm().unwrap_or([0.0; 6]);
+    AnalyticCandidate {
+        geometry: RvmGeometry {
+            tag: "PRIM".to_string(),
+            flags: 1,
+            primitive,
+            matrix3,
+            translation_mm: [cols[12], cols[13], cols[14]],
+            record_bbox,
+            bbox_frame: crate::rvm_read::BboxFrame::Local,
+            level: None,
+        },
+        sagitta_mm: dish.sagitta_mm,
+    }
+}
+
 /// 生成侧的 `HEAD` / `MODL`。banner 刻意不像 E3D，好让快照一眼看出来源。
 pub fn generated_header(
     note: impl Into<String>,
@@ -1513,5 +2082,213 @@ mod tests {
         let mut out = Vec::new();
         push_string(&mut out, "AMS");
         assert_eq!(out, vec![0, 0, 0, 1, b'A', b'M', b'S', 0]);
+    }
+
+    fn sorted(pair: [f64; 2]) -> [f64; 2] {
+        let mut pair = pair.map(f64::abs);
+        pair.sort_by(f64::total_cmp);
+        pair
+    }
+
+    fn assert_pair_eq(got: [f64; 2], want: [f64; 2], what: &str) {
+        let (got, want) = (sorted(got), sorted(want));
+        assert!(
+            (got[0] - want[0]).abs() < 1e-6 && (got[1] - want[1]).abs() < 1e-6,
+            "{what}: got {got:?} want {want:?}"
+        );
+    }
+
+    /// 拿 `pyramid_solid` 自己造几只棱台再认回来：完整的棱台、偏心的、退化成楔形与四棱锥的。
+    #[test]
+    fn recognises_pyramids_built_by_the_solid_kernel() {
+        // `/电动消防冷却水泵P-3601` 的 PYRA（570×120 → 65×120）、`:SDS_Entity 3` 的支架底板
+        // 加了偏心、一只楔形、一只四棱锥。
+        for (xb, yb, xt, yt, h, xo, yo) in [
+            (570.0, 120.0, 65.0, 120.0, 330.0, 0.0, 0.0),
+            (230.0, 230.0, 200.0, 200.0, 10.0, 30.0, -20.0),
+            (100.0, 80.0, 0.0, 80.0, 50.0, 0.0, 12.0),
+            (100.0, 80.0, 0.0, 0.0, 50.0, -7.0, 0.0),
+        ] {
+            let solid = crate::solid::pyramid_solid(xb, yb, xt, yt, h, xo, yo).unwrap();
+            let mesh = crate::mesh::TriMesh::from_manifold(&solid);
+            let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
+            let pyramid = pyramid_from_local_mesh(&mesh.vertices, &triangles)
+                .unwrap_or_else(|| panic!("棱台应认得回来: {xb}/{yb}/{xt}/{yt}/{h}/{xo}/{yo}"));
+            assert!((pyramid.height - h).abs() < 1e-6, "h={}", pyramid.height);
+            // 轴向由面法向定，可能与内核的 +Z 反向；反过来时上下面跟着换。
+            // 底面哪条边算 X 也由识别器定，边长按集合比；偏心同理按绝对值的集合比。
+            let (bottom, top) = if pyramid.axis.z >= 0.0 {
+                (pyramid.bottom, pyramid.top)
+            } else {
+                (pyramid.top, pyramid.bottom)
+            };
+            assert_pair_eq(bottom, [xb, yb], "bottom");
+            assert_pair_eq(top, [xt, yt], "top");
+            assert_pair_eq(pyramid.offset, [xo, yo], "offset");
+
+            // 写出来的记录必须过自校闸（带旋转）：偏心记错一半，AABB 立刻差 |off|/2。
+            let world = glam::DMat4::from_rotation_z(0.4) * glam::DMat4::from_rotation_x(0.7);
+            let (lo, hi) = world_aabb_of(&mesh.vertices, &world);
+            let candidate = pyramid_geometry(&world, &pyramid);
+            assert_eq!(candidate.geometry.primitive.kind_id(), 1);
+            assert_eq!(candidate.sagitta_mm, 0.0);
+            assert!(
+                candidate.matches_mesh_aabb(lo, hi, 0.01),
+                "{xb}/{yb}/{xt}/{yt}/{h}/{xo}/{yo}: {:?}",
+                candidate.geometry.world_aabb_mm()
+            );
+        }
+    }
+
+    #[test]
+    fn a_box_is_not_offered_as_a_pyramid_but_a_sheared_one_is() {
+        // 上下同形、不偏心 = 盒子：`Box` 那条记录才贴 E3D，识别器让路。
+        let solid = crate::solid::pyramid_solid(100.0, 100.0, 100.0, 100.0, 50.0, 0.0, 0.0).unwrap();
+        let mesh = crate::mesh::TriMesh::from_manifold(&solid);
+        let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
+        assert!(pyramid_from_local_mesh(&mesh.vertices, &triangles).is_none());
+
+        // 同形但偏心的平行六面体不是盒子，得认，而且写出来要过闸。
+        let solid = crate::solid::pyramid_solid(100.0, 100.0, 100.0, 100.0, 50.0, 20.0, 0.0).unwrap();
+        let mesh = crate::mesh::TriMesh::from_manifold(&solid);
+        let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
+        let pyramid = pyramid_from_local_mesh(&mesh.vertices, &triangles).expect("偏心的平行六面体");
+        let world = glam::DMat4::from_rotation_z(0.4) * glam::DMat4::from_rotation_x(0.7);
+        let (lo, hi) = world_aabb_of(&mesh.vertices, &world);
+        assert!(pyramid_geometry(&world, &pyramid).matches_mesh_aabb(lo, hi, 0.01));
+    }
+
+    #[test]
+    fn a_frustum_with_a_trapezoid_side_is_recognised_along_its_true_axis() {
+        // 570×120 → 65×120 的 ±Y 侧面是竖直矩形，法向 ±Y 也让顶点只落两档；但那两档
+        // 各是一个梯形，过不了矩形那一关，识别器必须落到真正的底面法向 Z 上。
+        let solid = crate::solid::pyramid_solid(570.0, 120.0, 65.0, 120.0, 330.0, 0.0, 0.0).unwrap();
+        let mesh = crate::mesh::TriMesh::from_manifold(&solid);
+        let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
+        let pyramid = pyramid_from_local_mesh(&mesh.vertices, &triangles).unwrap();
+        assert!(pyramid.axis.z.abs() > 1.0 - 1e-9, "axis={:?}", pyramid.axis);
+        assert!((pyramid.height - 330.0).abs() < 1e-6);
+    }
+
+    /// 拿 `unit_sphere_solid` 造几只球再认回来，缺口按网格自己的内切球算。
+    #[test]
+    fn recognises_spheres_built_by_the_solid_kernel() {
+        for (segments, radius) in [(8, 5.0_f64), (12, 10.0), (24, 50.0)] {
+            let solid = crate::solid::unit_sphere_solid(segments)
+                .unwrap()
+                .scale(radius, radius, radius)
+                .translate(3.0, -4.0, 5.0);
+            let mesh = crate::mesh::TriMesh::from_manifold(&solid);
+            let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
+            let sphere = sphere_from_local_mesh(&mesh.vertices, &triangles)
+                .unwrap_or_else(|| panic!("{segments} 段的球应认得回来"));
+            assert!((sphere.radius - radius).abs() < 1e-9, "r={}", sphere.radius);
+            assert!(
+                (sphere.centre - glam::DVec3::new(3.0, -4.0, 5.0)).length() < 1e-9,
+                "centre={:?}",
+                sphere.centre
+            );
+            if segments == 8 {
+                // 八面体每边一分为二：三个棱中点张成的那一片到球心 √(2/3)·r。
+                let want = (1.0 - (2.0_f64 / 3.0).sqrt()) * radius;
+                assert!((sphere.sagitta_mm - want).abs() < 1e-9, "sagitta={}", sphere.sagitta_mm);
+            }
+            assert!(sphere.sagitta_mm > 0.0 && sphere.sagitta_mm < 0.2 * radius);
+
+            let world = glam::DMat4::from_rotation_z(0.4) * glam::DMat4::from_rotation_x(0.7);
+            let (lo, hi) = world_aabb_of(&mesh.vertices, &world);
+            let candidate = sphere_geometry(&world, &sphere);
+            assert_eq!(candidate.geometry.primitive.kind_id(), 9);
+            assert!(candidate.matches_mesh_aabb(lo, hi, 0.01), "{segments} 段");
+            // 记录带着元素的旋转（与 E3D 同口径），世界盒仍是球心 ± r：闸门那一侧不能被
+            // 八个角转出来的大盒糊住。
+            let rotation = candidate.geometry.rotation();
+            let expected = (world * glam::DMat4::from_translation(sphere.centre)).to_cols_array();
+            for (got, want) in rotation.iter().zip([
+                expected[0], expected[1], expected[2], expected[4], expected[5], expected[6],
+                expected[8], expected[9], expected[10],
+            ]) {
+                assert!((got - want).abs() < 1e-12, "{rotation:?}");
+            }
+            let aabb = candidate.world_aabb_mm().unwrap();
+            let centre = world.transform_point3(sphere.centre);
+            for axis in 0..3 {
+                assert!((aabb[axis] - (centre[axis] - radius)).abs() < 1e-9, "{aabb:?}");
+                assert!((aabb[axis + 3] - (centre[axis] + radius)).abs() < 1e-9, "{aabb:?}");
+            }
+            // 读侧按八个角算出来的世界盒确实大一圈——这正是闸门要绕开它的原因。
+            let by_corners = candidate.geometry.world_aabb_mm().unwrap();
+            assert!(by_corners[3] - by_corners[0] > 2.0 * radius + 1e-6, "{by_corners:?}");
+        }
+    }
+
+    #[test]
+    fn polyhedra_with_equidistant_corners_are_not_spheres() {
+        // 立方体：八个角与中心等距，但只有 8 个顶点、内切比 0.577。
+        let cube = crate::solid::pyramid_solid(100.0, 100.0, 100.0, 100.0, 100.0, 0.0, 0.0).unwrap();
+        let mesh = crate::mesh::TriMesh::from_manifold(&cube);
+        let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
+        assert!(sphere_from_local_mesh(&mesh.vertices, &triangles).is_none());
+
+        // 直径 = 高的圆柱：全部顶点到中心都是 √2·r，48 个顶点够数，但内切比不到 1/√2。
+        let cylinder = crate::solid::csg_cylinder_solid(100.0, 100.0).unwrap();
+        let mesh = crate::mesh::TriMesh::from_manifold(&cylinder);
+        let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
+        assert!(mesh.vertices.len() >= MIN_SPHERE_VERTICES);
+        assert!(sphere_from_local_mesh(&mesh.vertices, &triangles).is_none());
+    }
+
+    /// 拿 `spherical_dish_solid` 造几只碟再认回来：浅碟、半球、很浅的碟。
+    #[test]
+    fn recognises_spherical_dishes_built_by_the_solid_kernel() {
+        // `DISH 1 of EQUIPMENT 1 of ZONE 3 of /Copy-of-泵棚B版`：底圆半径 225、高 100。
+        for (radius, height) in [(225.0_f64, 100.0_f64), (100.0, 100.0), (60.0, 15.0)] {
+            let solid = crate::solid::spherical_dish_solid(radius, height).unwrap();
+            let mesh = crate::mesh::TriMesh::from_manifold(&solid);
+            let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
+            let dish = spherical_dish_from_local_mesh(&mesh.vertices, &triangles)
+                .unwrap_or_else(|| panic!("碟应认得回来: {radius}/{height}"));
+            assert!((dish.base_radius - radius).abs() < 1e-6, "{dish:?}");
+            assert!((dish.height - height).abs() < 1e-6, "{dish:?}");
+            // 内核把底圆放在 z = 0、顶点在 +z：轴必须指向 +Z，原点必须是底圆心。
+            assert!(dish.axis.z > 1.0 - 1e-9, "{dish:?}");
+            assert!(dish.centre.length() < 1e-6, "{dish:?}");
+            assert!(dish.segments >= MIN_CIRCLE_SEGMENTS && dish.segments % 4 == 0, "{dish:?}");
+            assert!(dish.sagitta_mm > 0.0 && dish.sagitta_mm < 0.02 * radius.max(height), "{dish:?}");
+
+            let world = glam::DMat4::from_rotation_z(0.4) * glam::DMat4::from_rotation_x(0.7);
+            let (lo, hi) = world_aabb_of(&mesh.vertices, &world);
+            let candidate = spherical_dish_geometry(&world, &dish);
+            assert_eq!(candidate.geometry.primitive.kind_id(), 6);
+            assert!(
+                candidate.matches_mesh_aabb(lo, hi, 0.01),
+                "{radius}/{height}: sagitta={} {:?} vs {lo:?}..{hi:?}",
+                candidate.sagitta_mm,
+                candidate.geometry.world_aabb_mm()
+            );
+        }
+    }
+
+    #[test]
+    fn a_knuckled_dish_and_a_sphere_are_not_offered_as_spherical_dishes() {
+        // 带折边的碟：折边环上的顶点不在冠球上，第 3 条把它挡回去。
+        let (radius, height) = (225.0, 100.0);
+        let knuckle = crate::solid::dish_knuckle_radius(radius, height);
+        let solid = crate::solid::elliptical_dish_solid(radius, height, knuckle).unwrap();
+        let mesh = crate::mesh::TriMesh::from_manifold(&solid);
+        let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
+        assert!(spherical_dish_from_local_mesh(&mesh.vertices, &triangles).is_none());
+
+        // 整球没有平底。
+        let solid = crate::solid::unit_sphere_solid(12).unwrap().scale(50.0, 50.0, 50.0);
+        let mesh = crate::mesh::TriMesh::from_manifold(&solid);
+        let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
+        assert!(spherical_dish_from_local_mesh(&mesh.vertices, &triangles).is_none());
+
+        // 圆柱两端都是整圈平盘，不是碟。
+        let solid = crate::solid::csg_cylinder_solid(100.0, 40.0).unwrap();
+        let mesh = crate::mesh::TriMesh::from_manifold(&solid);
+        let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
+        assert!(spherical_dish_from_local_mesh(&mesh.vertices, &triangles).is_none());
     }
 }

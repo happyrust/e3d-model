@@ -51,6 +51,28 @@
 //! 目录件（SBFITTING/FIXING/PLDATUM）。工具按 noun 分组报「两边都有 / 只在基准 /
 //! 只在生成」，**只对两边都有的判 AABB**——把只在基准那一侧的当成失败，报告就成了
 //! 一张恒红的表，没人会再看第二眼。
+//!
+//! ## 只有中心线的成员不进对拍
+//!
+//! RVM 的 `Line`（kind 10）不是实体，**它的包围盒是导出器现编的**：
+//! `expdri/DRWLIN`（`expdri.dll` `0x10002B92`）拿两个端点算出长度 `L`，写下的盒子是
+//! 写死的 `[-5, -5, -L/2, 5, 5, L/2]`，两个参数是字面量 `5.0` 与 `L`。那个 ±5 mm
+//! 是这段代码里的常数，不是模型里的任何尺寸。
+//!
+//! 另外两条旁证：导出分派 `expdri/EXPFPR` 里每种实体图元都有 `n` 与 `n+0x32` 两个
+//! 入口（第二表现），只有 `0xB`（线）是光杆一个；libgm 里 `GM_Line` 是条棱
+//! （`point0`/`point1`/`getPEdge`/`getEdgeType`），是这一族里唯一**没有
+//! `calcFacets`** 的类——它从不产生面。
+//!
+//! 所以拿它判 AABB 就是拿导出器的常数当判据。[`e3d_model::rvm_read`] 早就这么定了
+//! （`Primitive::Line` 没有采样点、`world_aabb_mm()` 给 `None`、帧记
+//! `BboxFrame::NotApplicable`），于是 RVM ↔ RVM 那条路**两侧都已经**把它们丢掉了；
+//! 这里让快照那条路跟上，口径只此一份。
+//!
+//! **这不是把欠款抹掉。** 「E3D 画了一条线、我们一条都还不画」记在
+//! `Report::centreline_only` 与 `evidence_pending` 上（SLYK `/石楼装卸车-SUPP1`
+//! 的 17 根无剖面 SCTN 就在那本账里），那本账才是它的归属；本工具报
+//! `centreline_only_baseline`，让它在对拍报告里也点得出名字。
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -198,7 +220,26 @@ fn owner_key(desc: &str) -> String {
     }
 }
 
+/// 这一条几何是不是中心线（RVM `Line`，kind 10）。见模块文档「只有中心线的成员不进对拍」。
+///
+/// 两种快照形态都要认：`rvm_verify import` 写的是对象（`{"kind":"Line",…}`），
+/// [`load_rvm_side`] 写的是光一个 kind 名。少认一种，同一份 RVM 走两条路会判出两个结果。
+fn is_centreline(geometry: &serde_json::Value) -> bool {
+    let kind = match geometry {
+        serde_json::Value::String(kind) => Some(kind.as_str()),
+        other => other.get("kind").and_then(serde_json::Value::as_str),
+    };
+    kind == Some("Line")
+}
+
+/// 取前四字是为了让 RVM 的全名词（`SUBEQUIPMENT`）配上 e3d-io 的短名词（`SUBE`）。
+/// 用户自定义元素类型（`:` 开头）没有短名词，两侧写的是同一串，截了反而撞车：
+/// `/石楼装卸车-SUPP1` 里 `:SDS_Pole` / `:SDS_Plate` / `:SDS_Entity` 全塌成 `:SDS`，
+/// 同一属主同一序号下三件挤成一个键，整个 ZONE 判不下去。
 fn noun4(noun: &str) -> String {
+    if noun.starts_with(':') {
+        return noun.to_string();
+    }
     noun.chars().take(4).collect()
 }
 
@@ -267,6 +308,9 @@ struct CompareReport {
     unkeyable_generated: Vec<String>,
     /// 基准里带几何但发不出主键的成员，同理。
     unkeyable_baseline: Vec<String>,
+    /// 基准里只有 `Line` 的成员：E3D 画了中心线、没画实体，不进判据（见模块文档）。
+    /// 留名而不是静默丢掉——这是一笔欠款，不是一件不存在的东西。
+    centreline_only_baseline: Vec<String>,
     by_noun: BTreeMap<String, NounTally>,
     pairs: Vec<Pair>,
     only_baseline: Vec<String>,
@@ -274,9 +318,13 @@ struct CompareReport {
 }
 
 /// 基准侧一条待配记录：成员本身、面片（缺面片的走 snapshot AABB）、世界 AABB、AABB 来源标记。
+///
+/// 面片这一格**借**着 `facet_vertices` 里的那一份，不复制：解析图元的「面片」是我们按面
+/// 采出来的点云，一只 90° 弯头就有 2.3 万点，`/Copy-of-装卸车PI` 那种管线根整份 6800 万点
+/// （≈1.7 GB）。多留一份就多 1.7 GB，debug 下直接顶穿提交上限。
 type BaseEntry<'a> = (
     &'a SnapshotMember,
-    Option<FacetData>,
+    Option<&'a FacetData>,
     [f64; 6],
     &'static str,
 );
@@ -321,7 +369,11 @@ type RvmSide = (
 /// 这是「RVM ↔ RVM 对称对拍」的全部实现：两侧都走 [`e3d_model::rvm_read`]，
 /// 于是「基准 AABB 怎么算」只剩一处代码，也不再需要 `--facets` 这条旁路
 /// ——面片顶点本来就在文件里。
-fn load_rvm_side(path: &std::path::Path) -> anyhow::Result<RvmSide> {
+///
+/// `want_facets` 关掉时不建面片索引。**生成侧一定要关**：判档只从生成侧取
+/// `Generated`（世界 / 局部 AABB 与分量都已经在里面了），那份索引一行都读不到，
+/// 却要为每只弯头留 2.3 万个采样点——`/Copy-of-装卸车PI` 白占 1.7 GB。
+fn load_rvm_side(path: &std::path::Path, want_facets: bool) -> anyhow::Result<RvmSide> {
     let file = e3d_model::rvm_read::RvmFile::read(path)?;
     let unknown = file.bbox_frame_tally().get("unknown").copied().unwrap_or(0);
     if unknown > 0 {
@@ -383,7 +435,7 @@ fn load_rvm_side(path: &std::path::Path) -> anyhow::Result<RvmSide> {
             None => ([0.0; 3], [0.0; 3]),
         };
 
-        if !world_vertices.is_empty() {
+        if want_facets && !world_vertices.is_empty() {
             let polygons = member
                 .geometries
                 .iter()
@@ -448,14 +500,24 @@ fn main() -> anyhow::Result<()> {
         parse_args()?;
 
     // RVM ↔ RVM：两侧同一个读法，`--facets` 不再需要（面片就在文件里）。
-    let rvm_side = generated_rvm.as_deref().map(load_rvm_side).transpose()?;
-    let baseline_rvm = match &rvm_side {
-        Some(_) => Some(load_rvm_side(&baseline_path)?),
+    //
+    // 两侧的点云都**只留一份**：生成侧不建面片索引，基准侧的三样东西一路 move 到位。
+    // 早先每一步都 `clone()`，同一份点云同时活着四份，管线根就是这么 OOM 的。
+    let generated: Option<Vec<Generated>> = match generated_rvm.as_deref() {
+        Some(path) => Some(load_rvm_side(path, false)?.2),
+        None => None,
+    };
+    let baseline_rvm = match &generated {
+        Some(_) => Some(load_rvm_side(&baseline_path, true)?),
         None => None,
     };
 
-    let snapshot: Snapshot = match &baseline_rvm {
-        Some((members, _, _)) => Snapshot {
+    let (baseline_members, baseline_facets) = match baseline_rvm {
+        Some((members, facets, _)) => (Some(members), Some(facets)),
+        None => (None, None),
+    };
+    let snapshot: Snapshot = match baseline_members {
+        Some(members) => Snapshot {
             meta: SnapshotMeta {
                 dbnum: None,
                 root_name: members.first().and_then(|m| m.name.clone()),
@@ -463,7 +525,7 @@ fn main() -> anyhow::Result<()> {
                 member_count: Some(members.len()),
                 geometry_count: Some(members.iter().map(|m| m.geometries.len()).sum()),
             },
-            members: members.clone(),
+            members,
         },
         None => serde_json::from_slice(
             &std::fs::read(&baseline_path)
@@ -471,8 +533,8 @@ fn main() -> anyhow::Result<()> {
         )
         .context("解析 RVM 快照 JSON")?,
     };
-    let generated: Vec<Generated> = match &rvm_side {
-        Some((_, _, generated)) => generated.clone(),
+    let generated: Vec<Generated> = match generated {
+        Some(generated) => generated,
         None => serde_json::from_slice(
             &std::fs::read(&elements_path)
                 .with_context(|| format!("读生成物 {}", elements_path.display()))?,
@@ -481,8 +543,8 @@ fn main() -> anyhow::Result<()> {
     };
 
     // ---- 面片实算 AABB（可信基准，见模块文档） ----
-    let facet_vertices: BTreeMap<String, FacetData> = match (&baseline_rvm, &facets_path) {
-        (Some((_, facets, _)), _) => facets.clone(),
+    let facet_vertices: BTreeMap<String, FacetData> = match (baseline_facets, &facets_path) {
+        (Some(facets), _) => facets,
         (None, None) => BTreeMap::new(),
         (None, Some(path)) => {
             let groups: Vec<FacetGroupDump> = serde_json::from_slice(
@@ -553,9 +615,15 @@ fn main() -> anyhow::Result<()> {
     // ---- 基准侧：只要带几何且有世界 AABB 的成员 ----
     let mut base: BTreeMap<Key, BaseEntry<'_>> = BTreeMap::new();
     let mut unkeyable_baseline = Vec::new();
+    let mut centreline_only_baseline = Vec::new();
     let (mut aabb_from_facets, mut aabb_from_snapshot) = (0usize, 0usize);
     for member in &snapshot.members {
         if member.geometries.is_empty() {
+            continue;
+        }
+        if member.geometries.iter().all(is_centreline) {
+            centreline_only_baseline
+                .push(member.name.clone().unwrap_or_else(|| "?".to_string()));
             continue;
         }
         let facets = member
@@ -613,10 +681,7 @@ fn main() -> anyhow::Result<()> {
             _ => aabb_from_snapshot += 1,
         }
         if base
-            .insert(
-                key.clone(),
-                (member, facets.cloned(), world_aabb, aabb_source),
-            )
+            .insert(key.clone(), (member, facets, world_aabb, aabb_source))
             .is_some()
         {
             bail!("基准里主键重复：{key:?}——`n of owner` 序号不唯一，对拍口径不成立");
@@ -901,6 +966,7 @@ fn main() -> anyhow::Result<()> {
         baseline_geometries: snapshot.meta.geometry_count,
         unkeyable_generated,
         unkeyable_baseline,
+        centreline_only_baseline,
         by_noun,
         pairs,
         only_baseline,
@@ -934,6 +1000,13 @@ fn main() -> anyhow::Result<()> {
             report.unkeyable_baseline.len()
         );
     }
+    if !report.centreline_only_baseline.is_empty() {
+        println!(
+            "基准里只有中心线、不进判据的成员 {} 件（E3D 画了线、我们还不画，账在 \
+             report.json 的 centreline_only 上）",
+            report.centreline_only_baseline.len()
+        );
+    }
     for pair in report.pairs.iter().take(10) {
         println!(
             "  {:>18} raw={:>9.4} mm sig={:>9}  {}  ({}, 基准={})",
@@ -958,8 +1031,14 @@ fn main() -> anyhow::Result<()> {
 
     let off: usize = report.by_noun.values().map(|t| t.off).sum();
     let both: usize = report.by_noun.values().map(|t| t.both).sum();
+    // 两侧都没有可判的件是「这棵子树本来就不画」，不是口径对不上：SLYK `/发油泵棚一基础`
+    // 那种 ZONE，E3D 导出的 RVM 里一个带几何的成员都没有，我们也一件没生成。只有一侧
+    // 有东西才是真配不上。
     if both == 0 {
-        bail!("一件都没配上——主键口径对不上，先看 only_baseline / only_generated");
+        if !report.only_baseline.is_empty() || !report.only_generated.is_empty() {
+            bail!("一件都没配上——主键口径对不上，先看 only_baseline / only_generated");
+        }
+        println!("两侧都没有可判的件：这棵子树本来就不出几何");
     }
     if off > 0 {
         bail!("{off}/{both} 件超出弦高容差，看上面的 off 明细");
@@ -1230,10 +1309,34 @@ mod tests {
         assert!((aabb[5] - 5.0).abs() < 1e-9);
     }
 
+    /// 中心线在两种快照形态里都要认得出来，混了实体的成员则照旧进判据。
+    ///
+    /// 形态一是 `rvm_verify import` 的对象，形态二是 [`load_rvm_side`] 的 kind 名。
+    /// 只认一种的话，同一份 RVM 走快照路与走 RVM ↔ RVM 会判出两个结果。
+    #[test]
+    fn a_line_is_a_centreline_in_both_snapshot_shapes() {
+        let object = serde_json::json!({"kind": "Line", "detail": {"start_radius": 5.0}});
+        assert!(is_centreline(&object));
+        assert!(is_centreline(&serde_json::Value::String("Line".into())));
+        assert!(!is_centreline(&serde_json::json!({"kind": "Box"})));
+        assert!(!is_centreline(&serde_json::Value::String("Box".into())));
+        // 「全是中心线」才不进判据：线旁边还有实体的成员照判。
+        let solid = serde_json::Value::String("Cylinder".into());
+        assert!(![object, solid].iter().all(is_centreline));
+    }
+
     #[test]
     fn noun_filter_uses_the_same_four_character_key_on_both_sides() {
         assert_eq!(noun4("GWALL"), noun4("GWAL"));
         assert_ne!(noun4("GWALL"), noun4("PANE"));
+    }
+
+    /// 用户自定义元素类型整串进键：截成四字会把同一属主下的三种支撑件挤成一个。
+    #[test]
+    fn user_defined_element_types_keep_their_full_noun() {
+        assert_eq!(noun4(":SDS_Pole"), ":SDS_Pole");
+        assert_ne!(noun4(":SDS_Pole"), noun4(":SDS_Plate"));
+        assert_ne!(noun4(":SDS_Plate"), noun4(":SDS_Entity"));
     }
 
     /// 管身按几何配对：E3D 的 `TUBE 2 / TUBE 5` 要能对上我们的 `TUBI 1 / TUBI 2`；

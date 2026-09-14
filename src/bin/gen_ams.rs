@@ -35,6 +35,7 @@ use e3d_model::catalogue::CatalogueMeshCache;
 use e3d_model::db_discovery::DirectoryDbResolver;
 use e3d_model::mesh::TriMesh;
 use e3d_model::pipeline::{GenerationOutcome, Report, generate_subtree_with_cache};
+use e3d_model::udet::UdetCatalog;
 
 struct Args {
     attlib: PathBuf,
@@ -112,6 +113,10 @@ const ANALYTIC_TOL_MM: f64 = 0.01;
 
 /// 一个组件 → 一条 RVM 记录。能认成解析图元就写解析图元，否则写 FacetGroup。
 ///
+/// 识别器按 `Box → Cylinder → Snout → CircularTorus → Pyramid → Sphere → SphericalDish`
+/// 逐个试，先认出来的算。次序有讲究：等径不偏心的圆台让给圆柱、同形不偏心的棱台让给盒子，
+/// 顶点恰好共球的正棱柱先被圆柱接走，球的识别器再靠内切比把剩下的多面体挡在外面。
+///
 /// **自校闸**：解析候选算出来的世界 AABB 必须与这块网格实算的一致，否则退回面片。
 /// 规范体约定写错了照样能写出一份解析得开但几何是错的 RVM，这种错不该靠人眼发现。
 /// 「一致」的尺度由候选自己给（[`e3d_model::rvm_write::AnalyticCandidate::matches_mesh_aabb`]）。
@@ -147,6 +152,20 @@ fn rvm_component_geometry(
         .or_else(|| {
             let torus = e3d_model::rvm_write::torus_from_local_mesh(local_vertices, triangles)?;
             Some(e3d_model::rvm_write::circular_torus_geometry(world, &torus))
+        })
+        .or_else(|| {
+            let pyramid =
+                e3d_model::rvm_write::pyramid_from_local_mesh(local_vertices, triangles)?;
+            Some(e3d_model::rvm_write::pyramid_geometry(world, &pyramid))
+        })
+        .or_else(|| {
+            let sphere = e3d_model::rvm_write::sphere_from_local_mesh(local_vertices, triangles)?;
+            Some(e3d_model::rvm_write::sphere_geometry(world, &sphere))
+        })
+        .or_else(|| {
+            let dish =
+                e3d_model::rvm_write::spherical_dish_from_local_mesh(local_vertices, triangles)?;
+            Some(e3d_model::rvm_write::spherical_dish_geometry(world, &dish))
         });
     let had_candidate = candidate.is_some();
     let accepted = candidate
@@ -172,6 +191,7 @@ fn rvm_component_geometry(
 ///
 /// noun 这里发的是库里的短名（`FTUB`），E3D 发的是全称（`FTUBE`）。
 /// **对拍不受影响**——`rvm_compare` 两侧都做 `noun4()` 截断；人读时差一截尾巴。
+/// 工程派生的子类型例外：两侧写的都是完整的 UDET 名（`:SDS_Pole`），截不得。
 fn rvm_display_name(
     name: Option<&String>,
     noun: &str,
@@ -253,6 +273,8 @@ fn scan_route_roots(
 struct ElementInvariants {
     geometry_id: e3d_model::GeometryId,
     refno: String,
+    /// 对拍用的名词：库里的短名，工程派生的子类型换成 UDET 名（`:SDS_Pole`），
+    /// 与 E3D 写进 RVM 的那个一致。见 [`e3d_model::udet`]。
     noun: String,
     /// Diagnostic route segment shown dashed by Plant UI and intentionally
     /// absent from the E3D solid RVM export.
@@ -261,8 +283,9 @@ struct ElementInvariants {
     /// 属主的显示名（`NOUN /名`），属主无名时为 `None`。见 [`owner_keys`]。
     /// 管身（`TUBI`）的属主是容器本身，见 [`tube_pair_key`]。
     owner_desc: Option<String>,
-    /// 本元素在属主**同 noun 兄弟**里的序号，文件原序 1 起。
-    /// 管身：容器内建成管身的路由顺序，1 起。
+    /// 本元素在属主**同 noun 兄弟**里的序号，文件原序 1 起；同 noun 按
+    /// [`ElementInvariants::noun`] 那一档算（`:SDS_Plate` 与 `:SDS_Entity`
+    /// 同是 `FIXING`，但各数各的）。管身：容器内建成管身的路由顺序，1 起。
     ordinal: usize,
     volume_mm3: f64,
     aabb_min: [f64; 3],
@@ -322,8 +345,12 @@ struct RouteRootAudit {
 /// 属主无名时必须递归复现 E3D 的默认显示名。例如 7997 的设备基本体位于无名
 /// SUBE 下，RVM 键是 `CYLINDER 18 of SUBEQUIPMENT 20 of EQUIPMENT /X`；只看
 /// 最近的命名祖先会把 20 个 SUBE 的同序号基本体错配在一起。
+///
+/// 名词一律走 [`UdetCatalog::display_noun`]：工程派生的子类型 E3D 写的是 UDET 名
+/// （`:SDS_Pole`），序号也按 UDET 名数。见 [`e3d_model::udet`]。
 fn owner_display_desc(
     set: &std::sync::Arc<DbSet>,
+    udets: &UdetCatalog,
     refno: RefNo,
     cache: &mut std::collections::HashMap<RefNo, Option<String>>,
     visiting: &mut std::collections::HashSet<RefNo>,
@@ -336,31 +363,33 @@ fn owner_display_desc(
     }
 
     let element = set.element(refno);
-    let noun = element.element_type()?;
+    let noun = udets.display_noun(&element)?;
     let desc = match element.stored_name()? {
         Some(name) => Some(format!("{noun} {name}")),
         None => match element.owner()? {
             None => None,
-            Some(parent) => match owner_display_desc(set, parent.refno(), cache, visiting)? {
-                None => None,
-                Some(parent_desc) => {
-                    let mut ordinal = 0usize;
-                    let mut found = false;
-                    for sibling in parent.members()? {
-                        if sibling.element_type()? == noun {
-                            ordinal += 1;
+            Some(parent) => {
+                match owner_display_desc(set, udets, parent.refno(), cache, visiting)? {
+                    None => None,
+                    Some(parent_desc) => {
+                        let mut ordinal = 0usize;
+                        let mut found = false;
+                        for sibling in parent.members()? {
+                            if udets.display_noun(&sibling)? == noun {
+                                ordinal += 1;
+                            }
+                            if sibling.refno() == refno {
+                                found = true;
+                                break;
+                            }
                         }
-                        if sibling.refno() == refno {
-                            found = true;
-                            break;
+                        if !found {
+                            bail!("{refno} 不在属主 {} 的成员表里", parent.refno());
                         }
+                        Some(format!("{noun} {ordinal} of {parent_desc}"))
                     }
-                    if !found {
-                        bail!("{refno} 不在属主 {} 的成员表里", parent.refno());
-                    }
-                    Some(format!("{noun} {ordinal} of {parent_desc}"))
                 }
-            },
+            }
         },
     };
     visiting.remove(&refno);
@@ -370,6 +399,7 @@ fn owner_display_desc(
 
 fn owner_keys(
     set: &std::sync::Arc<DbSet>,
+    udets: &UdetCatalog,
     owners: &std::collections::HashSet<RefNo>,
     desc_cache: &mut std::collections::HashMap<RefNo, Option<String>>,
 ) -> anyhow::Result<std::collections::HashMap<RefNo, (Option<String>, usize)>> {
@@ -378,13 +408,14 @@ fn owner_keys(
         let owner = set.element(*owner_ref);
         let desc = owner_display_desc(
             set,
+            udets,
             *owner_ref,
             desc_cache,
             &mut std::collections::HashSet::new(),
         )?;
         let mut seen: BTreeMap<String, usize> = BTreeMap::new();
         for member in owner.members()? {
-            let noun = member.element_type()?;
+            let noun = udets.display_noun(&member)?;
             let ordinal = seen.entry(noun).or_insert(0);
             *ordinal += 1;
             keys.insert(member.refno(), (desc.clone(), *ordinal));
@@ -406,12 +437,14 @@ fn owner_keys(
 /// 核过：E3D `TUBE 1..3` 与我们的 `TUBI 1..3` 逐根配对且局部 AABB 差 ≤ 0.24 mm。
 fn tube_pair_key(
     set: &std::sync::Arc<DbSet>,
+    udets: &UdetCatalog,
     container: RefNo,
     desc_cache: &mut std::collections::HashMap<RefNo, Option<String>>,
     tube_ordinals: &mut std::collections::HashMap<RefNo, usize>,
 ) -> anyhow::Result<(Option<String>, usize)> {
     let desc = owner_display_desc(
         set,
+        udets,
         container,
         desc_cache,
         &mut std::collections::HashSet::new(),
@@ -447,8 +480,14 @@ fn main() -> anyhow::Result<()> {
 
     // 池级元素缓存：一次生成是有界的一棵子树，而 owner 链上溯与目录链走查会把同一批
     // 元素反复解析（ams8000 实测每元素 145 遍）。长驻进程另说，见 `with_element_cache`。
-    let set = if args.project_dirs.is_empty() {
-        std::sync::Arc::new(DbSet::with_attlib_file(&args.attlib)?.with_element_cache())
+    // DICT 库里的 UDET 定义决定 E3D 怎么叫工程派生出来的子类型；对拍主键带名词，
+    // 不查这张表整族配不上（见 `e3d_model::udet`）。扫到哪些 DICT 库只有 resolver
+    // 知道，所以在它被搬进 DbSet 之前先把库号记下来。
+    let (set, dict_dbnos) = if args.project_dirs.is_empty() {
+        (
+            std::sync::Arc::new(DbSet::with_attlib_file(&args.attlib)?.with_element_cache()),
+            Vec::new(),
+        )
     } else {
         let resolver = DirectoryDbResolver::scan(&args.project_dirs, &template_dir)?;
         for skipped in resolver.skipped() {
@@ -459,9 +498,13 @@ fn main() -> anyhow::Result<()> {
             );
         }
         println!("{}", resolver.summary());
-        std::sync::Arc::new(
-            DbSet::with_attlib_file_and_resolver(&args.attlib, Box::new(resolver))?
-                .with_element_cache(),
+        let dict_dbnos = resolver.dbnos_of_type("DICT");
+        (
+            std::sync::Arc::new(
+                DbSet::with_attlib_file_and_resolver(&args.attlib, Box::new(resolver))?
+                    .with_element_cache(),
+            ),
+            dict_dbnos,
         )
     };
     let dbno = set.add_db(DbFilePin {
@@ -491,6 +534,14 @@ fn main() -> anyhow::Result<()> {
             sesno: None,
         })?;
         println!("目录库 {} 打开为 dbno={cat_dbno}", file.display());
+    }
+
+    let udets = UdetCatalog::scan(&set, &dict_dbnos)?;
+    if !dict_dbnos.is_empty() {
+        println!(
+            "DICT 库 {dict_dbnos:?} 里读到 {} 条 UDET 定义",
+            udets.len()
+        );
     }
 
     // 只在从头整库生成时才拿索引总数当判据；`--root` 是子树，对不上是应该的。
@@ -642,7 +693,7 @@ fn main() -> anyhow::Result<()> {
             .map(|owner| owner.refno())
             .collect();
         let mut desc_cache = std::collections::HashMap::new();
-        let keys = owner_keys(&set, &owners, &mut desc_cache)?;
+        let keys = owner_keys(&set, &udets, &owners, &mut desc_cache)?;
         // 管身在 `elements` 里按容器的路由槽位顺序推入（`build_route_tubes` 顺序 push、
         // 生成物不重排），逐容器计数就是路由序。
         let mut tube_ordinals = std::collections::HashMap::new();
@@ -679,12 +730,24 @@ fn main() -> anyhow::Result<()> {
                 .collect::<Vec<_>>();
             components.sort_by(|a, b| b.volume_mm3.total_cmp(&a.volume_mm3));
             let (owner_desc, ordinal) = match &generated.geometry_id {
-                e3d_model::GeometryId::ImpliedTube { .. } => {
-                    tube_pair_key(&set, generated.refno, &mut desc_cache, &mut tube_ordinals)?
-                }
+                e3d_model::GeometryId::ImpliedTube { .. } => tube_pair_key(
+                    &set,
+                    &udets,
+                    generated.refno,
+                    &mut desc_cache,
+                    &mut tube_ordinals,
+                )?,
                 e3d_model::GeometryId::Element { .. } => {
                     keys.get(&generated.refno).cloned().unwrap_or((None, 0))
                 }
+            };
+            // 对拍身份用 E3D 的名词：工程派生的子类型两侧写的都是 UDET 名。
+            // 管身没有库记录（`refno` 填的是容器），名词照旧是 `TUBI`。
+            let identity_noun = match &generated.geometry_id {
+                e3d_model::GeometryId::Element { .. } => {
+                    udets.display_noun(&set.element(generated.refno))?
+                }
+                e3d_model::GeometryId::ImpliedTube { .. } => generated.noun.clone(),
             };
             if args.rvm && !mesh.indices.is_empty() {
                 let world = &generated.world;
@@ -745,7 +808,7 @@ fn main() -> anyhow::Result<()> {
                 }
                 let name = rvm_display_name(
                     generated.name.as_ref(),
-                    &generated.noun,
+                    &identity_noun,
                     owner_desc.as_ref(),
                     ordinal,
                 );
@@ -761,7 +824,7 @@ fn main() -> anyhow::Result<()> {
             invariants.push(ElementInvariants {
                 geometry_id: generated.geometry_id.clone(),
                 refno: generated.refno.to_string(),
-                noun: generated.noun.clone(),
+                noun: identity_noun,
                 is_invalid_tubi: generated.is_invalid_tubi,
                 name: generated.name.clone(),
                 owner_desc,
