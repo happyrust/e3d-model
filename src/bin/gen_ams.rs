@@ -804,12 +804,26 @@ fn main() -> anyhow::Result<()> {
                 // 「E3D preserves touching catalogue primitives as separate display meshes」），
                 // 合成一条会让 `Cylinder×2 → FacetGroup` 这类差异永远消不掉。
                 // `components()` 有 `parts` 就用它，没有就按连通性拆——单块实体拆出来还是一块。
-                let component_meshes: Vec<TriMesh> = generated
-                    .components()
-                    .iter()
-                    .map(TriMesh::from_manifold)
-                    .filter(|m| !m.indices.is_empty())
-                    .collect();
+                //
+                // **扣过负体的是例外，整只一条。** E3D 对布尔结果没有解析图元可写，只能把整只
+                // 元素的结果交给面片写出器，出来就是一条记录。取证是全量的：全 sweep 24 118 个
+                // 元素里落了负体的只有 218 个，其中 199 只 NOZZ（两个 SCYL 各扣一把 NSCY 膛刀）
+                // 基准侧**清一色一条**面片——颈与法兰装在同一条记录里，两端的环形面靠多轮廓
+                // 表达（`/PH-3601出口1` 那条 32 个多边形里 4 个带孔：外圈 12 边、内圈 8 边）；
+                // 我们的网格是分开的两块，逐组件写就平白多出一条。剩下 19 只本来就是单块，
+                // 两种口径同解。一个反例都没有。
+                let component_meshes: Vec<TriMesh> = if generated.negatives_applied > 0 {
+                    vec![mesh.clone()]
+                } else {
+                    generated
+                        .components()
+                        .iter()
+                        .map(TriMesh::from_manifold)
+                        .collect()
+                }
+                .into_iter()
+                .filter(|m| !m.indices.is_empty())
+                .collect();
                 // 拉伸体族照 E3D 的写法一律面片，不进识别器（见 [`e3d_exports_as_extrusion`]）。
                 let facets_only = e3d_exports_as_extrusion(&generated.noun);
                 // `PrimitiveInstance` 描述的是**整个元素**（`local_transform` 在元素局部系里），
