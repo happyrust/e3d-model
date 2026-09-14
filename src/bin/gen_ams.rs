@@ -166,10 +166,15 @@ fn rvm_component_geometry(
             let dish =
                 e3d_model::rvm_write::spherical_dish_from_local_mesh(local_vertices, triangles)?;
             Some(e3d_model::rvm_write::spherical_dish_geometry(world, &dish))
+        })
+        // 折边碟排在球形碟后面：球形碟的顶点全在冠球上，先被那一条认走。写出去的是半椭球
+        // ——照抄 E3D 导出时就做了的那层近似，好让两边 RVM 的图元种类对得上；形状损失算进
+        // 候选自己的 `sagitta_mm`，仍由下面那道自校闸按 r/h 算出来的量放行。
+        .or_else(|| {
+            let dish =
+                e3d_model::rvm_write::elliptical_dish_from_local_mesh(local_vertices, triangles)?;
+            Some(e3d_model::rvm_write::elliptical_dish_geometry(world, &dish))
         });
-    // 折边碟（`elliptical_dish_from_local_mesh`）**有意不接在这里**：RVM 的 `EllipticalDish`
-    // 是半椭球，我们这只是 torispherical 头，落盘会与自己的网格差好几毫米、过不了下面那道
-    // 自校闸。等口径定下来（忠于自己的网格 / 照抄 E3D 的导出损失）再接。
     let had_candidate = candidate.is_some();
     let accepted = candidate
         .filter(|candidate| candidate.matches_mesh_aabb(world_lo, world_hi, ANALYTIC_TOL_MM))
