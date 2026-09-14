@@ -7,7 +7,7 @@
 //! is Core3D `QSSEXT`: `SEXT -> SLOO -> SVER` becomes the same
 //! [`crate::solid::extrude_rings`] body used by design-side extrusions.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use glam::{DMat3, DMat4, DVec3};
 use manifold_csg::Manifold;
@@ -870,7 +870,8 @@ pub fn model_catalogue_member_with_cache(
     // 一笔不记，一只 LCYL 全零高的 FTUB 在报告上与「漏建」长得一样。
     let mut degenerate_other = 0usize;
     let mut primitives = 0usize;
-    let mut placed_parts = HashSet::new();
+    // 放置 → 先放那一块在 `solids` 里的下标；重复放置在它身上记 `repeats`（见 `place_part_once`）。
+    let mut placed_parts: HashMap<PlacedPartKey, usize> = HashMap::new();
     // 零尺寸的那几只：不进 `solids`（没体可建），但要跟着写记录。
     let mut degenerate_parts: Vec<DegenerateCataloguePart> = Vec::new();
     let mut member_duplicates = 0usize;
@@ -931,25 +932,17 @@ pub fn model_catalogue_member_with_cache(
                                 continue;
                             }
                         };
-                        let placed_key = PlacedPartKey {
+                        if !place_part_once(
+                            cache,
+                            &mut placed_parts,
+                            &mut solids,
+                            &primitive_noun,
+                            &evaluated.mesh_key,
                             mesh_id,
-                            transform_bits: matrix_bits(evaluated.transform),
-                        };
-                        if !placed_parts.insert(placed_key) {
+                            evaluated.transform,
+                        ) {
                             member_duplicates += 1;
-                            cache.stats.duplicate_placed_parts += 1;
-                            continue;
                         }
-                        cache.stats.unique_placed_parts += 1;
-                        let local_mesh = &cache
-                            .local_meshes
-                            .get(&evaluated.mesh_key)
-                            .expect("catalogue mesh inserted above")
-                            .solid;
-                        solids.push(CataloguePart {
-                            solid: placed(local_mesh, evaluated.transform),
-                            noun: primitive_noun.clone(),
-                        });
                     }
                     Ok(None) => zero_height += 1,
                     Err(error) => diagnostics.push(format!(
@@ -977,25 +970,17 @@ pub fn model_catalogue_member_with_cache(
                                 continue;
                             }
                         };
-                        let placed_key = PlacedPartKey {
+                        if !place_part_once(
+                            cache,
+                            &mut placed_parts,
+                            &mut solids,
+                            &primitive_noun,
+                            &evaluated.mesh_key,
                             mesh_id,
-                            transform_bits: matrix_bits(evaluated.transform),
-                        };
-                        if !placed_parts.insert(placed_key) {
+                            evaluated.transform,
+                        ) {
                             member_duplicates += 1;
-                            cache.stats.duplicate_placed_parts += 1;
-                            continue;
                         }
-                        cache.stats.unique_placed_parts += 1;
-                        let local_mesh = &cache
-                            .local_meshes
-                            .get(&evaluated.mesh_key)
-                            .expect("catalogue mesh inserted above")
-                            .solid;
-                        solids.push(CataloguePart {
-                            solid: placed(local_mesh, evaluated.transform),
-                            noun: primitive_noun.clone(),
-                        });
                     }
                     Ok(None) => degenerate_other += 1,
                     Err(error) => diagnostics.push(format!(
@@ -1023,25 +1008,17 @@ pub fn model_catalogue_member_with_cache(
                                 continue;
                             }
                         };
-                        let placed_key = PlacedPartKey {
+                        if !place_part_once(
+                            cache,
+                            &mut placed_parts,
+                            &mut solids,
+                            &primitive_noun,
+                            &evaluated.mesh_key,
                             mesh_id,
-                            transform_bits: matrix_bits(evaluated.transform),
-                        };
-                        if !placed_parts.insert(placed_key) {
+                            evaluated.transform,
+                        ) {
                             member_duplicates += 1;
-                            cache.stats.duplicate_placed_parts += 1;
-                            continue;
                         }
-                        cache.stats.unique_placed_parts += 1;
-                        let local_mesh = &cache
-                            .local_meshes
-                            .get(&evaluated.mesh_key)
-                            .expect("catalogue mesh inserted above")
-                            .solid;
-                        solids.push(CataloguePart {
-                            solid: placed(local_mesh, evaluated.transform),
-                            noun: primitive_noun.clone(),
-                        });
                     }
                     Ok(None) => degenerate_other += 1,
                     Err(error) => diagnostics.push(format!(
@@ -1170,25 +1147,17 @@ pub fn model_catalogue_member_with_cache(
                                 continue;
                             }
                         };
-                        let placed_key = PlacedPartKey {
+                        if !place_part_once(
+                            cache,
+                            &mut placed_parts,
+                            &mut solids,
+                            &primitive_noun,
+                            &evaluated.mesh_key,
                             mesh_id,
-                            transform_bits: matrix_bits(evaluated.transform),
-                        };
-                        if !placed_parts.insert(placed_key) {
+                            evaluated.transform,
+                        ) {
                             member_duplicates += 1;
-                            cache.stats.duplicate_placed_parts += 1;
-                            continue;
                         }
-                        cache.stats.unique_placed_parts += 1;
-                        let local_mesh = &cache
-                            .local_meshes
-                            .get(&evaluated.mesh_key)
-                            .expect("catalogue mesh inserted above")
-                            .solid;
-                        solids.push(CataloguePart {
-                            solid: placed(local_mesh, evaluated.transform),
-                            noun: primitive_noun.clone(),
-                        });
                     }
                     Ok(CylinderOutcome::Bodyless {
                         transform,
@@ -1493,9 +1462,9 @@ pub fn model_catalogue_member_with_cache(
     let compose_timing = crate::perf::cat_compose_scope();
     // 「本件有没有成体」查缓存里记下的面数，不问 `local`：问一句就把局部系那一遍
     // 物化出来了，而这批顶点马上还要在世界系再算一遍。`placed_parts` 与 `solids`
-    // 逐个对应（重复放置在上面 `continue` 掉了），面数相加就是汇总后的面数。
+    // 逐个对应（重复放置只在先放那一块上记了一笔，没另放体），面数相加就是汇总后的面数。
     let assembly_tris: usize = placed_parts
-        .iter()
+        .keys()
         .map(|part| cache.mesh_tri_counts[part.mesh_id])
         .sum();
     if assembly_tris == 0 {
@@ -1536,6 +1505,12 @@ pub fn model_catalogue_member_with_cache(
     } else {
         Vec::new()
     };
+    // 与 `parts` 逐块对齐的记录份数：同一放置出现了几次，RVM 就写几条（体只有一块）。
+    let part_record_repeats = if preserve_components {
+        solids.iter().map(|part| part.repeats).collect()
+    } else {
+        Vec::new()
+    };
     // 零尺寸记录跟 `parts` 同一条命：整只元素合成一条时，多挂一条零尺寸的没有对应物。
     if !preserve_components {
         degenerate_parts.clear();
@@ -1569,6 +1544,7 @@ pub fn model_catalogue_member_with_cache(
             solid: world_solid,
             parts,
             part_catalogue_nouns,
+            part_record_repeats,
             degenerate_parts,
             world,
             primitive_instance: None,
@@ -1636,6 +1612,7 @@ fn model_hvac_rectangular_basic(
             solid: placed(&built.solid, world),
             parts: None,
             part_catalogue_nouns: Vec::new(),
+            part_record_repeats: Vec::new(),
             degenerate_parts: Vec::new(),
             world,
             primitive_instance: built.instance,
@@ -2806,12 +2783,15 @@ pub(crate) struct CataloguePart {
     pub(crate) solid: Manifold,
     /// 目录图元的名词（`SBOX` / `SCYL` / `LPYR` / `LSNO`…）。
     pub(crate) noun: String,
+    /// 这一个放置在 GMSE 里出现了几次：1 = 只此一块；2 = 另有一个成员算出了同一只网格、
+    /// 同一个放置。体只放一块，记录按这个数写，见 [`place_part_once`]。
+    pub(crate) repeats: usize,
 }
 
 /// 取网格 → 放置去重 → 摆放。G0-1c 三条臂共用这一份；其余臂的手抄版见计划 G2-5。
 fn place_cached_part(
     cache: &mut CatalogueMeshCache,
-    placed_parts: &mut HashSet<PlacedPartKey>,
+    placed_parts: &mut HashMap<PlacedPartKey, usize>,
     solids: &mut Vec<CataloguePart>,
     noun: &str,
     mesh_key: &CatalogueMeshKey,
@@ -2819,14 +2799,44 @@ fn place_cached_part(
     build: impl FnOnce() -> Result<Manifold, ModelError>,
 ) -> Result<bool, ModelError> {
     let mesh_id = cached_mesh_id(cache, mesh_key, build)?;
+    Ok(place_part_once(
+        cache,
+        placed_parts,
+        solids,
+        noun,
+        mesh_key,
+        mesh_id,
+        transform,
+    ))
+}
+
+/// 把一块已进缓存的目录网格按 `transform` 放进 `solids`。返回是否真的放了一块新体。
+///
+/// **同一只网格、同一个放置只放一块体，重复的只记一笔。** 两块全同的体并起来是自交的，
+/// `Manifold::compose` 吃不下；体积也会翻倍。但 E3D 的 RVM 驱动逐 GMSE 成员写记录，
+/// 不管它们是不是长在同一个地方：`/Copy-of-7#管线-1/B1` 的 `VALV 3` 基准里第 5、6 两条是
+/// **字节一样**的两只圆柱（80 根严尺子上这样的重复 54 处，45 件元素）。所以记录那一层要
+/// 照着补——`placed_parts` 记的是先放那一块在 `solids` 里的下标，重复时给它 `repeats` 加一，
+/// 写 RVM 时那一块的记录多写几遍（[`crate::elmodl::GeneratedElement::part_record_repeats`]）。
+fn place_part_once(
+    cache: &mut CatalogueMeshCache,
+    placed_parts: &mut HashMap<PlacedPartKey, usize>,
+    solids: &mut Vec<CataloguePart>,
+    noun: &str,
+    mesh_key: &CatalogueMeshKey,
+    mesh_id: usize,
+    transform: DMat4,
+) -> bool {
     let placed_key = PlacedPartKey {
         mesh_id,
         transform_bits: matrix_bits(transform),
     };
-    if !placed_parts.insert(placed_key) {
+    if let Some(&index) = placed_parts.get(&placed_key) {
+        solids[index].repeats += 1;
         cache.stats.duplicate_placed_parts += 1;
-        return Ok(false);
+        return false;
     }
+    placed_parts.insert(placed_key, solids.len());
     cache.stats.unique_placed_parts += 1;
     let local_mesh = &cache
         .local_meshes
@@ -2836,8 +2846,9 @@ fn place_cached_part(
     solids.push(CataloguePart {
         solid: placed(local_mesh, transform),
         noun: noun.to_string(),
+        repeats: 1,
     });
-    Ok(true)
+    true
 }
 
 fn local_failure(primitive: &DbElement, error: &ModelError) -> String {
@@ -4686,5 +4697,63 @@ mod tests {
                 "collect_owned_negatives 不认 {noun}，这种刀会落 `is not implemented`"
             );
         }
+    }
+
+    /// 同一只网格、同一个放置放两次：体只有一块，先放那一块记 `repeats = 2`；
+    /// 换个放置就是另一块体。E3D 对重复的成员照写一条记录，记录份数从这里来。
+    #[test]
+    fn a_repeated_placement_adds_a_record_not_a_body() {
+        let mut cache = CatalogueMeshCache::default();
+        let mut placed_parts: HashMap<PlacedPartKey, usize> = HashMap::new();
+        let mut solids: Vec<CataloguePart> = Vec::new();
+        let key = CatalogueMeshKey::Cylinder {
+            tessellation_version: 0,
+            diameter_bits: 40.0_f64.to_bits(),
+            height_bits: 74.0_f64.to_bits(),
+        };
+        let mesh_id = cached_mesh_id(&mut cache, &key, || {
+            Ok(csg_cylinder_solid(40.0, 74.0)?)
+        })
+        .unwrap();
+        let at = DMat4::from_translation(DVec3::new(10.0, 0.0, 0.0));
+        let elsewhere = DMat4::from_translation(DVec3::new(-10.0, 0.0, 0.0));
+
+        assert!(place_part_once(
+            &mut cache,
+            &mut placed_parts,
+            &mut solids,
+            "SCYL",
+            &key,
+            mesh_id,
+            at,
+        ));
+        assert!(!place_part_once(
+            &mut cache,
+            &mut placed_parts,
+            &mut solids,
+            "SCYL",
+            &key,
+            mesh_id,
+            at,
+        ));
+        assert!(place_part_once(
+            &mut cache,
+            &mut placed_parts,
+            &mut solids,
+            "SCYL",
+            &key,
+            mesh_id,
+            elsewhere,
+        ));
+
+        assert_eq!(solids.len(), 2, "重复放置不得另放一块体");
+        assert_eq!(
+            solids.iter().map(|part| part.repeats).collect::<Vec<_>>(),
+            [2, 1],
+            "重复记在先放那一块身上"
+        );
+        assert_eq!(cache.stats.unique_placed_parts, 2);
+        assert_eq!(cache.stats.duplicate_placed_parts, 1);
+        assert_eq!(placed_parts.len(), 2);
     }
 }

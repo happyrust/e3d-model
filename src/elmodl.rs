@@ -239,6 +239,13 @@ pub struct GeneratedElement {
     /// LPYR 照样写 `Pyramid`。网格识别器不知来历，只能按长相先中先得，于是 300 只阀门的
     /// 手轮座写成了 `Box`、等径 LSNO 写成了 `Cylinder`——几何 exact，种类却不一致。
     pub part_catalogue_nouns: Vec<String>,
+    /// 与 `parts` 逐块对齐的**记录份数**：这一块在 GMSE 里被几个成员算成了同一只网格、
+    /// 同一个放置，RVM 就写几条记录。空表 = 每块一条。
+    ///
+    /// 体只放一块（两块全同的体并起来是自交的，体积也会翻倍），但 E3D 的 RVM 驱动逐成员
+    /// 写记录、不管它们是不是长在同一个地方：`/Copy-of-7#管线-1/B1` 的 `VALV 3` 基准里
+    /// 第 5、6 两条是字节一样的两只圆柱。只写一条，两侧记录条数就对不上，而几何本来一致。
+    pub part_record_repeats: Vec<usize>,
     /// 退化成零尺寸的目录图元。Core 与我们都不出体，**E3D 的 RVM 驱动照样落一条记录**，
     /// 于是基准里凭空多出一条 `Cylinder[r=0 h=0]`。
     pub degenerate_parts: Vec<DegenerateCataloguePart>,
@@ -582,6 +589,7 @@ pub fn model_element_with_cache(
                     solid,
                     parts: Some(fitting_parts),
                     part_catalogue_nouns: Vec::new(),
+                    part_record_repeats: Vec::new(),
                     degenerate_parts: Vec::new(),
                     world: world_matrix(el)?,
                     primitive_instance: None,
@@ -616,6 +624,7 @@ pub fn model_element_with_cache(
                     solid,
                     parts: Some(fitting_parts),
                     part_catalogue_nouns: Vec::new(),
+                    part_record_repeats: Vec::new(),
                     degenerate_parts: Vec::new(),
                     world: world_matrix(el)?,
                     primitive_instance: None,
@@ -759,6 +768,7 @@ pub fn model_element_with_cache(
         solid,
         parts,
         part_catalogue_nouns,
+        part_record_repeats: Vec::new(),
         degenerate_parts: Vec::new(),
         world,
         primitive_instance: (!had_negative_members)

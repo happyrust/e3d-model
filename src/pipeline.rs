@@ -990,6 +990,7 @@ fn build_route_tubes(
                     solid: tube.solid,
                     parts: None,
                     part_catalogue_nouns: Vec::new(),
+                    part_record_repeats: Vec::new(),
                     degenerate_parts: Vec::new(),
                     world: tube.placement,
                     primitive_instance: tube.primitive_instance,

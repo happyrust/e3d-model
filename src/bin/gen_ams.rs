@@ -728,6 +728,8 @@ fn main() -> anyhow::Result<()> {
     let mut rvm_extrusion_facets = 0usize;
     // 目录图元退化成零尺寸、跟着 E3D 照写的空记录数。
     let mut rvm_zero_size = 0usize;
+    // 同一放置在 GMSE 里出现不止一次、跟着 E3D 多写的那几条记录数（体只有一块）。
+    let mut rvm_repeated_records = 0usize;
     let obj_path = args.out.join("model.obj");
     let mut obj = std::io::BufWriter::new(
         std::fs::File::create(&obj_path).with_context(|| format!("建 {}", obj_path.display()))?,
@@ -954,10 +956,26 @@ fn main() -> anyhow::Result<()> {
                     } else {
                         &[]
                     };
+                // 逐块的记录份数，同一条对齐规矩。E3D 逐 GMSE 成员写记录，两个成员算出同一只
+                // 网格、同一个放置时它写两条字节一样的；我们体只放一块，记录照它的数补
+                // （见 [`e3d_model::elmodl::GeneratedElement::part_record_repeats`]）。
+                let component_repeats: &[usize] =
+                    if component_meshes.len() == generated.part_record_repeats.len() {
+                        &generated.part_record_repeats
+                    } else {
+                        &[]
+                    };
+                let repeats_of =
+                    |index: usize| component_repeats.get(index).copied().unwrap_or(1).max(1);
                 let mut geometries = Vec::with_capacity(component_meshes.len());
+                let mut push_repeated = |geometry: e3d_model::rvm_read::RvmGeometry,
+                                         repeats: usize| {
+                    rvm_repeated_records += repeats - 1;
+                    geometries.extend(std::iter::repeat_n(geometry, repeats));
+                };
                 if let Some(geometry) = whole_element_instance {
                     rvm_analytic += 1;
-                    geometries.push(geometry);
+                    push_repeated(geometry, repeats_of(0));
                 } else {
                     for (index, component) in component_meshes.iter().enumerate() {
                         let local: Vec<[f64; 3]> =
@@ -969,35 +987,34 @@ fn main() -> anyhow::Result<()> {
                         // 这一族只认出身挑的那一把，认不出来就是面片——按长相轮一遍正是
                         // 64f3f01 挡掉的那件事（矩形截面写成 `Box`）。
                         let provenance_only = facets_only;
-                        if provenance_only
+                        let geometry = if provenance_only
                             && catalogue_noun
                                 .and_then(recogniser_for_catalogue_noun)
                                 .is_none()
                         {
                             rvm_extrusion_facets += 1;
-                            geometries.push(
-                                e3d_model::rvm_write::facet_group_from_world_triangles(
-                                    rotation,
-                                    world.w_axis.truncate().to_array(),
-                                    &local,
-                                    &tris,
-                                ),
-                            );
-                            continue;
-                        }
-                        let (clo, chi) = component.aabb().unwrap_or(([0.0; 3], [0.0; 3]));
-                        geometries.push(rvm_component_geometry(
-                            world,
-                            rotation,
-                            &local,
-                            &tris,
-                            clo,
-                            chi,
-                            catalogue_noun,
-                            provenance_only,
-                            &mut rvm_analytic,
-                            &mut rvm_analytic_rejected,
-                        ));
+                            e3d_model::rvm_write::facet_group_from_world_triangles(
+                                rotation,
+                                world.w_axis.truncate().to_array(),
+                                &local,
+                                &tris,
+                            )
+                        } else {
+                            let (clo, chi) = component.aabb().unwrap_or(([0.0; 3], [0.0; 3]));
+                            rvm_component_geometry(
+                                world,
+                                rotation,
+                                &local,
+                                &tris,
+                                clo,
+                                chi,
+                                catalogue_noun,
+                                provenance_only,
+                                &mut rvm_analytic,
+                                &mut rvm_analytic_rejected,
+                            )
+                        };
+                        push_repeated(geometry, repeats_of(index));
                     }
                 }
                 // 没有体的目录图元：没有网格可认，记录却照写——E3D 就是这么写的
@@ -1093,7 +1110,7 @@ fn main() -> anyhow::Result<()> {
         };
         file.write(&rvm_path)?;
         println!(
-            "RVM: {} 个成员（解析图元 {rvm_analytic} / 自校未过退回面片 {rvm_analytic_rejected} / 拉伸体照 E3D 写面片 {rvm_extrusion_facets} / 零尺寸空记录 {rvm_zero_size}）-> {}",
+            "RVM: {} 个成员（解析图元 {rvm_analytic} / 自校未过退回面片 {rvm_analytic_rejected} / 拉伸体照 E3D 写面片 {rvm_extrusion_facets} / 零尺寸空记录 {rvm_zero_size} / 重复放置补写 {rvm_repeated_records}）-> {}",
             file.members.len() - 1,
             rvm_path.display()
         );
