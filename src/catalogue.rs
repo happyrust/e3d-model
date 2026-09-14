@@ -3111,7 +3111,9 @@ fn evaluate_catalogue_torus(
 ) -> Result<Option<EvaluatedTorus>, ModelError> {
     let pa = catalogue_axis_or_fail(member, component, torus, "PAAX", "catalogue torus axis")?;
     let pb = catalogue_axis_or_fail(member, component, torus, "PBAX", "catalogue torus axis")?;
-    let (rotation, centre, centre_radius, angle_deg) = torus_frame(pa, pb)?;
+    let Some((rotation, centre, centre_radius, angle_deg)) = torus_frame(pa, pb)? else {
+        return Ok(None);
+    };
     if angle_deg.abs() <= 1.0e-6 {
         return Ok(None);
     }
@@ -3152,10 +3154,25 @@ fn evaluate_catalogue_torus(
     }))
 }
 
+/// 两根轴定一只环：`None` = 这只环退化，E3D 也不画。
+///
+/// 两根轴平行时圆心只能由两个 P 点的间距定：间距垂直于轴，就是那只 180° 的 U 形弯；
+/// 间距为零、或顺着轴，圆心与半径都无解——**那不是我们解不开，是它本来就不是一只环**。
+///
+/// 这两种此前报 `Err`，于是 80 根的取证账上挂着 50 条「catalogue torus axes 尺寸退化」，
+/// 看着像 50 只丢掉的环。逐件对过基准，**E3D 一只都没画**：
+///
+/// * 间距为零（36 条，ATTA 上的 `23045/16` 与 `/17`）：`/PS-0003` 那只 ATTA 两侧都只有
+///   一条 `Sphere`，kind 一致、AABB 差 0。
+/// * 间距顺着轴（14 条，PCOM 上的 `21385/8231` 与 `/8233`，delta 480 / 540 mm）：
+///   `PCOM 1 /Copy-(2)-of-油气回收供油管线/B2` 两侧都只有三条 `Cylinder`，同样逐项对上。
+///
+/// 所以这里退成 `Ok(None)`，与别的退化图元一样计进 `degenerate_other`——账要是一直
+/// 喊狼来了，下一个人还得把这条路再走一遍。真正解不开的（半径非有限、轴退化）仍旧报错。
 fn torus_frame(
     pa: crate::catalogue_point::CatalogueAxis,
     pb: crate::catalogue_point::CatalogueAxis,
-) -> Result<(DMat3, DVec3, f64, f64), ModelError> {
+) -> Result<Option<(DMat3, DVec3, f64, f64)>, ModelError> {
     let a = pa.direction.normalize_or_zero();
     let mut y = -pb.direction.normalize_or_zero();
     let mut z = a.cross(pb.direction).normalize_or_zero();
@@ -3165,10 +3182,7 @@ fn torus_frame(
         let delta = pb.origin - pa.origin;
         x = delta.normalize_or_zero();
         if x.length_squared() <= AXIS_TOL || x.dot(y).abs() > 1.0e-5 {
-            return Err(ModelError::Solid(SolidError::Degenerate {
-                what: "catalogue torus axes",
-                detail: format!("parallel PAAX/PBAX with delta={delta:?}"),
-            }));
+            return Ok(None);
         }
         z = x.cross(y).normalize_or_zero();
         (
@@ -3197,12 +3211,12 @@ fn torus_frame(
         }));
     }
     y = z.cross(x).normalize_or_zero();
-    Ok((
+    Ok(Some((
         DMat3::from_cols(x, y, z),
         centre,
         radius,
         angle.to_degrees(),
-    ))
+    )))
 }
 
 /// 一把刀的键。SBOX 与 SREV 的刀集共用这一份——键的口径分叉，缓存就会把
@@ -4305,6 +4319,45 @@ mod tests {
         .unwrap();
         let direct = rect_torus_solid(200.0, 260.0, 40.0, 90.0).unwrap();
         assert_eq!(torus.volume().to_bits(), direct.volume().to_bits());
+    }
+
+    /// 两根轴平行、间距却定不出圆心的，是一只**不存在的环**，不是一次失败：
+    /// 报 `Err` 会在取证账上凭空挂 50 条「丢了 50 只环」（见 [`torus_frame`] 的取证）。
+    /// 同时钉住正常那只仍照解——退化判据松了会把真环也吞掉。
+    #[test]
+    fn a_torus_whose_axes_are_parallel_without_a_centre_is_not_a_torus() {
+        use crate::catalogue_point::CatalogueAxis;
+        let axis = |origin: DVec3, direction: DVec3| CatalogueAxis { origin, direction };
+
+        // 间距为零：ATTA 上的 23045/16、23045/17 就是这一种。
+        assert!(
+            torus_frame(
+                axis(DVec3::ZERO, DVec3::X),
+                axis(DVec3::ZERO, -DVec3::X),
+            )
+            .unwrap()
+            .is_none()
+        );
+        // 间距顺着轴：PCOM 上的 21385/8231、21385/8233，delta 480 mm。
+        assert!(
+            torus_frame(
+                axis(DVec3::ZERO, DVec3::X),
+                axis(DVec3::new(480.0, 0.0, 0.0), -DVec3::X),
+            )
+            .unwrap()
+            .is_none()
+        );
+
+        // 真环照解：两根轴差 90°，圆心半径由两个 P 点定。
+        let (_, centre, radius, angle_deg) = torus_frame(
+            axis(DVec3::ZERO, DVec3::X),
+            axis(DVec3::new(100.0, 100.0, 0.0), DVec3::Y),
+        )
+        .unwrap()
+        .expect("正交两轴是一只真环");
+        assert!((radius - 100.0).abs() < 1.0e-9, "半径 {radius}");
+        assert!((angle_deg.abs() - 90.0).abs() < 1.0e-9, "扫角 {angle_deg}");
+        assert!(centre.is_finite());
     }
 
     /// NSEX 从 SBOX 上扣掉的必须恰好是「轮廓 × 高度」的棱柱——CRCATI 里
