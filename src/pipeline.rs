@@ -994,6 +994,7 @@ fn build_route_tubes(
                     degenerate_parts: Vec::new(),
                     world: tube.placement,
                     primitive_instance: tube.primitive_instance,
+                    analytic_primitive: None,
                     negatives_applied: 0,
                     negatives_skipped: Vec::new(),
                     notes: vec![format!(

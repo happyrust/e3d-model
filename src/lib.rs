@@ -87,7 +87,8 @@ pub use pipeline::{
     generate_subtree_with_cache,
 };
 pub use primitive_instance::{
-    PrimitiveCacheStats, PrimitiveInstance, PrimitiveMeshKey, primitive_cache_stats,
+    AnalyticPrimitive, PrimitiveCacheStats, PrimitiveInstance, PrimitiveMeshKey,
+    primitive_cache_stats,
 };
 pub use route::{
     CatalogueNotWired, PPointResolver, Route, RouteEnd, RoutePoint, TubeGeometry, TubeOutcome,

@@ -33,6 +33,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
+use crate::primitive_instance::AnalyticPrimitive;
 use crate::rvm_read::{
     Contour, M_TO_MM, Polygon, Primitive, RvmFile, RvmGeometry, RvmHeader, RvmMember,
 };
@@ -417,6 +418,80 @@ pub fn analytic_from_instance(
         geometry,
         sagitta_mm,
     })
+}
+
+/// 设计图元的解析描述（[`AnalyticPrimitive`]）→ RVM 记录。目前只有 SLCY → 9 参 `Snout`：
+/// E3D 的 RVM 驱动对 SLCY 走 DRSNO，写 `Snout[r, r, HEIG, 0, 0, XBSH, YBSH, XTSH, YTSH]`，
+/// 角度转弧度、符号照抄；记录帧 = 元素世界帧、原点 = 元素原点——与
+/// [`crate::solid::slope_ended_cylinder_solid`] 的局部帧（轴在 Z、沿 Z 居中）正好是同一个，
+/// 所以世界矩阵直接落记录。取证：`/盘梯底部梯子`（21909/51286）表现级 6 基准里的 8 只 SLCY，
+/// 矩阵 = 属主的旋转、平移 = 元素 POS 的世界坐标、四个角逐字段对上设计属性。
+///
+/// 网格识别器认不出斜切圆柱（两端不是圆、也不平行），这一族只能从属性直出；**调用方必须过
+/// [`AnalyticCandidate::matches_mesh_aabb`]**，这里只是参数的搬运。离散化缺口：斜切面上网格
+/// 顶点与解析极值之间的缺口是径向弦高再乘 `√(tan²xs + tan²ys)`（z 方向随斜率放大），
+/// 两端取大者、再与 1 取大——不斜切时退回普通圆柱那一档。
+pub fn analytic_from_primitive(
+    world: &glam::DMat4,
+    primitive: &AnalyticPrimitive,
+) -> Option<AnalyticCandidate> {
+    match *primitive {
+        AnalyticPrimitive::SlopedCylinder {
+            radius,
+            height,
+            xtop_deg,
+            ytop_deg,
+            xbot_deg,
+            ybot_deg,
+            segments,
+        } => {
+            if !(radius > 0.0 && height > 0.0) || segments < 3 {
+                return None;
+            }
+            let slope = |x_deg: f64, y_deg: f64| {
+                (x_deg.to_radians().tan().powi(2) + y_deg.to_radians().tan().powi(2)).sqrt()
+            };
+            let sagitta_mm = chord_sagitta_mm(radius, std::f64::consts::TAU / f64::from(segments))
+                * slope(xtop_deg, ytop_deg)
+                    .max(slope(xbot_deg, ybot_deg))
+                    .max(1.0);
+            let primitive = Primitive::Snout([
+                radius,
+                radius,
+                height,
+                0.0,
+                0.0,
+                xbot_deg.to_radians(),
+                ybot_deg.to_radians(),
+                xtop_deg.to_radians(),
+                ytop_deg.to_radians(),
+            ]);
+            let cols = world.to_cols_array();
+            let matrix3 = [
+                cols[0], cols[1], cols[2], cols[4], cols[5], cols[6], cols[8], cols[9], cols[10],
+            ]
+            .map(|value| value / M_TO_MM);
+            let mut geometry = RvmGeometry {
+                tag: "PRIM".to_string(),
+                flags: 1,
+                primitive,
+                matrix3,
+                translation_mm: [cols[12], cols[13], cols[14]],
+                record_bbox: [0.0; 6],
+                bbox_frame: crate::rvm_read::BboxFrame::Local,
+                level: None,
+            };
+            // 记录 bbox 是**真几何**的局部盒（带斜切），不抄 E3D 那只度当弧度的盒
+            // （见 [`Primitive::declared_box_mm`]）：那只盒能比实体还小——顶端 −67.5° 时它的
+            // 盒顶只到 65.8 mm，几何却到 540.8 mm——抄过来就是把体裁掉，按 bbox 取舍的下游会
+            // 直接丢件。读侧两只盒都认得（判帧时真几何与那只盒各试一遍），Local 帧不受影响。
+            geometry.record_bbox = geometry.primitive.local_aabb_mm()?;
+            Some(AnalyticCandidate {
+                geometry,
+                sagitta_mm,
+            })
+        }
+    }
 }
 
 /// 网格本身就是一只轴对齐长方体时，给出它的三个边长（局部 mm）。否则 None。

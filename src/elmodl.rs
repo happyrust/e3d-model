@@ -28,7 +28,8 @@ use crate::polyhedron::{
     PolyhedronError, legacy_polygon_panels, polyhedron_faces, polyhedron_solid,
 };
 use crate::primitive_instance::{
-    PrimitiveBuild, PrimitiveInstance, instantiate_box, instantiate_centered_cylinder,
+    AnalyticPrimitive, PrimitiveBuild, PrimitiveInstance, instantiate_box,
+    instantiate_centered_cylinder,
 };
 use crate::profile::{LoopProfile, ProfileError, loop_profile};
 use crate::section::{
@@ -256,6 +257,9 @@ pub struct GeneratedElement {
     /// Persistence may write this as legacy `inst_geo + geo_relate.trans`
     /// instead of allocating a per-element `booled_id` mesh.
     pub primitive_instance: Option<PrimitiveInstance>,
+    /// 网格之外的解析身份（[`AnalyticPrimitive`]），只在独立正体、且网格识别器认不出那族
+    /// 形状时才有——目前就是 SLCY。RVM 写出端拿它直出记录，仍要过自校闸。
+    pub analytic_primitive: Option<AnalyticPrimitive>,
     pub negatives_applied: usize,
     pub negatives_skipped: Vec<SkippedNegative>,
     /// 倒圆越界、SJUS 未生效等非致命观察。
@@ -450,6 +454,7 @@ pub fn model_element_with_cache(
     let mut section_member_sources: Vec<SectionSource> = Vec::new();
 
     let local_timing = crate::perf::local_solid_scope();
+    let mut analytic_primitive: Option<AnalyticPrimitive> = None;
     let (local, primitive_instance) = match category {
         // 与基本体同一条实例化边界：正体一旦有负体要扣，就按布尔参与者烘焙直建。
         Category::LoopExtrusion => match extrusion_local_solid(
@@ -491,6 +496,7 @@ pub fn model_element_with_cache(
                     return Err(error);
                 }
             };
+            analytic_primitive = built.analytic;
             (built.solid, built.instance)
         }
         Category::Revolution => (revolution_local_solid(el, &noun, 0.0, &mut notes)?, None),
@@ -593,6 +599,7 @@ pub fn model_element_with_cache(
                     degenerate_parts: Vec::new(),
                     world: world_matrix(el)?,
                     primitive_instance: None,
+                    analytic_primitive: None,
                     negatives_applied: 0,
                     negatives_skipped: skipped,
                     notes,
@@ -628,6 +635,7 @@ pub fn model_element_with_cache(
                     degenerate_parts: Vec::new(),
                     world: world_matrix(el)?,
                     primitive_instance: None,
+                    analytic_primitive: None,
                     negatives_applied: 0,
                     negatives_skipped: skipped,
                     notes,
@@ -773,6 +781,9 @@ pub fn model_element_with_cache(
         world,
         primitive_instance: (!had_negative_members)
             .then_some(primitive_instance)
+            .flatten(),
+        analytic_primitive: (!had_negative_members)
+            .then_some(analytic_primitive)
             .flatten(),
         negatives_applied,
         negatives_skipped: skipped,
@@ -1557,6 +1568,7 @@ fn primitive_local_solid(
                         negative_cylinder_segments(d * 0.5),
                     )?,
                     instance: None,
+                    analytic: None,
                 })
             }
         }
@@ -1570,6 +1582,7 @@ fn primitive_local_solid(
                 !allow_instance,
             )?,
             instance: None,
+            analytic: None,
         }),
         Prim::Pyramid => {
             let xbot = require_double(el, noun, "XBOT", "pyramid")?;
@@ -1586,6 +1599,7 @@ fn primitive_local_solid(
                     default_zero(el, "YOFF")?,
                 )?,
                 instance: None,
+                analytic: None,
             })
         }
         Prim::RectTorus => {
@@ -1596,6 +1610,7 @@ fn primitive_local_solid(
             Ok(PrimitiveBuild {
                 solid: rect_torus_solid(rins, rout, h, angle)?,
                 instance: None,
+                analytic: None,
             })
         }
         Prim::CircTorus => {
@@ -1604,6 +1619,7 @@ fn primitive_local_solid(
             Ok(PrimitiveBuild {
                 solid: circ_torus_solid(default_zero(el, "RINS")?, rout, angle)?,
                 instance: None,
+                analytic: None,
             })
         }
         Prim::Snout => Ok(PrimitiveBuild {
@@ -1616,6 +1632,7 @@ fn primitive_local_solid(
                 !allow_instance,
             )?,
             instance: None,
+            analytic: None,
         }),
         Prim::Dish => Ok(PrimitiveBuild {
             solid: dish_local_solid(
@@ -1625,24 +1642,35 @@ fn primitive_local_solid(
                 !allow_instance,
             )?,
             instance: None,
+            analytic: None,
         }),
         Prim::SlopedCylinder => {
             let radius = require_double(el, noun, "DIAM", "slope-ended cylinder")? * 0.5;
+            let height = require_double(el, noun, "HEIG", "slope-ended cylinder")?;
+            let xtop_deg = fold_shear_angle(default_zero(el, "XTSH")?);
+            let ytop_deg = fold_shear_angle(default_zero(el, "YTSH")?);
+            let xbot_deg = fold_shear_angle(default_zero(el, "XBSH")?);
+            let ybot_deg = fold_shear_angle(default_zero(el, "YBSH")?);
+            let segments = if allow_instance {
+                cylinder_segments(radius)
+            } else {
+                negative_cylinder_segments(radius)
+            };
             Ok(PrimitiveBuild {
                 solid: slope_ended_cylinder_solid_with_segments(
-                    radius,
-                    require_double(el, noun, "HEIG", "slope-ended cylinder")?,
-                    fold_shear_angle(default_zero(el, "XTSH")?),
-                    fold_shear_angle(default_zero(el, "YTSH")?),
-                    fold_shear_angle(default_zero(el, "XBSH")?),
-                    fold_shear_angle(default_zero(el, "YBSH")?),
-                    if allow_instance {
-                        cylinder_segments(radius)
-                    } else {
-                        negative_cylinder_segments(radius)
-                    },
+                    radius, height, xtop_deg, ytop_deg, xbot_deg, ybot_deg, segments,
                 )?,
                 instance: None,
+                // 独立正体才带解析身份：进了布尔的 E3D 只会写面片，参数也没处用。
+                analytic: allow_instance.then_some(AnalyticPrimitive::SlopedCylinder {
+                    radius,
+                    height,
+                    xtop_deg,
+                    ytop_deg,
+                    xbot_deg,
+                    ybot_deg,
+                    segments,
+                }),
             })
         }
     }

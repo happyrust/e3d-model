@@ -136,9 +136,38 @@ fn cached_canonical(key: PrimitiveMeshKey) -> Result<Arc<Manifold>, SolidError> 
     }
 }
 
+/// 设计图元的**解析描述**（元素局部系），供 RVM 写出端直接落记录、不经网格识别。
+///
+/// 与 [`PrimitiveInstance`] 的分工：那一份是「规范网格 + 仿射」，只覆盖能仿射出来的盒子与
+/// 圆柱；斜切圆柱不是圆柱的仿射像（两端是斜平面、侧壁不斜），没有规范体可放，网格识别器
+/// 也认不出斜切来——只能把参数原样带到写出端。**写出端必须过自校闸**（候选的世界 AABB 对
+/// 网格实算的），这里只是参数的搬运，不替它担保。
+#[derive(Debug, Clone, PartialEq)]
+pub enum AnalyticPrimitive {
+    /// SLCY（`gm_CreateSlopeEndedCylinder`）：轴在局部 Z、沿 Z 居中，两端按
+    /// `z = ±h/2 + x·tan(xs) + y·tan(ys)` 斜切。角度为**度**、已折回 (−90°, 90°)，
+    /// 与 [`crate::solid::slope_ended_cylinder_solid_with_segments`] 同参同序。
+    ///
+    /// E3D 的 RVM 驱动对它走 DRSNO，写 9 参 `Snout[r, r, HEIG, 0, 0, XBSH, YBSH, XTSH, YTSH]`
+    /// （角度转弧度、符号照抄），记录帧 = 元素世界帧。取证：`/盘梯底部梯子`（21909/51286）
+    /// 表现级 6 的基准，8 只 SLCY 逐字段对上设计属性。
+    SlopedCylinder {
+        radius: f64,
+        height: f64,
+        xtop_deg: f64,
+        ytop_deg: f64,
+        xbot_deg: f64,
+        ybot_deg: f64,
+        /// 建网格时的周向段数，写出端按它算网格与解析面之间的离散化缺口。
+        segments: i32,
+    },
+}
+
 pub(crate) struct PrimitiveBuild {
     pub solid: Manifold,
     pub instance: Option<PrimitiveInstance>,
+    /// 网格之外的解析身份（见 [`AnalyticPrimitive`]）；有它的图元 `instance` 一定是 `None`。
+    pub analytic: Option<AnalyticPrimitive>,
 }
 
 pub(crate) fn instantiate_box(
@@ -156,6 +185,7 @@ pub(crate) fn instantiate_box(
         return Ok(PrimitiveBuild {
             solid: box_solid(x, y, z)?,
             instance: None,
+            analytic: None,
         });
     }
     if !instance_cache_enabled() {
@@ -163,6 +193,7 @@ pub(crate) fn instantiate_box(
         return Ok(PrimitiveBuild {
             solid: box_solid(x, y, z)?,
             instance: None,
+            analytic: None,
         });
     }
     validate_box_dims(x, y, z)?;
@@ -175,6 +206,7 @@ pub(crate) fn instantiate_box(
             key,
             local_transform,
         }),
+        analytic: None,
     })
 }
 
@@ -190,6 +222,7 @@ pub(crate) fn instantiate_cylinder(
         return Ok(PrimitiveBuild {
             solid: cylinder_solid(diam, height)?,
             instance: None,
+            analytic: None,
         });
     }
     if !instance_cache_enabled() {
@@ -197,6 +230,7 @@ pub(crate) fn instantiate_cylinder(
         return Ok(PrimitiveBuild {
             solid: cylinder_solid(diam, height)?,
             instance: None,
+            analytic: None,
         });
     }
     // Preserve validation and calculate N from the real radius before replacing
@@ -219,6 +253,7 @@ pub(crate) fn instantiate_cylinder(
             key,
             local_transform,
         }),
+        analytic: None,
     })
 }
 
@@ -237,6 +272,7 @@ pub(crate) fn instantiate_centered_cylinder(
         return Ok(PrimitiveBuild {
             solid: csg_cylinder_solid(diam, height)?,
             instance: None,
+            analytic: None,
         });
     }
     validate_cylinder_dims(diam, height)?;
@@ -255,6 +291,7 @@ pub(crate) fn instantiate_centered_cylinder(
             key,
             local_transform,
         }),
+        analytic: None,
     })
 }
 

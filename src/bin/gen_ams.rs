@@ -961,14 +961,31 @@ fn main() -> anyhow::Result<()> {
                 .collect();
                 // 拉伸体族与多面体照 E3D 的写法一律面片，不进识别器（见 [`e3d_exports_facets_only`]）。
                 let facets_only = e3d_exports_facets_only(&generated.noun);
-                // `PrimitiveInstance` 描述的是**整个元素**（`local_transform` 在元素局部系里），
-                // 所以只有单组件时它才说得准；多组件的逐块自己认几何。
+                // `PrimitiveInstance` / `AnalyticPrimitive` 描述的都是**整个元素**（在元素
+                // 局部系里），所以只有单组件时它们才说得准；多组件的逐块自己认几何。
+                // 后者是网格识别器认不出的那一族（SLCY → 带斜切角的 `Snout`），只能从属性直出，
+                // 自校闸照过。
                 let whole_element_instance = (!facets_only && component_meshes.len() == 1)
-                    .then_some(generated.primitive_instance.as_ref())
-                    .flatten()
-                    .and_then(|instance| {
-                        e3d_model::rvm_write::analytic_from_instance(&generated.world, instance)
+                    .then(|| {
+                        generated
+                            .primitive_instance
+                            .as_ref()
+                            .and_then(|instance| {
+                                e3d_model::rvm_write::analytic_from_instance(
+                                    &generated.world,
+                                    instance,
+                                )
+                            })
+                            .or_else(|| {
+                                generated.analytic_primitive.as_ref().and_then(|primitive| {
+                                    e3d_model::rvm_write::analytic_from_primitive(
+                                        &generated.world,
+                                        primitive,
+                                    )
+                                })
+                            })
                     })
+                    .flatten()
                     .filter(|candidate| candidate.matches_mesh_aabb(lo, hi, ANALYTIC_TOL_MM))
                     .map(|candidate| candidate.geometry);
 

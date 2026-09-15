@@ -1548,6 +1548,7 @@ pub fn model_catalogue_member_with_cache(
             degenerate_parts,
             world,
             primitive_instance: None,
+            analytic_primitive: None,
             negatives_applied: catalogue_negatives,
             negatives_skipped: Vec::new(),
             notes,
@@ -1616,6 +1617,7 @@ fn model_hvac_rectangular_basic(
             degenerate_parts: Vec::new(),
             world,
             primitive_instance: built.instance,
+            analytic_primitive: None,
             negatives_applied: 0,
             negatives_skipped: Vec::new(),
             notes: vec![format!(
