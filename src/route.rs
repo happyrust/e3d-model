@@ -89,6 +89,19 @@ pub const ZERO_LENGTH_TOL_MM: f64 = 1.0;
 /// 「负管长」的形态（README §3.2 的 74 根），与偏轴分开记账才看得出各占多少。
 pub const TUBE_ALIGNMENT_TOL: f64 = 1.0e-3;
 
+/// 隐式管身的通径门：两端公称通径之差**严格小于 0.005 mm** 才画管。
+///
+/// **从 `Core3D.dll` 反编译钉死**：`build/LIMPOK`（`0x1025b49f`，Logical IMPlied tube OK）
+/// 开头就是 `CNOMBO(端 A, &v21, MM)` / `CNOMBO(端 B, &v22, MM)` 再判
+/// `fabs(v21 − v22) < 0.005 || 例外`——第三参那个常量哈希 531805 反解是 `MM`，所以 0.005
+/// 的单位是毫米。不过这一关，后面那几道共轴 / 朝前的检查根本不查。例外闸读的是 BRAN 的
+/// `HDSHAP`（两个谓词都点头才置位），SLYK 一例没命中。
+///
+/// 真库旁证（SLYK 两个设计库 14 859 个槽位）：两端通径有差的只有 14 个，**最小的一个差
+/// 10 mm**，没有一个落在 0.005 附近——容差取多少在这份数据上都一样，写 0.005 是照抄
+/// LIMPOK 而不是凑出来的。
+pub const BORE_MATCH_TOL_MM: f64 = 0.005;
+
 /// 一个 P 点的三件套：位置、方向、通径。
 ///
 /// 对应 `GTTUBE` 里 `IHEAD`/`TAIL`/`PLEAVE`/`PARRIV` 四个例程各自取出的那一组。
@@ -748,11 +761,18 @@ pub fn build_tube(from: &RoutePoint, to: &RoutePoint, outer_diameter: Option<f64
     }
 }
 
-/// 两端通径是否不一致。调用方据槽位决定实体有效性；头槽位的不一致
-/// 由原生 RVM 对照确认只能保留诊断线。半径选择与此判定分开。
+/// 两端公称通径是否不一致（容差 [`BORE_MATCH_TOL_MM`]）。
+///
+/// 这是 E3D 的**绘制门**，不是诊断线：不一致就不画这根隐式管身（`build/LIMPOK`，
+/// 调用方见 [`crate::pipeline`]）。两端任缺一边都判「不算不一致」——取不到通径是
+/// 目录没解开，与两端不等是两回事。写成 `!(< tol)` 而不是 `> tol`，让 NaN 落进
+/// 不一致侧，与 LIMPOK 的 `fabs(a − b) < 0.005` 同向。
+///
+/// 半径选择与此判定分开：不一致时 `CGETOD` 取的是**到达侧**（见
+/// [`tube_outer_diameter`]），那一支今天只在门放行之后才有意义。
 pub fn bore_mismatch(from: &RoutePoint, to: &RoutePoint) -> bool {
     match (from.bore, to.bore) {
-        (Some(a), Some(b)) => (a - b).abs() > f64::EPSILON,
+        (Some(a), Some(b)) => !((a - b).abs() < BORE_MATCH_TOL_MM),
         _ => false,
     }
 }
@@ -1210,6 +1230,22 @@ mod tests {
         assert!(bore_mismatch(&a, &b));
         assert!(!bore_mismatch(&a, &a));
         assert!(!bore_mismatch(&a, &unknown));
+    }
+
+    /// 通径门的界照抄 `build/LIMPOK` 的 `fabs(a − b) < 0.005`（`CNOMBO` 第三参是 `MM`）：
+    /// 恰好等于容差算不一致，差一点点不算；NaN 落进不一致侧。
+    #[test]
+    fn the_bore_gate_sits_exactly_on_the_limpok_tolerance() {
+        let bored = |bore: f64| point([0.0; 3], [0.0, 0.0, 1.0], Some(bore));
+        assert!(!bore_mismatch(&bored(200.0), &bored(200.0 + 0.0049)));
+        // 恰好一格只能拿常量自己凑：`200.0 + 0.005` 在二进制里差的是 0.004999…，
+        // 仍在门内——这条界在真数据上够不着（见 [`BORE_MATCH_TOL_MM`]：实测最小的
+        // 通径差是 10 mm），钉的是取严的方向，不是某个可达的值。
+        assert!(bore_mismatch(&bored(0.0), &bored(BORE_MATCH_TOL_MM)));
+        assert!(!bore_mismatch(&bored(200.0), &bored(200.0 + 0.005)));
+        // SLYK 里唯一一根被这道门挡下的实管：B3 尾槽位，构件侧 200、分支 `TBOR` 250。
+        assert!(bore_mismatch(&bored(200.0), &bored(250.0)));
+        assert!(bore_mismatch(&bored(200.0), &bored(f64::NAN)));
     }
 
     /// 目录链没接上时，构件端必须如实解不出——不许拿构件 `POS` 顶。

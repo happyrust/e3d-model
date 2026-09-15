@@ -892,15 +892,19 @@ fn build_route_tubes(
                 SlotAlignment::Aligned { .. } | SlotAlignment::Indeterminate => {}
             }
         }
+        // E3D 的第二道门（`build/LIMPOK`）：两端公称通径不等就不画，**整条路由上每个
+        // 槽位一视同仁**，不分头 / 构件 / 尾（见 [`crate::route::BORE_MATCH_TOL_MM`]）。
+        //
+        // 头槽位先有原生 AMS 探针：只改 `HBOR` 500 → 25，RVM 里那根头管就没了，改回
+        // 500 又回来；只改 stub 的公称通径则不动它。尾与构件槽位 2026-09-15 由
+        // `Q TGEOM` / `Q TEXIST` 这对伪属性收口——BRAN `21491/9826`（B3）逐件问下来
+        // 7 true / 14 false，与本仓槽位表逐格重合，唯一相反的那格正是尾槽位
+        // `21491/9846:LEAVE(P2) → TAIL`：E3D 说 `TGEOM=false`（基准 RVM 里连
+        // `TUBE 8` 这个 member 都没有），而它恰好是全模型 5 907 根建成管里唯一一根
+        // 两端通径不等的（200 vs `TBOR` 250）。
         if bore_mismatch(&from, &to) {
             ledger.degenerate.bore_mismatch += 1;
-            // Native AMS head probe: changing only HBOR 500 -> 25 removes
-            // the RVM head solid; restoring 500 brings it back. Changing only
-            // the stub nominal bore does not remove it. Member/tail slots need
-            // their own native validation.
-            if matches!(&slot.from, RouteEnd::ContainerHead(_)) {
-                invalid_reason.get_or_insert("head bore mismatch");
-            }
+            invalid_reason.get_or_insert("bore mismatch");
         }
         // Native VALV and COUP probes retain identical P-point coordinates
         // when ORIL is cleared, but no longer export the head tube solid.

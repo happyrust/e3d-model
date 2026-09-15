@@ -389,18 +389,18 @@ fn audit_bran(
                 } else {
                     None
                 };
-                // 与生产路径相同的原生 E3D 头部绘制门。坐标本身可建出圆柱并不
-                // 代表 E3D 会画：头通径不合、到达件 ORIL=false，或 BRAN 没有
-                // HSTU/HSRO 时，原生 RVM 都没有该头管。
-                let mut native_head_gate = None;
+                // 与生产路径相同的原生 E3D 绘制门。坐标本身可建出圆柱并不代表 E3D 会画：
+                // 两端通径不等（`build/LIMPOK`，每个槽位都查），或头槽位上到达件
+                // ORIL=false / BRAN 没有 HSTU/HSRO 时，原生 RVM 都没有那根管。
+                let mut native_gate = None;
+                if row.bore_mismatch {
+                    native_gate = Some("bore mismatch");
+                }
                 if let RouteEnd::ContainerHead(departure) = &slot.from {
-                    if row.bore_mismatch {
-                        native_head_gate = Some("head bore mismatch");
-                    }
                     if let RouteEnd::MemberArrive { member, .. } = &slot.to {
                         match member.get_bool("ORIL") {
                             Ok(Some(false)) => {
-                                native_head_gate.get_or_insert("head arrival orientation unset");
+                                native_gate.get_or_insert("head arrival orientation unset");
                             }
                             Ok(_)
                             | Err(e3d_io::db_element::DbElementError::UnknownAttribute {
@@ -426,7 +426,7 @@ fn audit_bran(
                                 Err(error) => return Err(error.into()),
                             };
                             if alternate_null {
-                                native_head_gate.get_or_insert("head stub unset");
+                                native_gate.get_or_insert("head stub unset");
                             }
                         }
                     }
@@ -463,11 +463,11 @@ fn audit_bran(
                         row.to,
                         row.length_mm.unwrap_or(f64::NAN)
                     ));
-                } else if let Some(reason) = native_head_gate {
-                    row.outcome = "native_head_filtered".into();
+                } else if let Some(reason) = native_gate {
+                    row.outcome = "native_filtered".into();
                     row.length_mm = Some(tube_length(from.pos, to.pos));
                     problems.push(format!(
-                        "[data] 槽位 {} → {} 被 E3D 头部绘制门挡下（{reason}，长 {:.1}mm）",
+                        "[data] 槽位 {} → {} 被 E3D 绘制门挡下（{reason}，长 {:.1}mm）",
                         row.from,
                         row.to,
                         row.length_mm.unwrap_or(f64::NAN)
