@@ -4435,12 +4435,9 @@ mod tests {
 
         // 间距为零：ATTA 上的 23045/16、23045/17 就是这一种。
         assert!(
-            torus_frame(
-                axis(DVec3::ZERO, DVec3::X),
-                axis(DVec3::ZERO, -DVec3::X),
-            )
-            .unwrap()
-            .is_none()
+            torus_frame(axis(DVec3::ZERO, DVec3::X), axis(DVec3::ZERO, -DVec3::X))
+                .unwrap()
+                .is_none()
         );
         // 间距顺着轴：PCOM 上的 21385/8231、21385/8233，delta 480 mm。
         assert!(
@@ -4711,10 +4708,8 @@ mod tests {
             diameter_bits: 40.0_f64.to_bits(),
             height_bits: 74.0_f64.to_bits(),
         };
-        let mesh_id = cached_mesh_id(&mut cache, &key, || {
-            Ok(csg_cylinder_solid(40.0, 74.0)?)
-        })
-        .unwrap();
+        let mesh_id =
+            cached_mesh_id(&mut cache, &key, || Ok(csg_cylinder_solid(40.0, 74.0)?)).unwrap();
         let at = DMat4::from_translation(DVec3::new(10.0, 0.0, 0.0));
         let elsewhere = DMat4::from_translation(DVec3::new(-10.0, 0.0, 0.0));
 

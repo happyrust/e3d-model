@@ -110,8 +110,14 @@ fn main() -> anyhow::Result<()> {
             let bucket = buckets.entry(opcode).or_default();
             bucket.count += 1;
             *bucket.lengths.entry(words.len()).or_default() += 1;
-            *bucket.tails.entry(join(words.iter().rev().take(2))).or_default() += 1;
-            *bucket.heads.entry(join(words.iter().skip(4).take(2))).or_default() += 1;
+            *bucket
+                .tails
+                .entry(join(words.iter().rev().take(2)))
+                .or_default() += 1;
+            *bucket
+                .heads
+                .entry(join(words.iter().skip(4).take(2)))
+                .or_default() += 1;
             if bucket.samples.len() < sample {
                 bucket.samples.push((describe(&element), words));
             }
@@ -132,7 +138,10 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn join<'a>(words: impl Iterator<Item = &'a u32>) -> String {
-    words.map(|word| word.to_string()).collect::<Vec<_>>().join(" ")
+    words
+        .map(|word| word.to_string())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn describe(element: &DbElement) -> String {

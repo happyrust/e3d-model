@@ -2331,8 +2331,7 @@ fn elliptical_dish_on_base(
         }
         let (radial, axial) = base.cylindrical(p);
         let on_hub = ((radial * radial + (axial - hub_centre_z).powi(2)).sqrt() - hub).abs();
-        let on_knuckle =
-            (((radial - knuckle_ring).powi(2) + axial * axial).sqrt() - knuckle).abs();
+        let on_knuckle = (((radial - knuckle_ring).powi(2) + axial * axial).sqrt() - knuckle).abs();
         if on_hub.min(on_knuckle) > 1e-6 {
             return None;
         }
@@ -2377,7 +2376,10 @@ fn ellipsoid_vs_knuckled_gap(base_radius: f64, height: f64, knuckle: f64, hub: f
             if phi <= phi_t {
                 [hub * phi.sin(), hub * phi.cos() - (hub - height)]
             } else {
-                [(base_radius - knuckle) + knuckle * phi.sin(), knuckle * phi.cos()]
+                [
+                    (base_radius - knuckle) + knuckle * phi.sin(),
+                    knuckle * phi.cos(),
+                ]
             }
         })
         .collect();
@@ -2836,9 +2838,15 @@ mod tests {
                 matches!(record.primitive, Primitive::Cylinder([r, h]) if r == radius && h == height),
                 "{record:?}"
             );
-            assert_eq!(record.record_bbox, [-radius, -radius, 0.0, radius, radius, 0.0]);
+            assert_eq!(
+                record.record_bbox,
+                [-radius, -radius, 0.0, radius, radius, 0.0]
+            );
             for axis in 0..3 {
-                assert!((record.translation_mm[axis] - want[axis]).abs() < 1e-9, "{record:?}");
+                assert!(
+                    (record.translation_mm[axis] - want[axis]).abs() < 1e-9,
+                    "{record:?}"
+                );
             }
         }
     }
@@ -3019,16 +3027,19 @@ mod tests {
     #[test]
     fn a_box_is_not_offered_as_a_pyramid_but_a_sheared_one_is() {
         // 上下同形、不偏心 = 盒子：`Box` 那条记录才贴 E3D，识别器让路。
-        let solid = crate::solid::pyramid_solid(100.0, 100.0, 100.0, 100.0, 50.0, 0.0, 0.0).unwrap();
+        let solid =
+            crate::solid::pyramid_solid(100.0, 100.0, 100.0, 100.0, 50.0, 0.0, 0.0).unwrap();
         let mesh = crate::mesh::TriMesh::from_manifold(&solid);
         let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
         assert!(pyramid_from_local_mesh(&mesh.vertices, &triangles).is_none());
 
         // 同形但偏心的平行六面体不是盒子，得认，而且写出来要过闸。
-        let solid = crate::solid::pyramid_solid(100.0, 100.0, 100.0, 100.0, 50.0, 20.0, 0.0).unwrap();
+        let solid =
+            crate::solid::pyramid_solid(100.0, 100.0, 100.0, 100.0, 50.0, 20.0, 0.0).unwrap();
         let mesh = crate::mesh::TriMesh::from_manifold(&solid);
         let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
-        let pyramid = pyramid_from_local_mesh(&mesh.vertices, &triangles).expect("偏心的平行六面体");
+        let pyramid =
+            pyramid_from_local_mesh(&mesh.vertices, &triangles).expect("偏心的平行六面体");
         let world = glam::DMat4::from_rotation_z(0.4) * glam::DMat4::from_rotation_x(0.7);
         let (lo, hi) = world_aabb_of(&mesh.vertices, &world);
         assert!(pyramid_geometry(&world, &pyramid).matches_mesh_aabb(lo, hi, 0.01));
@@ -3038,7 +3049,8 @@ mod tests {
     fn a_box_shaped_pyramid_is_kept_when_the_catalogue_says_it_came_from_an_lpyr() {
         // 300 只阀门的手轮座就是这一只：PAAX 与 PBAX 都解出 +X，成品是一只正方盒，
         // 基准 RVM 里它仍是 `Pyramid`。按长相让给 `Box`，按出身照认棱台。
-        let solid = crate::solid::pyramid_solid(100.0, 100.0, 100.0, 100.0, 50.0, 0.0, 0.0).unwrap();
+        let solid =
+            crate::solid::pyramid_solid(100.0, 100.0, 100.0, 100.0, 50.0, 0.0, 0.0).unwrap();
         let mesh = crate::mesh::TriMesh::from_manifold(&solid);
         let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
         let pyramid = pyramid_from_local_mesh_including_boxes(&mesh.vertices, &triangles)
@@ -3068,7 +3080,8 @@ mod tests {
     fn a_frustum_with_a_trapezoid_side_is_recognised_along_its_true_axis() {
         // 570×120 → 65×120 的 ±Y 侧面是竖直矩形，法向 ±Y 也让顶点只落两档；但那两档
         // 各是一个梯形，过不了矩形那一关，识别器必须落到真正的底面法向 Z 上。
-        let solid = crate::solid::pyramid_solid(570.0, 120.0, 65.0, 120.0, 330.0, 0.0, 0.0).unwrap();
+        let solid =
+            crate::solid::pyramid_solid(570.0, 120.0, 65.0, 120.0, 330.0, 0.0, 0.0).unwrap();
         let mesh = crate::mesh::TriMesh::from_manifold(&solid);
         let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
         let pyramid = pyramid_from_local_mesh(&mesh.vertices, &triangles).unwrap();
@@ -3097,7 +3110,11 @@ mod tests {
             if segments == 8 {
                 // 八面体每边一分为二：三个棱中点张成的那一片到球心 √(2/3)·r。
                 let want = (1.0 - (2.0_f64 / 3.0).sqrt()) * radius;
-                assert!((sphere.sagitta_mm - want).abs() < 1e-9, "sagitta={}", sphere.sagitta_mm);
+                assert!(
+                    (sphere.sagitta_mm - want).abs() < 1e-9,
+                    "sagitta={}",
+                    sphere.sagitta_mm
+                );
             }
             assert!(sphere.sagitta_mm > 0.0 && sphere.sagitta_mm < 0.2 * radius);
 
@@ -3111,27 +3128,44 @@ mod tests {
             let rotation = candidate.geometry.rotation();
             let expected = (world * glam::DMat4::from_translation(sphere.centre)).to_cols_array();
             for (got, want) in rotation.iter().zip([
-                expected[0], expected[1], expected[2], expected[4], expected[5], expected[6],
-                expected[8], expected[9], expected[10],
+                expected[0],
+                expected[1],
+                expected[2],
+                expected[4],
+                expected[5],
+                expected[6],
+                expected[8],
+                expected[9],
+                expected[10],
             ]) {
                 assert!((got - want).abs() < 1e-12, "{rotation:?}");
             }
             let aabb = candidate.world_aabb_mm().unwrap();
             let centre = world.transform_point3(sphere.centre);
             for axis in 0..3 {
-                assert!((aabb[axis] - (centre[axis] - radius)).abs() < 1e-9, "{aabb:?}");
-                assert!((aabb[axis + 3] - (centre[axis] + radius)).abs() < 1e-9, "{aabb:?}");
+                assert!(
+                    (aabb[axis] - (centre[axis] - radius)).abs() < 1e-9,
+                    "{aabb:?}"
+                );
+                assert!(
+                    (aabb[axis + 3] - (centre[axis] + radius)).abs() < 1e-9,
+                    "{aabb:?}"
+                );
             }
             // 读侧按八个角算出来的世界盒确实大一圈——这正是闸门要绕开它的原因。
             let by_corners = candidate.geometry.world_aabb_mm().unwrap();
-            assert!(by_corners[3] - by_corners[0] > 2.0 * radius + 1e-6, "{by_corners:?}");
+            assert!(
+                by_corners[3] - by_corners[0] > 2.0 * radius + 1e-6,
+                "{by_corners:?}"
+            );
         }
     }
 
     #[test]
     fn polyhedra_with_equidistant_corners_are_not_spheres() {
         // 立方体：八个角与中心等距，但只有 8 个顶点、内切比 0.577。
-        let cube = crate::solid::pyramid_solid(100.0, 100.0, 100.0, 100.0, 100.0, 0.0, 0.0).unwrap();
+        let cube =
+            crate::solid::pyramid_solid(100.0, 100.0, 100.0, 100.0, 100.0, 0.0, 0.0).unwrap();
         let mesh = crate::mesh::TriMesh::from_manifold(&cube);
         let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
         assert!(sphere_from_local_mesh(&mesh.vertices, &triangles).is_none());
@@ -3159,8 +3193,14 @@ mod tests {
             // 内核把底圆放在 z = 0、顶点在 +z：轴必须指向 +Z，原点必须是底圆心。
             assert!(dish.axis.z > 1.0 - 1e-9, "{dish:?}");
             assert!(dish.centre.length() < 1e-6, "{dish:?}");
-            assert!(dish.segments >= MIN_CIRCLE_SEGMENTS && dish.segments % 4 == 0, "{dish:?}");
-            assert!(dish.sagitta_mm > 0.0 && dish.sagitta_mm < 0.02 * radius.max(height), "{dish:?}");
+            assert!(
+                dish.segments >= MIN_CIRCLE_SEGMENTS && dish.segments % 4 == 0,
+                "{dish:?}"
+            );
+            assert!(
+                dish.sagitta_mm > 0.0 && dish.sagitta_mm < 0.02 * radius.max(height),
+                "{dish:?}"
+            );
 
             let world = glam::DMat4::from_rotation_z(0.4) * glam::DMat4::from_rotation_x(0.7);
             let (lo, hi) = world_aabb_of(&mesh.vertices, &world);
@@ -3186,7 +3226,9 @@ mod tests {
         assert!(spherical_dish_from_local_mesh(&mesh.vertices, &triangles).is_none());
 
         // 整球没有平底。
-        let solid = crate::solid::unit_sphere_solid(12).unwrap().scale(50.0, 50.0, 50.0);
+        let solid = crate::solid::unit_sphere_solid(12)
+            .unwrap()
+            .scale(50.0, 50.0, 50.0);
         let mesh = crate::mesh::TriMesh::from_manifold(&solid);
         let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
         assert!(spherical_dish_from_local_mesh(&mesh.vertices, &triangles).is_none());

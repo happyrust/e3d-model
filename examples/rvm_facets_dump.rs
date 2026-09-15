@@ -430,7 +430,8 @@ fn main() -> anyhow::Result<()> {
                             }
                             record_match = Some(frame.is_some());
                             tessellated_local_aabb = local_aabb;
-                            let mut polys = triangulation_world_polygons(&tri.indices, &local, &cols);
+                            let mut polys =
+                                triangulation_world_polygons(&tri.indices, &local, &cols);
                             // rvm-rs 的采样封顶会让大半径回转体缩进（见 [`ring_extremes`]）；
                             // 把每一圈的精确极值点补成一条附加多边形，AABB 才是解析值。
                             let extremes = if is_body_of_revolution(other) {

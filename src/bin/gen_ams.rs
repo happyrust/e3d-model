@@ -680,10 +680,7 @@ fn main() -> anyhow::Result<()> {
 
     let udets = UdetCatalog::scan(&set, &dict_dbnos)?;
     if !dict_dbnos.is_empty() {
-        println!(
-            "DICT 库 {dict_dbnos:?} 里读到 {} 条 UDET 定义",
-            udets.len()
-        );
+        println!("DICT 库 {dict_dbnos:?} 里读到 {} 条 UDET 定义", udets.len());
     }
 
     // 只在从头整库生成时才拿索引总数当判据；`--root` 是子树，对不上是应该的。

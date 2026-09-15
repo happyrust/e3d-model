@@ -622,8 +622,7 @@ fn main() -> anyhow::Result<()> {
             continue;
         }
         if member.geometries.iter().all(is_centreline) {
-            centreline_only_baseline
-                .push(member.name.clone().unwrap_or_else(|| "?".to_string()));
+            centreline_only_baseline.push(member.name.clone().unwrap_or_else(|| "?".to_string()));
             continue;
         }
         let facets = member

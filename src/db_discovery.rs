@@ -483,7 +483,11 @@ mod tests {
         assert!(resolver.resolve(4242).is_none(), "没扫到的库不猜");
 
         assert_eq!(resolver.dbnos_of_type("CATA"), vec![5052]);
-        assert_eq!(resolver.dbnos_of_type("desi"), vec![8000], "类型名不分大小写");
+        assert_eq!(
+            resolver.dbnos_of_type("desi"),
+            vec![8000],
+            "类型名不分大小写"
+        );
         assert!(resolver.dbnos_of_type("DICT").is_empty());
     }
 

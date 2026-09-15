@@ -352,10 +352,7 @@ fn trim_overlapping_fillets(
 /// 两条折线首尾相撞的那一对弦：`a` 从尾巴往回数，`b` 从头往前数，取先撞上的。
 ///
 /// 返回 `(a 上保留到的点下标, b 上丢弃到的点下标, 交点)`。
-fn first_chord_crossing(
-    a: &[[f64; 2]],
-    b: &[[f64; 2]],
-) -> Option<(usize, usize, [f64; 2])> {
+fn first_chord_crossing(a: &[[f64; 2]], b: &[[f64; 2]]) -> Option<(usize, usize, [f64; 2])> {
     if a.len() < 2 || b.len() < 2 {
         return None;
     }
@@ -386,9 +383,11 @@ fn segment_crossing(p0: [f64; 2], p1: [f64; 2], q0: [f64; 2], q1: [f64; 2]) -> O
     let d = [q0[0] - p0[0], q0[1] - p0[1]];
     let t = (d[0] * s[1] - d[1] * s[0]) / denom;
     let u = (d[0] * r[1] - d[1] * r[0]) / denom;
-    (0.0..=1.0).contains(&t)
-        .then(|| ())
-        .and_then(|()| (0.0..=1.0).contains(&u).then_some([p0[0] + r[0] * t, p0[1] + r[1] * t]))
+    (0.0..=1.0).contains(&t).then(|| ()).and_then(|()| {
+        (0.0..=1.0)
+            .contains(&u)
+            .then_some([p0[0] + r[0] * t, p0[1] + r[1] * t])
+    })
 }
 
 /// `d2_numberOfSegmentsForCircle(radius, tol)`（libgeom 3.1 `0x1002BA70`）：整圆分几段。
@@ -615,11 +614,7 @@ mod tests {
     /// 的 21491-11385 基准），按 11.25° 相位格算出来是 24.622。
     #[test]
     fn overlapping_fillets_on_a_short_edge_meet_at_the_chord_crossing() {
-        let r = |x: f64, y: f64| FilletVertex {
-            x,
-            y,
-            frad: 2000.0,
-        };
+        let r = |x: f64, y: f64| FilletVertex { x, y, frad: 2000.0 };
         let ring = [
             r(0.0, 0.0),
             r(0.0, 16000.0),

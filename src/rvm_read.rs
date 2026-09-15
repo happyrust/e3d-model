@@ -174,7 +174,9 @@ impl Primitive {
                 // 只用来在 5（椭圆碟）与 6（球形碟）之间选一个，形状本身不落盘。
                 const LATITUDES: usize = 64;
                 if !(*r > 0.0 && *h > 0.0) {
-                    return ring(*r, 0.0).chain(std::iter::once([0.0, 0.0, *h])).collect();
+                    return ring(*r, 0.0)
+                        .chain(std::iter::once([0.0, 0.0, *h]))
+                        .collect();
                 }
                 (1..LATITUDES)
                     .flat_map(move |j| {
@@ -195,7 +197,9 @@ impl Primitive {
                 //（`r·(1 − cos(π/256))` 也是 7.5e-5·r），不另开一档精度。
                 const LATITUDES: usize = 64;
                 if !(*r > 0.0 && *h > 0.0) {
-                    return ring(*r, 0.0).chain(std::iter::once([0.0, 0.0, *h])).collect();
+                    return ring(*r, 0.0)
+                        .chain(std::iter::once([0.0, 0.0, *h]))
+                        .collect();
                 }
                 let sphere_radius = (r * r + h * h) / (2.0 * h);
                 let phi_max = ((sphere_radius - h) / sphere_radius)
@@ -205,7 +209,10 @@ impl Primitive {
                 (1..LATITUDES)
                     .flat_map(move |j| {
                         let phi = phi_max * j as f64 / LATITUDES as f64;
-                        ring(sphere_radius * phi.sin(), centre_z + sphere_radius * phi.cos())
+                        ring(
+                            sphere_radius * phi.sin(),
+                            centre_z + sphere_radius * phi.cos(),
+                        )
                     })
                     .chain(ring(*r, 0.0))
                     .chain(std::iter::once([0.0, 0.0, *h]))
