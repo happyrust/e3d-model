@@ -152,11 +152,20 @@ impl Primitive {
                 // 球的 AABB 与朝向无关，八个角就够紧。
                 corners(&[-r, -r, -r, *r, *r, *r]).to_vec()
             }
-            Self::Snout([rb, rt, h, ox, oy, ..]) => {
-                // 偏心量两端各摊一半。
+            Self::Snout([rb, rt, h, ox, oy, bsx, bsy, tsx, tsy]) => {
+                // 偏心量两端各摊一半；斜切按 `z = ±h/2 + x·tan(sx) + y·tan(sy)`，x/y 取**未偏心**
+                // 的圈坐标——rvm-rs `impl TessellateWithCaps for Snout` 与 libgm `GM_SlopeEndCyl`
+                // （E3D 的 SLCY 正是走 DRSNO 写成带斜切角的 `Snout`）是同一条公式。
+                // 忽略这四个角，斜切大的记录 bbox 帧就认不出来（`/盘梯底部梯子` 67.5° 的那两只
+                // 顶面抬高 46 mm），整份文件被判 Unknown、严尺子拒判。
+                let (mbx, mby, mtx, mty) = (bsx.tan(), bsy.tan(), tsx.tan(), tsy.tan());
                 ring(*rb, -h / 2.0)
-                    .map(|p| [p[0] - ox / 2.0, p[1] - oy / 2.0, p[2]])
-                    .chain(ring(*rt, h / 2.0).map(|p| [p[0] + ox / 2.0, p[1] + oy / 2.0, p[2]]))
+                    .map(move |[x, y, z]| [x - ox / 2.0, y - oy / 2.0, z + x * mbx + y * mby])
+                    .chain(
+                        ring(*rt, h / 2.0).map(move |[x, y, z]| {
+                            [x + ox / 2.0, y + oy / 2.0, z + x * mtx + y * mty]
+                        }),
+                    )
                     .collect()
             }
             Self::EllipticalDish([r, h]) => {
@@ -294,12 +303,34 @@ impl Primitive {
     /// （其中 51 条偏心），上面这条公式**逐条**对得上（残差 ≤ 0.01 mm）；真几何那条只对上
     /// 非偏心的 5514 条，51 条偏心的残差恰好是 `|XOFF|`，大到顶穿容差时整份文件的判帧就塌了
     /// （`/1#罐组管线` 等 10 个 ZONE 的 REDUCER 因此被判 `Unknown`，严尺子对拍直接拒判）。
+    ///
+    /// **斜切 `Snout`**（设计 SLCY 走 DRSNO 写出来的那一族）E3D 的盒更离谱：z 两端不是几何的极值，
+    /// 而是各按**一个点**挪——顶端挪 `rt·tan(YTSH)`、底端挪 `−rb·tan(YBSH)`——而且喂给 `tan` 的是
+    /// **度数当弧度**（22.5 → tan(22.5 rad) = 0.5578，不是 tan(22.5°) = 0.4142）：
+    ///
+    /// ```text
+    /// z_max = +h/2 + rt · tan(tshear_y 的度数)        z_min = −h/2 − rb · tan(bshear_y 的度数)
+    /// ```
+    ///
+    /// 取证是表现级 6 的四根探针（`_probe14/`，2026-09-15）：120 只 SLCY、10 种参数组合，
+    /// 顶端 22.5° / 45° / 67.5° / 25.06° / 39.89° / 64.94° 六个角度上这条公式逐一命中
+    /// （残差 ≤ 0.002 mm）：−22.5° 让顶面**降** 10.599（= 19·tan(22.5 rad)），+67.5° 让它**升**
+    /// 429.175（= 19·tan(67.5 rad)，67.5 rad 离 21.5π 只差 0.044），−25.06° 反而升 1.451
+    /// （25.06 rad 刚过 8π）——单调的公式一条都凑不出这组符号，度当弧度是唯一解。真几何的
+    /// 顶面在 h/2 ± rt·tan(θ) 之间，跟这只盒没有关系。X 方向的斜切没有样本（120 只 XTSH / XBSH
+    /// 全是 0），这里按同一个点（x = 0）算、不计入——真有样本时它会以 Unknown 报出来。
     pub fn declared_box_mm(&self) -> Option<[f64; 6]> {
         match self {
-            Self::Snout([rb, rt, h, ox, oy, ..]) if *ox != 0.0 || *oy != 0.0 => {
+            Self::Snout([rb, rt, h, ox, oy, _bsx, bsy, _tsx, tsy])
+                if *ox != 0.0 || *oy != 0.0 || *bsy != 0.0 || *tsy != 0.0 =>
+            {
                 let hx = (rb - ox / 2.0).max(rt + ox / 2.0);
                 let hy = (rb - oy / 2.0).max(rt + oy / 2.0);
-                Some([-hx, -hy, -h / 2.0, hx, hy, h / 2.0])
+                // E3D 把度数当弧度喂给 tan。
+                let degrees_as_radians_tan = |rad: f64| rad.to_degrees().tan();
+                let z_min = -h / 2.0 - rb * degrees_as_radians_tan(*bsy);
+                let z_max = h / 2.0 + rt * degrees_as_radians_tan(*tsy);
+                Some([-hx, -hy, z_min, hx, hy, z_max])
             }
             _ => None,
         }
@@ -737,7 +768,7 @@ fn detect_bbox_frame(geometry: &RvmGeometry) -> BboxFrame {
             .fold(0.0f64, |acc, (x, y)| acc.max((x - y).abs()))
     };
     // 两套点云各判一次，取更贴的那一档：真几何，以及 E3D 写 bbox 时另算的那只盒
-    // （见 `Primitive::declared_box_mm`，只有偏心 `Snout` 有）。E3D 哪天把那条公式
+    // （见 `Primitive::declared_box_mm`，只有偏心 / 斜切 `Snout` 有）。E3D 哪天把那条公式
     // 补齐了，真几何这一套自己就会重新贴上，这里不用回来改。
     let mut best: Option<(f64, BboxFrame)> = None;
     let hulls = std::iter::once(points).chain(
@@ -930,6 +961,69 @@ mod tests {
         // 不偏心时 E3D 那条公式与真几何重合，5514 条实测记录都靠原路判帧，别多给一个候选。
         let snout = Primitive::Snout([136.5, 109.55, 178.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
         assert_eq!(snout.declared_box_mm(), None);
+    }
+
+    /// 斜切 `Snout`（SLCY 走 DRSNO 写的）：真几何按 `z = ±h/2 + y·tan(θ)` 抬一侧、压一侧，
+    /// E3D 的记录盒却把**度数当弧度**、按一个点挪。四条都是 `/盘梯底部梯子`（21909/51286）
+    /// 表现级 6 基准里的实测记录，`_probe14/`。
+    #[test]
+    fn sheared_snout_hull_follows_the_caps_and_the_declared_box_follows_e3d() {
+        let deg = f64::to_radians;
+        // 顶面 −22.5°：真几何 z 到 535 + 19·tan 22.5° = 542.87；E3D 写 524.401 = 535 − 19·tan(22.5 rad)。
+        let top_only = Primitive::Snout([19.0, 19.0, 1070.0, 0.0, 0.0, 0.0, 0.0, 0.0, deg(-22.5)]);
+        let hull = top_only.local_aabb_mm().unwrap();
+        assert_close(&hull, &[-19.0, -19.0, -535.0, 19.0, 19.0, 542.87], 0.01);
+        let declared = top_only.declared_box_mm().unwrap();
+        assert_close(
+            &declared,
+            &[-19.0, -19.0, -535.0, 19.0, 19.0, 524.401],
+            0.002,
+        );
+
+        // 顶面 +67.5°：67.5 rad 离 21.5π 只差 0.044，E3D 的盒顶被顶到 964.175；真几何只到 580.87。
+        let steep = Primitive::Snout([19.0, 19.0, 1070.0, 0.0, 0.0, 0.0, 0.0, 0.0, deg(67.5)]);
+        assert!((steep.local_aabb_mm().unwrap()[5] - 580.87).abs() < 0.01);
+        assert!((steep.declared_box_mm().unwrap()[5] - 964.175).abs() < 0.002);
+
+        // 两端各 −45°：真几何 z ∈ ±(494.975 + 19)；E3D 写 ±464.199 = ±(494.975 − 19·tan(45 rad))。
+        let both = Primitive::Snout([
+            19.0,
+            19.0,
+            989.9495,
+            0.0,
+            0.0,
+            0.0,
+            deg(-45.0),
+            0.0,
+            deg(-45.0),
+        ]);
+        let hull = both.local_aabb_mm().unwrap();
+        assert_close(&hull, &[-19.0, -19.0, -513.975, 19.0, 19.0, 513.975], 0.01);
+        let declared = both.declared_box_mm().unwrap();
+        assert_close(
+            &declared,
+            &[-19.0, -19.0, -464.199, 19.0, 19.0, 464.199],
+            0.002,
+        );
+
+        // 底 +22.5° / 顶 −67.5°：底端挪 −10.599、顶端挪 −429.176，盒子整个塌向下方。
+        let mixed = Primitive::Snout([
+            19.0,
+            19.0,
+            989.9495,
+            0.0,
+            0.0,
+            0.0,
+            deg(22.5),
+            0.0,
+            deg(-67.5),
+        ]);
+        let declared = mixed.declared_box_mm().unwrap();
+        assert_close(
+            &declared,
+            &[-19.0, -19.0, -505.574, 19.0, 19.0, 65.799],
+            0.002,
+        );
     }
 
     #[test]
