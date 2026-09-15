@@ -321,27 +321,34 @@ fn rvm_component_geometry(
     })
 }
 
-/// E3D 把这些元素**当拉伸体导出**，一律 `FacetGroup`——识别器再认得出盒子也不能写 `Box`。
+/// E3D 对这些元素**只有面片写出器**，一律 `FacetGroup`——识别器再认得出盒子也不能写 `Box`。
 ///
-/// 依据在 RVM 驱动里：`expdri/DRWEXT`（拉伸体写出器）写的记录种类是常数 11 = FacetGroup
-/// （`unk_1000D394`），顶盖、N 张侧面、底盖各一条多边形；没有「截面恰好是矩形就改写 Box」
-/// 这一条——盒子走的是另一条 `DRBOX`，只有真图元（设计 BOX / 目录 SBOX）才到得了那里。
+/// **拉伸体族**的依据在 RVM 驱动里：`expdri/DRWEXT`（拉伸体写出器）写的记录种类是常数 11 =
+/// FacetGroup（`unk_1000D394`），顶盖、N 张侧面、底盖各一条多边形；没有「截面恰好是矩形就
+/// 改写 Box」这一条——盒子走的是另一条 `DRBOX`，只有真图元（设计 BOX / 目录 SBOX）才到得了那里。
 /// 80 根严尺子印证（2026-09-14 实测）：名词认得出来的这一族 1 168 件，E3D 侧写的是
 /// 1 223 条 `FacetGroup` 与 52 条 `Pyramid`（空心矩形 SCTN 的壁板），**一条 `Box` 都没有**；
 /// 我们的网格识别器不知来历，把其中的矩形截面认成 `Box`、棱台形管墩认成 `Pyramid`——
 /// 几何 exact、种类却不一致。接上这一条之后严尺子的 kind 不一致从 1 383 件降到 799 件。
 ///
+/// **多面体**（POHE / POLYHE，显式 B-rep）同理：E3D 拿到的是顶点面表，没有图元可写，整只交
+/// 面片写出器。取证是表现级 3 的探针（四根，15 只 POHE 各拆 6 块）：E3D 侧 90 条全是
+/// `FacetGroup`，我们按长相认成了 30 条 `Box` + 48 条 `Pyramid`（其余 12 块本来就认不出来）。
+/// 表现级 0 的 80 根里一只 POHE 都不画（全 sweep 336 只被跳过，LEVE 在 [2,4] / [4,5] / [5,7]），
+/// 所以此前不在账上。
+///
 /// 名单 = 设计侧环拉伸（[`e3d_model::category::Category::LoopExtrusion`]：PANE / FLOOR / EXTR /
-/// AEXTR / SCREED / GWALL）+ 型材扫掠（SCTN / GENSEC / STWALL / WALL / RAIL / KICKPL）。
+/// AEXTR / SCREED / GWALL）+ 型材扫掠（SCTN / GENSEC / STWALL / WALL / RAIL / KICKPL）+
+/// 多面体（[`e3d_model::category::Category::Polyhedron`]：POHE / POLYHE）。
 /// 目录构件（FITT / FIXING / SBFI / PCOM…）**不在**名单里：它们由 GMSE 图元拼成，E3D 走
 /// DRBOX / DRCYL 等图元写出器——`:SDS_Entity 3` 那块底板就是 E3D 自己写的 `Pyramid`。
 ///
 /// 空心矩形 SCTN（E3D 拆成 4 条 `Pyramid` 壁板）不受影响：本来就是一条面片对 4 条 Pyramid，
 /// 那是另一件事（拆板）。
-fn e3d_exports_as_extrusion(noun: &str) -> bool {
+fn e3d_exports_facets_only(noun: &str) -> bool {
     matches!(
         e3d_model::category::classify(noun),
-        e3d_model::category::Category::LoopExtrusion
+        e3d_model::category::Category::LoopExtrusion | e3d_model::category::Category::Polyhedron
     ) || matches!(
         noun,
         "SCTN" | "GENSEC" | "STWALL" | "WALL" | "RAIL" | "KICKPL"
@@ -952,8 +959,8 @@ fn main() -> anyhow::Result<()> {
                 .into_iter()
                 .filter(|m| !m.indices.is_empty())
                 .collect();
-                // 拉伸体族照 E3D 的写法一律面片，不进识别器（见 [`e3d_exports_as_extrusion`]）。
-                let facets_only = e3d_exports_as_extrusion(&generated.noun);
+                // 拉伸体族与多面体照 E3D 的写法一律面片，不进识别器（见 [`e3d_exports_facets_only`]）。
+                let facets_only = e3d_exports_facets_only(&generated.noun);
                 // `PrimitiveInstance` 描述的是**整个元素**（`local_transform` 在元素局部系里），
                 // 所以只有单组件时它才说得准；多组件的逐块自己认几何。
                 let whole_element_instance = (!facets_only && component_meshes.len() == 1)
@@ -1011,7 +1018,7 @@ fn main() -> anyhow::Result<()> {
                             .and_then(|noun| recogniser_for_catalogue_noun(noun))
                             .or(design_recogniser);
                         // 拉伸体族一律面片，**除非这一块的出身另有说法**：SCTN 的 `SREC`
-                        // 成员 E3D 走 DRPYR，不进拉伸体写出器（见 `e3d_exports_as_extrusion`）。
+                        // 成员 E3D 走 DRPYR，不进拉伸体写出器（见 `e3d_exports_facets_only`）。
                         // 这一族只认出身挑的那一把，认不出来就是面片——按长相轮一遍正是
                         // 64f3f01 挡掉的那件事（矩形截面写成 `Box`）。
                         let provenance_only = facets_only;
@@ -1134,7 +1141,7 @@ fn main() -> anyhow::Result<()> {
         };
         file.write(&rvm_path)?;
         println!(
-            "RVM: {} 个成员（解析图元 {rvm_analytic} / 自校未过退回面片 {rvm_analytic_rejected} / 拉伸体照 E3D 写面片 {rvm_extrusion_facets} / 零尺寸空记录 {rvm_zero_size} / 重复放置补写 {rvm_repeated_records}）-> {}",
+            "RVM: {} 个成员（解析图元 {rvm_analytic} / 自校未过退回面片 {rvm_analytic_rejected} / 拉伸体 / 多面体照 E3D 写面片 {rvm_extrusion_facets} / 零尺寸空记录 {rvm_zero_size} / 重复放置补写 {rvm_repeated_records}）-> {}",
             file.members.len() - 1,
             rvm_path.display()
         );
