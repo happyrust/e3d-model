@@ -118,9 +118,9 @@ enum Recogniser {
     Cylinder,
     Snout,
     CircularTorus,
-    /// **只由出身挑中**（`SRTO`），不进 [`RECOGNISER_ORDER`]：矩形轮廓的 `SREV` / 设计
-    /// `REVO` 回转出来的网格与矩形环一模一样，而 E3D 对那两族写的是烘好的 `FacetGroup`
-    /// ——按长相轮到它，就把那些面片写成了 `RectangularTorus`。
+    /// **只由出身挑中**（目录 `SRTO`、设计 `RTOR`），不进 [`RECOGNISER_ORDER`]：矩形轮廓的
+    /// `SREV` / 设计 `REVO` 回转出来的网格与矩形环一模一样，而 E3D 对那两族写的是烘好的
+    /// `FacetGroup`——按长相轮到它，就把那些面片写成了 `RectangularTorus`。
     RectangularTorus,
     Pyramid,
     Sphere,
@@ -170,6 +170,26 @@ fn recogniser_for_catalogue_noun(noun: &str) -> Option<Recogniser> {
         // 矩形，只因为写成 `SPRO` + 4 个 `SPVE`，E3D 出的就是一条 `FacetGroup`。
         "LPYR" | "SREC" => Some(Recogniser::Pyramid),
         "SSPH" => Some(Recogniser::Sphere),
+        _ => None,
+    }
+}
+
+/// 设计图元 → 该用哪把识别器。**名单上只有 `RTOR`。**
+///
+/// 设计图元没有目录出身，一直是按长相认的；80 根严尺子（表现级 0）上 CYLI / BOX / DISH /
+/// PYRA / CTOR / CONE 全部对得上——这些族按长相认与 E3D 按名词写同解，不必动。`RTOR` 是
+/// 唯一的例外：它那把识别器**只由出身挑中**（见 [`Recogniser::RectangularTorus`]），兜底
+/// 次序里没有它，不给出身就永远是面片；而 E3D 的 DRRTO 对 RTOR 写的正是 `RectangularTorus`。
+///
+/// 表现级 0 的基准里一件 RTOR 都没有：全 sweep 168 只 RTOR 的 LEVE 全是 [2,4]，两侧都不画，
+/// 所以此前不在账上。取证是 `/盘梯底部梯子`（21909/51286）在表现级 3 的基准：两只 RTOR
+/// 各一条 `RectangularTorus`，我们原本交的是面片。
+///
+/// `SNOU` / `CONE` / `PYRA` 的退化情形（等径圆台、同形棱台）按名词写才与 E3D 一致，但 80 根
+/// 里一件没有，没有取证就不接；`ARTOR` 那一族同理。
+fn recogniser_for_design_noun(noun: &str) -> Option<Recogniser> {
+    match noun {
+        "RTOR" => Some(Recogniser::RectangularTorus),
         _ => None,
     }
 }
@@ -244,7 +264,8 @@ fn analytic_candidate(
 
 /// 一个组件 → 一条 RVM 记录。能认成解析图元就写解析图元，否则写 FacetGroup。
 ///
-/// 有目录出身就先试出身那把（[`recogniser_for_catalogue_noun`]），没有或认不出来再按
+/// 有出身就先试出身挑的那把（`preferred`：目录图元走 [`recogniser_for_catalogue_noun`]，
+/// 设计图元走 [`recogniser_for_design_noun`]），没有或认不出来再按
 /// [`RECOGNISER_ORDER`] 逐个试，先认出来的算。`provenance_only` = 只许出身那一把上场
 /// （拉伸体族：E3D 对它们只有「出身是 SREC 就 DRPYR，否则面片」这一条，按长相轮一遍
 /// 会把矩形截面写成 `Box`，那正是 64f3f01 挡掉的）。
@@ -260,12 +281,11 @@ fn rvm_component_geometry(
     triangles: &[[u32; 3]],
     world_lo: [f64; 3],
     world_hi: [f64; 3],
-    catalogue_noun: Option<&str>,
+    preferred: Option<Recogniser>,
     provenance_only: bool,
     analytic_count: &mut usize,
     rejected_count: &mut usize,
 ) -> e3d_model::rvm_read::RvmGeometry {
-    let preferred = catalogue_noun.and_then(recogniser_for_catalogue_noun);
     let candidate = preferred
         .and_then(|recogniser| {
             analytic_candidate(recogniser, world, local_vertices, triangles, true)
@@ -964,6 +984,14 @@ fn main() -> anyhow::Result<()> {
                     };
                 let repeats_of =
                     |index: usize| component_repeats.get(index).copied().unwrap_or(1).max(1);
+                // 设计图元的出身就是元素自己的名词（[`recogniser_for_design_noun`]）。只在
+                // **单块、没扣负体、没有目录出身**时才说得准：多块是按连通性拆出来的，扣过
+                // 负体的是布尔结果（E3D 也只能写面片），有目录出身的听目录的。
+                let design_recogniser = (component_meshes.len() == 1
+                    && generated.negatives_applied == 0
+                    && generated.part_catalogue_nouns.is_empty())
+                .then(|| recogniser_for_design_noun(&generated.noun))
+                .flatten();
                 let mut geometries = Vec::with_capacity(component_meshes.len());
                 let mut push_repeated = |geometry: e3d_model::rvm_read::RvmGeometry,
                                          repeats: usize| {
@@ -978,17 +1006,16 @@ fn main() -> anyhow::Result<()> {
                         let local: Vec<[f64; 3]> =
                             component.vertices.iter().map(to_local).collect();
                         let tris: Vec<[u32; 3]> = component.indices.as_chunks::<3>().0.to_vec();
-                        let catalogue_noun = component_nouns.get(index).map(String::as_str);
+                        let preferred = component_nouns
+                            .get(index)
+                            .and_then(|noun| recogniser_for_catalogue_noun(noun))
+                            .or(design_recogniser);
                         // 拉伸体族一律面片，**除非这一块的出身另有说法**：SCTN 的 `SREC`
                         // 成员 E3D 走 DRPYR，不进拉伸体写出器（见 `e3d_exports_as_extrusion`）。
                         // 这一族只认出身挑的那一把，认不出来就是面片——按长相轮一遍正是
                         // 64f3f01 挡掉的那件事（矩形截面写成 `Box`）。
                         let provenance_only = facets_only;
-                        let geometry = if provenance_only
-                            && catalogue_noun
-                                .and_then(recogniser_for_catalogue_noun)
-                                .is_none()
-                        {
+                        let geometry = if provenance_only && preferred.is_none() {
                             rvm_extrusion_facets += 1;
                             e3d_model::rvm_write::facet_group_from_world_triangles(
                                 rotation,
@@ -1005,7 +1032,7 @@ fn main() -> anyhow::Result<()> {
                                 &tris,
                                 clo,
                                 chi,
-                                catalogue_noun,
+                                preferred,
                                 provenance_only,
                                 &mut rvm_analytic,
                                 &mut rvm_analytic_rejected,
