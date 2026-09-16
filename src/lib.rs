@@ -31,6 +31,7 @@
 // 变成整块吞掉的坏网格。取反式让 NaN 落进拒绝分支，是刻意的，不是笔误。
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
+pub mod attribute_reads;
 pub mod cable_tray;
 pub mod catalogue;
 pub mod catalogue_point;
@@ -59,6 +60,7 @@ pub mod solid;
 pub mod transform;
 pub mod udet;
 
+pub use attribute_reads::{AttributeReadSet, attribute_read_set, reads_attribute};
 pub use cable_tray::{CABLE_TRAY_ELEMENT_NOUNS, CableTrayPlacement, is_cable_tray_element};
 pub use catalogue::{
     CatalogueMeshCache, CatalogueMeshCacheStats, model_catalogue_member,

@@ -899,6 +899,41 @@ pub fn graphics_ignored_nouns() -> impl Iterator<Item = &'static str> {
         .map(|(noun, _)| noun.as_str())
 }
 
+/// 3.1 字典（`data/noun-family-matrix.json`）里的全部 noun 名，升序。
+///
+/// 给属性读取集合的守卫用（`tests/attribute_reads_guard.rs`）：源码里一个大写字面量若是 noun 名，
+/// 就不是属性读点——分类表、家族名单、测试夹具里满是 `"BOX"` / `"PANE"` 这类词。
+pub fn dictionary_noun_names() -> impl Iterator<Item = &'static str> {
+    noun_dictionary().keys().map(String::as_str)
+}
+
+/// Core3D `change/UPGRPH`（`0x1022EAEE`，E3D 3.1）里**位姿变化也整件重建**的 23 个 noun。
+///
+/// core 对字典 DCHC 类别 3（`POS` / `ORI` / `BFORI`）的默认处置是只改图形段矩阵
+/// （顶层件 `css/STRTRA`、图元 `css/SEGTRA`、容器 `change/TRASCN`——它自己的「刚体前移」），
+/// **唯独**这 23 个 noun 走 `add/ADDREM` → `add/REPELE`（`build/TOPDEL` 删段 + `add/ADDDES` 重走
+/// ELMODL）：它们的几何由摆放位置**派生**——门窗在墙 / 板上开孔、吊顶件按网格摆放、栏杆立柱 /
+/// 端头 / 门 / 踢脚板随相邻件、桥架支架随托盘、标注随被标对象、楼梯梯段 / 斜梁、地面覆层、
+/// 家具 / 固定设施随房间。字典里 23 个全是 primitive，14 个带 `IPFCOM`（型材附件）、`CTSUPP` 带 `ICABCO`。
+///
+/// 对增量的意义（gen-model ADR-066 D1 规则 3 的补条，开发计划 2026-09-15 S2）：这些 noun 挪位
+/// **不能**走刚体前移——锚点自己的网格会随摆放变形（开孔位置、相邻件长度），左乘 Δ 得到的是错的；
+/// 一律整根重算。名单是 `UPGRPH` 的内联 noun hash 用 `ENHAS2` 逆函数解出的
+/// （`531441 + Σ code(cᵢ)·27ⁱ`），换 E3D 版本要重取：
+/// `ida-bridge exec idalib-49136 --sql "SELECT decompile(0x1022eaee)"`。
+/// 取证：gen-model `docs/2026-09-15_core-attribute-change-classes-and-model-update-paths.md` §4。
+pub const PLACEMENT_DERIVED_NOUNS: [&str; 23] = [
+    "DRAW", "CLNTIL", "STRFLT", "INFITT", "PLTFRM", "ELFITT", "STRLNG", "HVACFI", "RAIL", "DOOR",
+    "WINDOW", "FPFITT", "LINDIM", "FLRCOV", "MLABEL", "FIXTUR", "HRPOST", "HRTERM", "HRGATE",
+    "HRPANE", "KICKPL", "CTSUPP", "FURNIT",
+];
+
+/// 这个 noun 的几何是否由摆放派生（在 [`PLACEMENT_DERIVED_NOUNS`] 里）——是则它的 `POS`/`ORI`
+/// 变化等于几何变化，core 与我们都整件重建，不走「只改矩阵」。
+pub fn is_placement_derived(noun: &str) -> bool {
+    PLACEMENT_DERIVED_NOUNS.contains(&noun.trim().to_ascii_uppercase().as_str())
+}
+
 /// 用 E3D 3.1 的真实家族位认领剩余级联 NOUN。这里只决定建模路径，状态仍为
 /// `EvidencePending`；没有样本的专业族不会因此被伪报为已经建成。
 fn dictionary_composite_category(noun: &str) -> Category {
@@ -1123,6 +1158,47 @@ mod repre_discipline_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// P23 名单逐个点名（开发计划 2026-09-15 S2）：恰好 `UPGRPH` `0x1022EAEE` 里那 23 个、无重复、
+    /// 每个都是 3.1 字典里的 primitive noun；谓词大小写 / 空白不敏感，普通设备 / 容器 / 型材不在其中。
+    #[test]
+    fn placement_derived_nouns_are_exactly_the_twenty_three_from_upgrph() {
+        let expected: BTreeSet<&str> = [
+            // 逆 hash 顺序即 UPGRPH 内联常量的比较顺序。
+            "DRAW", "CLNTIL", "STRFLT", "INFITT", "PLTFRM", "ELFITT", "STRLNG", "HVACFI", "RAIL",
+            "DOOR", "WINDOW", "FPFITT", "LINDIM", "FLRCOV", "MLABEL", "FIXTUR", "HRPOST", "HRTERM",
+            "HRGATE", "HRPANE", "KICKPL", "CTSUPP", "FURNIT",
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(expected.len(), 23);
+        let actual: BTreeSet<&str> = PLACEMENT_DERIVED_NOUNS.into_iter().collect();
+        assert_eq!(actual.len(), PLACEMENT_DERIVED_NOUNS.len(), "名单里有重复");
+        assert_eq!(actual, expected, "P23 名单漂移：按 UPGRPH 重取，不许手改");
+
+        let dictionary = noun_dictionary();
+        for noun in PLACEMENT_DERIVED_NOUNS {
+            assert!(
+                dictionary.contains_key(noun),
+                "{noun} 不在 3.1 字典里——逆 hash 解错了？"
+            );
+            assert!(is_placement_derived(noun), "{noun}");
+            assert!(
+                is_placement_derived(&noun.to_ascii_lowercase()),
+                "{noun} 小写"
+            );
+            assert!(is_placement_derived(&format!(" {noun} ")), "{noun} 带空白");
+        }
+        // 栏杆整族里只有立柱 / 端头 / 门 / 栏板 / 踢脚板 / RAIL 在名单上；HANDRA 容器本身不在——
+        // 它与设备 / 容器 / 型材 / 桥架件 / 负体 / 开孔一样，挪位时 core 照旧只改矩阵（后几类另有
+        // 自己的排除：桥架件伪属性、被属主消费的几何，见 gen-model `rigid_anchor`）。
+        for noun in [
+            "EQUI", "BOX", "ZONE", "SITE", "STRU", "SCTN", "PANE", "WALL", "HANDRA", "BRAN",
+            "CTRAY", "CTSTRA", "NBOX", "PLOPEN",
+        ] {
+            assert!(!is_placement_derived(noun), "{noun} 不该在 P23 里");
+        }
+    }
 
     /// ams1112 实测 noun 全集必须每个都有归属，一个 Unknown 都不许有——
     /// 分类表漏一个 noun，那个 noun 的元素就整族缺席，报告里只剩一行 unknown 计数。

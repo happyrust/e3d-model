@@ -53,6 +53,17 @@ use crate::transform::PLACEMENT_ATTRIBUTES;
 /// 常量，只随 core 的新证据动。
 const TUBI_CHANGE_GATE: [&str; 4] = ["POS", "ORI", "ITLE", "SPRE"];
 
+/// **戳**：Design 应用侧随每次图形重建写下的缓存计数，跟着摆放一起变是编辑器的副作用，不是
+/// 「摆放之外还动了别的」。今天只有 `CACHID`（3.1 才有，`WORD` 型、每次 `+1`）：gen-model 2026-09-16
+/// S8 普查 453 库 2961 窗——13724 次跳动全是 `+1`，有值元素上 88 次含 `POS`/`ORI` 的变化**全部**
+/// 同时跳它；S4 对拍把它剔出比较集再判，多出的 84 个锚点（整台 EQUI 挪位为主）108 根两态全等、
+/// 0 红（`docs/evidence/2026-09-16-rigid-exclusion-parity-ignore-cachid.md`）。生成器一处都不读它
+/// （它不在读取集合里：`gen_read_set.py` 把这张表的名字单列成 `stamp_literals`，守卫钉两边逐名相等），
+/// 所以 [`ElementDiff::is_placement_only`] 判「只动了摆放」时忽略它；但它**单独**变不算动了摆放
+/// （那是整库缓存重建的扫写，照旧走 regen——gen-model 计划 §8 Q6 另议），元数据门里也照旧不放行
+/// （字典没给它投票）。
+pub const PLACEMENT_STAMP_ATTRIBUTES: [&str; 1] = ["CACHID"];
+
 /// 这个 noun 的属性差分结果算不算数（core 的 NOUN_TUBI 门，见模块文档最后一节）。
 /// 除 `TUBI` 外一律算数。
 fn attribute_diff_passes_noun_gate(noun: &str, changed: &[String]) -> bool {
@@ -138,7 +149,8 @@ impl ElementDiff {
                 .any(|name| PLACEMENT_ATTRIBUTES.contains(&name.as_str()))
     }
 
-    /// 这一窗**只**动了摆放：[`PLACEMENT_ATTRIBUTES`] 里至少一项变了，除此之外一个字没动。
+    /// 这一窗**只**动了摆放：[`PLACEMENT_ATTRIBUTES`] 里至少一项变了，除此之外——
+    /// [`PLACEMENT_STAMP_ATTRIBUTES`] 不算——一个字没动。
     ///
     /// 与 [`Self::placement_input_changed`] 是两个问题，别混用：那个问「我一动，子树里
     /// 的世界矩阵变不变」，是**级联**判据，改挂 / 类型变 / `opaque` 都算变，答案越宽越
@@ -152,17 +164,21 @@ impl ElementDiff {
     /// `ATT_MEMB`）；`opaque` 是「记录变了但指不出哪一项」，指不出就不能说只动了摆放。
     ///
     /// `attributes` 为空时返回 `false`：那是「没动」（[`Self::is_unchanged`]），不是
-    /// 「只动了摆放」——便宜路径也是活，没变的元素不该被排进去。
+    /// 「只动了摆放」——便宜路径也是活，没变的元素不该被排进去。**只有戳变了**同样返回
+    /// `false`：戳不是摆放，摆放一项都没动就不是「只动了摆放」。
     pub fn is_placement_only(&self) -> bool {
         self.type_changed.is_none()
             && self.owner_changed.is_none()
             && self.members.is_none()
             && !self.opaque
-            && !self.attributes.is_empty()
             && self
                 .attributes
                 .iter()
-                .all(|name| PLACEMENT_ATTRIBUTES.contains(&name.as_str()))
+                .any(|name| PLACEMENT_ATTRIBUTES.contains(&name.as_str()))
+            && self.attributes.iter().all(|name| {
+                PLACEMENT_ATTRIBUTES.contains(&name.as_str())
+                    || PLACEMENT_STAMP_ATTRIBUTES.contains(&name.as_str())
+            })
     }
 
     fn unchanged(refno: RefNo, noun: String) -> Self {
@@ -500,6 +516,27 @@ mod tests {
         // 摆放之外还动了别的：网格要重算，不能只刷矩阵。
         assert!(!diff_with(vec!["POS", "DIAM"]).is_placement_only());
         assert!(!diff_with(vec!["DIAM"]).is_placement_only());
+        assert!(!diff_with(vec!["POS", "NAME"]).is_placement_only());
+        assert!(!diff_with(vec!["POS", "HEIG"]).is_placement_only());
+
+        // 戳（`CACHID`）跟着摆放一起变是编辑器的副作用，不算「摆放之外还动了别的」（2026-09-16 Q5）；
+        // 但只有戳变了不是只动了摆放——摆放一项都没动。
+        for stamp in PLACEMENT_STAMP_ATTRIBUTES {
+            assert!(
+                diff_with(vec!["POS", stamp]).is_placement_only(),
+                "{stamp} 混进来不挡便宜路径"
+            );
+            assert!(diff_with(vec!["ORI", stamp]).is_placement_only());
+            assert!(diff_with(vec!["POS", "ORI", stamp]).is_placement_only());
+            assert!(
+                !diff_with(vec![stamp]).is_placement_only(),
+                "只有 {stamp} 变不是只动了摆放"
+            );
+            assert!(!diff_with(vec!["POS", stamp, "HEIG"]).is_placement_only());
+            assert!(!diff_with(vec![stamp, "NAME"]).is_placement_only());
+            // 戳不是矩阵输入，也不触发级联。
+            assert!(!diff_with(vec![stamp]).placement_input_changed());
+        }
 
         // 「什么都没动」不是「只动了摆放」——便宜路径也是活，别排空转的。
         assert!(diff_with(vec![]).is_unchanged());
