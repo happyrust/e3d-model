@@ -291,6 +291,15 @@ pub struct IncrementReport {
     pub tube_upserts: usize,
     /// 这一轮 Remove 的管身键数（横切计数，已含在 `removals` 里）。
     pub tube_removals: usize,
+    /// 逐容器的管段账：`regenerate_derived` 里每条在 target 端处理过的路由容器（pdms `a/b` 串）→
+    /// 这一轮**真建成**的管身根数（[`route_tubes_of`] 返回多少就记多少；退休 / 类型已变的容器记 0，
+    /// 读挂的不记——它已在 `derived_failed` 里响）。
+    ///
+    /// 与 `upserts` 分开记账，是给下游**局部**发布的管段完整性门用的（gen-model ADR-078 D6）：
+    /// 那边一条 BRAN 的管身是整段重写，`upserts` 里少带一段就是静默丢管；门拿这本账对
+    /// 真带上的段数，从 `upserts` 里数回来就是自证，抓不到烘焙 / 过滤 / 装配路上掉的那一段。
+    /// 横切计数，各值之和 == `tube_upserts`。
+    pub tube_segments: BTreeMap<String, usize>,
     /// 非致命观察（级联检查读挂但单元已入账、成员表疑似回环等）。
     pub notes: Vec<Incident>,
 }
@@ -380,6 +389,19 @@ impl IncrementReport {
                 self.derived_retired,
                 self.derived_failed.len(),
                 self.derived_to_regenerate,
+            ));
+        }
+        // 逐容器管段账是 `tube_upserts` 的横切拆分：每条处理过（建成或退休）的容器一条，
+        // 各值之和必须等于这一轮真 upsert 的管身根数。
+        let segmented = self.tube_segments.values().sum::<usize>();
+        if segmented != self.tube_upserts
+            || self.tube_segments.len() != self.derived_regenerated + self.derived_retired
+        {
+            return Err(format!(
+                "管段账不平：逐容器 {} 条共 {segmented} 段，tube_upserts {}，建成 + 退休容器 {}",
+                self.tube_segments.len(),
+                self.tube_upserts,
+                self.derived_regenerated + self.derived_retired,
             ));
         }
         Ok(())
@@ -1668,6 +1690,7 @@ pub fn execute_plan(target: &Arc<DbSet>, plan: UpdatePlan) -> IncrementOutcome {
             // 容器在 target 端已删：退休，旧键由下面的差集统一清。
             Err(DbElementError::NotFound { .. }) => {
                 report.derived_retired += 1;
+                report.tube_segments.insert(refno.to_string(), 0);
             }
             Err(error) => {
                 report
@@ -1679,6 +1702,7 @@ pub fn execute_plan(target: &Arc<DbSet>, plan: UpdatePlan) -> IncrementOutcome {
                     // 类型变更把容器变成了别的东西，或改挂到了风管（HVAC）下：名下不该
                     // 再有管身，旧键全清。
                     report.derived_retired += 1;
+                    report.tube_segments.insert(refno.to_string(), 0);
                     report.notes.push(incident(
                         refno,
                         noun,
@@ -1688,6 +1712,9 @@ pub fn execute_plan(target: &Arc<DbSet>, plan: UpdatePlan) -> IncrementOutcome {
                 Ok(true) => match route_tubes_of(&el) {
                     Ok(tubes) => {
                         report.derived_regenerated += 1;
+                        // 逐容器管段账（gen-model ADR-078 D6 的门拿它对 upserts）：与下面的
+                        // `upserts.push` 分开记，装配路上掉了一段这里才对不上。
+                        report.tube_segments.insert(refno.to_string(), tubes.len());
                         for tube in tubes {
                             kept.insert(tube.geometry_id.clone());
                             report.tube_upserts += 1;
@@ -1881,6 +1908,8 @@ mod tests {
             derived_regenerated: 1,
             derived_retired: 1,
             derived_failed: incident_n(1),
+            tube_upserts: 2,
+            tube_segments: BTreeMap::from([("1/10".to_string(), 2), ("1/11".to_string(), 0)]),
             ..IncrementReport::default()
         };
         assert!(report.accounts_for().is_ok());
@@ -1889,10 +1918,46 @@ mod tests {
             derived_to_regenerate: 3,
             derived_regenerated: 1,
             derived_retired: 1,
+            tube_upserts: 2,
+            tube_segments: BTreeMap::from([("1/10".to_string(), 2), ("1/11".to_string(), 0)]),
             ..IncrementReport::default()
         };
         let err = report.accounts_for().unwrap_err();
         assert!(err.contains("派生执行账不平"), "{err}");
+    }
+
+    /// 逐容器管段账是 `tube_upserts` 的横切拆分：建成 / 退休的容器每条一笔，各值之和等于
+    /// 真 upsert 的管身根数。少一条容器、或段数对不上，下游拿它当门就核不出漏段。
+    #[test]
+    fn per_container_tube_segments_must_split_the_tube_upserts() {
+        let short = IncrementReport {
+            derived_to_regenerate: 2,
+            derived_regenerated: 2,
+            tube_upserts: 3,
+            tube_segments: BTreeMap::from([("1/10".to_string(), 3)]),
+            ..IncrementReport::default()
+        };
+        let err = short.accounts_for().unwrap_err();
+        assert!(err.contains("管段账不平"), "{err}");
+
+        let miscounted = IncrementReport {
+            derived_to_regenerate: 2,
+            derived_regenerated: 2,
+            tube_upserts: 3,
+            tube_segments: BTreeMap::from([("1/10".to_string(), 1), ("1/11".to_string(), 1)]),
+            ..IncrementReport::default()
+        };
+        let err = miscounted.accounts_for().unwrap_err();
+        assert!(err.contains("管段账不平"), "{err}");
+
+        let closed = IncrementReport {
+            derived_to_regenerate: 2,
+            derived_regenerated: 2,
+            tube_upserts: 3,
+            tube_segments: BTreeMap::from([("1/10".to_string(), 1), ("1/11".to_string(), 2)]),
+            ..IncrementReport::default()
+        };
+        assert!(closed.accounts_for().is_ok());
     }
 
     /// 执行账：regenerated + skipped + failed 必须等于计划单元数。

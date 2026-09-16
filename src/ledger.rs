@@ -355,6 +355,14 @@ impl ChangeLedger {
         &self.placement_only
     }
 
+    /// 每个候选在 L4 的去向，按登记顺序，`(word0, word1)` 键。守恒（账上每个 refno 恰好一条）由
+    /// [`Self::accounts_for`] 判，这里只原样给出。消费者（gen-model 刚体前移的规划器，ADR-066 D1 规则 2）
+    /// 拿它把 [`Disposition::NoModel`] 的候选——元数据门放行的、或落在没有模型归属的元素上的——从
+    /// 「同根另有改动」里摘出去：它们没折进任何单元 / 派生容器，没有几何跟着变，不该把根踢回整根重算。
+    pub fn dispositions(&self) -> &[((u32, u32), Disposition)] {
+        &self.dispositions
+    }
+
     pub fn of_kind(&self, kind: ChangeKind) -> impl Iterator<Item = &LedgerEntry> {
         self.entries.iter().filter(move |entry| entry.kind == kind)
     }
