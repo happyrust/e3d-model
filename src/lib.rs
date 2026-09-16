@@ -79,8 +79,8 @@ pub use element_diff::{ElementDiff, MemberDelta, diff_element};
 pub use elmodl::{GeneratedElement, GeometryId, ModelError};
 pub use extrusion_reuse::ExtrusionReuseStats;
 pub use increment::{
-    AffectedClosure, IncrementError, IncrementOutcome, IncrementReport, UpdatePlan, WindowDiff,
-    collect_window, increment_update,
+    AffectedClosure, IncrementError, IncrementOutcome, IncrementReport, NoModelTier, UpdatePlan,
+    WindowDiff, collect_window, increment_update,
 };
 pub use ledger::{ChangeKind, ChangeLedger, ChangeTally, LedgerEntry};
 pub use mesh::TriMesh;

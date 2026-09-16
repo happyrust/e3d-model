@@ -35,9 +35,12 @@
 //!      重算（见下「派生单元」一节）；
 //!    - 改动落在没有单元归属、也不在任何路由射程里的元素上（容器改名、NonGraphic、
 //!      未建的目录件）→ 记 `no_model` 账，一个都不许蒸发；
-//!    - 调用方经 [`plan_update_with`] 判为「只改了业务元数据、无结构变化」的 Modified
-//!      候选（gen-model 的 DataOnly ∧ DCHC=0 名单）→ 同样记 `no_model`、不上卷不级联，
-//!      但账本照记、闭包种子照收（凭证前移那一层不因此少收）。
+//!    - 调用方经 [`plan_update_with`] 判为「只改了不影响模型的属性、无结构变化」的 Modified
+//!      候选（gen-model 的两票：E3D 字典 DCHC=0 ∧ 生成器不读；2026-09-15 之前是 DataOnly ∧
+//!      DCHC=0 的五个名字）→ 同样记 `no_model`、不上卷不级联，但账本照记、闭包种子照收
+//!      （候选与它的祖先链照进闭包；闭包里能少的只有它本来会触发的粗级联扇出——桥架分支整条
+//!      重建那片单元——那些根由调用方按两票前移）；调用方顺带说是哪一档（[`NoModelTier`]），
+//!      只进两个横切计数。
 //! 3. **执行** [`execute_plan`]：逐单元重建（与全量管线同一条 [`model_element`]），
 //!    产出 Upsert / Remove 动作。重建结果为 Skipped / 失败时**发 Remove**——
 //!    Core 的次序是先擦后画，画不出来那一行就该保持擦掉的状态，绝不留陈旧网格。
@@ -221,10 +224,15 @@ pub struct IncrementReport {
     /// 与「这个改动落在没有模型归属的元素上」是两回事。老实现没有 L2，
     /// 这些候选一律当「变了」照常上卷重建。
     pub unchanged: usize,
-    /// `no_model` 里由调用方的「不影响模型」谓词判掉的那部分（[`plan_update_with`]）：
-    /// 记录真的变了，但改动全部落在业务元数据上（NAME / DESC …），成员 / 属主 / 类型都没动。
+    /// `no_model` 里由调用方的「不影响模型」谓词判掉、且谓词说是**老名单**那一档的候选
+    /// （[`NoModelTier::MetadataOnly`]，[`plan_update_with`]）：记录真的变了，但改动全部落在业务
+    /// 元数据上（NAME / DESC / PURP / FUNC / LCHKDA），成员 / 属主 / 类型都没动。
     /// 横切计数，已含在 `no_model` 里——它回答的是「这一窗省了多少次上卷」，不是第四本账。
     pub metadata_only: usize,
+    /// `no_model` 里由同一条谓词判掉、但至少一个属性落在**新档**的候选（[`NoModelTier::UnreadAttribute`]，
+    /// 2026-09-15 S6）：字典 DCHC=0 且生成器不读、却不在老名单里的属性。与 `metadata_only` 互斥、
+    /// 同样已含在 `no_model` 里；两个数分开记，是让「门变宽以后多省了多少」在回执上读得出来。
+    pub unread_attribute: usize,
     /// 折算进了某个单元动作（重建 / 移除，含被去重掉的）的候选数。
     pub rolled_up: usize,
     /// `rolled_up` 里**只**靠变换级联折进去的候选数（自身与上方都没有单元 / 容器，
@@ -346,6 +354,14 @@ impl IncrementReport {
                 self.cascade_only, self.rolled_up
             ));
         }
+        let gated = self.metadata_only + self.unread_attribute;
+        let no_model = self.no_model.values().sum::<usize>();
+        if gated > no_model {
+            return Err(format!(
+                "metadata_only {} + unread_attribute {} = {gated} 是 no_model {no_model} 的子集，不能比它大",
+                self.metadata_only, self.unread_attribute
+            ));
+        }
         let executed = self.regenerated + self.regen_skipped.len() + self.regen_failed.len();
         if executed != self.units_to_regenerate {
             return Err(format!(
@@ -372,9 +388,9 @@ impl IncrementReport {
     pub fn totals_line(&self) -> String {
         format!(
             "window {}→{}: candidates={} (+{} ~{} -{}) rolled_up={} unchanged={} no_model={} \
-             (metadata_only={}) unresolved={} cascades={} units regen={} remove={} derived={} | \
-             regenerated={} skipped={} failed={} | derived regen={} retired={} failed={} \
-             tubes +{} -{}",
+             (metadata_only={} unread_attribute={}) unresolved={} cascades={} units regen={} \
+             remove={} derived={} | regenerated={} skipped={} failed={} | derived regen={} \
+             retired={} failed={} tubes +{} -{}",
             self.base_sesno,
             self.target_sesno,
             self.candidates,
@@ -385,6 +401,7 @@ impl IncrementReport {
             self.unchanged,
             self.no_model.values().sum::<usize>(),
             self.metadata_only,
+            self.unread_attribute,
             self.unresolved.len(),
             self.cascades.len(),
             self.units_to_regenerate,
@@ -1001,29 +1018,47 @@ pub fn plan_update_bounded(
     window: &WindowDiff,
     limits: PlanLimits,
 ) -> UpdatePlan {
-    plan_update_with(base, target, window, limits, |_| false)
+    plan_update_with(base, target, window, limits, |_| None)
 }
 
-/// [`plan_update_bounded`] 外加一道调用方给的「不影响模型」谓词（gen-model 2026-09-08）。
+/// 调用方「不影响模型」谓词对一个 Modified 候选的回答里带的档位（[`plan_update_with`]）。
 ///
-/// `metadata_only(diff)` 对一个 **Modified** 候选回 `true` = 这次改动全部落在业务元数据上
-/// （NAME / DESC 之类），成员 / 属主 / 类型 / opaque 都没动：**不上卷、不级联**，
-/// 记 `no_model`（横切计数 [`IncrementReport::metadata_only`]）。哪些属性算元数据由调用方说
-/// ——本 crate 不认识 gen-model 的效果表与 E3D 字典的 DCHC，名单只写一份。
+/// 去向只有一个——记 `no_model`、不上卷、不级联；档位只决定横切计数落在
+/// [`IncrementReport::metadata_only`] 还是 [`IncrementReport::unread_attribute`]。
+/// 哪些属性算哪一档由调用方说（gen-model `model_impact`），本 crate 只数。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum NoModelTier {
+    /// 老名单（2026-09-08 立的门）：改动全部落在业务元数据 NAME / DESC / PURP / FUNC / LCHKDA 上。
+    MetadataOnly,
+    /// 新档（2026-09-15 S6）：至少一个属性是「E3D 字典 DCHC=0 ∧ 生成器不读」而不在老名单里。
+    UnreadAttribute,
+}
+
+/// [`plan_update_bounded`] 外加一道调用方给的「不影响模型」谓词（gen-model 2026-09-08；
+/// 2026-09-15 S6 起回答带档位）。
+///
+/// `metadata_only(diff)` 对一个 **Modified** 候选回 `Some(档)` = 这次改动全部落在不影响模型的
+/// 属性上（NAME / DESC 之类的业务元数据，或 core 不重画、生成器也不读的属性），成员 / 属主 /
+/// 类型 / opaque 都没动：**不上卷、不级联**，记 `no_model`，档位进横切计数
+/// [`IncrementReport::metadata_only`] / [`IncrementReport::unread_attribute`]。哪些属性算不影响模型、
+/// 算哪一档由调用方说——本 crate 不认识 gen-model 的效果表、E3D 字典的 DCHC 与生成读取集合，名单只写一份。
 ///
 /// 三条不变量，调用方与本函数各守一半：
 /// - 账本**照记**（`ledger.record` 在谓词之前）：这些候选仍是 [`UpdatePlan::affected_closure`]
 ///   的种子，「根不在闭包里 = 子树什么都没动」的凭证前移判据一字不改，只是不再把它们上卷成
-///   `regenerate`；房间结构触发那类读账本的消费者也照常看得见它们。
+///   `regenerate`、也不再从它们出发级联（桥架分支「子树里改了任何东西就整条重建」那类按 noun
+///   不按属性判的扇出随之省掉——那片单元不进闭包、它们的根由调用方按两票前移，gen-model 的
+///   全语料两态门钉「闭包只少不多、少掉的全是少重建的单元及其祖先」）；房间结构触发那类读账本的
+///   消费者也照常看得见它们。
 /// - 谓词只对 Modified 候选起作用：Inserted / Deleted 没有「只改了元数据」这一说。
-/// - 谓词返回 `true` 的候选必须真的没有结构变化——那是调用方谓词的责任，这里不复核；
-///   `|_| false` 就是 [`plan_update_bounded`]。
+/// - 谓词返回 `Some` 的候选必须真的没有结构变化——那是调用方谓词的责任，这里不复核；
+///   `|_| None` 就是 [`plan_update_bounded`]。
 pub fn plan_update_with(
     base: &Arc<DbSet>,
     target: &Arc<DbSet>,
     window: &WindowDiff,
     limits: PlanLimits,
-    metadata_only: impl Fn(&ElementDiff) -> bool,
+    metadata_only: impl Fn(&ElementDiff) -> Option<NoModelTier>,
 ) -> UpdatePlan {
     let mut report = IncrementReport {
         base_sesno: window.base_sesno,
@@ -1301,10 +1336,13 @@ pub fn plan_update_with(
                     report.unchanged += 1;
                     continue;
                 }
-                // 调用方的「不影响模型」门（见 [`plan_update_with`]）：改动全部落在业务元数据上、
+                // 调用方的「不影响模型」门（见 [`plan_update_with`]）：改动全部落在不影响模型的属性上、
                 // 无结构变化 → 记 no_model，不上卷、不级联。账本上面已经记过，闭包种子照收。
-                if metadata_only(&diff) {
-                    report.metadata_only += 1;
+                if let Some(tier) = metadata_only(&diff) {
+                    match tier {
+                        NoModelTier::MetadataOnly => report.metadata_only += 1,
+                        NoModelTier::UnreadAttribute => report.unread_attribute += 1,
+                    }
                     settle(&mut report, &mut ledger, refno, &diff.noun, false);
                     continue;
                 }
@@ -1805,6 +1843,31 @@ mod tests {
     #[test]
     fn default_limits_are_unbounded() {
         assert_eq!(PlanLimits::default().max_candidates, None);
+    }
+
+    /// 元数据门省下的两档（`metadata_only` / `unread_attribute`）都是 `no_model` 的横切计数：
+    /// 两数之和不能比 `no_model` 大，且两个都要在 `totals_line` 上读得到（2026-09-15 S6）。
+    #[test]
+    fn the_two_gate_tiers_are_a_subset_of_no_model_and_both_show_on_the_totals_line() {
+        let mut report = IncrementReport {
+            candidates: 5,
+            rolled_up: 2,
+            metadata_only: 1,
+            unread_attribute: 2,
+            ledger_refnos: 5,
+            ..IncrementReport::default()
+        };
+        report.no_model.insert("ELBO".into(), 3);
+        assert!(report.accounts_for().is_ok());
+        let line = report.totals_line();
+        assert!(
+            line.contains("no_model=3 (metadata_only=1 unread_attribute=2)"),
+            "{line}"
+        );
+
+        report.unread_attribute = 3;
+        let err = report.accounts_for().unwrap_err();
+        assert!(err.contains("unread_attribute 3"), "{err}");
     }
 
     /// 派生执行账：regenerated + retired + failed 必须等于计划容器数。
