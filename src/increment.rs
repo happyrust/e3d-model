@@ -233,6 +233,9 @@ pub struct IncrementReport {
     /// 2026-09-15 S6）：字典 DCHC=0 且生成器不读、却不在老名单里的属性。与 `metadata_only` 互斥、
     /// 同样已含在 `no_model` 里；两个数分开记，是让「门变宽以后多省了多少」在回执上读得出来。
     pub unread_attribute: usize,
+    /// `no_model` 里由同一条谓词判掉、改动**只**落在戳上的候选（[`NoModelTier::CacheStamp`]，2026-09-17 Q6）：
+    /// 整库缓存重建的扫写、或挪一件时被顺带盖戳的子树成员。与前两档互斥、同样已含在 `no_model` 里。
+    pub cache_stamp: usize,
     /// 折算进了某个单元动作（重建 / 移除，含被去重掉的）的候选数。
     pub rolled_up: usize,
     /// `rolled_up` 里**只**靠变换级联折进去的候选数（自身与上方都没有单元 / 容器，
@@ -363,12 +366,12 @@ impl IncrementReport {
                 self.cascade_only, self.rolled_up
             ));
         }
-        let gated = self.metadata_only + self.unread_attribute;
+        let gated = self.metadata_only + self.unread_attribute + self.cache_stamp;
         let no_model = self.no_model.values().sum::<usize>();
         if gated > no_model {
             return Err(format!(
-                "metadata_only {} + unread_attribute {} = {gated} 是 no_model {no_model} 的子集，不能比它大",
-                self.metadata_only, self.unread_attribute
+                "metadata_only {} + unread_attribute {} + cache_stamp {} = {gated} 是 no_model {no_model} 的子集，不能比它大",
+                self.metadata_only, self.unread_attribute, self.cache_stamp
             ));
         }
         let executed = self.regenerated + self.regen_skipped.len() + self.regen_failed.len();
@@ -410,7 +413,7 @@ impl IncrementReport {
     pub fn totals_line(&self) -> String {
         format!(
             "window {}→{}: candidates={} (+{} ~{} -{}) rolled_up={} unchanged={} no_model={} \
-             (metadata_only={} unread_attribute={}) unresolved={} cascades={} units regen={} \
+             (metadata_only={} unread_attribute={} cache_stamp={}) unresolved={} cascades={} units regen={} \
              remove={} derived={} | regenerated={} skipped={} failed={} | derived regen={} \
              retired={} failed={} tubes +{} -{}",
             self.base_sesno,
@@ -424,6 +427,7 @@ impl IncrementReport {
             self.no_model.values().sum::<usize>(),
             self.metadata_only,
             self.unread_attribute,
+            self.cache_stamp,
             self.unresolved.len(),
             self.cascades.len(),
             self.units_to_regenerate,
@@ -1046,23 +1050,29 @@ pub fn plan_update_bounded(
 /// 调用方「不影响模型」谓词对一个 Modified 候选的回答里带的档位（[`plan_update_with`]）。
 ///
 /// 去向只有一个——记 `no_model`、不上卷、不级联；档位只决定横切计数落在
-/// [`IncrementReport::metadata_only`] 还是 [`IncrementReport::unread_attribute`]。
-/// 哪些属性算哪一档由调用方说（gen-model `model_impact`），本 crate 只数。
+/// [`IncrementReport::metadata_only`]、[`IncrementReport::unread_attribute`] 还是
+/// [`IncrementReport::cache_stamp`]。哪些属性算哪一档由调用方说（gen-model `model_impact`），本 crate 只数。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum NoModelTier {
     /// 老名单（2026-09-08 立的门）：改动全部落在业务元数据 NAME / DESC / PURP / FUNC / LCHKDA 上。
     MetadataOnly,
     /// 新档（2026-09-15 S6）：至少一个属性是「E3D 字典 DCHC=0 ∧ 生成器不读」而不在老名单里。
     UnreadAttribute,
+    /// 第三档（2026-09-17 Q6）：改动**只**落在戳上（[`crate::element_diff::PLACEMENT_STAMP_ATTRIBUTES`]，
+    /// 今天只有 `CACHID`）——Design 应用随每次图形重建写下的缓存 `+1` 计数，写方不是设计变更，
+    /// 生成器一处不读。戳混在别的放行属性里时不改档（跟着 `NAME` 记老档、跟着 `DUTY` 记新档），
+    /// 只有一个字都没动、就戳跳了一下的才记这里。
+    CacheStamp,
 }
 
 /// [`plan_update_bounded`] 外加一道调用方给的「不影响模型」谓词（gen-model 2026-09-08；
 /// 2026-09-15 S6 起回答带档位）。
 ///
 /// `metadata_only(diff)` 对一个 **Modified** 候选回 `Some(档)` = 这次改动全部落在不影响模型的
-/// 属性上（NAME / DESC 之类的业务元数据，或 core 不重画、生成器也不读的属性），成员 / 属主 /
-/// 类型 / opaque 都没动：**不上卷、不级联**，记 `no_model`，档位进横切计数
-/// [`IncrementReport::metadata_only`] / [`IncrementReport::unread_attribute`]。哪些属性算不影响模型、
+/// 属性上（NAME / DESC 之类的业务元数据，或 core 不重画、生成器也不读的属性，或只有戳 `CACHID`
+/// 跳了一下），成员 / 属主 / 类型 / opaque 都没动：**不上卷、不级联**，记 `no_model`，档位进横切计数
+/// [`IncrementReport::metadata_only`] / [`IncrementReport::unread_attribute`] /
+/// [`IncrementReport::cache_stamp`]。哪些属性算不影响模型、
 /// 算哪一档由调用方说——本 crate 不认识 gen-model 的效果表、E3D 字典的 DCHC 与生成读取集合，名单只写一份。
 ///
 /// 三条不变量，调用方与本函数各守一半：
@@ -1364,6 +1374,7 @@ pub fn plan_update_with(
                     match tier {
                         NoModelTier::MetadataOnly => report.metadata_only += 1,
                         NoModelTier::UnreadAttribute => report.unread_attribute += 1,
+                        NoModelTier::CacheStamp => report.cache_stamp += 1,
                     }
                     settle(&mut report, &mut ledger, refno, &diff.noun, false);
                     continue;
@@ -1872,29 +1883,34 @@ mod tests {
         assert_eq!(PlanLimits::default().max_candidates, None);
     }
 
-    /// 元数据门省下的两档（`metadata_only` / `unread_attribute`）都是 `no_model` 的横切计数：
-    /// 两数之和不能比 `no_model` 大，且两个都要在 `totals_line` 上读得到（2026-09-15 S6）。
+    /// 元数据门省下的三档（`metadata_only` / `unread_attribute` / `cache_stamp`）都是 `no_model` 的横切计数：
+    /// 三数之和不能比 `no_model` 大，且三个都要在 `totals_line` 上读得到（2026-09-15 S6；2026-09-17 Q6 加第三档）。
     #[test]
-    fn the_two_gate_tiers_are_a_subset_of_no_model_and_both_show_on_the_totals_line() {
+    fn the_gate_tiers_are_a_subset_of_no_model_and_all_show_on_the_totals_line() {
         let mut report = IncrementReport {
-            candidates: 5,
+            candidates: 6,
             rolled_up: 2,
             metadata_only: 1,
             unread_attribute: 2,
-            ledger_refnos: 5,
+            cache_stamp: 1,
+            ledger_refnos: 6,
             ..IncrementReport::default()
         };
-        report.no_model.insert("ELBO".into(), 3);
+        report.no_model.insert("ELBO".into(), 4);
         assert!(report.accounts_for().is_ok());
         let line = report.totals_line();
         assert!(
-            line.contains("no_model=3 (metadata_only=1 unread_attribute=2)"),
+            line.contains("no_model=4 (metadata_only=1 unread_attribute=2 cache_stamp=1)"),
             "{line}"
         );
 
         report.unread_attribute = 3;
         let err = report.accounts_for().unwrap_err();
         assert!(err.contains("unread_attribute 3"), "{err}");
+        report.unread_attribute = 2;
+        report.cache_stamp = 2;
+        let err = report.accounts_for().unwrap_err();
+        assert!(err.contains("cache_stamp 2"), "{err}");
     }
 
     /// 派生执行账：regenerated + retired + failed 必须等于计划容器数。

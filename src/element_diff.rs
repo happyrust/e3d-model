@@ -60,7 +60,9 @@ const TUBI_CHANGE_GATE: [&str; 4] = ["POS", "ORI", "ITLE", "SPRE"];
 /// 0 红（`docs/evidence/2026-09-16-rigid-exclusion-parity-ignore-cachid.md`）。生成器一处都不读它
 /// （它不在读取集合里：`gen_read_set.py` 把这张表的名字单列成 `stamp_literals`，守卫钉两边逐名相等），
 /// 所以 [`ElementDiff::is_placement_only`] 判「只动了摆放」时忽略它；但它**单独**变不算动了摆放
-/// （那是整库缓存重建的扫写，照旧走 regen——gen-model 计划 §8 Q6 另议），元数据门里也照旧不放行
+/// （摆放一项都没动，不是锚点）。元数据门那边 2026-09-17 Q6 起把这张表当第一票的例外（字典按构造
+/// 收不到它）：只有戳跳了的候选记 `no_model` 第三档 [`crate::increment::NoModelTier::CacheStamp`]，
+/// 不上卷、不级联（gen-model `model_impact::attribute_is_metadata_only`）；此前它在元数据门里不放行
 /// （字典没给它投票）。
 pub const PLACEMENT_STAMP_ATTRIBUTES: [&str; 1] = ["CACHID"];
 
