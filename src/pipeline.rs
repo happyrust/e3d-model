@@ -45,8 +45,8 @@ use crate::extrusion_reuse::ExtrusionReuseStats;
 use crate::hvac_tube::duct_departure_section;
 use crate::route::{
     ArriveCheck, PPointResolver, Route, RouteEnd, SlotAlignment, TubeOutcome, TubeSection,
-    ZERO_LENGTH_TOL_MM, bore_mismatch, build_tube, resolve_end, slot_alignment, slot_ordinals,
-    tube_length, tube_outer_diameter, walk_route,
+    TubeSlot, ZERO_LENGTH_TOL_MM, bore_mismatch, build_tube, resolve_end, slot_alignment,
+    slot_ordinals, tube_length, tube_outer_diameter, walk_route,
 };
 
 /// 一条有名有姓的记录。
@@ -88,7 +88,37 @@ pub struct ImpliedTubes {
     pub by_owner_noun: BTreeMap<String, usize>,
     /// 退化情形明细，P2 出几何时才填得上。
     pub degenerate: ImpliedTubeDegenerate,
+    /// **判定不画**的槽位数，按判据分账（完整计数，不受样本上限影响）。
+    pub not_drawn_by_reason: BTreeMap<String, usize>,
+    /// 判定不画的槽位点名样本，最多 [`TUBE_NOT_DRAWN_SAMPLE_CAP`] 条。
+    pub not_drawn: Vec<TubeNotDrawn>,
 }
+
+/// 一根**判定不画**的管身槽位的点名记录。
+///
+/// [`ImpliedTubeDegenerate`] 那几个计数回答「这一跑退化了几根」，回答不了运维当场要问的
+/// 那一句：**少的是哪一根、为什么**。两者都要：计数进趋势，点名进日志。
+///
+/// 立这本账的由头是 2026-09-18 的原生对拍：BRAN `24381/103536` 的 `HBOR` 9 → 20 之后，
+/// E3D 自己也不画那根头段管（两侧同为 9 根），所以「口径对不上不产管」不是缺陷；
+/// 可引擎这一下 `failures=[]`、`成功 1 / 失败 0`、全程 0 条 WARN，下游只看得见少了一节管，
+/// 没有任何线索可查。少一根管与少一根管之间的差别（按设计 / 缺陷）必须留在账上。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct TubeNotDrawn {
+    /// 路由容器 refno（`a/b`）。管身没有自己的库记录，只能报容器。
+    pub container_refno: String,
+    /// 同站点对内的出现序，与 [`crate::elmodl::GeometryId::ImpliedTube`] 的键同一份——
+    /// 报一个别处对不上的序号，等于没报。
+    pub route_ordinal: u32,
+    pub from_refno: String,
+    pub to_refno: String,
+    /// 不画的判据，与两道门、`invalid_tubi_reason` 同一套说法。
+    pub reason: &'static str,
+}
+
+/// 点名样本的条数上限。整库初始化一跑能退化上千根，点名账是给人看的、不是第二份计数；
+/// 计数在 [`ImpliedTubes::not_drawn_by_reason`] 里是完整的。
+pub const TUBE_NOT_DRAWN_SAMPLE_CAP: usize = 32;
 
 impl ImpliedTubes {
     /// 全部槽位都量过了才给总长，否则留 `None`。
@@ -98,6 +128,73 @@ impl ImpliedTubes {
     pub fn settle_total_length(&mut self) {
         self.total_length = (self.measured == self.count).then_some(self.measured_length_mm);
     }
+
+    /// 判定不画的槽位总数（分账各值之和）。
+    pub fn not_drawn_total(&self) -> usize {
+        self.not_drawn_by_reason.values().sum()
+    }
+
+    /// 一行人读的「这一跑少了哪几根管、为什么」，没有就 `None`——
+    /// 无事的时候不该往日志里塞字，那样它就又变成了背景噪声。
+    pub fn not_drawn_line(&self) -> Option<String> {
+        let total = self.not_drawn_total();
+        if total == 0 {
+            return None;
+        }
+        let by_reason = self
+            .not_drawn_by_reason
+            .iter()
+            .map(|(reason, count)| format!("{reason}={count}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let named = self
+            .not_drawn
+            .iter()
+            .map(|slot| {
+                format!(
+                    "{}#{} {}→{} {}",
+                    slot.container_refno,
+                    slot.route_ordinal,
+                    slot.from_refno,
+                    slot.to_refno,
+                    slot.reason
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("；");
+        let elided = total.saturating_sub(self.not_drawn.len());
+        let tail = if elided > 0 {
+            format!("；另 {elided} 根同类未点名")
+        } else {
+            String::new()
+        };
+        Some(format!("未产管={total}（{by_reason}：{named}{tail}）"))
+    }
+}
+
+/// 记一根判定不画的槽位：计数照记，点名到上限为止。
+fn record_not_drawn(
+    ledger: &mut ImpliedTubes,
+    container: &DbElement,
+    slot: &TubeSlot,
+    route_ordinal: u32,
+    reason: &'static str,
+) {
+    *ledger
+        .not_drawn_by_reason
+        .entry(reason.to_string())
+        .or_insert(0) += 1;
+    if ledger.not_drawn.len() >= TUBE_NOT_DRAWN_SAMPLE_CAP {
+        return;
+    }
+    let (from_station, to_station) = slot.station_refnos();
+    ledger.not_drawn.push(TubeNotDrawn {
+        container_refno: container.refno().to_string(),
+        route_ordinal,
+        from_refno: from_station.to_string(),
+        to_refno: to_station.to_string(),
+        reason,
+    });
 }
 
 /// 建不出几何的管身分类计数（算法文档 §4 的退化表）。
@@ -851,6 +948,7 @@ fn build_route_tubes(
                     .ppoint_db_not_open_by_dbno
                     .entry(dbno.to_string())
                     .or_insert(0) += 1;
+                record_not_drawn(ledger, container, slot, route_ordinal, "ppoint db not open");
                 continue;
             }
             Err(DbElementError::NotFound { dbno, .. }) => {
@@ -861,11 +959,19 @@ fn build_route_tubes(
                     .ppoint_target_not_found_by_dbno
                     .entry(dbno.to_string())
                     .or_insert(0) += 1;
+                record_not_drawn(
+                    ledger,
+                    container,
+                    slot,
+                    route_ordinal,
+                    "ppoint target not found",
+                );
                 continue;
             }
             Err(error) => return Err(error),
         }) else {
             ledger.degenerate.missing_ppoint += 1;
+            record_not_drawn(ledger, container, slot, route_ordinal, "missing ppoint");
             continue;
         };
         // E3D 的第一道门：槽位要与两端方向共轴且朝前，否则不画（见
@@ -1003,7 +1109,11 @@ fn build_route_tubes(
                 // Alignment and head-condition checks are native E3D draw
                 // gates.  Keep their measurements and detailed ledger counts,
                 // but never leak a diagnostic cylinder into the model/RVM.
-                if invalid_reason.is_some() {
+                //
+                // 门关得对不等于可以不吭声：这一根本来量得出长度、下游也看得见它没了，
+                // 所以按判据点名留痕（[`ImpliedTubes::not_drawn`]），别让它无声消失。
+                if let Some(reason) = invalid_reason {
+                    record_not_drawn(ledger, container, slot, route_ordinal, reason);
                     continue;
                 }
                 ledger.built += 1;
@@ -1046,9 +1156,12 @@ fn build_route_tubes(
                     }],
                 });
             }
+            // 零长槽位不进点名账：两端点重合是路由上的常态（E3D 同样不画），
+            // 一跑上千条，点名它等于把这本账淹掉。计数照记。
             TubeOutcome::ZeroLength { .. } => ledger.degenerate.zero_length += 1,
             TubeOutcome::NoDirection | TubeOutcome::NoRadius | TubeOutcome::Failed(_) => {
-                ledger.degenerate.unbuildable += 1
+                ledger.degenerate.unbuildable += 1;
+                record_not_drawn(ledger, container, slot, route_ordinal, "unbuildable");
             }
         }
     }
@@ -1186,6 +1299,19 @@ impl Report {
                 .entry(dbno)
                 .or_insert(0) += count;
         }
+        // 点名账合并时计数全收、样本收到上限为止：一个子树把样本占满，不能让后面
+        // 子树的**计数**也跟着丢——那样「未产管=1」与「未产管=300」在报告上就一样了。
+        for (reason, count) in implied_tubes.not_drawn_by_reason {
+            *self
+                .implied_tubes
+                .not_drawn_by_reason
+                .entry(reason)
+                .or_insert(0) += count;
+        }
+        let room = TUBE_NOT_DRAWN_SAMPLE_CAP.saturating_sub(self.implied_tubes.not_drawn.len());
+        self.implied_tubes
+            .not_drawn
+            .extend(implied_tubes.not_drawn.into_iter().take(room));
         for (target, source) in [
             (&mut self.catalog_pending, catalog_pending),
             (&mut self.centreline_only, centreline_only),
@@ -1561,5 +1687,151 @@ mod tests {
 
         unmeasured.merge(both);
         assert_eq!(unmeasured.implied_tubes.total_length, None);
+    }
+
+    fn not_drawn(container: &str, ordinal: u32, reason: &'static str) -> TubeNotDrawn {
+        TubeNotDrawn {
+            container_refno: container.into(),
+            route_ordinal: ordinal,
+            from_refno: "24381/103536".into(),
+            to_refno: "24381/103537".into(),
+            reason,
+        }
+    }
+
+    /// 少一根管必须点得出名：容器、槽位序号、两端、判据，一样都不能少。
+    ///
+    /// 这五样正是 2026-09-18 那次排查缺的东西——当时账面只有 `failures=[]`，
+    /// 要靠对着 E3D 导 RVM 才知道少的是哪一根。
+    #[test]
+    fn a_refused_slot_is_named_with_its_container_ordinal_ends_and_reason() {
+        let mut report = Report::default();
+        report
+            .implied_tubes
+            .not_drawn
+            .push(not_drawn("24381/103536", 0, "bore mismatch"));
+        report
+            .implied_tubes
+            .not_drawn_by_reason
+            .insert("bore mismatch".into(), 1);
+
+        let line = report
+            .implied_tubes
+            .not_drawn_line()
+            .expect("有未产管就必须有这一行");
+        for shown in [
+            "未产管=1",
+            "bore mismatch=1",
+            "24381/103536#0",
+            "24381/103536→24381/103537",
+        ] {
+            assert!(line.contains(shown), "{shown} 不在 {line}");
+        }
+        assert!(
+            !line.contains("另"),
+            "没被截断就不该说「另 N 根同类未点名」：{line}"
+        );
+    }
+
+    /// 什么都没少的那一跑不许留话。诊断天天在，就等于没有诊断。
+    #[test]
+    fn a_clean_run_says_nothing_about_tubes_not_drawn() {
+        assert_eq!(Report::default().implied_tubes.not_drawn_line(), None);
+        assert_eq!(Report::default().implied_tubes.not_drawn_total(), 0);
+    }
+
+    /// 样本有上限、计数没有：一个子树把样本占满之后，后面子树的**计数**仍要进账，
+    /// 否则「未产管=1」与「未产管=300」在报告上长得一模一样。
+    #[test]
+    fn capping_the_named_samples_must_not_cap_the_count() {
+        let mut first = Report::default();
+        for ordinal in 0..TUBE_NOT_DRAWN_SAMPLE_CAP as u32 {
+            first
+                .implied_tubes
+                .not_drawn
+                .push(not_drawn("24381/103536", ordinal, "bore mismatch"));
+        }
+        first.implied_tubes.not_drawn_by_reason.insert(
+            "bore mismatch".into(),
+            TUBE_NOT_DRAWN_SAMPLE_CAP,
+        );
+
+        let mut second = Report::default();
+        second
+            .implied_tubes
+            .not_drawn
+            .push(not_drawn("24381/147828", 3, "reversed"));
+        second
+            .implied_tubes
+            .not_drawn_by_reason
+            .insert("reversed".into(), 7);
+
+        first.merge(second);
+        assert_eq!(
+            first.implied_tubes.not_drawn.len(),
+            TUBE_NOT_DRAWN_SAMPLE_CAP,
+            "点名样本不许超过上限"
+        );
+        assert_eq!(
+            first.implied_tubes.not_drawn_total(),
+            TUBE_NOT_DRAWN_SAMPLE_CAP + 7,
+            "计数要全收"
+        );
+        let line = first.implied_tubes.not_drawn_line().expect("有未产管");
+        assert!(line.contains("reversed=7"), "分账要带上没点到名的那些：{line}");
+        assert!(line.contains("另 7 根同类未点名"), "{line}");
+    }
+
+    /// 每一处「这根槽位不出管」的分支都要留痕——除了零长那一档（路由上的常态，
+    /// E3D 同样不画，点名它会把这本账淹掉）。
+    ///
+    /// 这条看源码：漏记一处的表现不是报错，是**又回到从前**——账面全绿、日志一声不响，
+    /// 而下游少了一节管。行为测试看不见「没写的那一行」。
+    #[test]
+    fn every_refusal_in_build_route_tubes_leaves_a_named_record() {
+        let source = include_str!("pipeline.rs");
+        let body = source
+            .split_once("\nfn build_route_tubes(")
+            .expect("build_route_tubes 必须在")
+            .1
+            .split_once("\nfn push_members(")
+            .expect("push_members 紧跟 build_route_tubes 之后")
+            .0;
+        assert!(
+            body.contains("if let Some(reason) = invalid_reason {")
+                && body.contains("record_not_drawn(ledger, container, slot, route_ordinal, reason)"),
+            "两道门判不画的那一根必须按判据点名"
+        );
+        // 每一处 `continue`（= 这根槽位就此不出管）往回数几行必须能看见点名那一发。
+        let lines = body.lines().map(str::trim).collect::<Vec<_>>();
+        let refusals = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| **line == "continue;")
+            .collect::<Vec<_>>();
+        assert!(
+            refusals.len() >= 3,
+            "build_route_tubes 里应当有多处 continue，守卫却只数到 {}",
+            refusals.len()
+        );
+        for (at, _) in refusals {
+            let from = at.saturating_sub(8);
+            assert!(
+                lines[from..at]
+                    .iter()
+                    .any(|line| line.starts_with("record_not_drawn(")),
+                "第 {at} 行那处 continue 之前没有 record_not_drawn：{:?}",
+                &lines[from..=at]
+            );
+        }
+        // 不出管的第四条路不走 continue（`build_tube` 建不出来），也要在账上。
+        assert!(
+            body.contains(r#"record_not_drawn(ledger, container, slot, route_ordinal, "unbuildable")"#),
+            "建不出来的那一档也要点名"
+        );
+        assert!(
+            body.contains("TubeOutcome::ZeroLength { .. } => ledger.degenerate.zero_length += 1"),
+            "零长那一档仍只记数不点名，改法要连同上面的注释一起改"
+        );
     }
 }
