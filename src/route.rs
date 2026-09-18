@@ -915,6 +915,69 @@ mod tests {
         }
     }
 
+    /// 纯平移那一档**真正发出去的东西**：一根长度错了整整一个平移量的管，不是一个缺口。
+    ///
+    /// 上一条钉的是「共轴门拦不住它」，停在判据上；这一条接着走到 [`build_tube`]——
+    /// 两种读法**都** `Built`、半径一模一样，只有长度差着那 1000 mm。转角那一档至少还会
+    /// 被判 `Reversed` / `Misaligned` 而整根丢掉，看得见少了什么；这一档发布出去的是一根
+    /// 看着正常、量着不对的管身，不跟 E3D 对拍就没有任何一处会响。
+    ///
+    /// 数是 2026-09-18 同一份设计状态换两个二进制跑出来的：ams7997 `24381/103251`
+    /// （`/Copy-of-1CIS001MT-YK/B1`，`HBOR 7`，首件是 BEND `24381/103252`）的属主 ZONE
+    /// `24381/103249` 沿 `HDIR` 整体平移 1000 mm（刚体平移，E3D 侧每根管长度一字不变），
+    /// 修复前把那根 824.0496 mm 的头段管发成 **1824.0496 mm**，两边半径同为 3.175。
+    /// 取证：`_runs/ams-init-1112-7997-20260917-mc/e3d-trans-105935/cmp-moved-prefix.csv`（前修）
+    /// 与 `cmp-moved-refixed.csv`（修后，同一份宏、同一份设计）。
+    #[test]
+    fn a_pure_translation_publishes_a_tube_that_is_exactly_the_translation_too_long() {
+        let hdir = DVec3::new(0.5877852439880371, 0.80901700258255, 0.0);
+        let hpos = [1090.4100341796875, 1500.8199462890625, -2905.0];
+        // 基线态属主链是单位阵，所以库里头段管 `world_trans.translation` 的远端
+        // 就是首件 BEND 的目录 P 点本身。
+        let arrive_baseline = DVec3::new(1574.777, 2167.488, -2905.0);
+        let world = DMat4::from_translation(hdir * 1000.0);
+        // 构件端经 `world_matrix` 折叠，跟着属主一起走；容器端跟不跟着走，正是这条要钉的。
+        let arrive = RoutePoint {
+            pos: world.transform_point3(arrive_baseline),
+            dir: -hdir,
+            bore: Some(7.0),
+        };
+
+        let folded = place_container_point(world, hpos, Some(hdir.to_array()), Some(7.0));
+        let TubeOutcome::Built(good) = build_tube(&folded, &arrive, Some(6.35)) else {
+            panic!("折叠之后这根头段管该建得出来");
+        };
+        assert!(
+            (good.length_mm - 824.0496).abs() < 0.001,
+            "{} 不是 E3D 画的 824.0496",
+            good.length_mm
+        );
+        assert!((good.radius_mm - 3.175).abs() < 1.0e-12);
+
+        // 不折叠：**照样建得出来**。这一档没有缺口，只有一根多了 1000 mm 的管。
+        let unfolded = RoutePoint {
+            pos: DVec3::from_array(hpos),
+            dir: hdir,
+            bore: Some(7.0),
+        };
+        let TubeOutcome::Built(poisoned) = build_tube(&unfolded, &arrive, Some(6.35)) else {
+            panic!("这条缺陷的形态是发出一根错管、不是不发；建不出来就说明这条测试已经量错了东西");
+        };
+        assert!(
+            (poisoned.length_mm - 1824.0496).abs() < 0.001,
+            "{} 不是前修二进制发出去的 1824.0496",
+            poisoned.length_mm
+        );
+        assert!(
+            (poisoned.radius_mm - good.radius_mm).abs() < 1.0e-12,
+            "半径一模一样，账面上分不出好坏——只有长度不对"
+        );
+        assert!(
+            (poisoned.length_mm - good.length_mm - 1000.0).abs() < 0.001,
+            "多出来的正好是属主链那 1000 mm 平移"
+        );
+    }
+
     /// 源码钉：[`container_point`] 必须**接上** [`place_container_point`]。
     ///
     /// 上面两条测的是那个纯函数本身，而这条缺陷的全部形态是「没接上」——没接上时
