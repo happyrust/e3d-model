@@ -537,15 +537,7 @@ pub(crate) fn tube_outer_diameter_from_stub(
     stub_attributes: &[&str],
 ) -> Result<Option<f64>, DbElementError> {
     for name in stub_attributes {
-        let start = match departure.get_element(name) {
-            Ok(start) => start,
-            Err(DbElementError::UnknownAttribute { .. }) => None,
-            Err(error) => return Err(error),
-        };
-        let Some(start) = start else {
-            continue;
-        };
-        let Some(component) = follow_catalogue_component(start)? else {
+        let Some(component) = tube_component_of_stub(departure, name)? else {
             continue;
         };
         let para = match component.get_double_array("PARA") {
@@ -563,6 +555,30 @@ pub(crate) fn tube_outer_diameter_from_stub(
         }
     }
     Ok(None)
+}
+
+/// The TUBI component one stub attribute of a departure element selects: the
+/// stub (`HSTU`/`HSRO`/`LSTU`/`LSRO`) followed through the bounded
+/// `SPCO -> [SPCO ->]* SCOM` traversal. `None` when the attribute is not in the
+/// template, is unset, or the chain does not reach a component.
+///
+/// [`tube_outer_diameter_from_stub`] reads the pipe outside diameter off this
+/// component's `PARA[2]`; the HVAC straight ([`crate::hvac_tube`]) reads the
+/// cross-section off its `GMRE` primitives instead, so the component itself
+/// is exposed here rather than each caller repeating the walk.
+pub(crate) fn tube_component_of_stub(
+    departure: &DbElement,
+    stub_attribute: &str,
+) -> Result<Option<DbElement>, DbElementError> {
+    let start = match departure.get_element(stub_attribute) {
+        Ok(start) => start,
+        Err(DbElementError::UnknownAttribute { .. }) => None,
+        Err(error) => return Err(error),
+    };
+    let Some(start) = start else {
+        return Ok(None);
+    };
+    follow_catalogue_component(start)
 }
 
 fn follow_catalogue_component(mut current: DbElement) -> Result<Option<DbElement>, DbElementError> {
@@ -610,7 +626,7 @@ fn follow_catalogue_component(mut current: DbElement) -> Result<Option<DbElement
 
 /// 目录件的 `PTSE` 里编号为 `number` 的那个 P 点；没有就把有的编号一并交出去，
 /// 记账时能看出是"P 点根本不存在"而不是"解不出"。
-fn point_numbered(
+pub(crate) fn point_numbered(
     component: &DbElement,
     number: u32,
 ) -> Result<Result<DbElement, CatalogueAxisFailure>, DbElementError> {
@@ -714,7 +730,7 @@ fn axis_words(point: &DbElement) -> Option<Vec<u32>> {
 /// Core3D `pplib/SPARAM` (`0x103C4BB4`) 对四词全零元组返回显式数值 0；它不是
 /// “求不出”。PTCA 点大量用这个编码表示原点坐标，若当 unresolved，`Pn` 目录轴和
 /// 路由端点会一起消失。
-fn number_of(element: &DbElement, name: &str, env: &DbElementParamEnv) -> Option<f64> {
+pub(crate) fn number_of(element: &DbElement, name: &str, env: &DbElementParamEnv) -> Option<f64> {
     let outcome = element.get_number(name, env).ok()?;
     outcome.value().or_else(|| {
         matches!(

@@ -27,7 +27,8 @@ use e3d_io::engine::{ReadOnlyEngine, ScanTier};
 use e3d_io::refno::RefNo;
 use e3d_model::category::{Category, classify};
 use e3d_model::route::{
-    TubeOutcome, build_tube, container_head, container_tail, tube_length, tube_outer_diameter,
+    TubeOutcome, TubeSection, build_tube, container_head, container_tail, tube_length,
+    tube_outer_diameter,
 };
 
 /// 容器头/尾点的三件套属性名，与算法文档 §3.1 的 `IHEAD` / `TAIL` 常量区对齐。
@@ -231,10 +232,11 @@ fn probe_build(container: &DbElement) -> anyhow::Result<String> {
         return Ok("头或尾解不出".to_string());
     };
     let diameter = tube_outer_diameter(None, None, tail.bore);
-    let verdict = match build_tube(&head, &tail, diameter) {
+    let verdict = match build_tube(&head, &tail, TubeSection::round(diameter)) {
         TubeOutcome::Built(tube) => format!(
-            "建成，长 {:.3}mm 半径 {:.3}mm",
-            tube.length_mm, tube.radius_mm
+            "建成，长 {:.3}mm 半径 {:?}mm",
+            tube.length_mm,
+            tube.radius_mm()
         ),
         TubeOutcome::ZeroLength { length_mm } => format!("零长 {length_mm:.6}mm"),
         TubeOutcome::NoDirection => "定不出朝向".to_string(),

@@ -636,11 +636,11 @@ pub fn builds_from_catalogue_component(noun: &str) -> bool {
 /// 理由与 [`is_model_unit`] 那段一字不差：往 [`Category`] 里加变体时，加的人必须当场
 /// 回答「它名下会不会派生出几何」。让编译器逼问，而不是指望人记得。
 ///
-/// # 这只是 noun 那一半；管线与增量的门是 [`derives_implied_tubes`]
+/// # 管线与增量的门是 [`derives_implied_tubes`]，学科由 [`route_discipline`] 给
 ///
-/// `BRAN` 一个 noun 两个学科共用：管道分支属主是 `PIPE`，风管分支属主是 `HVAC`，
-/// 而**风管没有隐式管身**。光看 noun 答不出来，所以真正放在派生门上的谓词是带元素的
-/// [`derives_implied_tubes`]，这里的 noun 判据是它的前半段。
+/// `BRAN` 一个 noun 两个学科共用：管道分支属主是 `PIPE`，风管分支属主是 `HVAC`。两个学科
+/// **都派生隐式管身**（风管那一支 2026-09-18 对着 E3D 逐条钉过，见 [`route_discipline`]），
+/// 但链怎么走、断面从哪儿读两边不同，所以派生门只看 noun，学科单独问。
 /// Route containers for which E3D actually synthesizes inter-member tube bodies.
 ///
 /// HANG deliberately stays a [`Category::RouteContainer`] so its PCLA/HELE members are
@@ -649,38 +649,70 @@ pub fn builds_from_catalogue_component(noun: &str) -> bool {
 /// a spurious 33.8m cylinder between otherwise independent catalogue instances.
 pub const DERIVED_ROUTE_CONTAINER_NOUNS: [&str; 4] = ["BRAN", "LUG", "SUPC", "TRUNNI"];
 
-/// 属主 noun 是它的路由容器**不派生**隐式管身：风管。
+/// 路由容器属于哪个学科：决定链怎么走（[`crate::route::station_verdict`]）与隐式管身的
+/// 断面从哪儿读（[`crate::hvac_tube`]）。
 ///
-/// E3D HVAC 的直段是显式 `STRT`，构件之间的间隙只在数据一致性检查里报错、不补画；
-/// `GTTUBE` 的管身语义只属于管道那一支。唯一一份 HVAC RVM 参照
-/// （`evidence/20260902-hvac-ctray-census/rvm-BRAN-24381-30598-primitives.json`，导出时
-/// `repre tube on` + `export implied tube into separate containers`）里 `/-VES-E-4-L-2509`
-/// 只有 4 Box（STRT）+ 1 Pyramid（BRCO），没有任何圆柱；按 noun 派生的话，同一条分支会在
-/// HEAD→STRT1 与 STRT4→TAIL 各长出一根 r=580 的圆管（25.6 m + 17.5 m），ams7997 全库是
-/// 245 根、4.46 km（`evidence/20260902-ams7997-bran-audit`）。
-pub const NO_IMPLIED_TUBE_OWNER_NOUNS: [&str; 1] = ["HVAC"];
+/// 只有一个判据——**属主 noun 是不是 `HVAC`**（`nounlib/IHVCOM` 的 `CLIMBS(HVAC)` 同一口径，
+/// [`crate::catalogue`] 的表现级也这么分）。属主读不出（根、悬空、库未注册）按管道：那是
+/// 管道库的常态形态，不能因为它把整条管道链判成风管。
+///
+/// # 风管**也**派生隐式直段——2026-09-02 那条「不派生」的结论是样本失真
+///
+/// 2026-09-02 只有一份 HVAC RVM 参照（`/-VES-E-4-L-2509`，`24381/30598`：4 Box + 1 Pyramid，
+/// 没有 TUBE 容器），于是把属主 HVAC 的 BRAN 整个关在派生门外。2026-09-18 把 ams7997 的
+/// **216 条**风管 BRAN 全部对着 E3D 导了一遍（`repre tube on` +
+/// `export implied tube into separate containers`）：E3D 给 **14 条支管画了 17 段**
+/// `TUBE k of BRANCH` —— 15 段 Box、2 段 Cylinder（其中 1 段是 E3D 自己求值失败的 r=0 退化体），
+/// 最长 750 mm、最短 15 mm。那条 30598 只是恰好没有缝，不具代表性。
+///
+/// 机理与管道那支**同形**：离开侧的 `LSTU` 指向 `/CADCHVACSPEC/RTUBEA|B|C` / `CTUBE`，其目录件
+/// `/RTUBE1..3` 的 BOXING 与 `/CTUBE` 的 TUBE 用 `( ATTRIB LEAWID OF PREV )` /
+/// `( ATTRIB LEAHEI OF PREV )` / `( ATTRIB LBOR OF PREV )` 取**离开侧构件**的断面，而那三个伪属性
+/// 就是离开 P 点的 `PWID` / `PHEI` / `PBOR`。与管道不同的两处：ATTA 在风管链上一律穿过
+/// （见 [`crate::route::station_verdict`]），断面是矩形或圆（见 [`crate::route::TubeSection`]）。
+/// 取证：`_runs/ams-init-1112-7997-20260917-mc/ledger-seg15-frameall.md` §10–§13，
+/// `e3d-hvac-all-121918/`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RouteDiscipline {
+    /// 管道（属主 `PIPE`，以及属主读不出 / 不是 `HVAC` 的一切）。
+    Pipe,
+    /// 风管（属主 `HVAC`）。
+    Hvac,
+}
 
-/// 这个容器名下会不会派生隐式管身——管线的路由容器臂、增量的三处上卷 / 级联 / 重算
-/// **都问这一个**，两边各写一份门的下场见 [`is_model_unit`] 文档里那次 `SBFI` 漏件。
-///
-/// 两半：noun 在 [`DERIVED_ROUTE_CONTAINER_NOUNS`] 里（[`is_derived_unit`]），且属主不在
-/// [`NO_IMPLIED_TUBE_OWNER_NOUNS`] 里。属主读不出（根、悬空）按「不是风管」处理——
-/// 那是管道库的常态形态，不能因为它让管身整条链消失。
-pub fn derives_implied_tubes(container: &DbElement) -> Result<bool, DbElementError> {
-    if !is_derived_unit(&container.element_type()?) {
-        return Ok(false);
-    }
+/// 属主 noun 是它的路由容器按风管走。
+pub const HVAC_ROUTE_OWNER_NOUNS: [&str; 1] = ["HVAC"];
+
+/// 这个路由容器的学科，见 [`RouteDiscipline`]。
+pub fn route_discipline(container: &DbElement) -> Result<RouteDiscipline, DbElementError> {
     let owner_noun = match container.owner()? {
         Some(owner) if owner.refno() != container.refno() => match owner.element_type() {
             Ok(noun) => noun,
             Err(DbElementError::NotFound { .. } | DbElementError::DbNotRegistered { .. }) => {
-                return Ok(true);
+                return Ok(RouteDiscipline::Pipe);
             }
             Err(error) => return Err(error),
         },
-        _ => return Ok(true),
+        _ => return Ok(RouteDiscipline::Pipe),
     };
-    Ok(!NO_IMPLIED_TUBE_OWNER_NOUNS.contains(&owner_noun.trim().to_ascii_uppercase().as_str()))
+    Ok(
+        if HVAC_ROUTE_OWNER_NOUNS.contains(&owner_noun.trim().to_ascii_uppercase().as_str()) {
+            RouteDiscipline::Hvac
+        } else {
+            RouteDiscipline::Pipe
+        },
+    )
+}
+
+/// 这个容器名下会不会派生隐式管身——管线的路由容器臂、增量的三处上卷 / 级联 / 重算
+/// **都问这一个**，两边各写一份门的下场见 [`is_model_unit`] 文档里那次 `SBFI` 漏件。
+///
+/// 今天只看 noun（[`is_derived_unit`]）：管道与风管两个学科的 BRAN 都派生，学科差异在
+/// [`route_discipline`] 那一层。2026-09-02 到 2026-09-18 之间这里多一半「属主不是 HVAC」，
+/// 为什么撤掉见 [`RouteDiscipline`]。带元素而不直接问 noun，是给将来再出现按属主分档的场合
+/// 留着同一个门——两处各写一份的下场同上。
+pub fn derives_implied_tubes(container: &DbElement) -> Result<bool, DbElementError> {
+    Ok(is_derived_unit(&container.element_type()?))
 }
 
 pub fn is_derived_unit(noun: &str) -> bool {

@@ -10,10 +10,14 @@
 //! [`crate::category::derives_implied_tubes`]：E3D 只为 BRAN/LUG/SUPC/TRUNNI 四族
 //! （[`crate::category::DERIVED_ROUTE_CONTAINER_NOUNS`]）在成员间补管，**HANG 不补**
 //! （RVM 24381/177986 只导出 PCLAMP 与 HELEMENT 两组几何；把两个独立支撑件当管路串
-//! 起来会凭空得到一根 33.8m 的假管），**属主是 HVAC 的风管 BRAN 也不补**（风管直段是
-//! 显式 STRT；RVM 24381/30598 只有 4 Box + 1 Pyramid，按 noun 补管会多出两根 r=580 的
-//! 20 多米圆管）。管线与增量都按那一个谓词收口：HANG 与风管 BRAN 不进本模块，
-//! 它们的成员照常由通用遍历下钻、按目录件建模。
+//! 起来会凭空得到一根 33.8m 的假管）。管线与增量都按那一个谓词收口：HANG 不进本模块，
+//! 它的成员照常由通用遍历下钻、按目录件建模。
+//!
+//! **属主是 HVAC 的风管 BRAN 也补**——2026-09-02 到 2026-09-18 之间它被关在门外，依据是
+//! 唯一一份 RVM 参照（24381/30598）里没有 TUBE；2026-09-18 把 ams7997 的 216 条风管 BRAN 全对了
+//! 一遍，E3D 给 14 条画了 17 段（15 Box + 2 Cylinder）。风管链与管道链走法相同、两处不同
+//! （[`crate::category::RouteDiscipline`]）：ATTA 在风管链上一律穿过（[`station_verdict`]），
+//! 断面是矩形或圆、从离开 P 点的 `PWID/PHEI/PBOR` 来（[`TubeSection`]、[`crate::hvac_tube`]）。
 //!
 //! # 两端点有两种来源，可得性完全不同
 //!
@@ -54,8 +58,8 @@ use e3d_io::record::descriptor::DescriptorValue;
 use e3d_io::refno::RefNo;
 
 use crate::catalogue_point::catalogue_component;
-use crate::category::{Category, classify};
-use crate::primitive_instance::{PrimitiveInstance, instantiate_centered_cylinder};
+use crate::category::{Category, RouteDiscipline, classify, route_discipline};
+use crate::primitive_instance::{PrimitiveInstance, instantiate_box, instantiate_centered_cylinder};
 use crate::solid::SolidError;
 use crate::transform::world_matrix;
 
@@ -185,6 +189,8 @@ impl TubeSlot {
 /// 一个路由容器走完的结果。
 #[derive(Debug)]
 pub struct Route {
+    /// 这条链按哪个学科走的（[`crate::category::route_discipline`]）：管身的断面从哪儿读由它定。
+    pub discipline: RouteDiscipline,
     /// 链上的路由成员，文件原序。
     pub members: Vec<DbElement>,
     /// 不推进隐式管身链的成员。**记账、继续下钻、但不参与串接**——
@@ -261,12 +267,30 @@ pub enum StationVerdict {
 ///
 /// 所以看的是目录 GTYP，不是设计 noun。证据见
 /// `evidence/20260902-ams8000-bran-audit/rvm-pending-items-2026-09-02.md` §2。
-pub fn station_verdict(noun: &str, scom_gtyp: Option<&str>) -> StationVerdict {
+///
+/// # 风管链上的 ATTA 一律穿过，不问 GTYP
+///
+/// 上面那条 ANCI 判据是管道语料（MDS 梯架支撑）钉的。风管链上的 ATTA 同样是 MDS 支撑
+/// （`/MDS/.HVAC-REST.1300` 一族，SCOM `GTYP=ANCI`），E3D 却**不在它两侧断管**——
+/// ams7997 216 条风管 BRAN、572 处 ATTA 站点，E3D 一段管也没有以它为端点；三条支管的
+/// 管长把这件事钉死：`/-VES-S-2-L-4910` 的 STRT→DAMP 之间夹着一只 ATTA，按站点算 STRT→ATTA
+/// 是 10 mm，E3D 画的是 **15 mm**（STRT→DAMP）；`/-CCV-E-3-L-1704` 同形是 48.30 mm、
+/// 无名支管 `24381/79980` 是 179.52 mm（按站点算是 844.5 mm）。反过来
+/// `/-VES-E-2-L-3807` 的 STRT 30285→ATTA 30286 有 405 mm 的真缝、断面也读得出，E3D 一样不画。
+/// 所以风管链上 ATTA 不看目录、直接穿过；管道那条 ANCI 判据原样保留。
+pub fn station_verdict(
+    discipline: RouteDiscipline,
+    noun: &str,
+    scom_gtyp: Option<&str>,
+) -> StationVerdict {
     if !matches!(classify(noun), Category::RouteMember) {
         return StationVerdict::PassThrough;
     }
     if !noun.eq_ignore_ascii_case("ATTA") {
         return StationVerdict::Station;
+    }
+    if discipline == RouteDiscipline::Hvac {
+        return StationVerdict::PassThrough;
     }
     match scom_gtyp {
         Some(gtyp) if gtyp.eq_ignore_ascii_case("ANCI") => StationVerdict::Station,
@@ -275,13 +299,17 @@ pub fn station_verdict(noun: &str, scom_gtyp: Option<&str>) -> StationVerdict {
     }
 }
 
-/// 库上的裁决：非 ATTA 不查目录；ATTA 走 `SPRE → (CATR)* → SCOM` 读 `GTYP`。
+/// 库上的裁决：非 ATTA 不查目录；管道链上的 ATTA 走 `SPRE → (CATR)* → SCOM` 读 `GTYP`，
+/// 风管链上的 ATTA 连目录都不查（见 [`station_verdict`]）。
 /// 目录库没开 / 目标不在所钉会话与「没有 SPRE」同样算解不出——那是配置或数据的事，
 /// 不该把整条链的遍历打断。
-fn member_station_verdict(member: &DbElement) -> Result<StationVerdict, DbElementError> {
+fn member_station_verdict(
+    member: &DbElement,
+    discipline: RouteDiscipline,
+) -> Result<StationVerdict, DbElementError> {
     let noun = member.element_type()?;
-    if !noun.eq_ignore_ascii_case("ATTA") {
-        return Ok(station_verdict(&noun, None));
+    if !noun.eq_ignore_ascii_case("ATTA") || discipline == RouteDiscipline::Hvac {
+        return Ok(station_verdict(discipline, &noun, None));
     }
     let gtyp = match catalogue_component(member) {
         Ok(Some(component)) => scom_gtyp(&component)?,
@@ -289,7 +317,7 @@ fn member_station_verdict(member: &DbElement) -> Result<StationVerdict, DbElemen
         Err(DbElementError::DbNotRegistered { .. } | DbElementError::NotFound { .. }) => None,
         Err(error) => return Err(error),
     };
-    Ok(station_verdict(&noun, gtyp.as_deref()))
+    Ok(station_verdict(discipline, &noun, gtyp.as_deref()))
 }
 
 /// `SCOM.GTYP` 的字面（`Word { text }`，attlib 解不出字面时为 `None`）。
@@ -308,11 +336,12 @@ fn scom_gtyp(component: &DbElement) -> Result<Option<String>, DbElementError> {
 /// 的槽位，`prev` 前移到该成员的离开点；走完补一条到容器 `TPOS` 的尾管。
 /// 空容器给 1 条：只有头尾没有构件的 BRAN，E3D 照样在 HPOS 与 TPOS 之间画一根管。
 pub fn walk_route(container: &DbElement) -> Result<Route, DbElementError> {
+    let discipline = route_discipline(container)?;
     let mut members = Vec::new();
     let mut non_route_members = Vec::new();
     let mut pass_through_unresolved = 0usize;
     for member in container.members()? {
-        match member_station_verdict(&member)? {
+        match member_station_verdict(&member, discipline)? {
             StationVerdict::Station => members.push(member),
             StationVerdict::PassThrough => non_route_members.push(member),
             StationVerdict::PassThroughUnresolved => {
@@ -361,6 +390,7 @@ pub fn walk_route(container: &DbElement) -> Result<Route, DbElementError> {
         .collect();
 
     Ok(Route {
+        discipline,
         members,
         non_route_members,
         pass_through_unresolved,
@@ -421,7 +451,7 @@ pub fn route_slot_keys(container: &DbElement) -> Result<Vec<(u32, RefNo, RefNo)>
 }
 
 /// P 点编号：`LEAV` / `ARRI` 存的是字值（实测 `Word { raw: 2 }` / `Word { raw: 1 }`）。
-fn ppoint_number(el: &DbElement, name: &str) -> Result<Option<u32>, DbElementError> {
+pub(crate) fn ppoint_number(el: &DbElement, name: &str) -> Result<Option<u32>, DbElementError> {
     Ok(match el.attribute(name)? {
         Some(DescriptorValue::Word { raw, .. }) => Some(raw),
         Some(DescriptorValue::Int(number)) if number >= 0 => Some(number as u32),
@@ -730,16 +760,88 @@ pub fn departure_tube_outer_diameter(from: &RouteEnd) -> Result<Option<f64>, DbE
     }
 }
 
+/// 一根隐式管身的**断面**——两端点只定了轴线与长度，断面是第三个输入。
+///
+/// 管道那支只有圆：`CGETOD` 的外径（目录 `PARA[2]`，取不到回落到达侧通径），见
+/// [`tube_outer_diameter`]。风管那支两种都有：`LSTU` 指向 `/CADCHVACSPEC/CTUBE` 的圆管
+/// （目录 TUBE `PDIA = ( ATTRIB LBOR OF PREV )`）与指向 `RTUBEA|B|C` 的矩形直段（目录
+/// BOXING `PXLE` / `PZLE` 各读 `LEAWID` / `LEAHEI OF PREV`，A 与 B/C 只差两个名字对调），
+/// 见 [`crate::hvac_tube`]。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TubeSection {
+    /// 圆管，外径（mm）。
+    Round { outer_diameter: f64 },
+    /// 矩形风管直段。目录 BOXING 的轴是它的局部 Y（`PAXI = Y`），两条边分别沿它的局部 X 与
+    /// 局部 Z；E3D 按它自己的单轴 `ORI Y IS <离开方向>` 在**离开侧构件的局部系**里定那个局部 Z
+    /// （贴构件局部 Z，离开方向就是 ±Z 时取局部 Y；不是 P 点的 `PZAXI`——为什么、怎么钉的见
+    /// [`crate::hvac_tube`]）。这里把两条边长与那根轴的**世界**朝向一起交出来，[`build_tube`] 据此定
+    /// 管身绕轴的滚转。
+    Rectangular {
+        /// 目录 BOXING 的 `PXLE`（mm）：沿管身局部 X，即 `z_axis × 轴向`。
+        x_length: f64,
+        /// 目录 BOXING 的 `PZLE`（mm）：沿 `z_axis`。
+        z_length: f64,
+        /// `PZLE` 那条边的世界朝向（不必单位化、不必与轴严格正交；
+        /// [`build_tube`] 会把它投影到轴的法平面上再用）。
+        z_axis: DVec3,
+    },
+}
+
+impl TubeSection {
+    /// 圆管断面；`None` 或非正外径给 `None`，与 [`tube_outer_diameter`] 的回落结果直接相接。
+    pub fn round(outer_diameter: Option<f64>) -> Option<Self> {
+        outer_diameter
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .map(|outer_diameter| TubeSection::Round { outer_diameter })
+    }
+
+    /// 圆管半径；矩形断面给 `None`。
+    pub fn radius_mm(&self) -> Option<f64> {
+        match self {
+            TubeSection::Round { outer_diameter } => Some(outer_diameter / 2.0),
+            TubeSection::Rectangular { .. } => None,
+        }
+    }
+
+    /// 断面的两个边长都是有限正数才建得出体。
+    fn is_buildable(&self) -> bool {
+        match self {
+            TubeSection::Round { outer_diameter } => {
+                outer_diameter.is_finite() && *outer_diameter > 0.0
+            }
+            TubeSection::Rectangular {
+                x_length,
+                z_length,
+                z_axis,
+            } => {
+                x_length.is_finite()
+                    && *x_length > 0.0
+                    && z_length.is_finite()
+                    && *z_length > 0.0
+                    && z_axis.is_finite()
+            }
+        }
+    }
+}
+
 /// 建成的一根管身。
 pub struct TubeGeometry {
     /// 世界系实体。
     pub solid: Manifold,
     pub length_mm: f64,
-    pub radius_mm: f64,
+    /// 建体用的断面（[`TubeSection`]）：圆管在这里读半径，矩形读两条边。
+    pub section: TubeSection,
     /// 管身局部系（原点在两端中点、`+Z` 沿 `P1 − P2`）到世界系。
     pub placement: DMat4,
-    /// Canonical CylinderV3 placement in the tube-local frame.
+    /// Canonical CylinderV3 / BoxV1 placement in the tube-local frame.
     pub primitive_instance: Option<PrimitiveInstance>,
+}
+
+impl TubeGeometry {
+    /// 圆管半径（mm）；矩形风管直段给 `None`。
+    pub fn radius_mm(&self) -> Option<f64> {
+        self.section.radius_mm()
+    }
 }
 
 /// 建一根管身的结论。退化情形逐类分开，对应算法文档 §4 那张表——
@@ -750,9 +852,10 @@ pub enum TubeOutcome {
     ZeroLength {
         length_mm: f64,
     },
-    /// 定不出朝向：两点重合，且离开侧方向也退化。
+    /// 定不出朝向：两点重合，且离开侧方向也退化；矩形断面的 `z_axis` 与轴平行也落在这里。
     NoDirection,
-    /// 外径与到达侧通径都取不到。
+    /// 断面取不到：管道是外径与到达侧通径都没有；风管是离开侧的 TUBI 目录件 / 图元 /
+    /// `PWID`·`PHEI`·`PBOR` / 离开方向有一样解不出，或解出来不是正数。
     NoRadius,
     /// 尺寸过了校验但内核没给出实体。
     Failed(SolidError),
@@ -769,34 +872,75 @@ pub enum TubeOutcome {
 /// 原点放在两端中点、轴沿 `+Z`，正是前者的约定（轴向局部 Z、原点居中）；后者是
 /// 轴向局部 Y、原点在底面，套上去会让管身整体偏移半根长度并且躺倒。
 ///
-/// 只出圆柱这一件实体。`CLIN` 中心线与 `LINE` 线段不是实体，出网格时要跳过，
+/// 矩形断面走 [`instantiate_box`]（`BoxV1` 居中单位盒 + 缩放），放置矩阵与圆管同一个
+/// 原点（两端中点）、同一根 `+Z`（沿 `P1 − P2`），只是局部 Y 不再任取——它是断面的
+/// [`TubeSection::Rectangular::z_axis`] 投到轴法平面上的方向（`PZLE` 沿它），局部 X 随之
+/// 定为 `Y × Z`（`PXLE` 沿它）。盒子对 ±X、±Y 对称，两根轴的正负号不影响几何，
+/// 只有「哪条边沿 `z_axis`」这一格是要钉住的（见测试 `a_rectangular_duct_body_puts_pzle_along_the_z_axis`）。
+///
+/// 只出一件实体。`CLIN` 中心线与 `LINE` 线段不是实体，出网格时要跳过，
 /// 否则会污染连通分量与体积对拍。
-pub fn build_tube(from: &RoutePoint, to: &RoutePoint, outer_diameter: Option<f64>) -> TubeOutcome {
-    // 先判长度再判半径，顺序照 §4 那张退化表。ams8000 里那个空 BRAN
-    // （两端点都在原点、通径也是 0）两条都踩，先判半径会把它归成「取不到半径」，
+pub fn build_tube(from: &RoutePoint, to: &RoutePoint, section: Option<TubeSection>) -> TubeOutcome {
+    // 先判长度再判断面，顺序照 §4 那张退化表。ams8000 里那个空 BRAN
+    // （两端点都在原点、通径也是 0）两条都踩，先判断面会把它归成「取不到半径」，
     // 读报告的人会去查目录，而它其实只是一条没画完的空分支。
     let length = tube_length(from.pos, to.pos);
     // `isValidTubeLength` 的原样是 `< 1.0` 判无效——恰好 1.0mm 有效。写成
-    // `!(>=)` 而不是 `<`，让 NaN 长度也落进无效侧，不往半径/朝向那两步漏。
+    // `!(>=)` 而不是 `<`，让 NaN 长度也落进无效侧，不往断面/朝向那两步漏。
     if !(length >= ZERO_LENGTH_TOL_MM) {
         return TubeOutcome::ZeroLength { length_mm: length };
     }
-    let Some(diameter) = outer_diameter.filter(|value| *value > 0.0) else {
+    let Some(section) = section.filter(TubeSection::is_buildable) else {
         return TubeOutcome::NoRadius;
     };
     let Some(placement) = tumat(from.pos, from.dir, to.pos) else {
         return TubeOutcome::NoDirection;
     };
-    match instantiate_centered_cylinder(diameter, length) {
+    let (placement, local) = match section {
+        TubeSection::Round { outer_diameter } => {
+            (placement, instantiate_centered_cylinder(outer_diameter, length))
+        }
+        TubeSection::Rectangular {
+            x_length,
+            z_length,
+            z_axis,
+        } => {
+            let Some(placement) = rolled_placement(placement, z_axis) else {
+                return TubeOutcome::NoDirection;
+            };
+            (placement, instantiate_box(x_length, z_length, length, true))
+        }
+    };
+    match local {
         Ok(local) => TubeOutcome::Built(Box::new(TubeGeometry {
             solid: crate::solid::placed(&local.solid, placement),
             length_mm: length,
-            radius_mm: diameter / 2.0,
+            section,
             placement,
             primitive_instance: local.instance,
         })),
         Err(error) => TubeOutcome::Failed(error),
     }
+}
+
+/// 把 [`tumat`] 给的放置矩阵绕它自己的 `+Z`（轴向）转到「局部 Y 沿 `z_axis`」。
+///
+/// `z_axis` 先投到轴的法平面（去掉沿轴分量）再单位化；投影退化（与轴平行、零向量、
+/// 非有限）就给 `None`——没有可信的滚转，宁可不建也不随手挑一根。局部 X = Y × Z，右手系，
+/// 行列式 +1。
+fn rolled_placement(placement: DMat4, z_axis: DVec3) -> Option<DMat4> {
+    let axis = placement.z_axis.truncate();
+    if !(axis.length() > AXIS_DEGENERATE_TOL) || !axis.is_finite() || !z_axis.is_finite() {
+        return None;
+    }
+    let axis = axis.normalize();
+    let up = z_axis - axis * z_axis.dot(axis);
+    if !(up.length() > AXIS_DEGENERATE_TOL) {
+        return None;
+    }
+    let up = up.normalize();
+    let rotation = DMat3::from_cols(up.cross(axis), up, axis);
+    Some(DMat4::from_translation(placement.w_axis.truncate()) * DMat4::from_mat3(rotation))
 }
 
 /// 两端公称通径是否不一致（容差 [`BORE_MATCH_TOL_MM`]）。
@@ -944,7 +1088,8 @@ mod tests {
         };
 
         let folded = place_container_point(world, hpos, Some(hdir.to_array()), Some(7.0));
-        let TubeOutcome::Built(good) = build_tube(&folded, &arrive, Some(6.35)) else {
+        let TubeOutcome::Built(good) = build_tube(&folded, &arrive, TubeSection::round(Some(6.35)))
+        else {
             panic!("折叠之后这根头段管该建得出来");
         };
         assert!(
@@ -952,7 +1097,7 @@ mod tests {
             "{} 不是 E3D 画的 824.0496",
             good.length_mm
         );
-        assert!((good.radius_mm - 3.175).abs() < 1.0e-12);
+        assert!((good.radius_mm().unwrap() - 3.175).abs() < 1.0e-12);
 
         // 不折叠：**照样建得出来**。这一档没有缺口，只有一根多了 1000 mm 的管。
         let unfolded = RoutePoint {
@@ -960,7 +1105,9 @@ mod tests {
             dir: hdir,
             bore: Some(7.0),
         };
-        let TubeOutcome::Built(poisoned) = build_tube(&unfolded, &arrive, Some(6.35)) else {
+        let TubeOutcome::Built(poisoned) =
+            build_tube(&unfolded, &arrive, TubeSection::round(Some(6.35)))
+        else {
             panic!("这条缺陷的形态是发出一根错管、不是不发；建不出来就说明这条测试已经量错了东西");
         };
         assert!(
@@ -969,7 +1116,7 @@ mod tests {
             poisoned.length_mm
         );
         assert!(
-            (poisoned.radius_mm - good.radius_mm).abs() < 1.0e-12,
+            (poisoned.radius_mm().unwrap() - good.radius_mm().unwrap()).abs() < 1.0e-12,
             "半径一模一样，账面上分不出好坏——只有长度不对"
         );
         assert!(
@@ -1043,7 +1190,8 @@ mod tests {
             ),
             "{folded:?} -> {arrive:?}"
         );
-        let TubeOutcome::Built(tube) = build_tube(&folded, &arrive, Some(33.4)) else {
+        let TubeOutcome::Built(tube) = build_tube(&folded, &arrive, TubeSection::round(Some(33.4)))
+        else {
             panic!("147888 的头段管该建得出来");
         };
         assert!(
@@ -1051,7 +1199,7 @@ mod tests {
             "{} 不是 E3D 画的 348.0045",
             tube.length_mm
         );
-        assert!((tube.radius_mm - 16.7).abs() < 1.0e-12);
+        assert!((tube.radius_mm().unwrap() - 16.7).abs() < 1.0e-12);
 
         // 不折叠——缺陷的原样。同一个到达点，槽位从 348 mm 变成 24.76 m、偏轴 49°，
         // 共轴门直接拦掉，`build_tube` 根本不会被调到。
@@ -1076,37 +1224,168 @@ mod tests {
     /// `GTYP=ANCI` 的梯架支撑是站点；目录链走不通按穿过处理但要单列。
     #[test]
     fn station_verdict_follows_the_catalogue_gtyp_for_atta() {
+        let pipe = RouteDiscipline::Pipe;
         assert_eq!(
-            station_verdict("ATTA", Some("ATTA")),
+            station_verdict(pipe, "ATTA", Some("ATTA")),
             StationVerdict::PassThrough
         );
         assert_eq!(
-            station_verdict("ATTA", Some("atta")),
+            station_verdict(pipe, "ATTA", Some("atta")),
             StationVerdict::PassThrough
         );
         assert_eq!(
-            station_verdict("ATTA", Some("PCLA")),
+            station_verdict(pipe, "ATTA", Some("PCLA")),
             StationVerdict::PassThrough
         );
         assert_eq!(
-            station_verdict("ATTA", Some("ANCI")),
+            station_verdict(pipe, "ATTA", Some("ANCI")),
             StationVerdict::Station
         );
         assert_eq!(
-            station_verdict("ATTA", None),
+            station_verdict(pipe, "ATTA", None),
             StationVerdict::PassThroughUnresolved
         );
         for noun in ["ELBO", "TEE", "VALV", "REDU", "FTUB", "BEND"] {
             assert_eq!(
-                station_verdict(noun, None),
+                station_verdict(pipe, noun, None),
                 StationVerdict::Station,
                 "{noun}"
             );
         }
         // 不属于管路的成员从来不是站点，GTYP 说什么都不算。
         assert_eq!(
-            station_verdict("BOX", Some("ANCI")),
+            station_verdict(pipe, "BOX", Some("ANCI")),
             StationVerdict::PassThrough
+        );
+    }
+
+    /// 风管链上的 ATTA 一律穿过——连管道那条 ANCI 判据都不问。ams7997 216 条风管 BRAN 的
+    /// 572 处 ATTA（全是 `/MDS/.HVAC-REST.*`，SCOM `GTYP=ANCI`）E3D 一处都不当端点：
+    /// `/-VES-S-2-L-4910` STRT→(ATTA)→DAMP 画的是 15 mm 而不是 STRT→ATTA 的 10 mm。
+    /// 其余风管构件照旧是站点；「解不出」这一档在风管上也不存在。
+    #[test]
+    fn an_atta_on_a_duct_route_is_always_passed_through() {
+        let hvac = RouteDiscipline::Hvac;
+        for gtyp in [Some("ANCI"), Some("ATTA"), Some("PCLA"), None] {
+            assert_eq!(
+                station_verdict(hvac, "ATTA", gtyp),
+                StationVerdict::PassThrough,
+                "{gtyp:?}"
+            );
+        }
+        for noun in ["STRT", "BEND", "TAPE", "DAMP", "MESH", "BRCO", "TRNS", "OFST", "GRIL"] {
+            assert_eq!(
+                station_verdict(hvac, noun, None),
+                StationVerdict::Station,
+                "{noun}"
+            );
+        }
+        // 管道链上同一只 ANCI ATTA 仍是站点：两个学科的判据互不串。
+        assert_eq!(
+            station_verdict(RouteDiscipline::Pipe, "ATTA", Some("ANCI")),
+            StationVerdict::Station
+        );
+    }
+
+    /// 矩形风管直段：`PZLE` 沿断面给的 `z_axis`，`PXLE` 沿轴与它的叉积，轴向是两端点距离。
+    ///
+    /// 数是 E3D 画的第一根风管直段：`/-VES-E-2-L-3807`（`24381/30278`）TUBE 1，TAPE `24381/30293`
+    /// 离开 P2 `(47099, −12500, −25524)` 沿世界 −Y（构件局部 Z）、`PWID=1460 / PHEI=1520`，
+    /// 离开方向就是局部 Z、管身 Z 取局部 Y，折到世界是 +Z；DAMP `24381/30294` 到达 P1
+    /// `(47099, −12800, −25524)`；`LSTU=/CADCHVACSPEC/RTUBEB` → `/RTUBE2-BOXI` 的
+    /// `PXLE = LEAWID = 1460`、`PZLE = LEAHEI = 1520`。E3D RVM 里那只 Box 是 `1520 × 1460 × 300`，
+    /// 1520 那条边沿世界 Z、1460 沿世界 X、300 沿 Y，中心 `(47098.999, −12649.9996, −25524.0002)`
+    /// （`e3d-frame-all-110248/frame-all.rvm`）。
+    #[test]
+    fn a_rectangular_duct_body_puts_pzle_along_the_z_axis() {
+        let from = RoutePoint {
+            pos: DVec3::new(47099.0, -12500.0, -25524.0),
+            dir: -DVec3::Y,
+            bore: Some(2980.0),
+        };
+        let to = RoutePoint {
+            pos: DVec3::new(47099.0, -12800.0, -25524.0),
+            dir: DVec3::Y,
+            bore: Some(2980.0),
+        };
+        let section = TubeSection::Rectangular {
+            x_length: 1460.0,
+            z_length: 1520.0,
+            z_axis: DVec3::Z,
+        };
+        let TubeOutcome::Built(tube) = build_tube(&from, &to, Some(section)) else {
+            panic!("3807 的 TUBE 1 该建得出来");
+        };
+        assert!((tube.length_mm - 300.0).abs() < 1.0e-9);
+        assert_eq!(tube.radius_mm(), None, "矩形断面没有半径可报");
+        assert_eq!(tube.section, section);
+        let bounds = tube.solid.bounding_box().expect("有体就有盒");
+        let (min, max) = (bounds.min(), bounds.max());
+        let extents = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
+        assert!((extents[0] - 1460.0).abs() < 1.0e-6, "PXLE 沿世界 X：{extents:?}");
+        assert!((extents[1] - 300.0).abs() < 1.0e-6, "轴向沿世界 Y：{extents:?}");
+        assert!((extents[2] - 1520.0).abs() < 1.0e-6, "PZLE 沿 z_axis = 世界 Z：{extents:?}");
+        let centre = [
+            (min[0] + max[0]) * 0.5,
+            (min[1] + max[1]) * 0.5,
+            (min[2] + max[2]) * 0.5,
+        ];
+        assert!((centre[0] - 47099.0).abs() < 1.0e-6, "{centre:?}");
+        assert!((centre[1] + 12650.0).abs() < 1.0e-6, "{centre:?}");
+        assert!((centre[2] + 25524.0).abs() < 1.0e-6, "{centre:?}");
+        // 实例身份：BoxV1 + 纯缩放，世界变换折进 placement——与圆管走同一条发布路。
+        let instance = tube.primitive_instance.expect("矩形直段也发实例");
+        assert_eq!(instance.key, crate::primitive_instance::PrimitiveMeshKey::BoxV1);
+        assert_eq!(
+            instance.local_transform,
+            DMat4::from_scale(DVec3::new(1460.0, 1520.0, 300.0))
+        );
+        let rotation = DMat3::from_mat4(tube.placement);
+        assert!((rotation.determinant() - 1.0).abs() < 1.0e-9, "右手系，{rotation:?}");
+        assert!((rotation.y_axis - DVec3::Z).length() < 1.0e-9, "局部 Y 沿 z_axis");
+
+        // 把 z_axis 换成 +X：1520 那条边跟着转到世界 X，1460 转到世界 Z。这一格就是滚转本身。
+        let rolled = TubeSection::Rectangular {
+            x_length: 1460.0,
+            z_length: 1520.0,
+            z_axis: DVec3::X,
+        };
+        let TubeOutcome::Built(tube) = build_tube(&from, &to, Some(rolled)) else {
+            panic!("换个滚转照样建得出来");
+        };
+        let bounds = tube.solid.bounding_box().expect("有体就有盒");
+        assert!((bounds.max()[0] - bounds.min()[0] - 1520.0).abs() < 1.0e-6);
+        assert!((bounds.max()[2] - bounds.min()[2] - 1460.0).abs() < 1.0e-6);
+
+        // z_axis 与轴平行：没有可信的滚转，不建也不猜。零长与断面缺失的次序照旧在它前面。
+        let parallel = TubeSection::Rectangular {
+            x_length: 1460.0,
+            z_length: 1520.0,
+            z_axis: DVec3::Y,
+        };
+        assert!(matches!(
+            build_tube(&from, &to, Some(parallel)),
+            TubeOutcome::NoDirection
+        ));
+        let flat = TubeSection::Rectangular {
+            x_length: 0.0,
+            z_length: 1520.0,
+            z_axis: DVec3::Z,
+        };
+        assert!(matches!(build_tube(&from, &to, Some(flat)), TubeOutcome::NoRadius));
+        assert!(matches!(
+            build_tube(&from, &from, Some(section)),
+            TubeOutcome::ZeroLength { .. }
+        ));
+        // 圆管断面的 `round` 收口：非正外径与 `None` 一样是「取不到」。
+        assert_eq!(TubeSection::round(None), None);
+        assert_eq!(TubeSection::round(Some(0.0)), None);
+        assert_eq!(TubeSection::round(Some(f64::NAN)), None);
+        assert_eq!(
+            TubeSection::round(Some(33.4)),
+            Some(TubeSection::Round {
+                outer_diameter: 33.4
+            })
         );
     }
 
@@ -1329,11 +1608,11 @@ mod tests {
     fn a_tube_is_built_at_its_real_length() {
         let from = point([0.0, 0.0, 1000.0], [0.0, 0.0, -1.0], Some(50.0));
         let to = point([0.0, 0.0, 200.0], [0.0, 0.0, 1.0], Some(50.0));
-        let TubeOutcome::Built(tube) = build_tube(&from, &to, Some(100.0)) else {
+        let TubeOutcome::Built(tube) = build_tube(&from, &to, TubeSection::round(Some(100.0))) else {
             panic!("这根管该建得出来");
         };
         assert!((tube.length_mm - 800.0).abs() < 1e-9);
-        assert!((tube.radius_mm - 50.0).abs() < 1e-12);
+        assert!((tube.radius_mm().unwrap() - 50.0).abs() < 1e-12);
 
         // 世界系 AABB：轴沿 Z，跨度就是长度；中心在中点，不在端点。
         let bounds = tube.solid.bounding_box().expect("管身应当有包围盒");
@@ -1346,7 +1625,7 @@ mod tests {
     fn a_collapsed_slot_is_reported_as_zero_length_rather_than_built() {
         let p = point([1.0, 2.0, 3.0], [0.0, 0.0, 1.0], Some(50.0));
         assert!(matches!(
-            build_tube(&p, &p, Some(100.0)),
+            build_tube(&p, &p, TubeSection::round(Some(100.0))),
             TubeOutcome::ZeroLength { .. }
         ));
     }
@@ -1359,13 +1638,13 @@ mod tests {
         let from = point([0.0, 0.0, 0.4], [0.0, 0.0, -1.0], Some(50.0));
         let to = point([0.0, 0.0, 0.0], [0.0, 0.0, 1.0], Some(50.0));
         assert!(matches!(
-            build_tube(&from, &to, Some(100.0)),
+            build_tube(&from, &to, TubeSection::round(Some(100.0))),
             TubeOutcome::ZeroLength { length_mm } if (length_mm - 0.4).abs() < 1e-12
         ));
 
         let from = point([0.0, 0.0, 1.0], [0.0, 0.0, -1.0], Some(50.0));
         assert!(matches!(
-            build_tube(&from, &to, Some(100.0)),
+            build_tube(&from, &to, TubeSection::round(Some(100.0))),
             TubeOutcome::Built(_)
         ));
     }
@@ -1375,7 +1654,7 @@ mod tests {
         let from = point([0.0, 0.0, 0.0], [0.0, 0.0, 1.0], None);
         let to = point([0.0, 0.0, 500.0], [0.0, 0.0, -1.0], None);
         assert!(matches!(
-            build_tube(&from, &to, tube_outer_diameter(None, None, to.bore)),
+            build_tube(&from, &to, TubeSection::round(tube_outer_diameter(None, None, to.bore))),
             TubeOutcome::NoRadius
         ));
     }

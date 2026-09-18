@@ -37,15 +37,16 @@ use crate::catalogue::{
 };
 use crate::catalogue_point::{CataloguePoints, tube_outer_diameter_from_stub};
 use crate::category::{
-    BuildDisposition, Category, CompositeFamily, decision, derives_implied_tubes,
-    enters_catalogue_by_catref, graphics_ignored_below, is_model_unit,
+    BuildDisposition, Category, CompositeFamily, RouteDiscipline, decision,
+    derives_implied_tubes, enters_catalogue_by_catref, graphics_ignored_below, is_model_unit,
 };
 use crate::elmodl::{GeneratedElement, GeometryId, Modeled, SkipKind, model_element_with_cache};
 use crate::extrusion_reuse::ExtrusionReuseStats;
+use crate::hvac_tube::duct_departure_section;
 use crate::route::{
-    ArriveCheck, PPointResolver, Route, RouteEnd, SlotAlignment, TubeOutcome, ZERO_LENGTH_TOL_MM,
-    bore_mismatch, build_tube, resolve_end, slot_alignment, slot_ordinals, tube_length,
-    tube_outer_diameter, walk_route,
+    ArriveCheck, PPointResolver, Route, RouteEnd, SlotAlignment, TubeOutcome, TubeSection,
+    ZERO_LENGTH_TOL_MM, bore_mismatch, build_tube, resolve_end, slot_alignment, slot_ordinals,
+    tube_length, tube_outer_diameter, walk_route,
 };
 
 /// 一条有名有姓的记录。
@@ -77,9 +78,11 @@ pub struct ImpliedTubes {
     /// 已量出的那部分长度之和（mm）。名字不叫 `total_*`，因为在
     /// `measured == count` 之前它只是个部分和。
     pub measured_length_mm: f64,
-    /// CGETOD 从离开侧的 TUBI 目录件 `PARA[2]` 取得真外径的槽位数。
+    /// 从离开侧的 TUBI 目录件取得断面的槽位数：管道是 CGETOD 的 `PARA[2]` 真外径，
+    /// 风管是 `RTUBE*` / `CTUBE` 图元解出的矩形 / 圆断面（[`crate::hvac_tube`]）。
     pub catalogue_od: usize,
-    /// 目录件或外径缺失，按 Core 的规则回落到到达侧 bore 的槽位数。
+    /// 目录件或外径缺失，按 Core 的规则回落到到达侧 bore 的槽位数（只有管道有这条回落；
+    /// 风管断面解不出直接落 `degenerate.unbuildable`）。
     pub bore_fallback: usize,
     /// 按属主容器 noun 分账：BRAN 一支和 HANG 一支的管身要能分开看。
     pub by_owner_noun: BTreeMap<String, usize>,
@@ -422,7 +425,8 @@ pub fn generate_subtree_with_cache(
             }
             Category::RouteContainer => {
                 *report.route_containers.entry(noun.clone()).or_insert(0) += 1;
-                // 风管分支（属主 HVAC）与 HANG 一样只下钻成员、不补管身，见谓词文档。
+                // HANG 只下钻成员、不补管身，见谓词文档；管道与风管的 BRAN 都补，
+                // 学科差异（ATTA 穿过、矩形断面）在 `walk_route` / `build_route_tubes` 里面。
                 if !derives_implied_tubes(&el)? {
                     // 不派生管身是**谓词给的结论**，不是 builder 没写：几何全在成员上。
                     // 留在 evidence_pending 里等于说「这只 HANG 还欠一份几何」。
@@ -941,32 +945,58 @@ fn build_route_tubes(
                 }
             }
         }
-        // CGETOD 的 A 是槽位离开侧：容器头读 HSTU/HSRO，普通构件离开读
-        // LSTU/LSRO。目录 PARA 是一基下标，PARA[2] 即 Rust values[1]。
-        let catalogue_od_result = match &slot.from {
-            crate::route::RouteEnd::ContainerHead(departure)
-            | crate::route::RouteEnd::ContainerTail(departure) => {
-                tube_outer_diameter_from_stub(departure, &["HSTU", "HSRO"])
+        // 断面按学科来（[`crate::category::RouteDiscipline`]）：
+        // 管道——CGETOD 的 A 是槽位离开侧：容器头读 HSTU/HSRO，普通构件离开读
+        // LSTU/LSRO。目录 PARA 是一基下标，PARA[2] 即 Rust values[1]。取不到回落到达侧通径。
+        // 风管——同一个 stub 指向的 TUBI 目录件没有 PARA，断面在它的 BOXING / TUBE 图元里，
+        // 由离开 P 点的 PWID/PHEI/PBOR 与离开方向的 ORIMAT 定（[`crate::hvac_tube`]）；没有回落，
+        // 解不出就是 `NoRadius`，与管道「外径与通径都没有」同一档记账。
+        let (section, section_source) = match route.discipline {
+            RouteDiscipline::Pipe => {
+                let catalogue_od_result = match &slot.from {
+                    crate::route::RouteEnd::ContainerHead(departure)
+                    | crate::route::RouteEnd::ContainerTail(departure) => {
+                        tube_outer_diameter_from_stub(departure, &["HSTU", "HSRO"])
+                    }
+                    crate::route::RouteEnd::MemberLeave { member, .. }
+                    | crate::route::RouteEnd::MemberArrive { member, .. } => {
+                        tube_outer_diameter_from_stub(member, &["LSTU", "LSRO"])
+                    }
+                };
+                // CGETOD 本来就是可失败查询：目录库没打开、历史 stub 不在所钉会话，
+                // 都必须走 GTTUBG 的 arrive-bore 回落，不能把整棵生成打断。
+                let catalogue_od = match catalogue_od_result {
+                    Ok(value) => value,
+                    Err(DbElementError::DbNotRegistered { .. } | DbElementError::NotFound { .. }) => {
+                        None
+                    }
+                    Err(error) => return Err(error),
+                };
+                let source = if catalogue_od.is_some() {
+                    ledger.catalogue_od += 1;
+                    "catalogue PARA[2]".to_string()
+                } else {
+                    ledger.bore_fallback += 1;
+                    "arrive bore fallback".to_string()
+                };
+                (
+                    TubeSection::round(tube_outer_diameter(catalogue_od, None, to.bore)),
+                    source,
+                )
             }
-            crate::route::RouteEnd::MemberLeave { member, .. }
-            | crate::route::RouteEnd::MemberArrive { member, .. } => {
-                tube_outer_diameter_from_stub(member, &["LSTU", "LSRO"])
-            }
+            RouteDiscipline::Hvac => match duct_departure_section(&slot.from) {
+                Ok(Some(duct)) => {
+                    ledger.catalogue_od += 1;
+                    (Some(duct.section), format!("catalogue {}", duct.source))
+                }
+                Ok(None) => (None, String::new()),
+                Err(DbElementError::DbNotRegistered { .. } | DbElementError::NotFound { .. }) => {
+                    (None, String::new())
+                }
+                Err(error) => return Err(error),
+            },
         };
-        // CGETOD 本来就是可失败查询：目录库没打开、历史 stub 不在所钉会话，
-        // 都必须走 GTTUBG 的 arrive-bore 回落，不能把整棵生成打断。
-        let catalogue_od = match catalogue_od_result {
-            Ok(value) => value,
-            Err(DbElementError::DbNotRegistered { .. } | DbElementError::NotFound { .. }) => None,
-            Err(error) => return Err(error),
-        };
-        if catalogue_od.is_some() {
-            ledger.catalogue_od += 1;
-        } else {
-            ledger.bore_fallback += 1;
-        }
-        let diameter = tube_outer_diameter(catalogue_od, None, to.bore);
-        match build_tube(&from, &to, diameter) {
+        match build_tube(&from, &to, section) {
             TubeOutcome::Built(tube) => {
                 ledger.measured += 1;
                 ledger.measured_length_mm += tube.length_mm;
@@ -1001,17 +1031,19 @@ fn build_route_tubes(
                     analytic_primitive: None,
                     negatives_applied: 0,
                     negatives_skipped: Vec::new(),
-                    notes: vec![format!(
-                        "implied tube length={}mm radius={}mm source={}{}",
-                        tube.length_mm,
-                        tube.radius_mm,
-                        if catalogue_od.is_some() {
-                            "catalogue PARA[2]"
-                        } else {
-                            "arrive bore fallback"
-                        },
-                        "",
-                    )],
+                    notes: vec![match tube.section {
+                        TubeSection::Round { outer_diameter } => format!(
+                            "implied tube length={}mm radius={}mm source={section_source}",
+                            tube.length_mm,
+                            outer_diameter / 2.0,
+                        ),
+                        TubeSection::Rectangular {
+                            x_length, z_length, ..
+                        } => format!(
+                            "implied duct length={}mm section={x_length}x{z_length}mm source={section_source}",
+                            tube.length_mm,
+                        ),
+                    }],
                 });
             }
             TubeOutcome::ZeroLength { .. } => ledger.degenerate.zero_length += 1,

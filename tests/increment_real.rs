@@ -30,7 +30,7 @@ use e3d_io::db_element::{DbFilePin, DbFileResolver, DbSet, template_file_for};
 use e3d_io::engine::{ReadOnlyEngine, ScanTier};
 use e3d_io::refno::RefNo;
 use e3d_io::session::DbView;
-use e3d_model::category::{derives_implied_tubes, is_model_unit};
+use e3d_model::category::{RouteDiscipline, derives_implied_tubes, is_model_unit, route_discipline};
 use e3d_model::db_discovery::DirectoryDbResolver;
 use e3d_model::elmodl::{GeneratedElement, GeometryId};
 use e3d_model::increment::{collect_window, execute_plan, plan_update};
@@ -921,25 +921,32 @@ fn the_affected_closure_reaches_both_owners_of_a_reparented_element() {
     );
 }
 
-/// **风管 BRAN 名下不派生隐式管身，管道 BRAN 照旧派生。** `BRAN` 一个 noun 两个学科共用
-/// （ams7997：HVAC 216 / PIPE 614），派生门因此不能只看 noun，得问带属主的
-/// [`derives_implied_tubes`]：`/-VES-E-4-L-2509`（`24381/30598`，属主 HVAC）在唯一一份
-/// HVAC RVM（`evidence/20260902-hvac-ctray-census/rvm-BRAN-24381-30598-primitives.json`，
-/// `repre tube on`）里只有 4 Box（STRT）+ 1 Pyramid（BRCO），没有任何圆柱；按 noun 派生会在
-/// HEAD→STRT1 与 STRT4→TAIL 各长出一根 r=580 的圆管（25.6 m + 17.5 m；全库 245 根、4.46 km，
-/// `evidence/20260902-ams7997-bran-audit`）。
+/// **风管 BRAN 与管道 BRAN 都派生隐式管身；风管那支的断面从离开 P 点来，ATTA 一律穿过。**
 ///
-/// 三处都要钉：谓词本身、增量走的 [`route_tubes_of`]、全量管线的路由容器臂——它们必须给
-/// 同一个答案，否则又是「全量说有、增量说没有」那类静默分歧。管道那一半拿同库同 noun 的
-/// `/6ZBR101MD-N310-01`（`24381/179302`，属主 PIPE）做对照：14 个槽位 10 个成管、4 个零长对接。
+/// 2026-09-02 这条测试钉的是反面（风管不派生），依据是唯一一份 HVAC RVM
+/// （`/-VES-E-4-L-2509`，`24381/30598`：4 Box + 1 Pyramid，没有 TUBE）。2026-09-18 把 ams7997
+/// 216 条风管 BRAN 全对了一遍 E3D（`_runs/ams-init-1112-7997-20260917-mc/ledger-seg15-frameall.md`
+/// §10–§13）：E3D 给 14 条画了 17 段（15 Box + 2 Cylinder），30598 只是恰好每条槽位都是零长。
+/// 门改成两个学科都派生之后，这条改钉三件事：
+///
+/// 1. 30598 **仍然**一根管都不出——不是门关着，是 6 条槽位全零长（`count = 6`、`built = 0`），
+///    成员照旧 4 Box + 1 Pyramid；
+/// 2. `/-VES-E-2-L-3807`（`24381/30278`）出 E3D 画着的那两段矩形直段：TAPE→DAMP 300 mm、
+///    DAMP→MESH 280 mm，断面 1460 × 1520（`LSTU=/CADCHVACSPEC/RTUBEB` → `/RTUBE2-BOXI`，
+///    `PXLE = LEAWID`、`PZLE = LEAHEI`），而链上 3 只 `/MDS/.HVAC-REST` ATTA 两侧一根都没有
+///    （STRT 30285 → ATTA 30286 有 405 mm 真缝、断面也读得出，E3D 不画，我们也不画）；
+/// 3. 全量管线与增量那条腿给同一批键。
+///
+/// 管道那一半照旧拿同库同 noun 的 `/6ZBR101MD-N310-01`（`24381/179302`，属主 PIPE）做对照：
+/// 14 个槽位 10 个成管、4 个零长对接——门改了、管道一根不多不少。
 #[test]
-fn hvac_owned_branches_derive_no_implied_tubes_but_pipe_branches_still_do() {
+fn hvac_owned_branches_derive_duct_straights_and_pipe_branches_are_unchanged() {
     if !fixtures_present() {
         return;
     }
     let attlib = shared_attlib();
     let db_file = Path::new(AMS_DIR).join("ams7997_0001");
-    // 链头会话（`gen_ams` 默认钉的那一环，2026-09-02 是 106）；两条分支从建库起就没动过。
+    // 链头会话（`gen_ams` 默认钉的那一环，2026-09-02 是 106）；三条分支从建库起就没动过。
     let sesno = *chain_of(&db_file)
         .expect("ams7997 有会话链")
         .first()
@@ -961,26 +968,36 @@ fn hvac_owned_branches_derive_no_implied_tubes_but_pipe_branches_still_do() {
             .collect()
     };
 
+    // 1. 2026-09-02 那条样本：派生门开着，但每条槽位都是零长，一根管也不出。
     let duct = RefNo::new(24381, 30598);
     assert_eq!(set.element(duct).element_type().unwrap(), "BRAN");
     assert_eq!(owner_noun(duct), "HVAC", "样本前提：这条是风管分支");
     assert!(
-        !derives_implied_tubes(&set.element(duct)).unwrap(),
-        "属主 HVAC 的 BRAN 不派生隐式管身"
+        derives_implied_tubes(&set.element(duct)).unwrap(),
+        "属主 HVAC 的 BRAN 也派生隐式管身（2026-09-18 起）"
+    );
+    assert_eq!(
+        route_discipline(&set.element(duct)).unwrap(),
+        RouteDiscipline::Hvac
     );
     assert!(
         route_tubes_of(&set.element(duct)).unwrap().is_empty(),
-        "增量重算那条腿也不许给风管补管"
+        "30598 每条槽位都是零长：门开着也不该长出管"
     );
     let outcome = generate_subtree(set.element(duct)).expect("风管分支全量生成");
     assert!(
         implied_tube_ids(&outcome.elements).is_empty(),
-        "全量管线不得为风管分支建隐式管身：{:?}",
+        "{:?}",
         implied_tube_ids(&outcome.elements)
     );
     assert_eq!(
-        outcome.report.implied_tubes.count, 0,
-        "风管分支的槽位不进管身账"
+        outcome.report.implied_tubes.count, 6,
+        "5 个成员 + 1 = 6 条槽位要进管身账（门开着的证据）"
+    );
+    assert_eq!(outcome.report.implied_tubes.built, 0);
+    assert_eq!(
+        outcome.report.implied_tubes.degenerate.zero_length, 6,
+        "六条全是零长，不是别的退化"
     );
     let mut by_noun: BTreeMap<&str, usize> = BTreeMap::new();
     for element in &outcome.elements {
@@ -992,6 +1009,55 @@ fn hvac_owned_branches_derive_no_implied_tubes_but_pipe_branches_still_do() {
         "成员照常按目录件建模，与 RVM 的 4 Box + 1 Pyramid 一一对应；ATTA 无 SPRE 不出几何"
     );
 
+    // 2. E3D 画着两段矩形直段的那条：TAPE→DAMP 300、DAMP→MESH 280，断面 1460 × 1520。
+    //    E3D RVM 里两只 Box 的中心 (47099, −12650, −25524) / (47099, −13160, −25524)，
+    //    1520 那条边沿世界 Z、1460 沿世界 X（`e3d-frame-all-110248/frame-all.rvm`）。
+    let ducted = RefNo::new(24381, 30278);
+    assert_eq!(owner_noun(ducted), "HVAC");
+    let straights = route_tubes_of(&set.element(ducted)).expect("3807 的风管直段");
+    assert_eq!(
+        straights.len(),
+        2,
+        "E3D 画了两段、且 ATTA 两侧一段都没有：{:?}",
+        straights.iter().map(|s| &s.notes).collect::<Vec<_>>()
+    );
+    let mut seen = Vec::new();
+    for straight in &straights {
+        assert_eq!(straight.noun, "TUBI");
+        let note = straight.notes.join(" ");
+        assert!(
+            note.contains("implied duct") && note.contains("section=1460x1520mm"),
+            "{note}"
+        );
+        assert!(
+            note.contains("source=catalogue /RTUBE2 BOXI /RTUBE2-BOXI"),
+            "{note}"
+        );
+        let bounds = straight.solid.bounding_box().expect("有体就有盒");
+        let (min, max) = (bounds.min(), bounds.max());
+        let extents = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
+        assert!((extents[0] - 1460.0).abs() < 1.0e-3, "{extents:?}");
+        assert!((extents[2] - 1520.0).abs() < 1.0e-3, "{extents:?}");
+        let centre_y = (min[1] + max[1]) * 0.5;
+        assert!(((min[0] + max[0]) * 0.5 - 47099.0).abs() < 1.0e-2, "{min:?} {max:?}");
+        assert!(((min[2] + max[2]) * 0.5 + 25524.0).abs() < 1.0e-2, "{min:?} {max:?}");
+        seen.push(((extents[1] * 10.0).round() / 10.0, (centre_y * 10.0).round() / 10.0));
+    }
+    seen.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    assert_eq!(
+        seen,
+        vec![(280.0, -13160.0), (300.0, -12650.0)],
+        "长度与中心要是 E3D 那两只 Box 的"
+    );
+    let ducted_outcome = generate_subtree(set.element(ducted)).expect("3807 全量生成");
+    assert_eq!(
+        implied_tube_ids(&ducted_outcome.elements),
+        implied_tube_ids(&straights),
+        "全量管线与增量那条腿必须给出同一批管身键"
+    );
+    assert_eq!(ducted_outcome.report.implied_tubes.built, 2);
+
+    // 3. 管道对照：一根不多不少。
     let pipe = RefNo::new(24381, 179302);
     assert_eq!(set.element(pipe).element_type().unwrap(), "BRAN");
     assert_eq!(owner_noun(pipe), "PIPE", "样本前提：这条是管道分支");
@@ -999,11 +1065,15 @@ fn hvac_owned_branches_derive_no_implied_tubes_but_pipe_branches_still_do() {
         derives_implied_tubes(&set.element(pipe)).unwrap(),
         "属主 PIPE 的 BRAN 照旧派生隐式管身"
     );
+    assert_eq!(
+        route_discipline(&set.element(pipe)).unwrap(),
+        RouteDiscipline::Pipe
+    );
     let incremental = route_tubes_of(&set.element(pipe)).expect("管道分支的管身");
     assert_eq!(
         incremental.len(),
         10,
-        "这条支管 14 个槽位里 10 个成管、4 个零长对接"
+        "14 个槽位 10 个成管、4 个零长对接（2026-09-02 的基线）"
     );
     let outcome = generate_subtree(set.element(pipe)).expect("管道分支全量生成");
     assert_eq!(
