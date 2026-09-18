@@ -19,8 +19,16 @@
 //!
 //! | 来源 | 属性 | 现在读不读得到 |
 //! |---|---|---|
-//! | 容器头 / 尾 | 容器自身的 `HPOS/HDIR/HBOR`、`TPOS/TDIR/TBOR` | **读得到**，直读 |
+//! | 容器头 / 尾 | 容器自身的 `HPOS/HDIR/HBOR`、`TPOS/TDIR/TBOR` | **读得到**，但存的是**属主系**，要过属主链折叠（见 [`container_point`]） |
 //! | 构件离开 / 到达 | 目录侧 `LPOS/LDIR/LBOR`、`APOS/ADIR/ABOR` | **读不到**，见下 |
+//!
+//! **两端必须落在同一个坐标系里。** 构件端经 [`crate::catalogue_point`] 解出来是世界系
+//! （`world_matrix(member)` 折叠属主链）；容器端的 `HPOS/TPOS` 文件里存的是相对属主的
+//! 坐标（E3D `Q HPOS` 与 `Q HPOS WRT /*` 在属主链非单位阵时给的是两个数），不折叠就等于
+//! 一端属主系、一端世界系。AMS 7997 `/Copy-of-2#主泵辅助管线`（ZONE `ORI 0,0,-120`）下的
+//! 13 条支管因此头槽位被算成一根 21 m 的反向管、静默丢弃：12 条恰好与「零长不画」同果而潜伏，
+//! `24381/147888` 缺了 E3D 画着的 348.0045 mm 头段管。取证见
+//! `_runs/ams-init-1112-7997-20260917-mc/e3d-frame-101857/`（2026-09-18）。
 //!
 //! 设计元素上的 `LEAV` / `ARRI` 只是 **P 点编号**（ams8000 全库 2612 个路由成员
 //! 实测清一色 `LEAV=2 / ARRI=1`），坐标在目录里，要走
@@ -49,6 +57,7 @@ use crate::catalogue_point::catalogue_component;
 use crate::category::{Category, classify};
 use crate::primitive_instance::{PrimitiveInstance, instantiate_centered_cylinder};
 use crate::solid::SolidError;
+use crate::transform::world_matrix;
 
 /// `ORIMAT` 挑副轴时判「叉积退化」的阈值。
 ///
@@ -432,6 +441,16 @@ pub fn container_tail(container: &DbElement) -> Result<Option<RoutePoint>, DbEle
 
 /// 位置读不到就整个点不成立（`PLEAVE`/`IHEAD` 出错时 ok 标志清零，见 §3.1）。
 /// 方向可以退化——`TUMAT` 只在两点重合时才回落到它。
+///
+/// # 两端必须折到同一个系里
+///
+/// `HPOS/TPOS/HDIR/TDIR` 是**属主相对**的原样文件值（`get_position` 只解 triple，不折属主链），
+/// 而构件端由 [`crate::catalogue_point::CataloguePoints`] 折过 [`world_matrix`] 给的是世界系。
+/// 不折，属主链非单位阵的容器上整条头 / 尾槽位就落在两个坐标系之间：ams7997 `24381/147828`
+/// 的属主 ZONE 转了 −120°，它的头槽位在这里量出来是一根 21 m、轴向 −19 351 mm 的反向管，
+/// 被 [`SlotAlignment::Reversed`] 默默丢掉——而 E3D 画得好好的（`24381/147888` 那根 348.0045 mm
+/// 的头段管就是这么丢的）。属主链是单位阵时两种读法重合，这个库里绝大多数 ZONE 正是如此，
+/// 所以它一直没露头。
 fn container_point(
     container: &DbElement,
     pos: &str,
@@ -441,14 +460,33 @@ fn container_point(
     let Some(position) = container.get_position(pos)? else {
         return Ok(None);
     };
-    Ok(Some(RoutePoint {
-        pos: DVec3::from_array(position),
-        dir: container
-            .get_direction(dir)?
-            .map(DVec3::from_array)
+    Ok(Some(place_container_point(
+        world_matrix(container)?,
+        position,
+        container.get_direction(dir)?,
+        container.get_double(bore)?,
+    )))
+}
+
+/// 把容器端的属主相对读数摆进世界系。
+///
+/// 单拎出来是为了不开库就能测「属主转了角，位置与方向要一起跟着转」——只折位置不折方向
+/// 是这一步最容易写漏的形态，而它在真库上的表现只是少了一根管，报告里一个数都不响。
+fn place_container_point(
+    world: DMat4,
+    position: [f64; 3],
+    direction: Option<[f64; 3]>,
+    bore: Option<f64>,
+) -> RoutePoint {
+    RoutePoint {
+        pos: world.transform_point3(DVec3::from_array(position)),
+        // 方向读不到时填的是**世界** +Z，不跟着折：它只是个占位，[`ArriveCheck::Skip`]
+        // 存在的理由就是不让它进判据，折一个占位没有意义。
+        dir: direction
+            .map(|d| world.transform_vector3(DVec3::from_array(d)))
             .unwrap_or(DVec3::Z),
-        bore: container.get_double(bore)?,
-    }))
+        bore,
+    }
 }
 
 /// 目录侧 P 点求解器 —— P1 与 P2 之间那条唯一的缝。
@@ -780,6 +818,196 @@ pub fn bore_mismatch(from: &RoutePoint, to: &RoutePoint) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 容器端要跟着属主链折进世界系——位置与方向都要折。
+    ///
+    /// 数是真的：ams7997 `24381/147828` 的属主 ZONE `24381/147826` 是 `ORI 0,0,-120`，
+    /// E3D 自己两问两答（`Q HPOS` / `Q HPOS WRT /*`）给的是
+    /// `W 7914 N 9285 U 5860` → `E 11998 N 2211 U 5860`，
+    /// `Q HDIR` / `Q HDIR WRT /*` 给的是 `W 4.133 S` → `N 25.867 E`。
+    #[test]
+    fn a_container_end_is_folded_into_world_by_its_owner_chain() {
+        let world = DMat4::from_rotation_z((-120.0_f64).to_radians());
+        let point = place_container_point(
+            world,
+            [-7914.2998046875, 9285.150390625, 5860.0],
+            Some([-0.9973994493484497, -0.07207191735506058, 0.0]),
+            Some(25.0),
+        );
+        // 库里首件 WELD `24381/147829` 折出来的世界原点是 (11998.326, 2211.41, 5860)——
+        // 头点与它重合正是「这条支管头槽位零长」的那个事实。
+        assert!((point.pos.x - 11998.326).abs() < 0.01, "{point:?}");
+        assert!((point.pos.y - 2211.410).abs() < 0.01, "{point:?}");
+        assert!((point.pos.z - 5860.0).abs() < 1.0e-9, "{point:?}");
+        // `N 25.867 E` 换成从 +X 起算就是 64.133°，与属主系那一读差整 120°。
+        let deg = point.dir.y.atan2(point.dir.x).to_degrees();
+        assert!((deg - 64.133).abs() < 0.01, "{deg} {point:?}");
+        // 折叠只转不缩：长度原样传下去。库里的 HDIR 是 f32，本来就不是严格的单位向量，
+        // 这里不替它归一化——`Coaxiality::of` 与 `orimat` 各自会归。
+        assert!((point.dir.length() - 1.0).abs() < 1.0e-6, "{point:?}");
+        assert_eq!(point.bore, Some(25.0));
+    }
+
+    /// 方向读不到时填的是**世界** +Z，不跟着折：占位值折了还是占位值，
+    /// 而 [`ArriveCheck::Skip`] 本来就不让它进判据。
+    #[test]
+    fn a_missing_container_direction_stays_world_up() {
+        let world = DMat4::from_rotation_z(90.0_f64.to_radians());
+        let point = place_container_point(world, [1.0, 0.0, 0.0], None, None);
+        assert_eq!(point.dir, DVec3::Z);
+        assert!((point.pos - DVec3::Y).length() < 1.0e-9, "{point:?}");
+    }
+
+    /// 属主链只有**平移**时，共轴门拦不住这条缺陷——它给的不是缺一根管，是一根长度错了的管。
+    ///
+    /// 不折叠时槽位向量是 `真跨度 + T`。`T` 与 `HDIR` 共线的那一档，两种读法的偏角**都是 0°**，
+    /// [`SlotAlignment::Aligned`] 照过、通径照对、账面一行不响，发布出去的管长正好多一个 `T`。
+    /// 转角属主那一档（见上一条测试）至少还会被判 `Reversed` 而整根丢掉，这一档连个缺口都不留。
+    ///
+    /// 数是 2026-09-18 同一份设计状态换两个二进制跑出来的：ams7997 ZONE `24381/103249`
+    /// 沿 `24381/103251` 的 `HDIR` 整体平移 1000 mm（刚体平移，E3D 侧每根管长度一字不变），
+    /// 修复前把那根 824.0496 mm 的头段管发成 **1824.0496 mm**，两边半径同为 3.175，
+    /// 108 行对拍里只有这一行不符。取证见
+    /// `_runs/ams-init-1112-7997-20260917-mc/e3d-trans-105935/cmp-moved-prefix.csv`。
+    #[test]
+    fn a_pure_translation_owner_chain_slips_through_the_coaxiality_gate() {
+        // 库里的原样读数：HDIR 是 f32 存的，不是严格的单位向量，这里照原样用。
+        let hdir = DVec3::new(0.587785243988037, 0.80901700258255, 0.0);
+        let hpos = [1090.41003417969, 1500.81994628906, -2905.0];
+        let head_length = 824.0496;
+        // 属主 ZONE 的 POS：沿 HDIR 挪 1000 mm，一点转角都没有。
+        let world = DMat4::from_translation(hdir * 1000.0);
+        // 到达点是首件的目录 P 点，世界系——它跟着属主链一起走。
+        let arrive = RoutePoint {
+            pos: world.transform_point3(DVec3::from_array(hpos)) + hdir * head_length,
+            dir: -hdir,
+            bore: Some(7.0),
+        };
+        // 不折叠就是这条缺陷的原样：位置留在属主系，方向反倒是对的。
+        let unfolded = RoutePoint {
+            pos: DVec3::from_array(hpos),
+            dir: hdir,
+            bore: Some(7.0),
+        };
+        let folded = place_container_point(world, hpos, Some(hdir.to_array()), Some(7.0));
+
+        assert!(
+            (tube_length(folded.pos, arrive.pos) - head_length).abs() < 1.0e-4,
+            "折叠之后才是 E3D 画的那根 824.0496"
+        );
+        assert!(
+            (tube_length(unfolded.pos, arrive.pos) - (head_length + 1000.0)).abs() < 1.0e-4,
+            "不折叠算出来的长度正好多一个平移量"
+        );
+
+        // 两种读法在共轴门前一模一样：都是 0° 偏角的 Aligned。门不是这条缺陷的兜底，
+        // 通径门也不是——挡住它的只有折叠本身。
+        for point in [folded, unfolded] {
+            assert!(
+                matches!(
+                    slot_alignment(&point, &arrive, ArriveCheck::Member),
+                    SlotAlignment::Aligned { leave_deg, arrive_deg: Some(arrive_deg) }
+                        if leave_deg.abs() < 1.0e-6 && arrive_deg.abs() < 1.0e-6
+                ),
+                "{point:?}"
+            );
+            assert!(!bore_mismatch(&point, &arrive));
+        }
+    }
+
+    /// 源码钉：[`container_point`] 必须**接上** [`place_container_point`]。
+    ///
+    /// 上面两条测的是那个纯函数本身，而这条缺陷的全部形态是「没接上」——没接上时
+    /// 没有任何一道门会响（共轴门那条测试就是钉这个的），真库上也只表现为少一根、
+    /// 或长度悄悄多一截。脱库测不到这根线，就在源码上钉住它。
+    #[test]
+    fn the_container_end_is_wired_through_the_owner_chain() {
+        let production = include_str!("route.rs")
+            .split_once("\n#[cfg(test)]\nmod tests {")
+            .expect("测试模块在生产代码之后")
+            .0;
+        let body = production
+            .split_once("fn container_point(")
+            .expect("container_point 必须在")
+            .1
+            .split_once("\n}\n")
+            .expect("函数体在顶层右括号处收尾")
+            .0;
+        assert!(
+            body.contains("world_matrix(container)"),
+            "容器两端必须折过属主链，否则与构件端不在同一个坐标系里"
+        );
+        assert!(
+            body.contains("place_container_point("),
+            "摆放走同一份 place_container_point，别再抄第二份"
+        );
+    }
+
+    /// 这条缺陷真正丢掉的那根管：ams7997 `24381/147888` 的 348.0045 mm 头段管。
+    ///
+    /// 上面几条钉的是「点折得对不对」，这一条从点一路走到**管**：同一个到达点，
+    /// 折叠那一读建得出 E3D 画着的那根，不折那一读连共轴门都过不去，一根都不出。
+    /// 缺的这一根在报告里只多一笔 `misaligned`，长度对拍上却是整根缺失——
+    /// 全库 62 条转角属主下的支管里，能看见的损失就这一根（2026-09-18 逐根对拍，
+    /// 其余 102 根修前修后逐字相同）。
+    ///
+    /// 数全是库里的原样读数：BRAN `HPOS`/`HDIR`/`HBOR`，属主链 PIPE `24381/147887`
+    /// → ZONE `24381/147826` `ORI 0,0,-120` → SITE 单位阵；到达点取头段管
+    /// `tubi_relate.world_trans.translation`（远端），就是首件 VALV `24381/147889` 的目录 P 点。
+    /// E3D 真值 `TUBE 1 of BRANCH /Copy-of-1RCS0204-1R80005` h=348.0045 r=16.7。
+    /// 取证见 `_runs/ams-init-1112-7997-20260917-mc/e3d-frame-all-110248/`。
+    #[test]
+    fn the_head_tube_lost_by_the_owner_rotation_is_rebuilt_once_it_is_folded_in() {
+        let world = DMat4::from_rotation_z((-120.0_f64).to_radians());
+        let hpos = [-9558.4404296875, 10540.75, 5860.0];
+        let hdir = [0.8616300225257874, 0.5075368881225586, 0.0];
+        let arrive_pos = DVec3::new(13910.806, 2659.4856, 5860.0);
+
+        let folded = place_container_point(world, hpos, Some(hdir), Some(25.0));
+        // 到达方向按 P 点约定朝外（逆着行进）。这条槽位两端共轴——正因为共轴 E3D 才画得出它，
+        // 所以拿折叠后的 `HDIR` 取反就是那个方向，不必再进目录读一次 P 点。
+        let arrive = RoutePoint {
+            pos: arrive_pos,
+            dir: -folded.dir,
+            bore: Some(25.0),
+        };
+
+        // 折叠之后：共轴、建得出、长度就是 E3D 那根。
+        assert!(
+            matches!(
+                slot_alignment(&folded, &arrive, ArriveCheck::Member),
+                SlotAlignment::Aligned { .. }
+            ),
+            "{folded:?} -> {arrive:?}"
+        );
+        let TubeOutcome::Built(tube) = build_tube(&folded, &arrive, Some(33.4)) else {
+            panic!("147888 的头段管该建得出来");
+        };
+        assert!(
+            (tube.length_mm - 348.0045).abs() < 0.01,
+            "{} 不是 E3D 画的 348.0045",
+            tube.length_mm
+        );
+        assert!((tube.radius_mm - 16.7).abs() < 1.0e-12);
+
+        // 不折叠——缺陷的原样。同一个到达点，槽位从 348 mm 变成 24.76 m、偏轴 49°，
+        // 共轴门直接拦掉，`build_tube` 根本不会被调到。
+        let unfolded = RoutePoint {
+            pos: DVec3::from_array(hpos),
+            dir: DVec3::from_array(hdir),
+            bore: Some(25.0),
+        };
+        let SlotAlignment::Misaligned { deviation_deg } =
+            slot_alignment(&unfolded, &arrive, ArriveCheck::Member)
+        else {
+            panic!("不折叠时这条槽位是偏轴，判成别的就说明这条测试已经量错了东西");
+        };
+        assert!((deviation_deg - 49.06).abs() < 0.1, "{deviation_deg}");
+        assert!(
+            tube_length(unfolded.pos, arrive.pos) > 24_000.0,
+            "不折叠量出来的是一根 24 米的假槽位"
+        );
+    }
 
     /// 站点裁决看的是目录 `GTYP`，不是设计 noun：`GTYP=ATTA/PCLA` 的附着点被 E3D 的 TUBE 穿过，
     /// `GTYP=ANCI` 的梯架支撑是站点；目录链走不通按穿过处理但要单列。
