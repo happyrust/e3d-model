@@ -49,10 +49,28 @@ const ACCEPTED_NO_TABLE_REFERENCES: &[(&str, &str)] = &[
 const INDIRECT_READ_SITES: &[(&str, &str, &[&str])] = &[
     // `via` 在 SPRE → CATR/PRTREF 的目录链上逐跳切换。
     ("section.rs", "via", &["\"SPRE\"", "\"CATR\"", "\"PRTREF\""]),
-    // `tube_outer_diameter_from_stub(departure, &[...])` 的 stub 名单由 pipeline.rs 传入。
-    ("catalogue_point.rs", "name", &[]),
+    // `catalogue_entry_attribute(noun)` 决定目录链从哪个属性起跳：默认 `SPRE`，
+    // NOZZ 那一族（`category::enters_catalogue_by_catref`）直接从 `CATR` 起跳。
+    (
+        "catalogue_point.rs",
+        "entry",
+        &[
+            "const SPEC_REF: &str = \"SPRE\"",
+            "const CATALOGUE_REF: &str = \"CATR\"",
+        ],
+    ),
+    // catalogue.rs 里同一个 `entry` 只用来给「没形状」的诊断点名，读的仍是上面二者之一；
+    // 名字本身钉在 catalogue_point.rs 那一条里，这里只钉它确实经由同一个函数取名。
+    ("catalogue.rs", "entry", &["catalogue_entry_attribute("]),
+    // `tube_component_of_stub(departure, stub_attribute)` 的 stub 名单由 pipeline.rs / route.rs 传入。
+    ("catalogue_point.rs", "stub_attribute", &[]),
     (
         "pipeline.rs",
+        "",
+        &["&[\"HSTU\", \"HSRO\"]", "&[\"LSTU\", \"LSRO\"]"],
+    ),
+    (
+        "route.rs",
         "",
         &["&[\"HSTU\", \"HSRO\"]", "&[\"LSTU\", \"LSRO\"]"],
     ),
@@ -62,15 +80,10 @@ const INDIRECT_READ_SITES: &[(&str, &str, &[&str])] = &[
         "name",
         &["point_index(\"STAREF\")", "point_index(\"ENDREF\")"],
     ),
-    // `reference(el, name)` 是 `get_element` 的薄包装，调用点都是字面量。
-    (
-        "cable_tray.rs",
-        "name",
-        &[
-            "reference(el, \"POSREF\")",
-            "reference(current, \"POSREF\")",
-        ],
-    ),
+    // `reference(el, name)` 是 `get_element` 的薄包装，住在 rpath.rs；调用点都是字面量——
+    // rpath.rs 自己沿 POSREF 链前进，cable_tray.rs 也经它读 POSREF。
+    ("rpath.rs", "name", &["reference(current, \"POSREF\")"]),
+    ("cable_tray.rs", "", &["reference(el, \"POSREF\")"]),
 ];
 
 /// 经间接读点最终读到的名字（与上表配套，参与三档归属校验）。
