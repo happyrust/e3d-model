@@ -38,6 +38,7 @@
 "HSTU",
 "ITLE",
 "JUSL",
+"LBOR",
 "LEAV",
 "LEVE",
 "LINE",
@@ -140,6 +141,9 @@
 "CACHID"
 ],
 "non_attribute_literals":[
+"ABOR",
+"ARRHEI",
+"ARRWID",
 "CENC",
 "CENL",
 "CENR",
@@ -167,6 +171,8 @@
 "IPFCOM",
 "IPLCOM",
 "IPRCOM",
+"LEAHEI",
+"LEAWID",
 "LEFT",
 "LEVEL",
 "MEMBERS",

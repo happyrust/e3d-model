@@ -192,9 +192,9 @@ fn every_attribute_literal_in_the_generator_is_in_the_read_set() {
         "这些戳源码里已经不提了，从 STAMP_LITERALS / PLACEMENT_STAMP_ATTRIBUTES 里摘掉：{dead_stamps:?}"
     );
 
-    // 今天的形状：133 个属性名（132 个字典 / schema 名 + 伪属性 `CPAR`）；变了不是错，是提醒把
+    // 今天的形状：134 个属性名（133 个字典 / schema 名 + 伪属性 `CPAR`）；变了不是错，是提醒把
     // gen-model 那份 generation_read_set.json 一起重生成。
-    assert_eq!(names.len(), 133, "读取集合条数漂移：两份产物要一起重生成");
+    assert_eq!(names.len(), 134, "读取集合条数漂移：两份产物要一起重生成");
 }
 
 /// 直接读点的字面量必然在集合里——`get_*("X")` / `attribute("X")` 一个都不许漏，这是宽口径之下
