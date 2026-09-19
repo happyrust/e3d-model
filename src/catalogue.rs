@@ -2167,9 +2167,23 @@ fn collect_owned_negatives(
 ) -> Result<(Vec<EvaluatedCatalogueCut>, Vec<String>), ModelError> {
     let mut cutters = Vec::new();
     let mut diagnostics = Vec::new();
+    // 每把刀也过一遍与正体同一张显示筛（`CSG_TreeBuilderCat::addNegatives` 对每个负体调
+    // `isWanted`，LEVE / TUFL 同一套）。此前这里不筛：ams7997 的 CADC 风管目录给每只本体都挂一把
+    // 内缩 5 mm 的刀（`/RSTRA-NBODY` `PXLE = DESP[2] − 5`、`/CSBRCO-NBREXT` `PDIA = DESP[41] − 5`、
+    // `/RSTHRE-NBODY` 的 loop 逐点 −5……），**全是 `LEVE 9 10`**；E3D 在 `LEVEL HVAC 6` 下不扣它们
+    // ——TTY RVM（`e3d-hvac-obst-135124/hvac-lvl6.rvm`）里 STRT 是实心 `Cylinder` / `Box`、THRE
+    // 是 10 面实心 FacetGroup——而引擎把 2181 只风管构件全扣成了 2.5 mm 薄壳（STRT 1700×930 的
+    // 网格体积 1.80e7 对实心 1.87e9 mm³），BRCO `/RSBRCO` 2.5×2.5×117 的 LPYR 本体更是被自己那把
+    // `2.5 − 5` 的刀整只吃掉（=24381/57376 少一根 E3D 画了的杆，AABB 差 62.7 mm）。
+    // 被筛掉的刀不是失败、不落 note，只进 `display_filtered_negatives` 的账。
+    let member_level = repre_level_of(member)?;
     for child in owner.members()? {
         let noun = child.element_type()?;
         if noun.eq_ignore_ascii_case("SLOO") {
+            continue;
+        }
+        if display_filtered(&child, member_level)?.is_some() {
+            cache.stats.display_filtered_negatives += 1;
             continue;
         }
         if noun.eq_ignore_ascii_case("NSCY") {
