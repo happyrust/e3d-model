@@ -1484,7 +1484,7 @@ pub fn model_catalogue_member_with_cache(
                 .collect::<Vec<_>>(),
         ),
     };
-    let world = world_matrix(member)?;
+    let world = catalogue_member_world(member)?;
     let noun = member.element_type()?;
     // E3D RVM keeps the visible catalogue primitives as independent display
     // components, including overlapping ones. Composing an AMS VALV's 18 SCYL
@@ -1555,6 +1555,24 @@ pub fn model_catalogue_member_with_cache(
         }),
         diagnostics,
     })
+}
+
+/// 目录件成员的世界矩阵。
+///
+/// `FIXING` 是例外：它的 owner 链上 `JLDATU` 与 `PLDATU` 两级**都没有 POS/ORI**，标架是
+/// 隐式的（关节位置由 `ZDIS` 沿宿主 WALL 的 spine 定，PLDATU 的 `POSL=OBOW` 是 E3D 的
+/// 隐式墙 pline），`world_matrix` 在这两级上乘的是单位阵。墙上开孔的那把刀早就算对了
+/// （[`crate::elmodl::fixing_host_frame`]），而**它自己那一件实例**走的是这里——两处
+/// 各算各的，于是 1112 的 255 个 FIXING 全挤在 x∈[-2520,-1920] 的一条窄带上，对着
+/// E3D TTY 的 RVM 基准逐个偏 13~25 m。现在两处共用同一个标架。
+fn catalogue_member_world(member: &DbElement) -> Result<DMat4, ModelError> {
+    if member.element_type()? == "FIXING"
+        && let Some(wall) = crate::elmodl::fixing_host_wall(member)?
+    {
+        return Ok(crate::elmodl::fixing_host_frame(&wall, member)?
+            * crate::transform::local_matrix(member)?);
+    }
+    Ok(world_matrix(member)?)
 }
 
 fn preserves_catalogue_components(saw_display_primitive: bool) -> bool {

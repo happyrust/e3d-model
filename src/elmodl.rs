@@ -1214,15 +1214,21 @@ fn collect_host_fixings(el: &DbElement, out: &mut Vec<DbElement>) -> Result<(), 
     Ok(())
 }
 
-fn fixing_world_cutter(wall: &DbElement, fixing: &DbElement) -> Result<Manifold, ModelError> {
-    let desp = fixing
-        .get_double_array("DESP")?
-        .ok_or_else(|| ModelError::MissingAttribute {
-            refno: fixing.refno().to_string(),
-            noun: "FIXING".into(),
-            name: "DESP",
-            what: "host cutter",
-        })?;
+/// 一个 FIXING 的世界标架（**不含** FIXING 自己的 `local_matrix`）。
+///
+/// `world_matrix(fixing)` 对它是错的：链上 `JLDATU` 与 `PLDATU` 两级**都没有 POS/ORI**，
+/// `local_matrix` 在它们身上返回单位阵，于是落点既丢了关节站位、也丢了 pline 基变换。
+/// 这两级的标架是**隐式**的：
+///
+/// - JLDATU：位置由 `ZDIS` 沿宿主 WALL 的 spine 弧长定出来（`joint`）。
+/// - PLDATU：`POSL=OBOW` 是 E3D 的隐式墙 pline（PLAX=-X），配 YDIR=+Z 由
+///   `cal_ori_by_ydir` 得到列 (-Y, +Z, -X)（`pldatum`）。
+///
+/// 开孔刀（[`fixing_world_cutter`]）与 FIXING **自己那一件实例**必须共用这一处：
+/// 两边各算一遍的那一版里，实例走的是 `world_matrix(fixing)`，1112 的 255 个 FIXING
+/// 因此全挤在 x∈[-2520,-1920] 的一条窄带上，对着 E3D TTY 的 RVM 基准逐个偏 13~25 m
+/// （`docs/evidence/2026-09-15-cata-dependency-cache.md`）。
+pub(crate) fn fixing_host_frame(wall: &DbElement, fixing: &DbElement) -> Result<DMat4, ModelError> {
     let pldatu = fixing
         .owner()?
         .ok_or_else(|| ModelError::MissingAttribute {
@@ -1262,7 +1268,37 @@ fn fixing_world_cutter(wall: &DbElement, fixing: &DbElement) -> Result<Manifold,
         DVec3::NEG_X.extend(0.0),
         DVec3::ZERO.extend(1.0),
     );
-    let local_to_wall = joint * pldatum * crate::transform::local_matrix(fixing)?;
+    Ok(world_matrix(wall)? * joint * pldatum)
+}
+
+/// FIXING 的宿主 WALL。`collect_host_fixings` 是从 WALL 递归**下来**的、层数不固定
+/// （FIXING 不一定恰好在 WALL → JLDATU → PLDATU 之下三层），所以反过来按 noun 上溯。
+pub(crate) fn fixing_host_wall(fixing: &DbElement) -> Result<Option<DbElement>, ModelError> {
+    let mut cursor = fixing.owner()?;
+    let mut hops = 0;
+    while let Some(current) = cursor {
+        if current.element_type()? == "WALL" {
+            return Ok(Some(current));
+        }
+        hops += 1;
+        if hops > 8 {
+            return Ok(None);
+        }
+        cursor = current.owner()?;
+    }
+    Ok(None)
+}
+
+fn fixing_world_cutter(wall: &DbElement, fixing: &DbElement) -> Result<Manifold, ModelError> {
+    let desp = fixing
+        .get_double_array("DESP")?
+        .ok_or_else(|| ModelError::MissingAttribute {
+            refno: fixing.refno().to_string(),
+            noun: "FIXING".into(),
+            name: "DESP",
+            what: "host cutter",
+        })?;
+    let local_to_world = fixing_host_frame(wall, fixing)? * crate::transform::local_matrix(fixing)?;
     let local = match desp.as_slice() {
         [_, outer_diam, _, length, _, _, _, x, y, z, ..] if *outer_diam > 0.0 && *length > 0.0 => {
             let segments = if *outer_diam <= 240.0 { 8 } else { 12 };
@@ -1282,7 +1318,7 @@ fn fixing_world_cutter(wall: &DbElement, fixing: &DbElement) -> Result<Manifold,
             });
         }
     };
-    Ok(placed(&local, world_matrix(wall)? * local_to_wall))
+    Ok(placed(&local, local_to_world))
 }
 
 fn wall_spine_points(wall: &DbElement) -> Result<(DVec3, DVec3, DVec3), ModelError> {
