@@ -331,6 +331,17 @@ impl ParamEnv for PreviousElementEnv {
             _ => self.inner.attribute_number(attribute),
         }
     }
+
+    /// 按字典键问的 UDA 交给内层。这里**没有** `PREV` 那一支：`( :HXYsize[2] )` 写下的是键，
+    /// 不带属主链（`ledger-seg15-frameall.md` §19.1），所以拦不着也不该拦；内层挂的是目录件，
+    /// 答的就是目录件自己的 UDA。
+    ///
+    /// 不转发的话这里落回 [`ParamEnv::uda_number`] 的默认 `None`——**目录件身上真存着的 UDA
+    /// 也读不出来**，而且无声。本库看不出差别（H 族头槽位那条路的键属于 acp7006 那本字典、
+    /// 元素上没值，§19.2），换一座库就看得出，所以钉在这儿。
+    fn uda_number(&self, key: u32, subscript: Option<f64>) -> Option<f64> {
+        self.inner.uda_number(key, subscript)
+    }
 }
 
 #[cfg(test)]
@@ -420,5 +431,98 @@ mod tests {
             None
         );
         assert_eq!(env.param(1), None);
+    }
+
+    /// `PreviousElementEnv` 不许把按字典键问的 UDA 吞掉。
+    ///
+    /// 由来：`9508ac4` 给 `ParamEnv` 加了 `uda_number`，默认实现是 `None`；本环境当时没转发，
+    /// 于是目录件身上**真存着**的 UDA 也读不出来，而且无声（`ledger-seg15-frameall.md` §19.5）。
+    /// 本库看不出差别——H 族头槽位那条路的键 `0x17EF4B61` 属于 `acp7006` 那本字典、元素上没值
+    /// （§19.2）——所以这里不拿目录件当语料，直接拿一个**确实存着 `:HXYsize` 的设计元素**
+    /// 当内层宿主：转发没接上时它答 `None`，接上了答 675 / 600。
+    ///
+    /// 语料同 `catalogue_visited_real.rs`（E3D 3.1 `AvevaMarineSample` + 影子模板）；值的出处是
+    /// E3D 自己的 `Q :HXYsize`（`c4_hxysize.log`，§18.2 八条逐一对过）。缺语料默认红，
+    /// 与那道门同一口径：确属无语料环境显式设 `E3D_SKIP_REAL_GATES=1`。
+    #[test]
+    fn a_uda_asked_by_dictionary_key_is_forwarded_to_the_inner_environment() {
+        use std::path::{Path, PathBuf};
+        use std::sync::Arc;
+
+        use e3d_attlib::AttlibData;
+        use e3d_io::db_element::{DbFilePin, DbSet, template_file_for};
+        use e3d_io::refno::RefNo;
+        use e3d_io::uda_catalog::UdaCatalog;
+
+        const AMS_DIR: &str = r"D:\AVEVA\Projects\E3D3.1\AvevaMarineSample\ams000";
+        const DESIGN_DB: &str = "ams7997_0001";
+        /// `*CNPESTD/DICT`：`/HXYsize` 的 `UKEY` 就在这本里。
+        const DICTIONARY_DB: &str = "ams5100_0001";
+        const TEMPLATE_DIR: &str = r"E:\reverse\e3d\shadow_e3d31_aps_all";
+        /// `/-CCV-S-2-L-1405`，E3D `Q :HXYsize` = `675 600`。
+        const BRAN_1405: RefNo = RefNo::new(24_381, 59_287);
+        /// `ams5100` 那条 `/HXYsize` 的 `UKEY`（§18.1）。
+        const HXYSIZE_AMS_KEY: u32 = 0x2652_AB52;
+
+        let design = PathBuf::from(AMS_DIR).join(DESIGN_DB);
+        let dictionary = PathBuf::from(AMS_DIR).join(DICTIONARY_DB);
+        let dicvir = PathBuf::from(TEMPLATE_DIR).join("dicvir.dat");
+        let attlib_file = PathBuf::from(TEMPLATE_DIR).join("attlib.dat");
+        let missing = [
+            design.as_path(),
+            dictionary.as_path(),
+            dicvir.as_path(),
+            attlib_file.as_path(),
+        ]
+        .into_iter()
+        .filter(|path| !path.exists())
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            assert!(
+                std::env::var_os("E3D_SKIP_REAL_GATES").is_some(),
+                "缺语料：{}；确属无语料环境请显式设 E3D_SKIP_REAL_GATES=1",
+                missing.join("、")
+            );
+            return;
+        }
+
+        let attlib = Arc::new(AttlibData::parse_file(&attlib_file).expect("attlib 解析得开"));
+        let catalog = Arc::new(
+            UdaCatalog::read(&dictionary, &dicvir, &attlib).expect("字典库读得开"),
+        );
+        let definition = catalog
+            .by_key(HXYSIZE_AMS_KEY)
+            .expect("ams5100 里有这个 UKEY");
+        assert_eq!(definition.name, "HXYsize");
+
+        let set = Arc::new(DbSet::new(Arc::clone(&attlib)).with_uda_catalog(catalog));
+        set.add_db(DbFilePin {
+            file: design,
+            template: template_file_for(Path::new(TEMPLATE_DIR), "DESI").expect("DESI 模板"),
+            db_type: Some("DESI".to_string()),
+            sesno: None,
+        })
+        .expect("设计库开得了");
+        let bran = set.element(BRAN_1405);
+
+        // 内层自己答得上——转发与否的差别才量得出来。
+        let inner = DbElementParamEnv::catalogue_only(bran.clone()).without_insulation();
+        assert_eq!(inner.uda_number(HXYSIZE_AMS_KEY, Some(1.0)), Some(675.0));
+
+        let env = PreviousElementEnv {
+            inner,
+            departure: bran,
+        };
+        assert_eq!(
+            (
+                env.uda_number(HXYSIZE_AMS_KEY, Some(1.0)),
+                env.uda_number(HXYSIZE_AMS_KEY, Some(2.0)),
+            ),
+            (Some(675.0), Some(600.0)),
+            "没转发就会落回 ParamEnv::uda_number 的默认 None"
+        );
+        // 字典里没有的键仍然答不上（`uda_by_key` 在里面报 Err，不冒充 0）。
+        assert_eq!(env.uda_number(0xDEAD_BEEF, Some(1.0)), None);
     }
 }
