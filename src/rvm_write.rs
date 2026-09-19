@@ -2369,12 +2369,13 @@ pub fn elliptical_dish_from_local_mesh(
     let points: Vec<DVec3> = vertices.iter().copied().map(DVec3::from_array).collect();
     base_plane_candidates(&points, triangles)
         .into_iter()
-        .find_map(|normal| elliptical_dish_on_base(&points, normal))
+        .find_map(|normal| elliptical_dish_on_base(&points, triangles, normal))
 }
 
 /// [`elliptical_dish_from_local_mesh`] 的后半段：底盘法向已定，把碟解出来或否掉。
 fn elliptical_dish_on_base(
     points: &[glam::DVec3],
+    triangles: &[[u32; 3]],
     normal: glam::DVec3,
 ) -> Option<RecognisedEllipticalDish> {
     let base = dish_base_and_apex(points, normal)?;
@@ -2400,15 +2401,40 @@ fn elliptical_dish_on_base(
     // 冠球心在轴上 h − Rc 处；折边环的中心圆半径 r − k、在底面上。
     let hub_centre_z = height - hub;
     let knuckle_ring = base_radius - knuckle;
+    // 点到冠球面 / 折边环面的距离：顶点判「在面上」用，面片的缺口也用它量。
+    let off_surface = |p: glam::DVec3| {
+        let (radial, axial) = base.cylindrical(p);
+        let on_hub = ((radial * radial + (axial - hub_centre_z).powi(2)).sqrt() - hub).abs();
+        let on_knuckle = (((radial - knuckle_ring).powi(2) + axial * axial).sqrt() - knuckle).abs();
+        on_hub.min(on_knuckle)
+    };
     for (p, on_base_hub) in base.surface_points(points) {
         if on_base_hub {
             continue; // 盘心不在任何一段曲面上。
         }
-        let (radial, axial) = base.cylindrical(p);
-        let on_hub = ((radial * radial + (axial - hub_centre_z).powi(2)).sqrt() - hub).abs();
-        let on_knuckle = (((radial - knuckle_ring).powi(2) + axial * axial).sqrt() - knuckle).abs();
-        if on_hub.min(on_knuckle) > 1e-6 {
+        if off_surface(p) > 1e-6 {
             return None;
+        }
+    }
+    // 缺口：底环的弦高，与曲面面片到冠球 / 折边环的欠缺，取大。顶点都在面上，
+    // 面片是内接的，欠缺最大处在片中间——拿重心与三条边的中点量。底盘那些片不算。
+    let rim_gap = chord_sagitta_mm(base_radius, std::f64::consts::TAU / base.segments as f64);
+    let mut cap_gap = 0.0f64;
+    for tri in triangles {
+        if tri
+            .iter()
+            .all(|i| (base.levels[*i as usize] - base.base_level).abs() <= 1e-6)
+        {
+            continue;
+        }
+        let [a, b, c] = tri.map(|i| points[i as usize]);
+        for q in [
+            (a + b + c) / 3.0,
+            (a + b) / 2.0,
+            (b + c) / 2.0,
+            (c + a) / 2.0,
+        ] {
+            cap_gap = cap_gap.max(off_surface(q));
         }
     }
     Some(RecognisedEllipticalDish {
@@ -2417,67 +2443,19 @@ fn elliptical_dish_on_base(
         centre: base.centre,
         axis: base.axis,
         segments: base.segments,
-        // 两笔系统差相加：底圆那一圈的弦高（网格是内接多边形），加上**形状本身**
-        // 那一层——落盘的半椭球与我们这只折边头不是同一个面。
-        sagitta_mm: chord_sagitta_mm(base_radius, std::f64::consts::TAU / base.segments as f64)
-            + ellipsoid_vs_knuckled_gap(base_radius, height, knuckle, hub),
+        sagitta_mm: rim_gap.max(cap_gap),
     })
-}
-
-/// 半椭球与折边头这两条母线之间的 Hausdorff 距离（mm）——落盘那一步的形状损失有多大。
-///
-/// `EllipticalDish(r, h)` 在 RVM 里是半椭球 `(r·sinθ, h·cosθ)`，而我们（和 E3D 自己）
-/// 手上那只是冠球 + 折边环。两个面沿任何方向的支撑函数之差都不超过它们的 Hausdorff
-/// 距离，所以拿它当自校闸的放行量是紧的。
-///
-/// **这不是给碟开的免检。** 放行量是由 `r` / `h` 这两个数**算**出来的，不是一个常数：
-/// 约定写错（比如 r 与 h 写反）造成的偏差是半径或半高那个量级（这只 225/100 的碟会差
-/// 125 mm），与这里算出来的几毫米仍差着一两个数量级，照样拦得住。
-fn ellipsoid_vs_knuckled_gap(base_radius: f64, height: f64, knuckle: f64, hub: f64) -> f64 {
-    const STEPS: usize = 256;
-    let phi_t = {
-        let ratio = (height - knuckle) / (hub - knuckle);
-        (1.0 - ratio).clamp(-1.0, 1.0).acos()
-    };
-    let ellipsoid: Vec<[f64; 2]> = (0..=STEPS)
-        .map(|i| {
-            let theta = std::f64::consts::FRAC_PI_2 * i as f64 / STEPS as f64;
-            [base_radius * theta.sin(), height * theta.cos()]
-        })
-        .collect();
-    let knuckled: Vec<[f64; 2]> = (0..=STEPS)
-        .map(|i| {
-            let phi = std::f64::consts::FRAC_PI_2 * i as f64 / STEPS as f64;
-            if phi <= phi_t {
-                [hub * phi.sin(), hub * phi.cos() - (hub - height)]
-            } else {
-                [
-                    (base_radius - knuckle) + knuckle * phi.sin(),
-                    knuckle * phi.cos(),
-                ]
-            }
-        })
-        .collect();
-    let one_way = |from: &[[f64; 2]], to: &[[f64; 2]]| {
-        from.iter().fold(0.0_f64, |worst, p| {
-            let nearest = to.iter().fold(f64::MAX, |best, q| {
-                best.min((p[0] - q[0]).hypot(p[1] - q[1]))
-            });
-            worst.max(nearest)
-        })
-    };
-    one_way(&ellipsoid, &knuckled).max(one_way(&knuckled, &ellipsoid))
 }
 
 /// 由 [`elliptical_dish_from_local_mesh`] 认出来的碟造一条 `EllipticalDish` 记录。
 ///
 /// RVM 的 `EllipticalDish` 与 `SphericalDish` 同形：参数 `[底圆半径, 高]`，原点在底圆
-/// 圆心、底圆在 z = 0、顶点在 z = +h。折边半径不落盘——`expdri/DRDISH` 只写这两个数。
-///
-/// **写出去的是半椭球，不是我们手上那只折边头**：这一步照抄 E3D 在导出时就做了的近似
-/// （`expdri/DRDISH` `0x10003fb8` 只写 r、h，折边半径仅用来在 5 与 6 之间选种类），
-/// 好让两边的 RVM 逐字对得上。形状损失有多大由 [`ellipsoid_vs_knuckled_gap`] 算出来，
-/// 记在 `sagitta_mm` 上、由自校闸放行——不是给碟免检。
+/// 圆心、底圆在 z = 0、顶点在 z = +h。折边半径不落盘——`expdri/DRDISH` 只写这两个数，
+/// 也不必落：k 是 r / h 的函数（`CREDSH`），读侧从 (r, h) 就能把冠球 + 折边环原样还原
+/// （[`crate::rvm_read::Primitive::local_hull_points_mm`] 2026-09-19 起正是这么读的，
+/// 与 E3D 的 `GM_EDish` 同形），所以落盘这一步**没有形状损失**；自校闸放行的只有面片的
+/// 内接缺口（底环弦高与冠 / 折边面片到曲面的欠缺，取大），与其它曲面图元一个口径。
+/// rvm-rs 一类阅览器把这条记录画成半椭球，那是阅览器的近似，不进闸门。
 pub fn elliptical_dish_geometry(
     world: &glam::DMat4,
     dish: &RecognisedEllipticalDish,
@@ -3349,17 +3327,14 @@ mod tests {
         }
     }
 
-    /// 落盘写成半椭球是**照抄 E3D 的导出损失**，放行量由 r / h 算出来，不是给碟免检。
+    /// 折边碟过自校闸靠的只是面片的内接缺口（弦高一档），不靠「形状损失」的放行量。
     ///
-    /// RVM 的 `EllipticalDish` 是一只 z 向缩放的四分之一球（rvm-rs
-    /// `impl Tessellate for EllipticalDish`），而 E3D 自己的 `GM_EDish` 是冠球 + 折边环的
-    /// torispherical 头（libgm `0x10054ab0`）；`expdri/DRDISH`（`0x10003fb8`）只写 (r, h)，
-    /// 形状在导出那一步就丢了。我们照写同一份，两边 RVM 的图元种类才对得上。
-    ///
-    /// 这一条钉住闸门还在：放行的是 [`ellipsoid_vs_knuckled_gap`] 按这只碟算出来的几毫米，
-    /// 而不是一个能吞下任何东西的常数——r 与 h 写反那种约定错差着一两个数量级，照样拦下。
+    /// 2026-09-19 之前读侧把 RVM 的 `EllipticalDish` 当半椭球采（rvm-rs 的画法），闸门只好
+    /// 放行半椭球与折边头之间几毫米的 Hausdorff 距离；现在读侧按 E3D `GM_EDish` 的
+    /// 冠球 + 折边环还原（k 由 r / h 算出，`expdri/DRDISH` 只写 (r, h) 并不丢形状），
+    /// 两边是同一个面，放行量回到弦高——r 与 h 写反那种约定错差两个数量级，照样拦下。
     #[test]
-    fn a_knuckled_dish_clears_the_gate_by_its_own_shape_loss_not_by_a_waiver() {
+    fn a_knuckled_dish_clears_the_gate_by_its_facet_gap_alone() {
         let (radius, height) = (225.0_f64, 100.0_f64);
         let knuckle = crate::solid::dish_knuckle_radius(radius, height);
         let solid = crate::solid::elliptical_dish_solid(radius, height, knuckle).unwrap();
@@ -3367,10 +3342,11 @@ mod tests {
         let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
         let dish = elliptical_dish_from_local_mesh(&mesh.vertices, &triangles).unwrap();
 
-        // 放行量是形状损失那一档（毫米），不是弦高（0.5 mm）也不是随便一个大数。
+        // 放行量是弦高那一档（FACET_TOL_MM = 0.5 的内接面片，片中间最多 ~1 mm），
+        // 不再是半椭球 vs 折边头那几毫米（这只 225/100 的碟两条母线径向最多差 7.8 mm）。
         assert!(
-            (1.0..12.0).contains(&dish.sagitta_mm),
-            "半椭球与折边头的差应是毫米量级，得到 {}",
+            (0.0..1.5).contains(&dish.sagitta_mm),
+            "折边碟的缺口应是弦高量级，得到 {}",
             dish.sagitta_mm
         );
 

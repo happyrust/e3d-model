@@ -184,31 +184,63 @@ impl Primitive {
                     .collect()
             }
             Self::EllipticalDish([r, h]) => {
-                // 半椭球面（`(r·sinθ, h·cosθ)`，θ 从顶点扫到底圈）按纬度逐圈采到底圆。
+                // 冠球 + 折边环（torispherical）的母线按纬度逐圈采到底圆，**不是**半椭球。
                 //
-                // 与 [`Self::SphericalDish`] 同一个坑、同一条改法：碟一倾斜，AABB 的极值
-                // 落在碟面中间某一圈上，光有底圈 + 顶点 + `(r/√2, h/√2)` 那一圈卡不住。
-                // r 225 / h 100 的碟转 `rot_z(0.4)·rot_x(0.7)` 实测因此**偏小 11.7 mm**
-                // （z 上界 156.6 对真值 168.3），生成侧的解析记录过不了自校闸。
+                // E3D 的 `EllipticalDish` 是 `GM_EDish`：冠球半径 Rc = (r² + h² − 2rk)/(2(h − k))，
+                // 折边是管半径 k、中心圆半径 r − k 的环，两段在 φt = acos((Rc − h)/(Rc − k)) 相切
+                // （libgm `0x10054ab0`；[`crate::solid::elliptical_dish_solid`] 照它画）。折边半径不落盘
+                // 也不必落：`expdri/DRDISH`（`0x10003fb8`）只写 (r, h)，而 k 本来就是 r / h 的函数
+                // （CREDSH `k = h/((r − h)/√(r² + h²) + 1)`，目录 PRAD 只当开关），从 (r, h) 能一字不差地
+                // 还原出 E3D 画的那只碟。2026-09-19 之前这里照 rvm-rs `impl Tessellate for EllipticalDish`
+                // 当半椭球 `(r·sinθ, h·cosθ)` 采——那是阅览器的近似，不是 E3D 的形：母线中段差到
+                // 2.8 mm（r 84 / h 38），斜置的碟世界盒差 1.6 mm（ams7997 管道 CAP `24381/145495`
+                // 因此被 `rvm_compare` 记成「E3D 更大 0.8 / 1.2」；seg15 账 §26.9 → §26.12）。
                 //
-                // 这只是**采样**密度，不是形状口径：RVM 的 `EllipticalDish` 就是一只
-                // z 向缩放的四分之一球（rvm-rs `impl Tessellate for EllipticalDish`），
-                // E3D 自己的 `GM_EDish` 是冠球 + 折边环的 torispherical 头，两者差着
-                // 一层导出损失——`expdri/DRDISH`（`0x10003fb8`）只写 (r, h)，折边半径
-                // 只用来在 5（椭圆碟）与 6（球形碟）之间选一个，形状本身不落盘。
+                // 与 [`Self::SphericalDish`] 同一条采样口径：碟一倾斜，AABB 的极值落在碟面中间
+                // 某一圈上，光有底圈 + 顶点卡不住。冠 / 折边各 64 圈；r == h 时 `GM_EDish` 退化成
+                // 半球（`isSpherical`），两种读法逐点相同，走同一条。
                 const LATITUDES: usize = 64;
                 if !(*r > 0.0 && *h > 0.0) {
                     return ring(*r, 0.0)
                         .chain(std::iter::once([0.0, 0.0, *h]))
                         .collect();
                 }
-                (1..LATITUDES)
+                let (r, h) = (*r, *h);
+                if (r - h).abs() <= 1e-6 {
+                    return (1..2 * LATITUDES)
+                        .flat_map(move |j| {
+                            let phi =
+                                std::f64::consts::FRAC_PI_2 * j as f64 / (2 * LATITUDES) as f64;
+                            ring(r * phi.sin(), r * phi.cos())
+                        })
+                        .chain(ring(r, 0.0))
+                        .chain(std::iter::once([0.0, 0.0, h]))
+                        .collect();
+                }
+                let knuckle = crate::solid::edish_knuckle_to_use(
+                    r,
+                    h,
+                    crate::solid::dish_knuckle_radius(r, h),
+                );
+                let hub = crate::solid::edish_radius_of_hub(r, h, knuckle);
+                let phi_t = {
+                    let ratio = (h - knuckle) / (hub - knuckle);
+                    (1.0 - ratio).clamp(-1.0, 1.0).acos()
+                };
+                let hub_centre_z = h - hub;
+                let knuckle_ring = r - knuckle;
+                (1..=LATITUDES)
                     .flat_map(move |j| {
-                        let theta = std::f64::consts::FRAC_PI_2 * j as f64 / LATITUDES as f64;
-                        ring(r * theta.sin(), h * theta.cos())
+                        let phi = phi_t * j as f64 / LATITUDES as f64;
+                        ring(hub * phi.sin(), hub_centre_z + hub * phi.cos())
                     })
-                    .chain(ring(*r, 0.0))
-                    .chain(std::iter::once([0.0, 0.0, *h]))
+                    .chain((1..LATITUDES).flat_map(move |j| {
+                        let phi = phi_t
+                            + (std::f64::consts::FRAC_PI_2 - phi_t) * j as f64 / LATITUDES as f64;
+                        ring(knuckle_ring + knuckle * phi.sin(), knuckle * phi.cos())
+                    }))
+                    .chain(ring(r, 0.0))
+                    .chain(std::iter::once([0.0, 0.0, h]))
                     .collect()
             }
             Self::SphericalDish([r, h]) => {
@@ -966,6 +998,45 @@ mod tests {
         )
         .unwrap();
         assert!(naive[3] > 27.0 && naive[5] > 27.0, "{naive:?}");
+    }
+
+    #[test]
+    fn a_tilted_elliptical_dish_hull_follows_the_knuckled_profile_not_a_half_ellipsoid() {
+        // ams7997 管道 0 级真值里 CAP `24381/145495` 的碟：EllipticalDish(84, 38)，轴斜置
+        // （seg15 账 §26.9 → §26.12）。E3D（`GM_EDish`）与我们的规范体画的都是冠球 + 折边环：
+        //   k = 38/((84−38)/√(84²+38²)+1) = 25.351，Rc = (84²+38²−2·84·k)/(2(38−k)) = 167.645，
+        //   φt = acos((Rc−38)/(Rc−k)) = 24.34°。
+        // 绕 X 转 45° 后 z 的上界 = max(ρ + z)/√2：折边上 φ = 45° 处 ρ + z = (84−k) + k·√2 = 94.50，
+        // 得 66.82；半椭球 (84·sinθ, 38·cosθ) 的 max(ρ + z) = √(84²+38²) = 92.20，只有 65.19——
+        // 差 1.63 mm，正是 `rvm_compare` 把这只 CAP 记成「E3D 更大 0.8 / 1.2」的那一档。
+        let a = 45.0f64.to_radians();
+        let rotate = |v: &[f64; 3]| {
+            [
+                v[0],
+                v[1] * a.cos() - v[2] * a.sin(),
+                v[1] * a.sin() + v[2] * a.cos(),
+            ]
+        };
+        let dish = Primitive::EllipticalDish([84.0, 38.0]);
+        let rotated = aabb_of(dish.local_hull_points_mm().iter().map(rotate)).unwrap();
+        // 冠 / 折边各 64 圈的采样误差 ≤ k·(1 − cos(65.7°/128)) ≈ 0.0005 mm。
+        assert!(
+            (rotated[5] - 66.82).abs() <= 0.02,
+            "z 上界应是折边给的 66.82，得到 {rotated:?}"
+        );
+        // 换回半椭球即红：它给 65.19，差 1.6 mm，远超 `EXACT_MM = 0.05`。
+        assert!((rotated[5] - 65.19).abs() > 1.5, "{rotated:?}");
+        // 不转时两种读法的盒同为 r / r / h——斜置才见差，所以这一格也钉住。
+        assert_close(
+            &dish.local_aabb_mm().unwrap(),
+            &[-84.0, -84.0, 0.0, 84.0, 84.0, 38.0],
+            0.02,
+        );
+        // r == h 退化成半球，与 SphericalDish 逐点相同。
+        let hemi = Primitive::EllipticalDish([25.0, 25.0])
+            .local_aabb_mm()
+            .unwrap();
+        assert_close(&hemi, &[-25.0, -25.0, 0.0, 25.0, 25.0, 25.0], 0.02);
     }
 
     #[test]
