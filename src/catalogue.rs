@@ -1655,20 +1655,41 @@ fn evaluate_lpyr(
     pyramid: &DbElement,
     env: &DbElementParamEnv,
 ) -> Result<Option<EvaluatedPyramid>, ModelError> {
-    let xtop = required_number(pyramid, "PBTP", env, "catalogue LPYR")?.abs();
-    let ytop = required_number(pyramid, "PCTP", env, "catalogue LPYR")?.abs();
-    let xbot = required_number(pyramid, "PBBT", env, "catalogue LPYR")?.abs();
-    let ybot = required_number(pyramid, "PCBT", env, "catalogue LPYR")?.abs();
+    evaluate_lpyr_as(
+        member,
+        component,
+        pyramid,
+        env,
+        "catalogue LPYR",
+        "catalogue LPYR axis",
+    )
+}
+
+/// [`evaluate_lpyr`] 的本体，正体 LPYR 与刀 NLPY 共用：同一组属性（PBTP/PCTP/PBBT/PCBT、
+/// PTDI/PBDI、PBOF/PCOF）、同一套三根轴（PAAX 高、PBAX 局部 X、PCAX 定 Y 偏移的号），
+/// 只有报错里的名字不同。
+fn evaluate_lpyr_as(
+    member: &DbElement,
+    component: &DbElement,
+    pyramid: &DbElement,
+    env: &DbElementParamEnv,
+    what: &'static str,
+    axis_what: &'static str,
+) -> Result<Option<EvaluatedPyramid>, ModelError> {
+    let xtop = required_number(pyramid, "PBTP", env, what)?.abs();
+    let ytop = required_number(pyramid, "PCTP", env, what)?.abs();
+    let xbot = required_number(pyramid, "PBBT", env, what)?.abs();
+    let ybot = required_number(pyramid, "PCBT", env, what)?.abs();
     let (top_distance, bottom_distance, xoff, yoff) = lpyr_axial_and_offsets(
-        required_number(pyramid, "PTDI", env, "catalogue LPYR")?,
-        required_number(pyramid, "PBDI", env, "catalogue LPYR")?,
-        required_number(pyramid, "PBOF", env, "catalogue LPYR")?,
-        required_number(pyramid, "PCOF", env, "catalogue LPYR")?,
+        required_number(pyramid, "PTDI", env, what)?,
+        required_number(pyramid, "PBDI", env, what)?,
+        required_number(pyramid, "PBOF", env, what)?,
+        required_number(pyramid, "PCOF", env, what)?,
     );
 
-    let pa = catalogue_axis_or_fail(member, component, pyramid, "PAAX", "catalogue LPYR axis")?;
-    let pb = catalogue_axis_or_fail(member, component, pyramid, "PBAX", "catalogue LPYR axis")?;
-    let pc = catalogue_axis_or_fail(member, component, pyramid, "PCAX", "catalogue LPYR axis")?;
+    let pa = catalogue_axis_or_fail(member, component, pyramid, "PAAX", axis_what)?;
+    let pb = catalogue_axis_or_fail(member, component, pyramid, "PBAX", axis_what)?;
+    let pc = catalogue_axis_or_fail(member, component, pyramid, "PCAX", axis_what)?;
 
     lpyr_geometry(
         [xbot, ybot, xtop, ytop],
@@ -1882,6 +1903,15 @@ fn lsnout_frame(
     ))
 }
 
+/// 刀 NLPY 与正体 LPYR 走**同一条**几何规则（[`evaluate_lpyr_as`]）：PAAX 定高、PBAX 定局部 X、
+/// PCAX 定 Y 偏移的号，PBOF/PCOF 进放置。
+///
+/// 此前这里只读 PAAX、拿 `orimat` 随手配一对横向轴、横向偏移也不进放置——方的、居中的刀
+/// 看不出来，长宽不等或带偏移的刀就转到别的方向去了。CADC 风管的裤形三通 `/RBREECH`
+/// （ams7997 `24381/100890`）正撞上：`NLPYRAMID 2 of /RBREECH-BODY1` 与 `/RBREECH-NGAP`
+/// 都是 `PBBT 0 / PBTP DESP[13] = 265`（沿 PBAX = P6 = X）× `PCBT ≈ 788 / PCTP 810`（沿 Y）
+/// 的楔形刀，被转成 x 向 810 宽、y 向 0 → 265 的楔——V 口切到了腿上、V 里的钣金填块 `GAP`
+/// 反而没被 `NGAP` 掏空（seg15 账 §26.12；真库门 `tests/hvac_rbreech_gap_real.rs`）。
 fn evaluate_nlpy(
     member: &DbElement,
     component: &DbElement,
@@ -1891,42 +1921,14 @@ fn evaluate_nlpy(
     if pyramid.get_bool("TUFL")? == Some(false) {
         return Ok(None);
     }
-    let mut xtop = required_number(pyramid, "PBTP", env, "catalogue NLPY")?.abs();
-    let mut ytop = required_number(pyramid, "PCTP", env, "catalogue NLPY")?.abs();
-    let mut xbot = required_number(pyramid, "PBBT", env, "catalogue NLPY")?.abs();
-    let mut ybot = required_number(pyramid, "PCBT", env, "catalogue NLPY")?.abs();
-    let top = required_number(pyramid, "PTDI", env, "catalogue NLPY")?;
-    let bottom = required_number(pyramid, "PBDI", env, "catalogue NLPY")?;
-    let xoff = required_number(pyramid, "PBOF", env, "catalogue NLPY")?;
-    let yoff = required_number(pyramid, "PCOF", env, "catalogue NLPY")?;
-    let mut axis =
-        catalogue_axis_or_fail(member, component, pyramid, "PAAX", "catalogue NLPY axis")?;
-    let mut height = top - bottom;
-    if height < 0.0 {
-        height = -height;
-        axis.direction = -axis.direction;
-        std::mem::swap(&mut xbot, &mut xtop);
-        std::mem::swap(&mut ybot, &mut ytop);
-    }
-    if height < HEIGHT_TOL_MM {
-        return Ok(None);
-    }
-    let rotation = orimat(axis.direction).ok_or_else(|| {
-        ModelError::Solid(SolidError::Degenerate {
-            what: "catalogue NLPY axis",
-            detail: format!("PAAX={:?}", axis.direction),
-        })
-    })?;
-    let parameters = [xbot, ybot, xtop, ytop, height, xoff, yoff];
-    Ok(Some(EvaluatedPyramid {
-        mesh_key: CatalogueMeshKey::Pyramid {
-            tessellation_version: PYRAMID_TESSELLATION_VERSION,
-            parameter_bits: parameters.map(|value| value.to_bits()),
-        },
-        parameters,
-        transform: DMat4::from_translation(axis.origin + axis.direction * ((bottom + top) * 0.5))
-            * DMat4::from_mat3(rotation),
-    }))
+    evaluate_lpyr_as(
+        member,
+        component,
+        pyramid,
+        env,
+        "catalogue NLPY",
+        "catalogue NLPY axis",
+    )
 }
 
 /// SEXT / SREV 共用的轮廓采集（Core 侧同为环组装配器 `sub_10715170`）：
