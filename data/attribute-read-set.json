@@ -138,7 +138,8 @@
 "ZOFF"
 ],
 "stamp_literals":[
-"CACHID"
+"CACHID",
+"SPAMAP"
 ],
 "non_attribute_literals":[
 "ABOR",

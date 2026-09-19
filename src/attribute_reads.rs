@@ -94,7 +94,7 @@ mod tests {
             assert!(reads_attribute(name), "{name}");
         }
         // 业务元数据：一个都不读——这是元数据门第二票的前提。戳同理：差分层按名字排除它，不是读它。
-        for name in ["NAME", "DESC", "PURP", "FUNC", "LCHKDA", "CACHID"] {
+        for name in ["NAME", "DESC", "PURP", "FUNC", "LCHKDA", "CACHID", "SPAMAP"] {
             assert!(!reads_attribute(name), "{name} 不该被生成器读到");
         }
     }

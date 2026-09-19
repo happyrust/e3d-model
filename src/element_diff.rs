@@ -64,7 +64,17 @@ const TUBI_CHANGE_GATE: [&str; 4] = ["POS", "ORI", "ITLE", "SPRE"];
 /// 收不到它）：只有戳跳了的候选记 `no_model` 第三档 [`crate::increment::NoModelTier::CacheStamp`]，
 /// 不上卷、不级联（gen-model `model_impact::attribute_is_metadata_only`）；此前它在元数据门里不放行
 /// （字典没给它投票）。
-pub const PLACEMENT_STAMP_ATTRIBUTES: [&str; 1] = ["CACHID"];
+///
+/// **`SPAMAP`（2026-09-19 加入，gen-model 计划 §8 N2 / t-334，用户拍板「与 `CACHID` 同档」）**：同样是 3.1
+/// 运行库 schema 里的簿记键（`INTVEC`，字典无票），Design 应用随图形 / 空间索引重建写下、逐次 `+1`
+/// （S8 语料 453 库里它单独跳 11666 次，`0 → 1 → 2`），生成器一处都不读（读取集合两仓守卫钉住）。实证与
+/// `CACHID` 同一把尺子：单库全量两态 4 库 1718 根 0 红（其中归 `SPAMAP` 增量的 1034 根）、全语料 453 库
+/// 命中 36 库（30 库是 `CACHID` 一根都没剔到的），四门与 `CACHID` 同向、无一格反向
+/// （`docs/evidence/2026-09-16-q6-spamap-denominator-audit.md` §4 / §4.1）。它进这张表的后果与 `CACHID`
+/// 完全平行：`[POS, SPAMAP]` 算只动了摆放、只 `SPAMAP` 跳记 `CacheStamp` 第三档、比例护栏按净候选数判
+/// （gen-model `window_root_plan::WindowImpact::cache_stamp`）。名单只此一份，两仓的 `stamp_literals`
+/// 守卫钉住逐名相等——加名字先看 `gen_read_set.py` 的 `STAMP_LITERALS`。
+pub const PLACEMENT_STAMP_ATTRIBUTES: [&str; 2] = ["CACHID", "SPAMAP"];
 
 /// 这个 noun 的属性差分结果算不算数（core 的 NOUN_TUBI 门，见模块文档最后一节）。
 /// 除 `TUBI` 外一律算数。
@@ -521,8 +531,8 @@ mod tests {
         assert!(!diff_with(vec!["POS", "NAME"]).is_placement_only());
         assert!(!diff_with(vec!["POS", "HEIG"]).is_placement_only());
 
-        // 戳（`CACHID`）跟着摆放一起变是编辑器的副作用，不算「摆放之外还动了别的」（2026-09-16 Q5）；
-        // 但只有戳变了不是只动了摆放——摆放一项都没动。
+        // 戳（`CACHID`，2026-09-19 起还有 `SPAMAP`）跟着摆放一起变是编辑器的副作用，不算「摆放之外还动了别的」
+        // （2026-09-16 Q5）；但只有戳变了不是只动了摆放——摆放一项都没动。两个戳一起跳同理。
         for stamp in PLACEMENT_STAMP_ATTRIBUTES {
             assert!(
                 diff_with(vec!["POS", stamp]).is_placement_only(),
@@ -539,6 +549,10 @@ mod tests {
             // 戳不是矩阵输入，也不触发级联。
             assert!(!diff_with(vec![stamp]).placement_input_changed());
         }
+        // 两个戳一起跟着摆放跳仍是只动了摆放；两个戳一起单独跳仍不是。
+        assert!(diff_with(vec!["POS", "CACHID", "SPAMAP"]).is_placement_only());
+        assert!(!diff_with(vec!["CACHID", "SPAMAP"]).is_placement_only());
+        assert!(!diff_with(vec!["CACHID", "SPAMAP"]).placement_input_changed());
 
         // 「什么都没动」不是「只动了摆放」——便宜路径也是活，别排空转的。
         assert!(diff_with(vec![]).is_unchanged());
