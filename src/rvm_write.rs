@@ -332,10 +332,10 @@ impl AnalyticCandidate {
 
     /// 候选记录的世界 AABB（mm）。
     ///
-    /// 球单独算：读侧给球的采样点是规范盒的八个角，只在记录自己的帧里才紧
-    /// （[`crate::rvm_read::Primitive::local_hull_points_mm`]）；而球的记录跟别的图元一样
-    /// 带元素的旋转（E3D 就是这么写的，对拍取局部帧靠它），八个角一转世界盒就大一圈，
-    /// 元素转 45° 时多出 `(√2 − 1)·r`。球的世界盒就是球心 ± r，不必绕采样点。
+    /// 球单独算：球的世界盒就是球心 ± r，与记录带的旋转无关，不必绕采样点。
+    /// 读侧 [`crate::rvm_read::Primitive::local_hull_points_mm`] 现在也按球面逐圈采
+    /// （早先是规范盒的八个角，元素转 45° 时世界盒多出 `(√2 − 1)·r`，这一格当年就是为绕开它
+    /// 才单独写的），但采样点撑不到极值、每侧短 7.5e-5·r；闸门这一侧直接给精确值。
     pub fn world_aabb_mm(&self) -> Option<[f64; 6]> {
         match self.geometry.primitive {
             Primitive::Sphere([r]) => {
@@ -3227,12 +3227,17 @@ mod tests {
                     "{aabb:?}"
                 );
             }
-            // 读侧按八个角算出来的世界盒确实大一圈——这正是闸门要绕开它的原因。
-            let by_corners = candidate.geometry.world_aabb_mm().unwrap();
-            assert!(
-                by_corners[3] - by_corners[0] > 2.0 * radius + 1e-6,
-                "{by_corners:?}"
-            );
+            // 读侧按球面采样算出来的世界盒与球心 ± r 只差采样误差（每侧 7.5e-5·r，
+            // `rvm_read.rs` 的 Sphere 分支）；早先它是八个角、转了就大一圈，闸门这一格
+            // 正是为绕开它才单独写的，两边现在要对得上。
+            let by_hull = candidate.geometry.world_aabb_mm().unwrap();
+            for axis in 0..3 {
+                assert!(
+                    (by_hull[axis] - aabb[axis]).abs() < 1e-3 * radius
+                        && (by_hull[axis + 3] - aabb[axis + 3]).abs() < 1e-3 * radius,
+                    "{by_hull:?} vs {aabb:?}"
+                );
+            }
         }
     }
 

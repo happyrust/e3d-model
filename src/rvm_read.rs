@@ -149,8 +149,23 @@ impl Primitive {
             }
             Self::Cylinder([r, h]) => ring(*r, -h / 2.0).chain(ring(*r, h / 2.0)).collect(),
             Self::Sphere([r]) => {
-                // 球的 AABB 与朝向无关，八个角就够紧。
-                corners(&[-r, -r, -r, *r, *r, *r]).to_vec()
+                // 球面按纬度逐圈采，**不是** ±r 八个角。球本身的 AABB 确实与朝向无关，
+                // 但这里给的是局部点、要跟着记录标架一起转：八个角一转，折出来的世界盒
+                // 最大到 r·√3——ams7997 管道真值 1111 只 Sphere 有 1107 只带旋转（MDS 支架
+                // ATTA 的 Ø20 / Ø40 球），Ø40 被算成 57.2 × 57.2 × 40.8，726 只 ATTA 因此被
+                // 记成「E3D 更大 5–17 mm」（seg15 账 §26.8 → §26.9）。纬向 128 圈 = 半球 64 圈
+                // 的密度（与 [`Self::SphericalDish`] 同），采样误差 7.5e-5·r，与周向同量级。
+                const LATITUDES: usize = 128;
+                if !(*r > 0.0) {
+                    return vec![[0.0, 0.0, 0.0]];
+                }
+                (1..LATITUDES)
+                    .flat_map(move |j| {
+                        let phi = std::f64::consts::PI * j as f64 / LATITUDES as f64;
+                        ring(r * phi.sin(), r * phi.cos())
+                    })
+                    .chain([[0.0, 0.0, *r], [0.0, 0.0, -*r]])
+                    .collect()
             }
             Self::Snout([rb, rt, h, ox, oy, bsx, bsy, tsx, tsy]) => {
                 // 偏心量两端各摊一半；斜切按 `z = ±h/2 + x·tan(sx) + y·tan(sy)`，x/y 取**未偏心**
@@ -923,6 +938,34 @@ mod tests {
         )
         .unwrap();
         assert!(naive[3] > 140.0, "{naive:?}");
+    }
+
+    #[test]
+    fn a_rotated_sphere_is_not_bounded_by_its_rotated_box_corners() {
+        // ams7997 管道真值里 MDS 支架 ATTA 的 Ø40 球：记录标架带旋转，±r 八角折出来的世界盒
+        // 是 57.2 × 57.2 × 40.8（seg15 账 §26.9），726 只 ATTA 因此被记成「E3D 更大」。
+        // 球的世界盒无论怎么转都该是球心 ± r。绕 Z 转 30° 再绕 X 转 35°，三轴都验。
+        let (a, b) = (30.0f64.to_radians(), 35.0f64.to_radians());
+        let rotate = |v: &[f64; 3]| {
+            let (x, y, z) = (
+                v[0] * a.cos() - v[1] * a.sin(),
+                v[0] * a.sin() + v[1] * a.cos(),
+                v[2],
+            );
+            [x, y * b.cos() - z * b.sin(), y * b.sin() + z * b.cos()]
+        };
+        let sphere = Primitive::Sphere([20.0]);
+        let rotated = aabb_of(sphere.local_hull_points_mm().iter().map(rotate)).unwrap();
+        // 采样误差 7.5e-5·r ≈ 0.0015 mm，远在 `EXACT_MM = 0.05` 之内。
+        assert_close(&rotated, &[-20.0, -20.0, -20.0, 20.0, 20.0, 20.0], 0.05);
+        // 八角近似：X 半跨 20·(cos30° + sin30°) ≈ 27.3，Z 半跨更大——正是那 57.2 / 2 一类的虚高。
+        let naive = aabb_of(
+            corners(&[-20.0, -20.0, -20.0, 20.0, 20.0, 20.0])
+                .iter()
+                .map(rotate),
+        )
+        .unwrap();
+        assert!(naive[3] > 27.0 && naive[5] > 27.0, "{naive:?}");
     }
 
     #[test]
