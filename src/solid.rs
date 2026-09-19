@@ -8,9 +8,14 @@
 //!    libgm 照铺，NonZero 能把它化解成正确的实心区域。
 //! 2. 环绕向按**外环**统一翻正：外环顺时针就整组反转，孔环靠与外环相反的绕向
 //!    在 NonZero 下扣掉。
-//! 3. libgm 的面级判定容差是 [`RES_TOL_MM`]（`GM_User::restol_` =
-//!    `gm_SetResolutionTolerance(0.051)`）；manifold-csg 没有等价的布尔判定参数，
-//!    因而负体做差前只用 [`MANIFOLD_NUDGE_MM`] 做最小几何让刀。PDMS 负体常与母体共壁，
+//! 3. libgm 的面级容差是 [`RES_TOL_MM`]（`GM_User::restol_` =
+//!    `gm_SetResolutionTolerance(0.051)`）。**它管的是消隐出图那条路**——`restol_`
+//!    的读者只有 `GM_Facets::obscureFaces` / `outputFaces` / `gm_PictureDraw` /
+//!    `HL_Picture`，加上两个 `calcFacets` 转给 `aggregateWith` 的可视聚合；集合运算
+//!    （`gm_combine`）收的是 `GM_User::normtol_`，而 Core3D 启动时把两者**都**设成
+//!    0.051。manifold-csg 没有等价的布尔判定参数，因而负体做差前只用
+//!    [`MANIFOLD_NUDGE_MM`] 做最小几何让刀，近共面那一档另走
+//!    [`snap_negatives_to_host_faces`]。PDMS 负体常与母体共壁，
 //!    不让开，差集沿共壁碎成薄片或留一层皮（gen-model `manifold_csg.rs` 的
 //!    实测：穹顶 NREV 碎成 132 壳、GWALL 穿墙洞留皮 p95=753.9）。
 //!
@@ -20,6 +25,8 @@
 //!    共线（建模者画平的，存储值差 ~0.02mm），该边在世界系里近乎穿过负体 AABB 中心，
 //!    逐轴缩放对这种边的外推量趋近 0，差完留下一根 0.01mm 厚、贯穿全高的针，
 //!    把 AABB 顶出去 63.5mm。截面 offset 是**平行外扩**，斜边不转动，不吃摆放角度。
+
+use std::collections::HashMap;
 
 use glam::{DMat3, DMat4, DVec3};
 use manifold_csg::{CrossSection, FillRule, JoinType, Manifold};
@@ -35,6 +42,19 @@ pub const RES_TOL_MM: f64 = 0.051;
 /// `0.001` 同时使 GWALL 17496/116569 与 17496/116549 对拍 exact，而 `0.01`
 /// 已令前者发生拓扑跃迁并过切 25.88mm。
 pub const MANIFOLD_NUDGE_MM: f64 = 0.001;
+
+/// 两张面算「同向」的余弦门槛：法向夹角 ≤ 0.5°。
+///
+/// 值取 libgm 的切向容差：Core3D 启动时 `gm_SetDefaultTangentTolerance(0.0087266)`，
+/// 0.0087266 rad 正是 0.5°（与 `gm_SetResolutionTolerance(0.051)` 并排设的，
+/// 见 [`snap_negatives_to_host_faces`]）。
+const PLANE_PARALLEL_COS: f64 = 0.999_961_923_064_171;
+
+/// 进 [`snap_negatives_to_host_faces`] 面表的最小面积（mm²）：一个弦高单元。
+///
+/// 门槛是防**碎片驱动吸附**：离散化产生的零星窄条也有法向，拿它去对宿主面
+/// 会让整把刀凭一条碎边被推出去。真正的刀面（墙厚 × 刀长那种）远在门槛之上。
+const SNAP_MIN_FACE_AREA_MM2: f64 = FACET_TOL_MM * FACET_TOL_MM;
 
 /// 圆离散的弦高容差（mm），与 [`crate::discretise::CHORD_TOL_MM`] 同源。
 pub const FACET_TOL_MM: f64 = crate::discretise::CHORD_TOL_MM;
@@ -1057,11 +1077,16 @@ pub(crate) fn edish_radius_of_hub(radius: f64, height: f64, knuckle: f64) -> f64
     (radius * radius + height * height - 2.0 * radius * knuckle) * (0.5 / (height - knuckle))
 }
 
-/// 回转轮廓的轴心吸附阈值（mm），`GM_User::normtol_`。
+/// 回转轮廓的轴心吸附阈值（mm），`GM_User::normtol_`（`GM_Revolution::movePointsOntoYAxis`
+/// 读的就是这个全局）。
 ///
-/// 值是 libgm 的初值 1e-6 而不是 `restol_` 那个 0.051：Core3D 虽然也调了
-/// `gm_SetDefaultNormalisationTolerance`，但 `GM_User::normtol(double)` 这个写入器
-/// 在 libgm 内零调用，运行期恒为初值（gen-model `libgm_discretise::NORM_TOL` 同源）。
+/// **这里的 1e-6 是 libgm 的静态初值，不是运行期的值。** 原先的依据（「`GM_User::normtol(double)`
+/// 这个写入器在 libgm 内零调用，运行期恒为初值」）漏了一条路：`gm_SetDefaultNormalisationTolerance`
+/// **直写** `GM_User::normtol_ = a1`，不走那个 setter，而 Core3D 启动时正是用它设成
+/// **0.051**（`sub_104DA260` 与 `sub_108E6A80` 两条路同值，与 `gm_SetResolutionTolerance(0.051)`
+/// 并排）。也就是说 E3D 的轴心吸附阈值是 0.051，比这里大五万倍。
+///
+/// 值先不动：改它会动到所有回转体的轮廓，得单独拿 RVM 对拍裁决，不搭在近共面吸附这一笔里。
 pub const NORM_TOL_MM: f64 = 1e-6;
 
 /// 半边长低于这个值（mm，亚微米）就当 0（gen-model `DEGENERATE_EDGE` 同值）。
@@ -1155,6 +1180,137 @@ pub fn cut_by_plane(solid: &Manifold, point: DVec3, normal: DVec3) -> Manifold {
     solid.intersection(&placed(&half_space, frame))
 }
 
+/// 一张面：单位外法向 + 平面偏移 `d = n·x`。
+struct FacePlane {
+    normal: DVec3,
+    offset: f64,
+}
+
+/// 网格 → 去重后的面表。按（量化法向，量化偏移）分桶，桶内按面积加权平均。
+///
+/// 量化只用来分桶，不参与判定：同一张平面的三角形偏移逐位相同，必落同一桶；
+/// 曲面的每条弦各成一桶也无妨，判定那头本来就带容差。
+fn face_planes(solid: &Manifold) -> Vec<FacePlane> {
+    let (properties, stride, triangles) = solid.to_mesh_f64();
+    if stride < 3 || properties.len() < stride {
+        return Vec::new();
+    }
+    let point = |index: u64| {
+        let base = index as usize * stride;
+        DVec3::new(properties[base], properties[base + 1], properties[base + 2])
+    };
+    // 法向量化到 1/4096，偏移量化到一个 RES_TOL_MM。
+    let mut buckets: HashMap<[i64; 4], (DVec3, f64, f64)> = HashMap::new();
+    for triangle in triangles.chunks_exact(3) {
+        let (a, b, c) = (point(triangle[0]), point(triangle[1]), point(triangle[2]));
+        let cross = (b - a).cross(c - a);
+        let doubled_area = cross.length();
+        if !(doubled_area > f64::EPSILON) {
+            continue;
+        }
+        let normal = cross / doubled_area;
+        let offset = normal.dot(a);
+        let key = [
+            (normal.x * 4096.0).round() as i64,
+            (normal.y * 4096.0).round() as i64,
+            (normal.z * 4096.0).round() as i64,
+            (offset / RES_TOL_MM).round() as i64,
+        ];
+        let area = 0.5 * doubled_area;
+        let entry = buckets.entry(key).or_insert((DVec3::ZERO, 0.0, 0.0));
+        entry.0 += normal * area;
+        entry.1 += offset * area;
+        entry.2 += area;
+    }
+    buckets
+        .into_values()
+        .filter(|(_, _, area)| *area >= SNAP_MIN_FACE_AREA_MM2)
+        .filter_map(|(normal_sum, offset_sum, area)| {
+            let normal = normal_sum / area;
+            let length = normal.length();
+            (length > 0.5).then(|| FacePlane {
+                normal: normal / length,
+                offset: offset_sum / area,
+            })
+        })
+        .collect()
+}
+
+/// 近共面刀面吸附：刀的某张面与宿主的某张面同向、而宿主那张面只在它外侧不到
+/// [`RES_TOL_MM`] 的地方，就把这把刀沿该法向整体推出去补上这段差，让它真的切齐。
+///
+/// **为什么不是把让刀量调大。** libgm 的差集走 `GM_SolidCombination::calcFacets`
+/// → `gm_combine`（`GM_SetOp.cxx`），自始至终按 `GM_User::normtol_` 归一
+/// （`D3_Limits::expandBy` 与 `GM_Facets::normalisePostSetOp` 收的都是它）。
+/// 那个全局 libgm 的静态初值确实是 1e-6，但 **Core3D 启动时把它设成 0.051**
+/// （`gm_SetDefaultNormalisationTolerance(0.051)`，两条初始化路径同值，与
+/// `gm_SetResolutionTolerance(0.051)` 并排），所以 E3D 对几十微米级的近共面是整片
+/// 吞掉的。我们这边 [`MANIFOLD_NUDGE_MM`] 只有 0.001，而它**不能**调大：0.01 在
+/// GWALL `17496/116569` 上实测过切 25.88mm（模块文档第 3 条）。于是让刀量照旧，
+/// 只在**量到了**近共面的那一个方向上、按实测差额补，补足量封顶 [`RES_TOL_MM`]。
+///
+/// **取证样本** ams1112 GWALL `17496/105880`（GWALL 19 of CWALL /1RS-WF03-W-C-RR001）：
+/// NXTR `17496/118305` 的端边与墙的外侧面本该齐平，存储值差 **0.022065mm**——刀就差
+/// 这一点没切到。E3D 把墙角 `PAVE 17496/105905` 拉到刀面上（RVM 写 16817.41，而原始
+/// 变换是 16817.4344），我们照实留下一张 104.2 × 2320mm、22µm 厚的贴面皮。那张皮让
+/// RVM 对拍 Hausdorff 报 **95.016mm**（皮面到最近一张真表面的距离），而它连在主体上，
+/// [`drop_subresolution_films`] 只看独立分量，收不着。
+///
+/// **代价上限**：任一方向最多多切 [`RES_TOL_MM`] + [`MANIFOLD_NUDGE_MM`]。会被它切穿的
+/// 只有该方向上剩料不足 0.051mm 的地方——那正是 E3D 自己也不留的亚容差薄片。
+pub fn snap_negatives_to_host_faces(host: &Manifold, negs: Vec<Manifold>) -> Vec<Manifold> {
+    if negs.is_empty() {
+        return negs;
+    }
+    let host_planes = face_planes(host);
+    if host_planes.is_empty() {
+        return negs;
+    }
+    negs.into_iter()
+        .map(|neg| snap_one_negative(&host_planes, neg))
+        .collect()
+}
+
+fn snap_one_negative(host_planes: &[FacePlane], neg: Manifold) -> Manifold {
+    let mut moves = Vec::new();
+    for face in face_planes(&neg) {
+        let mut gap = 0.0_f64;
+        for host in host_planes {
+            if face.normal.dot(host.normal) < PLANE_PARALLEL_COS {
+                continue;
+            }
+            // 同向两张面：宿主的偏移更大 = 它在刀的外侧，刀差了这一截没切到。
+            let short_by = host.offset - face.offset;
+            if short_by > 0.0 && short_by <= RES_TOL_MM {
+                gap = gap.max(short_by);
+            }
+        }
+        if gap > 0.0 {
+            moves.push((face.normal, gap + MANIFOLD_NUDGE_MM));
+        }
+    }
+    if moves.is_empty() {
+        return neg;
+    }
+    // 同一方向只推最远的那一次；`neg ∪ (neg + n·d)` 把该法向的面整体外移 d，
+    // 反方向的面一动不动（凹处扫不满只会少推，不会多推）。
+    moves.sort_by(|(_, a), (_, b)| b.total_cmp(a));
+    let mut pushed: Vec<DVec3> = Vec::new();
+    let mut snapped = neg;
+    for (normal, distance) in moves {
+        if pushed
+            .iter()
+            .any(|done| done.dot(normal) >= PLANE_PARALLEL_COS)
+        {
+            continue;
+        }
+        let shifted = placed(&snapped, DMat4::from_translation(normal * distance));
+        snapped = snapped.union(&shifted);
+        pushed.push(normal);
+    }
+    snapped
+}
+
 /// 正体 − 负体组（都已在世界系）。
 ///
 /// 负体必须**已在各自局部系让好刀**再进来（`elmodl::negative_world_solid` 负责）：
@@ -1221,6 +1377,52 @@ pub fn cleanup_floor_boolean_components(solid: Manifold, negative_count: usize) 
     }
     kept.push(merged);
     Manifold::compose(&kept)
+}
+
+/// 差集之后的薄膜清理：**独立**分量的平均板厚低于 libgm 的面级判定容差
+/// [`RES_TOL_MM`] 时，它不是几何，是共壁差集留下的一层皮。主分量永远保留。
+///
+/// 厚度用 `2·V/A`：一片 `t` 厚的板 `V ≈ (A/2)·t`，针状片给的是它的截面半径。
+/// 两种形态都与摆放角度无关，也不吃 [`minimum_planar_width`]「只量 XY」的亏，
+/// 而且 `volume` / `surface_area` 都是 manifold 现成的量，不用再遍历一遍网格。
+///
+/// 实测样本 ams1112 GWALL `17496/116569`：接缝刀 NXTR `17496/116928` 的一条边与墙体边界
+/// 近乎共线（存储值差约 8 µm），差完留下一根 20.8 mm 长、**平均 3.9 µm 厚**、贯穿全高
+/// 3,620 mm 的独立针片（294.9 mm³ = 整墙的 1.06e-7）。E3D 在同一处也退化了，只是塌成了
+/// 零厚度：RVM 那儿只有一张没有体积的面片，而且只在 z ≥ 2,160 那一段。这根针让 RVM 对拍的
+/// Hausdorff 报 2,010 mm（针的下端到最近一张真表面的距离），p95 却只有 0.0014 mm。
+///
+/// 为什么不靠加大让刀量：[`MANIFOLD_NUDGE_MM`] 从 0.001 提到 0.01，**在同一只墙上**实测
+/// 过切 25.88 mm（见模块文档第 3 条）。
+pub fn drop_subresolution_films(solid: Manifold) -> Manifold {
+    let components = solid.decompose();
+    if components.len() <= 1 {
+        return solid;
+    }
+    let main = components
+        .iter()
+        .enumerate()
+        .max_by(|(_, a), (_, b)| a.volume().abs().total_cmp(&b.volume().abs()))
+        .map(|(index, _)| index)
+        .unwrap_or(0);
+    let kept = components
+        .iter()
+        .enumerate()
+        .filter(|(index, component)| *index == main || !is_subresolution_film(component))
+        .map(|(_, component)| component.clone())
+        .collect::<Vec<_>>();
+    if kept.len() == components.len() {
+        return solid;
+    }
+    Manifold::compose(&kept)
+}
+
+fn is_subresolution_film(component: &Manifold) -> bool {
+    let area = component.surface_area();
+    if !(area > f64::EPSILON) {
+        return true;
+    }
+    2.0 * component.volume().abs() / area < RES_TOL_MM
 }
 
 fn inflate_planar_about_center(solid: &Manifold, grow: f64) -> Manifold {
@@ -1549,6 +1751,91 @@ mod tests {
         let cleaned = cleanup_floor_boolean_components(Manifold::compose(&[main, sliver]), 25);
         assert_eq!(cleaned.decompose().len(), 1);
         assert!(cleaned.volume() > 1_000_000.0);
+    }
+
+    /// 共壁差集留下的皮按 [`RES_TOL_MM`] 丢，够厚的独立片一个都不许动。
+    ///
+    /// 针片照 ams1112 GWALL `17496/116569` 的实测形状做：20.8 mm 长、贯穿 3,620 mm 全高、
+    /// 平均 3.9 µm 厚。判据是 `2·V/A`，所以它斜着放也照样被认出来——那根针的包围盒是
+    /// 1.254 × 20.717 mm，**按最小包围盒边长根本判不出薄**。
+    #[test]
+    fn subresolution_films_are_dropped_and_real_components_are_not() {
+        let main = Manifold::cube(1000.0, 1000.0, 3620.0, true);
+        let needle = extrude_rings(
+            vec![vec![[0.0, 0.0], [20.76, 0.0], [20.76, 0.0039]]],
+            3620.0,
+        )
+        .unwrap()
+        .rotate(0.0, 0.0, 4.3)
+        .translate(5000.0, 0.0, -1810.0);
+        assert!(needle.volume() < 400.0, "样本针片 {} mm³", needle.volume());
+
+        let cleaned = drop_subresolution_films(Manifold::compose(&[main.clone(), needle]));
+        assert_eq!(cleaned.decompose().len(), 1, "针片该被丢掉");
+        assert!(
+            (cleaned.volume() - main.volume()).abs() < 1e-6,
+            "主片不许动"
+        );
+
+        // 反面：一块 1 mm 厚的小板比容差厚 20 倍，是真几何，留着。
+        let plate = Manifold::cube(200.0, 200.0, 1.0, true).translate(5000.0, 0.0, 0.0);
+        let kept = drop_subresolution_films(Manifold::compose(&[main, plate]));
+        assert_eq!(kept.decompose().len(), 2);
+    }
+
+    /// 刀差一点点没切到宿主外侧面时把刀补出去；差得比 [`RES_TOL_MM`] 还多就一动不动。
+    ///
+    /// 差额照 ams1112 GWALL `17496/105880` 的实测取 0.022065 mm——NXTR `17496/118305`
+    /// 的端边与墙外侧面本该齐平，就差这一点，差完留下一张 22 µm 厚的贴面皮。
+    #[test]
+    fn a_cutter_short_of_a_host_face_by_less_than_restol_is_snapped_flush() {
+        // 宿主 x ∈ [−100, 100]；刀盖住 y ∈ [−50, 0] 的半边，x 只到 100 − gap。
+        let host = Manifold::cube(200.0, 100.0, 100.0, true);
+        let cutter =
+            |gap: f64| Manifold::cube(400.0, 50.0, 200.0, true).translate(-100.0 - gap, -25.0, 0.0);
+        let half = 1_000_000.0;
+
+        let short_by = 0.022_065;
+        let raw = subtract_negatives(host.clone(), vec![cutter(short_by)]);
+        assert!(
+            (raw.volume() - half - 5000.0 * short_by).abs() < 1.0,
+            "不吸附时该留下一张 {} mm³ 的皮，实得 {}",
+            5000.0 * short_by,
+            raw.volume() - half
+        );
+
+        let snapped = snap_negatives_to_host_faces(&host, vec![cutter(short_by)]);
+        let bb = snapped[0].bounding_box().unwrap();
+        assert!(
+            (bb.max()[0] - (100.0 + MANIFOLD_NUDGE_MM)).abs() < 1e-9,
+            "+x 该补到刚过宿主面，实得 {}",
+            bb.max()[0]
+        );
+        assert!(
+            (bb.min()[0] + 300.0 + short_by).abs() < 1e-9
+                && (bb.min()[1] + 50.0).abs() < 1e-9
+                && (bb.max()[1]).abs() < 1e-9
+                && (bb.max()[2] - 100.0).abs() < 1e-9,
+            "别的方向一个都不许动：{:?} {:?}",
+            bb.min(),
+            bb.max()
+        );
+        let cut = subtract_negatives(host.clone(), snapped);
+        assert!(
+            (cut.volume() - half).abs() < 1.0,
+            "皮该没了，实得 {}",
+            cut.volume()
+        );
+
+        // 反面：0.2 mm 比 RES_TOL_MM 厚，那是真料，照旧留着。
+        let thick = 0.2;
+        let kept = snap_negatives_to_host_faces(&host, vec![cutter(thick)]);
+        let cut = subtract_negatives(host, kept);
+        assert!(
+            (cut.volume() - half - 5000.0 * thick).abs() < 1.0,
+            "超容差的料不许被吸附掉，实得 {}",
+            cut.volume() - half
+        );
     }
 
     #[test]

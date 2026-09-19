@@ -39,10 +39,11 @@ use crate::section::{
 use crate::solid::{
     MANIFOLD_NUDGE_MM, SolidError, circ_torus_solid, circ_torus_solid_with_segments,
     cleanup_floor_boolean_components, csg_cylinder_solid_with_segments, cylinder_segments,
-    dish_knuckle_radius, elliptical_dish_solid_with_segments, extrude_rings, inflate_about_center,
-    negative_cylinder_segments, negative_part_rev_segments, placed, pyramid_solid,
-    rect_torus_solid, rect_torus_solid_with_segments, revolve_rings_profile_faceted_inflated,
-    slope_ended_cylinder_solid_with_segments, snout_segments, snout_solid_with_segments,
+    dish_knuckle_radius, drop_subresolution_films, elliptical_dish_solid_with_segments,
+    extrude_rings, inflate_about_center, negative_cylinder_segments, negative_part_rev_segments,
+    placed, pyramid_solid, rect_torus_solid, rect_torus_solid_with_segments,
+    revolve_rings_profile_faceted_inflated, slope_ended_cylinder_solid_with_segments,
+    snap_negatives_to_host_faces, snout_segments, snout_solid_with_segments,
     spherical_dish_solid_with_segments, subtract_negatives,
 };
 use crate::transform::world_matrix;
@@ -654,7 +655,7 @@ pub fn model_element_with_cache(
     let world = if let Some(frame) = section_frame {
         world_matrix(el)? * frame
     } else if category == Category::Catalog && noun == "SBFI" {
-        world_matrix(el)? * sbfitting_catalogue_alignment(el)?
+        sbfitting_world(el)?
     } else {
         world_matrix(el)?
     };
@@ -698,10 +699,30 @@ pub fn model_element_with_cache(
             }
         }
     }
+    if noun == "GWALL" {
+        let mut sleeves = Vec::new();
+        collect_host_sleeves(el, &mut sleeves)?;
+        for sleeve in sleeves {
+            match sleeve_world_cutter(&sleeve) {
+                Ok(solid) => applied.push(solid),
+                Err(error) => skipped.push(SkippedNegative {
+                    refno: sleeve.refno(),
+                    noun: "SBFI".into(),
+                    reason: error.to_string(),
+                }),
+            }
+        }
+    }
     let negatives_applied = applied.len();
+    // 近共面的刀先按 libgm 的归一化口径吸附到宿主面上，再做差——不然差出来的是
+    // 一张贴在主体上的亚容差皮，事后的 `drop_subresolution_films` 也收不着它。
+    let applied = snap_negatives_to_host_faces(&pos_world, applied);
     let mut solid = subtract_negatives(pos_world, applied);
     if noun == "FLOOR" {
         solid = cleanup_floor_boolean_components(solid, negatives_applied);
+    }
+    if negatives_applied > 0 {
+        solid = drop_subresolution_films(solid);
     }
     drop(negatives_timing);
     let materialize_timing = crate::perf::materialize_scope();
@@ -1321,6 +1342,58 @@ fn fixing_world_cutter(wall: &DbElement, fixing: &DbElement) -> Result<Manifold,
     Ok(placed(&local, local_to_world))
 }
 
+/// 宿主墙名下的套管（`GWALL` → `CMPF` → `SBFI`，层数不固定，与
+/// [`collect_host_fixings`] 同一种下钻）。
+///
+/// 只收带得起 `DESP` 的那些：套管本体与它在墙上开的洞出自同一份描述子，
+/// 凑不齐 10 项的连套管自己都建不出来（[`sbfitting_from_desp`]）。
+fn collect_host_sleeves(el: &DbElement, out: &mut Vec<DbElement>) -> Result<(), DbElementError> {
+    for member in el.members()? {
+        if member.element_type()? == "SBFI" {
+            if member
+                .get_double_array("DESP")?
+                .is_some_and(|desp| desp.len() >= SBFI_DESP_MIN)
+            {
+                out.push(member);
+            }
+        } else {
+            collect_host_sleeves(&member, out)?;
+        }
+    }
+    Ok(())
+}
+
+/// 一根套管在宿主墙上开的洞（世界系）。
+///
+/// 与 `FIXING` 那条（[`fixing_world_cutter`]）同型、同一份 `DESP` 布局，只是标架不同：
+/// `FIXING` 的属主链上 `JLDATU`/`PLDATU` 两级没有 POS/ORI、要现算
+/// （[`fixing_host_frame`]），套管的属主 `CMPF` 是有位置的普通元素，
+/// 直接与套管实例共用 [`sbfitting_world`]。
+///
+/// 这条路 2026-09-15 才接上。在那之前 `GWALL` 名下一个洞都不开：ams1112 的 200 根套管
+/// （宿主全是 `GWALL`，落在 54 堵墙上）在 RVM 对拍上表现为「某几堵墙 Hausdorff 几百毫米」，
+/// 量级正是半个墙厚——洞的内壁在我们这边是实心，最近的表面只好退到墙的外表面
+/// （`docs/evidence/2026-09-15-cata-dependency-cache.md`）。
+fn sleeve_world_cutter(sleeve: &DbElement) -> Result<Manifold, ModelError> {
+    let desp = sleeve
+        .get_double_array("DESP")?
+        .ok_or_else(|| ModelError::MissingAttribute {
+            refno: sleeve.refno().to_string(),
+            noun: "SBFI".into(),
+            name: "DESP",
+            what: "host bore",
+        })?;
+    let local = sbfitting_bore_from_desp(&desp).map_err(ModelError::Solid)?;
+    Ok(placed(&local, sbfitting_world(sleeve)?))
+}
+
+/// 套管那件实例的世界标架。开孔刀（[`sleeve_world_cutter`]）与实例必须共用这一处：
+/// 两边各算一遍，洞与套管就会错位——`FIXING` 在 2026-09-15 刚栽过这一跤
+/// （实例走 `world_matrix`、开孔刀走 `fixing_host_frame`，255 件偏 13~25 m）。
+fn sbfitting_world(el: &DbElement) -> Result<DMat4, ModelError> {
+    Ok(world_matrix(el)? * sbfitting_catalogue_alignment(el)?)
+}
+
 fn wall_spine_points(wall: &DbElement) -> Result<(DVec3, DVec3, DVec3), ModelError> {
     let spine = wall
         .members()?
@@ -1436,27 +1509,57 @@ fn sbfitting_from_desp(desp: &[f64], notes: &mut Vec<String>) -> Result<Manifold
         ));
     }
 
-    // The reference RVM uses twelve circumferential panels for this catalogue
-    // fitting.  Keeping that tessellation also makes topology comparisons
-    // deterministic instead of merely matching the bounding box.
-    const SEGMENTS: usize = 8;
-    let ring = |radius: f64, reverse: bool| {
-        let mut points = (0..SEGMENTS)
-            .map(|i| {
-                let angle = std::f64::consts::TAU * i as f64 / SEGMENTS as f64;
-                [radius * angle.cos(), radius * angle.sin()]
-            })
-            .collect::<Vec<_>>();
-        if reverse {
-            points.reverse();
-        }
-        points
-    };
     let solid = extrude_rings(
-        vec![ring(outer_diam * 0.5, false), ring(inner_diam * 0.5, true)],
+        vec![
+            sbfitting_ring(outer_diam * 0.5, false),
+            sbfitting_ring(inner_diam * 0.5, true),
+        ],
         length,
     )?;
     Ok(solid.translate(desp[7], desp[8], desp[9] - length))
+}
+
+/// The reference RVM uses eight circumferential panels for this catalogue
+/// fitting.  Keeping that tessellation also makes topology comparisons
+/// deterministic instead of merely matching the bounding box.
+const SBFI_SEGMENTS: usize = 8;
+
+fn sbfitting_ring(radius: f64, reverse: bool) -> Vec<[f64; 2]> {
+    let mut points = (0..SBFI_SEGMENTS)
+        .map(|i| {
+            let angle = std::f64::consts::TAU * i as f64 / SBFI_SEGMENTS as f64;
+            [radius * angle.cos(), radius * angle.sin()]
+        })
+        .collect::<Vec<_>>();
+    if reverse {
+        points.reverse();
+    }
+    points
+}
+
+/// 套管在宿主墙上开的那个洞：与 [`sbfitting_from_desp`] 同一份 `DESP`、同一组顶点、
+/// 同一处平移，只是把环换成 `OD` 实心柱。
+///
+/// 判据是 ams1112 `1RS-WF03-W-C-RR001` 的逐点实测：RVM 里那些洞的内壁是**内接**于
+/// `OD/2` 的八边形（采样点径向距离落在边心距 `62·cos22.5°=57.3` 到顶点 `62` 之间），
+/// 洞的 z 跨度与 `DESP[1]` 逐字相同（124 mm 那只）。所以洞不是「OD 加余量」，
+/// 就是套管外圆本身——两者必须同一组顶点，不能一边圆一边多边形。
+fn sbfitting_bore_from_desp(desp: &[f64]) -> Result<Manifold, SolidError> {
+    if desp.len() < SBFI_DESP_MIN {
+        return Err(SolidError::Degenerate {
+            what: SBFI_WHAT,
+            detail: format!("DESP length {} < {SBFI_DESP_MIN}", desp.len()),
+        });
+    }
+    let (outer_diam, length) = (desp[1], desp[3]);
+    if !(outer_diam > 0.0 && length > f64::EPSILON) {
+        return Err(SolidError::Degenerate {
+            what: SBFI_WHAT,
+            detail: format!("OD/LENGTH = {outer_diam}/{length}"),
+        });
+    }
+    let bore = extrude_rings(vec![sbfitting_ring(outer_diam * 0.5, false)], length)?;
+    Ok(bore.translate(desp[7], desp[8], desp[9] - length))
 }
 
 enum LocalSolid {
@@ -2385,6 +2488,40 @@ mod tests {
         assert!((bounds.max()[1] - 62.0).abs() < 1e-9);
         assert!(bounds.max()[2].abs() < 1e-9);
         assert!(notes.is_empty());
+    }
+
+    /// 套管在宿主墙上开的洞 = 套管外圆那只实心八棱柱，与套管本体**同一组顶点、
+    /// 同一处平移**。
+    ///
+    /// 判据是 ams1112 `1RS-WF03-W-C-RR001` 的逐点实测：RVM 里洞的内壁是内接于 `OD/2`
+    /// 的八边形（采样点径向距离落在边心距 57.3 到顶点 62 之间），洞的 z 跨度与
+    /// `DESP[1]` 逐字相同。洞若不与套管外壁同一组顶点（比如按真圆去切），
+    /// 两者之间会差一个弦高，对拍上就是整圈几毫米的薄壳。
+    #[test]
+    fn a_sleeve_bores_its_own_outer_octagon_through_the_host() {
+        let desp = [
+            100.0, 124.0, 12.0, 1000.0, 0.0, 0.0, 1400.0, 3000.0, 0.0, 0.0,
+        ];
+        let mut notes = Vec::new();
+        let sleeve = sbfitting_from_desp(&desp, &mut notes).expect("valid SBFI DESP");
+        let bore = sbfitting_bore_from_desp(&desp).expect("valid SBFI DESP");
+
+        // 洞是实心的：没有通孔，体积 = 内接八边形面积 × 长。
+        assert_eq!(bore.genus(), 0, "开孔刀不该带套管自己的内孔");
+        let octagon = 8.0 * 0.5 * 62.0 * 62.0 * (std::f64::consts::TAU / 8.0).sin();
+        assert!((bore.volume() - octagon * 1000.0).abs() / (octagon * 1000.0) < 1e-6);
+        assert!(bore.volume() > sleeve.volume(), "洞比环多一根内芯");
+
+        // 同壳同位：包围盒与套管本体逐轴相同。
+        let sleeve_bounds = sleeve.bounding_box().expect("sleeve bounds");
+        let bore_bounds = bore.bounding_box().expect("bore bounds");
+        for axis in 0..3 {
+            assert!((sleeve_bounds.min()[axis] - bore_bounds.min()[axis]).abs() < 1e-9);
+            assert!((sleeve_bounds.max()[axis] - bore_bounds.max()[axis]).abs() < 1e-9);
+        }
+
+        // 凑不齐 10 项的 DESP 连套管都建不出来，洞同样不许现编一个。
+        assert!(sbfitting_bore_from_desp(&[100.0, 124.0, 12.0]).is_err());
     }
 
     #[test]
