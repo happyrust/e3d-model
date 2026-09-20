@@ -1,0 +1,7 @@
+# 行尾约定：仓库里一律 LF，检出也是 LF（不分平台）。
+# 背景：2026-09-20 之前 core.autocrlf=false 又没有这份文件，索引 106 个文本文件里 3 个是 CRLF、工作树却有 57 个 CRLF / 混杂，
+# 全靠 stat 缓存才不显示为 modified——谁 touch 一下它就冒出来变成整文件的假改动（hvac_tube.rs 528/528 那种）。
+* text=auto eol=lf
+
+# RVM 二进制样本：不做任何行尾 / 差异处理。
+*.rvm binary
