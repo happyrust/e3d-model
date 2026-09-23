@@ -13,7 +13,7 @@
 //! - 负几何单个失败**不拖垮正体**：记进 [`GeneratedElement::negatives_skipped`]，
 //!   正体照出——RVM 对拍时这类元素会以体积偏大暴露，报告里有对应记录。
 
-use glam::{DMat4, DVec3};
+use glam::{DMat3, DMat4, DVec3};
 use manifold_csg::Manifold;
 
 use e3d_io::db_element::{DbElement, DbElementError};
@@ -33,8 +33,9 @@ use crate::primitive_instance::{
 };
 use crate::profile::{LoopProfile, ProfileError, loop_profile};
 use crate::section::{
-    SectionChain, SectionSource, evaluate_section_profile, section_catalogue, section_cut_planes,
-    section_local_solid, section_placement, spine_path, spine_swept_solid,
+    SectionChain, SectionSource, evaluate_section_profile, mitre_extension_length,
+    mitre_extension_solid, section_catalogue, section_cut_planes, section_local_solid,
+    section_placement, spine_mitre_plane, spine_path, spine_swept_solid,
 };
 use crate::solid::{
     MANIFOLD_NUDGE_MM, SolidError, circ_torus_solid, circ_torus_solid_with_segments,
@@ -1118,15 +1119,78 @@ fn wall_local_solid(el: &DbElement, notes: &mut Vec<String>) -> Result<Manifold,
         * DMat4::from_rotation_z(a0);
     torus = placed(&torus, local);
 
-    // ACC_MDR_CSGWall starts an unjoined short CURVE with its default profile
-    // Y direction (global +Y), then rotates the following curve profiles onto
-    // the radial direction. The transition is a ruled triangular end piece.
-    // Core3D's `ACC_CSGWallJoiner::calculateYDir` initializes that direction to
-    // (0,+1); RR001 WALL 4 is the three-interval specimen exercising this path.
-    if sweep_segments == 3 {
-        if let Some(profile) = default_wall_start_wedge(points[0], center, inner, thickness) {
-            let wedge = extrude_rings(vec![profile], height)?;
-            torus = &torus + &wedge;
+    // 两端斜接：端面法向挂在 SPINE 的 `DRNS` / `DRNE` 上（Core3D `setMitrePlanes` 同一判定，
+    // 见 [`crate::section::spine_mitre_plane`]）。端向缺席 / 与切向垂直或平行 → 径向平头；
+    // 其余按那张平面切：截面内角落在体内一侧就削掉，落在体外一侧就先沿切向补挤一截再切
+    // （`" Start-mitre extension"`）。
+    //
+    // 两件真机取证是同一条规则的两个符号：ams1112 `/1RS-WF03-W-C-RR001` WALL 4（3 个扫掠
+    // 区间）SPINE `DRNS = E`，E3D 从起点外延 1.41° 到 `x = pt0.x` 那张竖直面——此前这里按
+    // 「`sweep_segments == 3` 就补一个默认 Y 向的三角楔」硬编码；`/1RS-WF05-W-C-RR001`
+    // WALL 4（`17496/107037`，9 个区间）SPINE 同样 `DRNS = E`，E3D 却把起点内角**削**到
+    // `x = pt0.x`（比径向平头缩进 284 mm），旧的硬编码碰不到它。
+    let local_rotation = DMat3::from_mat4(crate::transform::local_matrix(&spine)?);
+    let spine_direction = |name: &str| -> DVec3 {
+        match spine.get_direction(name) {
+            Ok(Some(raw)) => local_rotation * DVec3::from_array(raw),
+            _ => DVec3::ZERO,
+        }
+    };
+    let profile_ring = vec![
+        [0.0, 0.0],
+        [thickness, 0.0],
+        [thickness, height],
+        [0.0, height],
+    ];
+    let travel = sweep.signum();
+    let mut cuts = Vec::new();
+    for (label, name, angle, is_start) in [
+        ("起点", "DRNS", a0, true),
+        ("终点", "DRNE", a0 + sweep, false),
+    ] {
+        let drn = spine_direction(name);
+        if drn.length_squared() <= 1e-18 {
+            continue;
+        }
+        let radial = DVec3::new(angle.cos(), angle.sin(), 0.0);
+        let ccw = DVec3::new(-angle.sin(), angle.cos(), 0.0);
+        let point = center + radial * radius;
+        let Some(plane) = spine_mitre_plane(drn, ccw * travel, point, is_start) else {
+            notes.push(format!(
+                "WALL {label}端 SPINE {name} {:?} 与切向垂直或平行：不斜接，径向平头",
+                drn.to_array()
+            ));
+            continue;
+        };
+        // 端标架：X 沿墙厚朝内（截面 x ∈ [0, 厚]）、Y 朝上（y ∈ [0, 高]）、Z = 逆时针切向，
+        // 右手系；体所在一侧在 Z 上的符号：起点端随行进方向，终点端反之。
+        let frame = DMat4::from_translation(point)
+            * DMat4::from_mat3(DMat3::from_cols(-radial, DVec3::Z, ccw));
+        let body_dir = if is_start { travel } else { -travel };
+        let rings = std::slice::from_ref(&profile_ring);
+        let extended = mitre_extension_length(rings, frame, &plane, body_dir);
+        if let Some(extension) = mitre_extension_solid(rings, frame, &plane, body_dir)? {
+            torus = &torus + &extension;
+        }
+        notes.push(format!(
+            "WALL {label}端按 SPINE {name} {:?} 斜切：过 ({:.3},{:.3}) 法向 {:?}，补挤 {extended:.3} mm",
+            drn.to_array(),
+            point.x,
+            point.y,
+            plane.normal.to_array()
+        ));
+        cuts.push((label, plane));
+    }
+    for (label, plane) in cuts {
+        torus = crate::solid::cut_by_plane(&torus, plane.point, plane.normal);
+        if torus.is_empty() {
+            return Err(ModelError::Solid(SolidError::Degenerate {
+                what: "WALL mitre",
+                detail: format!(
+                    "{label}端斜切面（法向 {:?}）把整堵墙切空",
+                    plane.normal.to_array()
+                ),
+            }));
         }
     }
     notes.push(format!(
@@ -1136,25 +1200,6 @@ fn wall_local_solid(el: &DbElement, notes: &mut Vec<String>) -> Result<Manifold,
         sweep.to_degrees()
     ));
     Ok(torus)
-}
-
-fn default_wall_start_wedge(
-    outer_start: DVec3,
-    center: DVec3,
-    inner_radius: f64,
-    thickness: f64,
-) -> Option<Vec<[f64; 2]>> {
-    let radial = (outer_start - center).normalize_or_zero();
-    if radial.y.abs() <= 1e-9 {
-        return None;
-    }
-    let inner_start = center + radial * inner_radius;
-    let default_start = outer_start - DVec3::Y * (thickness / radial.y);
-    Some(vec![
-        [outer_start.x, outer_start.y],
-        [inner_start.x, inner_start.y],
-        [default_start.x, default_start.y],
-    ])
 }
 
 fn circular_spine_geometry(points: &[DVec3]) -> Result<(DVec3, f64, f64, f64), ModelError> {
@@ -2377,18 +2422,132 @@ mod tests {
         assert!((sweep + std::f64::consts::TAU).abs() < 1e-9);
     }
 
+    /// 一堵圆弧墙照 [`wall_local_solid`] 的路数建出来：`[inner, outer]` 矩形截面绕圆心扫
+    /// `sweep`，再按 SPINE `DRNS`（起点端向）斜接。返回 (斜接前, 斜接后, 补挤长度)。
+    fn mitred_circular_wall(
+        center: DVec3,
+        outer_start: DVec3,
+        thickness: f64,
+        height: f64,
+        sweep: f64,
+        drns: DVec3,
+    ) -> (Manifold, Manifold, f64) {
+        let radius = (outer_start - center).length();
+        let a0 = (outer_start.y - center.y).atan2(outer_start.x - center.x);
+        let inner = radius - thickness;
+        let sweep_deg = sweep.to_degrees();
+        let segments = negative_part_rev_segments(radius, sweep_deg);
+        let torus = rect_torus_solid_with_segments(inner, radius, height, sweep_deg, segments)
+            .expect("wall torus");
+        let local = DMat4::from_translation(DVec3::new(center.x, center.y, height * 0.5))
+            * DMat4::from_rotation_z(a0);
+        let plain = placed(&torus, local);
+
+        let travel = sweep.signum();
+        let radial = DVec3::new(a0.cos(), a0.sin(), 0.0);
+        let ccw = DVec3::new(-a0.sin(), a0.cos(), 0.0);
+        let point = center + radial * radius;
+        let plane = spine_mitre_plane(drns, ccw * travel, point, true).expect("a real mitre");
+        let frame = DMat4::from_translation(point)
+            * DMat4::from_mat3(DMat3::from_cols(-radial, DVec3::Z, ccw));
+        let ring = vec![
+            [0.0, 0.0],
+            [thickness, 0.0],
+            [thickness, height],
+            [0.0, height],
+        ];
+        let extended = mitre_extension_length(&[ring.clone()], frame, &plane, travel);
+        let mut mitred = plain.clone();
+        if let Some(extension) =
+            mitre_extension_solid(&[ring], frame, &plane, travel).expect("extension")
+        {
+            mitred = &mitred + &extension;
+        }
+        let mitred = crate::solid::cut_by_plane(&mitred, plane.point, plane.normal);
+        (plain, mitred, extended)
+    }
+
+    /// ams1112 `/1RS-WF03-W-C-RR001` WALL 4（3 个扫掠区间，SPINE `DRNS = E`）：E3D 从起点
+    /// **外延**到 `x = pt0.x` 那张竖直面。此前按「默认 +Y 向三角楔」硬编码出来的第三个角
+    /// 是 (−5058.2188, −15289.8818)；按 DRNS 斜接补挤出来的那一角必须落在同一处。
     #[test]
-    fn short_wall_curve_default_start_profile_matches_rr001_rvm() {
+    fn wf03_wall_4_drns_east_extends_the_start_to_the_vertical_plane() {
         let center = DVec3::new(0.1140846, 0.4991176, 0.0);
         let outer = DVec3::new(-5058.21875, -16648.55664, 0.0);
-        let profile = default_wall_start_wedge(outer, center, 16100.51116, 1300.0)
-            .expect("start radial is not perpendicular to global Y");
-        let inner = profile[1];
-        let default_start = profile[2];
-        assert!((inner[0] - -4680.3086).abs() < 0.01);
-        assert!((inner[1] - -15404.699).abs() < 0.01);
-        assert!((default_start[0] - -5058.2188).abs() < 0.01);
-        assert!((default_start[1] - -15289.8818).abs() < 0.01);
+        let thickness = 1300.0;
+        let height = 3900.0;
+        // 起点 −106.90°，终点 −99.07°（`docs/2026-08-12_live-test-ledger.md`）。
+        let sweep = 7.83f64.to_radians();
+        let (plain, mitred, extended) =
+            mitred_circular_wall(center, outer, thickness, height, sweep, DVec3::X);
+        // 内侧切线与 `x = pt0.x` 的交点离内角 394.97 mm，就是要补挤的长度。
+        assert!((extended - 394.97).abs() < 0.05, "{extended}");
+        // 那一角：起点 + 厚度·朝内 − 补挤·切向。
+        let radial = (outer - center).normalize();
+        let ccw = DVec3::new(-radial.y, radial.x, 0.0);
+        let corner = outer - radial * thickness - ccw * extended;
+        assert!((corner.x - -5058.2188).abs() < 0.01, "{corner:?}");
+        assert!((corner.y - -15289.8818).abs() < 0.01, "{corner:?}");
+        // 多出来的体积 = 三角楔（底 394.97 × 高 1300 / 2）× 墙高。
+        let wedge = 0.5 * extended * thickness * height;
+        let delta = mitred.volume() - plain.volume();
+        assert!((delta - wedge).abs() / wedge < 0.01, "{delta} vs {wedge}");
+        // 平面本身不动外角：包围盒 x 最小值仍是 pt0.x。
+        let bb = mitred.bounding_box().expect("solid");
+        assert!((bb.min()[0] - outer.x).abs() < 0.01, "{:?}", bb.min());
+        // 楔子与本体要并成一块，不能是两片只贴着脸的壳（内部那张重合面会留在网格里）。
+        assert_eq!(mitred.decompose().len(), 1, "延伸段没有与本体咬合");
+    }
+
+    /// ams1112 `/1RS-WF05-W-C-RR001` WALL 4（`17496/107037`，9 个区间，SPINE `Drnstart E`）：
+    /// 同一张 `x = pt0.x` 的面在这里把起点内角**削掉**——E3D TTY 导出的 RVM 起点端内外两角
+    /// 同 x = 5492.3；径向平头的内角在 x = 5208.2（差 284 mm，2026-09-23 对拍抓到的那一件）。
+    #[test]
+    fn wf05_wall_4_drns_east_trims_the_start_to_the_vertical_plane() {
+        let center = DVec3::ZERO;
+        let outer = DVec3::new(5492.3, -16510.4, 0.0);
+        let thickness = 900.0;
+        let height = 5980.0;
+        let end = DVec3::new(13653.2, -10786.5, 0.0);
+        let sweep = (end.y.atan2(end.x) - outer.y.atan2(outer.x)).rem_euclid(std::f64::consts::TAU);
+        let (plain, mitred, extended) =
+            mitred_circular_wall(center, outer, thickness, height, sweep, DVec3::X);
+        assert_eq!(extended, 0.0, "内角在体内一侧，不补挤");
+        let before = plain.bounding_box().expect("solid");
+        let after = mitred.bounding_box().expect("solid");
+        assert!((before.min()[0] - 5208.2).abs() < 0.5, "{:?}", before.min());
+        assert!((after.min()[0] - 5492.3).abs() < 0.01, "{:?}", after.min());
+        // 别的边不动：外角 y、终点端、高度。
+        assert!((after.min()[1] - before.min()[1]).abs() < 1e-6);
+        assert!((after.max()[0] - before.max()[0]).abs() < 1e-6);
+        assert!((after.max()[1] - before.max()[1]).abs() < 1e-6);
+        assert!((after.max()[2] - height).abs() < 1e-6 && after.min()[2].abs() < 1e-6);
+        assert!(mitred.volume() < plain.volume());
+    }
+
+    /// `setMitrePlanes` 的两道门：端向与切向垂直 / 平行都不斜接；其余法向指向体内。
+    #[test]
+    fn spine_mitre_plane_gates_perpendicular_and_parallel_and_points_into_the_body() {
+        let p = DVec3::new(1.0, 2.0, 3.0);
+        assert!(spine_mitre_plane(DVec3::ZERO, DVec3::X, p, true).is_none());
+        assert!(
+            spine_mitre_plane(DVec3::Y, DVec3::X, p, true).is_none(),
+            "垂直"
+        );
+        assert!(
+            spine_mitre_plane(DVec3::X, DVec3::X, p, true).is_none(),
+            "平行"
+        );
+        assert!(
+            spine_mitre_plane(-DVec3::X, DVec3::X, p, false).is_none(),
+            "反向平行"
+        );
+        let slanted = DVec3::new(1.0, 1.0, 0.0).normalize();
+        let start = spine_mitre_plane(-slanted, DVec3::X, p, true).expect("起点斜切");
+        assert!(start.normal.dot(DVec3::X) > 0.0, "起点端法向朝行进方向");
+        assert_eq!(start.point, p);
+        let end = spine_mitre_plane(slanted, DVec3::X, p, false).expect("终点斜切");
+        assert!(end.normal.dot(DVec3::X) < 0.0, "终点端法向逆行进方向");
     }
 
     #[test]

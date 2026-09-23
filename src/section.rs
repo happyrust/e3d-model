@@ -47,7 +47,9 @@ use e3d_io::record::descriptor::DescriptorValue;
 use crate::catalogue::{display_filtered, optional_number, repre_level_of, required_number};
 use crate::discretise::{FilletVertex, flatten_ring};
 use crate::elmodl::ModelError;
-use crate::solid::{cut_by_plane, cylinder_segments, extrude_rings, placed, revolve_rings};
+use crate::solid::{
+    MANIFOLD_NUDGE_MM, cut_by_plane, cylinder_segments, extrude_rings, placed, revolve_rings,
+};
 
 /// 缺省对齐线：`JUSL` 未设时 E3D 用中性轴。
 pub const DEFAULT_JUSTIFICATION_LINE: &str = "NA";
@@ -1528,6 +1530,10 @@ pub fn spine_swept_solid(
         return Ok(None);
     }
     if path.drns.length_squared() > 1e-18 || path.drne.length_squared() > 1e-18 {
+        // WALL 那边已按 [`spine_mitre_plane`] / [`mitre_extension_solid`] 真切（ams1112 WF05 /
+        // WF03 RR001 两堵 WALL 4 对 E3D RVM 逐件对上）；GENSEC 接同一套只差一次 E3D 对拍——
+        // aps250209 有 178 只 GENSEC 带非零 DRNS/DRNE，2026-09-23 那台机器上 APS 的 TTY
+        // 会话起不来（des.exe 0xC0000005），没拿到基准前先照旧平头、只记账。
         notes.push(format!(
             "SPINE 的 DRNS {:?} / DRNE {:?} 非零：E3D 会接 mitre extension 斜切两端，本期未接，按平头建",
             path.drns.to_array(),
@@ -1673,6 +1679,110 @@ pub fn cut_plane_normal(to_local: DMat3, raw: DVec3, inward_z: f64) -> DVec3 {
         normal = -normal;
     }
     normal
+}
+
+// ---------------------------------------------------------------------------
+// SPINE 两端的斜接（Core3D `DB_Gensec::setMitrePlanes` + `sub_107318E0` 的
+// `" Start-mitre extension"` / `" End-mitre extension"`）。SCTN 的两端切面走上面 GTSTDT
+// 那套（端向在 SCTN 自己的 `DRNS`/`DRNE` 上）；WALL / GENSEC 的端向挂在 **SPINE** 的
+// `DRNS`/`DRNE` 上，判定与延伸在这里，两族共用。
+//
+// 取证：ams1112 `/1RS-WF05-W-C-RR001` WALL 4（`17496/107037`）的 SPINE `Drnstart E`、
+// `Drnend` 未设——E3D TTY 导出的 RVM 里起点端面是 `x = 5492.3` 那张竖直平面（内外两角同
+// x），终点端面是径向平头；起点内角比径向平头缩进 ≈ 300 mm。同库 `/1RS-WF03-W-C-RR001`
+// WALL 4 的 SPINE 同样 `DRNS = E`，那里的几何却是**外延** 1.41°（`docs/2026-08-12_live-test-ledger.md`）
+// ——同一张平面：内角落在平面体内一侧就削、落在体外一侧就补挤，两件事是一件事。
+// ---------------------------------------------------------------------------
+
+/// `setMitrePlanes` 的平行 / 垂直门：`|DRN · t| < 1e-6` 视为垂直、`|DRN × t| < 1e-6` 视为平行。
+pub const MITRE_PARALLEL_EPS: f64 = 1e-6;
+
+/// Core3D `DB_Gensec::setMitrePlanes`：由 SPINE 一端的端向（`DRNS` / `DRNE`）与该端的
+/// **行进切向**定出工作斜切平面；不改元素上的属性。
+///
+/// - 端向缺席 / 零向量 → `None`（平头）；
+/// - 端向与切向**垂直**（`"DRNS is actually perp; no mitre"`）→ `None`：那张平面含着轴，切不出端面；
+/// - 端向与切向**平行**（`"parallel; suppress the mitre"`）→ `None`：与挤出端盖重合，切了是空操作；
+/// - 其余 → 过端点、法向 = 端向的平面。法向规约成**指向体内**（起点端与行进切向同向、
+///   终点端反向），与 [`cut_plane_normal`] 同一约定，可直接喂 [`cut_by_plane`]。
+///
+/// 返回的 [`SectionCutPlane`] 坐标在调用方交进来的那个系里（WALL / GENSEC 自身局部系），
+/// 不是 SCTN 那套的截面局部系，别拿它调 [`SectionCutPlane::is_axial`]。
+pub fn spine_mitre_plane(
+    drn: DVec3,
+    tangent: DVec3,
+    point: DVec3,
+    is_start: bool,
+) -> Option<SectionCutPlane> {
+    let drn = drn.normalize_or_zero();
+    let tangent = tangent.normalize_or_zero();
+    if drn.length_squared() < 0.5 || tangent.length_squared() < 0.5 {
+        return None;
+    }
+    let along = drn.dot(tangent);
+    if along.abs() < MITRE_PARALLEL_EPS || drn.cross(tangent).length() < MITRE_PARALLEL_EPS {
+        return None;
+    }
+    let inward = if is_start { 1.0 } else { -1.0 };
+    let normal = if along * inward < 0.0 { -drn } else { drn };
+    Some(SectionCutPlane { point, normal })
+}
+
+/// 斜接延伸（`" Start-mitre extension"` / `" End-mitre extension"`，与 SCTN 的 XSPYR 同理）：
+/// 斜切面在截面的远侧会落到体外——端部一直画到平面，而不是只在原路径范围里削。
+///
+/// `frame` 是该端的截面标架（X/Y = 截面平面、Z = 该端的路径切向所在轴、原点在端点上）；
+/// `rings` 是标架里的截面环；`body_dir` 是体所在一侧在标架 Z 上的符号（行进切向与 Z 同向
+/// 的起点端 +1、终点端 −1）。返回要补挤的长度（≥ 0）：截面每个顶点各作一条平行于 Z 的棱，
+/// 与平面求交，落在体外那侧最远的一个。平面几乎含着轴（`|n.z|` 过小）时不补。
+pub fn mitre_extension_length(
+    rings: &[Vec<[f64; 2]>],
+    frame: DMat4,
+    plane: &SectionCutPlane,
+    body_dir: f64,
+) -> f64 {
+    let rotation = DMat3::from_mat4(frame);
+    let to_frame = rotation.transpose();
+    let normal = to_frame * plane.normal;
+    if normal.z.abs() <= EXTEND_NORMAL_Z_TOL {
+        return 0.0;
+    }
+    let origin = frame.transform_point3(DVec3::ZERO);
+    let point = to_frame * (plane.point - origin);
+    rings
+        .iter()
+        .flatten()
+        .map(|&[x, y]| point.z - (normal.x * (x - point.x) + normal.y * (y - point.y)) / normal.z)
+        .fold(0.0f64, |longest, z| longest.max(-z * body_dir))
+}
+
+/// 把 [`mitre_extension_length`] 算出的那一截挤出来并摆进 `frame`：体在标架 Z ≥ 0 一侧时
+/// 补 `[−L, +ε]`，反之补 `[−ε, L]`。长度不到 [`SPINE_POINT_TOL`] 时不补（`None`）。
+/// 调用方把它并进本体后再拿同一张平面切，体外多出来的部分随之削掉。
+///
+/// `ε` = [`MANIFOLD_NUDGE_MM`]：延伸段与本体只在端面上相接，两边各自算出来的端面顶点差着
+/// 最后几位小数，manifold 的并集会把它们留成两片只贴着脸的壳（WF03 RR001 WALL 4 实测：
+/// 楔子单独成一个分量、内部那张重合面留在网格里）。往体内多挤 1 µm 让并集真正咬合成
+/// 一块；直段本体上这 1 µm 完全落在体内，弧段本体的外弧面在这 1 µm 里离切平面
+/// ε²/2R ≈ 1e-11 mm，远在 manifold 的判定精度之下，不会长出薄片。
+pub fn mitre_extension_solid(
+    rings: &[Vec<[f64; 2]>],
+    frame: DMat4,
+    plane: &SectionCutPlane,
+    body_dir: f64,
+) -> Result<Option<Manifold>, crate::solid::SolidError> {
+    let length = mitre_extension_length(rings, frame, plane, body_dir);
+    if length <= SPINE_POINT_TOL {
+        return Ok(None);
+    }
+    let overlap = MANIFOLD_NUDGE_MM;
+    let solid = extrude_rings(rings.to_vec(), length + overlap)?;
+    let solid = if body_dir > 0.0 {
+        solid.translate(0.0, 0.0, -length)
+    } else {
+        solid.translate(0.0, 0.0, -overlap)
+    };
+    Ok(Some(placed(&solid, frame)))
 }
 
 /// [`section_local_solid`] 的成品：可见实体，加上并集**之前**的那几块。
