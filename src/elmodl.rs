@@ -1313,19 +1313,8 @@ pub(crate) fn fixing_host_frame(wall: &DbElement, fixing: &DbElement) -> Result<
         })?;
     let zdis = require_double(&jldatu, "JLDATU", "ZDIS", "WALL joint datum")?;
     let (p0, pm, p1) = wall_spine_points(wall)?;
-    let (curve_center, radius) = circle_through_xy(p0, pm, p1)?;
-    let a0 = (p0.y - curve_center.y).atan2(p0.x - curve_center.x);
-    let theta = a0 + zdis / radius;
-    let station = curve_center + DVec3::new(radius * theta.cos(), radius * theta.sin(), 0.0);
-    let inward = (curve_center - station).normalize();
-    let up = DVec3::Z;
-    let along = inward.cross(up).normalize();
-    let joint = DMat4::from_cols(
-        inward.extend(0.0),
-        up.extend(0.0),
-        along.extend(0.0),
-        station.extend(1.0),
-    );
+    let (curve_center, radius, a0, sweep) = circular_spine_geometry(&[p0, pm, p1])?;
+    let joint = wall_joint_frame(curve_center, radius, a0, sweep, zdis);
     // PLDATU POSL=OBOW is E3D's implicit wall pline: PLAX=-X. With
     // YDIR=+Z, cal_ori_by_ydir gives columns (-Y,+Z,-X).
     let pldatum = DMat4::from_cols(
@@ -1335,6 +1324,39 @@ pub(crate) fn fixing_host_frame(wall: &DbElement, fixing: &DbElement) -> Result<
         DVec3::ZERO.extend(1.0),
     );
     Ok(world_matrix(wall)? * joint * pldatum)
+}
+
+/// JLDATU 在圆弧墙 spine 上的站位标架（WALL 局部系）：列 = (朝圆心, 上, 沿墙)，原点在站位。
+///
+/// `ZDIS` 是沿 spine 起点量的弧长。落在 spine 之内时站位在弧上、沿墙向取该点切向；
+/// **越过两端时 E3D 不再沿弧走，而是从端点沿端切向直线外推**，沿墙向也钉在端切向上——
+/// 取证 ams1112 `/1RS03LL0018T`（WF03 RR001 WALL 4，弧长 2378 mm，`ZDIS` 2440）：E3D TTY
+/// `Q ORI` 给 JLDATU `Z is E 9.0681 S` = 墙**终点**切向（弧上 2440 处该是 E 8.87 S），
+/// RVM 里那只 FIXING 的原点按直线外推算得 0.00 mm、按弧外推 0.11 mm、按弧上 2440 处的
+/// 切向算 6.5 mm / 0.2°（FIXING 自己在 PLDATU 里还偏 1865 mm，杠杆把 0.2° 放大成 6.5 mm）。
+fn wall_joint_frame(center: DVec3, radius: f64, a0: f64, sweep: f64, zdis: f64) -> DMat4 {
+    let length = radius * sweep.abs();
+    let travel = if sweep < 0.0 { -1.0 } else { 1.0 };
+    let point = |angle: f64| center + DVec3::new(radius * angle.cos(), radius * angle.sin(), 0.0);
+    // 弧上 `angle` 处沿行进方向的单位切向。
+    let tangent = |angle: f64| DVec3::new(-angle.sin(), angle.cos(), 0.0) * travel;
+    let (base_angle, overshoot) = if zdis < 0.0 {
+        (a0, zdis)
+    } else if zdis > length {
+        (a0 + sweep, zdis - length)
+    } else {
+        (a0 + travel * zdis / radius, 0.0)
+    };
+    let station = point(base_angle) + tangent(base_angle) * overshoot;
+    let inward = (center - point(base_angle)).normalize();
+    let up = DVec3::Z;
+    let along = inward.cross(up).normalize();
+    DMat4::from_cols(
+        inward.extend(0.0),
+        up.extend(0.0),
+        along.extend(0.0),
+        station.extend(1.0),
+    )
 }
 
 /// FIXING 的宿主 WALL。`collect_host_fixings` 是从 WALL 递归**下来**的、层数不固定
@@ -2523,6 +2545,68 @@ mod tests {
         assert!((after.max()[1] - before.max()[1]).abs() < 1e-6);
         assert!((after.max()[2] - height).abs() < 1e-6 && after.min()[2].abs() < 1e-6);
         assert!(mitred.volume() < plain.volume());
+    }
+
+    /// JLDATU 站位：弧内按弧长走、沿墙向取该点切向（WF05 RR001 `/1RS05CC0013T`，`ZDIS` 3000，
+    /// E3D `Q POS` (8243, −15323)、`Q ORI` `Z is E 28.279 N`）；越过终点从终点沿终点切向直线外推、
+    /// 沿墙向钉在终点切向（WF03 RR001 `/1RS03LL0018T`，`ZDIS` 2440 > 弧长 2378，E3D
+    /// `Z is E 9.0681 S`）。
+    #[test]
+    fn wall_joint_frame_follows_the_arc_inside_and_the_end_tangent_line_beyond() {
+        // WF05 WALL 4：圆心原点、R 17400、起点 (5492.3, −16510.4)、终点 (13653.2, −10786.5)。
+        let (center, radius) = (DVec3::ZERO, 17400.0);
+        let a0 = (-16510.4f64).atan2(5492.3);
+        let sweep = ((-10786.5f64).atan2(13653.2) - a0).rem_euclid(std::f64::consts::TAU);
+        let inside = wall_joint_frame(center, radius, a0, sweep, 3000.0);
+        let station = inside.transform_point3(DVec3::ZERO);
+        assert!(
+            (station.x - 8243.0).abs() < 1.0 && (station.y - -15323.0).abs() < 1.0,
+            "{station:?}"
+        );
+        let along = inside.transform_vector3(DVec3::Z);
+        let expected = DVec3::new(
+            28.279f64.to_radians().cos(),
+            28.279f64.to_radians().sin(),
+            0.0,
+        );
+        assert!(along.abs_diff_eq(expected, 2e-4), "{along:?}");
+
+        // WF03 WALL 4：三点弧 pt0 / thru / pt1（`docs/2026-08-12_live-test-ledger.md`）。
+        let p0 = DVec3::new(-5058.21875, -16648.55664, 0.0);
+        let pm = DVec3::new(-3909.413, -16955.131, 0.0);
+        let p1 = DVec3::new(-2742.352, -17182.535, 0.0);
+        let (center, radius, a0, sweep) = circular_spine_geometry(&[p0, pm, p1]).expect("arc");
+        let length = radius * sweep;
+        assert!((length - 2378.0).abs() < 1.0, "{length}");
+        let beyond = wall_joint_frame(center, radius, a0, sweep, 2440.0);
+        let along = beyond.transform_vector3(DVec3::Z);
+        let end_tangent = DVec3::new(
+            (-9.0681f64).to_radians().cos(),
+            (-9.0681f64).to_radians().sin(),
+            0.0,
+        );
+        assert!(
+            along.abs_diff_eq(end_tangent, 2e-4),
+            "沿墙向该钉在终点切向：{along:?}"
+        );
+        let station = beyond.transform_point3(DVec3::ZERO);
+        let expected = p1 + end_tangent * (2440.0 - length);
+        assert!(
+            station.abs_diff_eq(expected, 0.05),
+            "{station:?} vs {expected:?}"
+        );
+        // 弧上外推会差 0.11 mm——E3D 的 RVM 原点按直线外推对到 0.00 mm，按弧 0.11 mm。
+        let on_arc_angle = a0 + 2440.0 / radius;
+        let on_arc = center
+            + DVec3::new(
+                radius * on_arc_angle.cos(),
+                radius * on_arc_angle.sin(),
+                0.0,
+            );
+        assert!(
+            (station - on_arc).length() > 0.05,
+            "{station:?} vs {on_arc:?}"
+        );
     }
 
     /// `setMitrePlanes` 的两道门：端向与切向垂直 / 平行都不斜接；其余法向指向体内。
