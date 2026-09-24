@@ -1518,7 +1518,14 @@ fn placed_profile_rings(
 /// 半径向 = 圆心→起点」的二维系，转完再摆回去。截面跨过回转轴（弯曲半径小于截面半宽）
 /// 时 manifold 会把轴另一侧裁掉，与 libgm 一样属于坏数据，只记 note。
 ///
-/// 全部成员都折不出环、或一段实体都没建成时交 `Ok(None)`。
+/// 两端斜接：SPINE 的 `DRNS` / `DRNE` 非零时，按 [`spine_mitre_plane`] 在首段起点 / 末段终点
+/// 各定一张平面（端向缺席 / 与该端行进切向垂直或平行 → 平头），先把截面沿该端切向补挤到
+/// 平面之外（[`mitre_extension_solid`]，`" Start-mitre extension"` / `" End-mitre extension"`），
+/// 并集之后再拿平面切——与 [`crate::elmodl`] 圆弧 WALL 那一套同一条规则、同一组 helper
+/// （ams1112 WF05 / WF03 RR001 两堵 WALL 4 已对 E3D RVM 逐件对上）。端标架取该端的切向与
+/// 传递到该端的 Ydir（终点端是沿路径转过全部弧段之后的 Ydir），再绕 Z 转同一个 `spin`。
+///
+/// 全部成员都折不出环、或一段实体都没建成时交 `Ok(None)`；斜切面把整根切空是坏数据，报错。
 pub fn spine_swept_solid(
     profile: &SectionProfile,
     path: &SpinePath,
@@ -1528,17 +1535,6 @@ pub fn spine_swept_solid(
     let members = placed_profile_rings(profile, notes);
     if members.is_empty() || path.segments.is_empty() {
         return Ok(None);
-    }
-    if path.drns.length_squared() > 1e-18 || path.drne.length_squared() > 1e-18 {
-        // WALL 那边已按 [`spine_mitre_plane`] / [`mitre_extension_solid`] 真切（ams1112 WF05 /
-        // WF03 RR001 两堵 WALL 4 对 E3D RVM 逐件对上）；GENSEC 接同一套只差一次 E3D 对拍——
-        // aps250209 有 178 只 GENSEC 带非零 DRNS/DRNE，2026-09-23 那台机器上 APS 的 TTY
-        // 会话起不来（des.exe 0xC0000005），没拿到基准前先照旧平头、只记账。
-        notes.push(format!(
-            "SPINE 的 DRNS {:?} / DRNE {:?} 非零：E3D 会接 mitre extension 斜切两端，本期未接，按平头建",
-            path.drns.to_array(),
-            path.drne.to_array()
-        ));
     }
     let spin = bang_deg.to_radians() + profile.neutral_axis_spin;
 
@@ -1560,19 +1556,28 @@ pub fn spine_swept_solid(
     }
     let mut ydir = ydir.normalize();
 
+    // 某一点处的截面标架：Z = 该处切向，Y = 传递到该处的 Ydir，X = Y × Z，再绕 Z 转 `spin`。
+    let frame_at = |point: DVec3, ydir: DVec3, tangent: DVec3| -> DMat4 {
+        let x_axis = ydir.cross(tangent).normalize();
+        DMat4::from_translation(point)
+            * DMat4::from_mat3(
+                DMat3::from_cols(x_axis, ydir, tangent) * DMat3::from_rotation_z(spin),
+            )
+    };
+
     let mut pieces: Vec<Manifold> = Vec::new();
     let mut previous_end_tangent: Option<DVec3> = None;
+    let mut start_frame: Option<DMat4> = None;
     for (index, segment) in path.segments.iter().enumerate() {
         let (start_tangent, end_tangent) = segment.tangents();
         if let Some(previous) = previous_end_tangent {
             ydir = rotate_between(ydir, previous, start_tangent);
             ydir = (ydir - start_tangent * ydir.dot(start_tangent)).normalize();
         }
-        let x_axis = ydir.cross(start_tangent).normalize();
-        let frame = DMat4::from_translation(segment.start())
-            * DMat4::from_mat3(
-                DMat3::from_cols(x_axis, ydir, start_tangent) * DMat3::from_rotation_z(spin),
-            );
+        let frame = frame_at(segment.start(), ydir, start_tangent);
+        if index == 0 {
+            start_frame = Some(frame);
+        }
         match segment {
             SpineSegment::Straight { .. } => {
                 let length = segment.length();
@@ -1660,9 +1665,93 @@ pub fn spine_swept_solid(
     let Some(first) = iter.next() else {
         return Ok(None);
     };
-    let body = iter.fold(first, |acc, next| acc.union(&next));
+    let mut body = iter.fold(first, |acc, next| acc.union(&next));
     if body.is_empty() {
         return Ok(None);
+    }
+
+    // 两端斜接（Core3D `DB_Gensec::setMitrePlanes` + mitre extension）。终点端的标架用
+    // 转过全部弧段之后的 Ydir 与末段终点切向；起点端就是首段的段标架。
+    let last = path.segments.last().expect("segments 非空");
+    let end_tangent = previous_end_tangent.expect("每段都记了终点切向");
+    let end_ydir = (ydir - end_tangent * ydir.dot(end_tangent)).normalize_or_zero();
+    let end_frame =
+        (end_ydir.length_squared() > 0.5).then(|| frame_at(last.end(), end_ydir, end_tangent));
+    let ends = [
+        (
+            "起点",
+            "DRNS",
+            path.drns,
+            first_tangent,
+            path.segments[0].start(),
+            start_frame,
+            true,
+        ),
+        (
+            "终点",
+            "DRNE",
+            path.drne,
+            end_tangent,
+            last.end(),
+            end_frame,
+            false,
+        ),
+    ];
+    let mut planes = Vec::new();
+    for (label, name, drn, tangent, point, frame, is_start) in ends {
+        if drn.length_squared() <= 1e-18 {
+            continue;
+        }
+        let Some(plane) = spine_mitre_plane(drn, tangent, point, is_start) else {
+            notes.push(format!(
+                "GENSEC {label}端 SPINE {name} {:?} 与切向垂直或平行：不斜接，平头",
+                drn.to_array()
+            ));
+            continue;
+        };
+        let Some(frame) = frame else {
+            notes.push(format!(
+                "GENSEC {label}端 SPINE {name} {:?}：端标架退化（Ydir 与切向平行），不斜接",
+                drn.to_array()
+            ));
+            continue;
+        };
+        // 体所在一侧在端标架 Z 上的符号：起点端体在 +Z（沿行进方向挤出），终点端在 −Z。
+        let body_dir = if is_start { 1.0 } else { -1.0 };
+        let mut extended = 0.0f64;
+        for (member, _, rings) in &members {
+            extended = extended.max(mitre_extension_length(rings, frame, &plane, body_dir));
+            match mitre_extension_solid(rings, frame, &plane, body_dir) {
+                Ok(Some(extension)) => body = body.union(&extension),
+                Ok(None) => {}
+                Err(error) => notes.push(format!(
+                    "截面成员 {member} 在{label}端的斜接补挤失败：{error}"
+                )),
+            }
+        }
+        notes.push(format!(
+            "GENSEC {label}端按 SPINE {name} {:?} 斜切：过 ({:.3},{:.3},{:.3}) 法向 {:?}，补挤 {extended:.3} mm",
+            drn.to_array(),
+            point.x,
+            point.y,
+            point.z,
+            plane.normal.to_array()
+        ));
+        planes.push((label, plane));
+    }
+    for (label, plane) in planes {
+        body = cut_by_plane(&body, plane.point, plane.normal);
+        if body.is_empty() {
+            return Err(SectionError::Model(ModelError::Solid(
+                crate::solid::SolidError::Degenerate {
+                    what: "GENSEC mitre",
+                    detail: format!(
+                        "{label}端斜切面（法向 {:?}）把整根切空",
+                        plane.normal.to_array()
+                    ),
+                },
+            )));
+        }
     }
     Ok(Some(body))
 }
@@ -2659,6 +2748,82 @@ mod tests {
             (solid.volume() - expected).abs() / expected < 0.02,
             "体积 {} vs {expected}",
             solid.volume()
+        );
+    }
+
+    /// GENSEC 两端按 SPINE `DRNS` / `DRNE` 斜接：沿 +X 的 1000 mm 直段、100×100 方截面，两端端向
+    /// 都是 XY 面里偏 X 30°。截面 x 轴落在世界 +Y 上，两张斜面在截面远侧各落到原路径之外
+    /// 50·tan30°，要先沿切向补挤再切——成品是一根平行四边形柱：x 伸到 [−28.868, 1028.868]，
+    /// 体积与平头同为 100×100×1000。端向与切向垂直（含着轴）那端照旧平头。
+    #[test]
+    fn spine_swept_solid_mitres_both_ends_on_drns_and_drne() {
+        let square = || SectionProfile {
+            members: vec![SectionMember {
+                source: SectionSource::Spro { vertices: 4 },
+                member_refno: "test/square".to_string(),
+                rings: vec![
+                    [[-50.0, -50.0], [50.0, -50.0], [50.0, 50.0], [-50.0, 50.0]]
+                        .map(|[x, y]| FilletVertex { x, y, frad: 0.0 })
+                        .to_vec(),
+                ],
+            }],
+            justification: [0.0, 0.0],
+            justification_line: DEFAULT_JUSTIFICATION_LINE.to_string(),
+            justification_found: true,
+            neutral_axis_spin: 0.0,
+            level: 0,
+            mirrored: false,
+            notes: Vec::new(),
+        };
+        let path = |drns: DVec3, drne: DVec3| {
+            let (segments, problems) =
+                spine_segments(&[point([0.0, 0.0, 0.0]), point([1000.0, 0.0, 0.0])]);
+            assert!(problems.is_empty(), "{problems:?}");
+            SpinePath {
+                segments,
+                ydir: DVec3::Z,
+                drns,
+                drne,
+                curve_types: Vec::new(),
+                problems: Vec::new(),
+            }
+        };
+        let slant = DVec3::new(30f64.to_radians().cos(), 30f64.to_radians().sin(), 0.0);
+        let overhang = 50.0 * 30f64.to_radians().tan();
+
+        let mut notes = Vec::new();
+        let solid = spine_swept_solid(&square(), &path(slant, slant), 0.0, &mut notes)
+            .unwrap()
+            .expect("该有实体");
+        let bbox = solid.bounding_box().expect("非空实体有包围盒");
+        let (min, max) = (bbox.min(), bbox.max());
+        assert!((min[0] + overhang).abs() < 1e-4, "{min:?} {notes:?}");
+        assert!(
+            (max[0] - (1000.0 + overhang)).abs() < 1e-4,
+            "{max:?} {notes:?}"
+        );
+        assert!((min[1] + 50.0).abs() < 1e-6 && (max[1] - 50.0).abs() < 1e-6);
+        assert!((min[2] + 50.0).abs() < 1e-6 && (max[2] - 50.0).abs() < 1e-6);
+        assert!(
+            (solid.volume() - 1.0e7).abs() < 10.0,
+            "体积 {}",
+            solid.volume()
+        );
+        assert_eq!(
+            notes.iter().filter(|note| note.contains("斜切")).count(),
+            2,
+            "{notes:?}"
+        );
+
+        let mut notes = Vec::new();
+        let solid = spine_swept_solid(&square(), &path(DVec3::Y, slant), 0.0, &mut notes)
+            .unwrap()
+            .expect("该有实体");
+        let bbox = solid.bounding_box().expect("非空实体有包围盒");
+        assert!(bbox.min()[0].abs() < 1e-6, "{:?} {notes:?}", bbox.min());
+        assert!(
+            notes.iter().any(|note| note.contains("垂直或平行")),
+            "{notes:?}"
         );
     }
 }
