@@ -123,7 +123,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 
-use e3d_io::db_element::{DbElementError, DbSet};
+use e3d_io::db_element::{DbElement, DbElementError, DbSet};
 use e3d_io::error::E3dReaderError;
 use e3d_io::index::{CompletedIndexDiff, IndexCandidate, IndexDiff, IndexTreeError};
 use e3d_io::page::PageId;
@@ -924,8 +924,8 @@ struct CascadeVisits {
     /// 也不再记一条 incident——一次导入 948 个桥架元素只该有一条「分支 X 级联」，
     /// 不是 812 条。
     tray_branches: BTreeSet<(u32, u32)>,
-    /// 本窗已经整棵重建过的 datum 宿主 GENSEC（[`gensec_datum_host_of`]），同上去重。
-    datum_hosts: BTreeSet<(u32, u32)>,
+    /// 本窗已经整棵重建过的现算标架宿主（[`implicit_frame_host_of`]），同上去重。
+    implicit_hosts: BTreeSet<(u32, u32)>,
 }
 
 fn collect_unit_subtree(
@@ -986,44 +986,48 @@ fn collect_unit_subtree(
 /// 电缆桥架分支容器的 noun：桥架件放置的全部跨元素输入都在它名下。
 const CABLE_TRAY_BRANCH_NOUN: &str = "CWBRAN";
 
-/// GENSEC 名下 datum 的标架输入所在的 noun（[`crate::datum`]）：宿主 GENSEC 自己
-/// （JUSL/BANG/LMIRR/SPRE）、它的 SPINE 路径（SPINE 的 POS/ORI/YDIR，POINSP，CURVE），
-/// 以及 datum 自己（JLDATU 的 ZDIS/PKDI/HPREF、PLDATU 的 POSL/YDIR）。
-const GENSEC_DATUM_INPUT_NOUNS: [&str; 6] =
-    ["GENSEC", "SPINE", "POINSP", "CURVE", "JLDATU", "PLDATU"];
-
-/// 候选（含自身）是某只名下有 `JLDATU` 的 GENSEC 的 datum 标架输入时，那只 GENSEC。
-/// 从候选上溯只许穿过 [`GENSEC_DATUM_INPUT_NOUNS`]；起点在这一端不存在也是 `None`。
+/// 候选（含自身）是某个现算标架的输入时，那个标架的宿主：
 ///
-/// # 为什么 GENSEC 的 datum 要单独一条腿
+/// - 名下有 `JLDATU` 的 GENSEC（[`crate::datum`]）：宿主自己（JUSL/BANG/LMIRR/SPRE）、
+///   它的 SPINE 路径（SPINE 的 POS/ORI/YDIR，POINSP，CURVE），以及 datum 自己（JLDATU 的
+///   ZDIS/PKDI/HPREF、PLDATU 的 POSL/YDIR）；
+/// - 名下有 `FITT` 的 SCTN / STWALL（`section::section_fitting_placement`）：宿主自己
+///   （POSS/POSE/BANG/JUSL/SPRE），以及 FITT 自己（POSL/ZDIS/BANG/DELP）。
 ///
-/// GENSEC 名下 `JLDATU` / `PLDATU` 的世界标架是现算的（[`crate::datum`]），挂在下面的
-/// FIXING 连同它 TMPL 里的一切都吃这个标架。输入要么不是 POS/ORI，要么在宿主的**兄弟**
-/// 子树（SPINE 路径）里：改一只 POINSP，`nearest_unit` 上卷到 GENSEC 只重建了梁自己，
-/// `placement_input_changed` 只认 POS/ORI，datum 底下的 FIXING 一个都不会重算。
+/// 从候选上溯只许穿过上面这些 noun；起点在这一端不存在也是 `None`。
 ///
-/// 判据照桥架那条取最保守也最便宜的一档：命中就把整棵 GENSEC 子树级联重建。穿过 FIXING
+/// # 为什么现算标架要单独一条腿
+///
+/// 这些元素没有 POS/ORI，[`crate::transform::world_matrix`] 按属主现算它们的标架，挂在
+/// 下面的 FIXING / TMPL 件都吃这个标架。输入要么不是 POS/ORI，要么在宿主的**兄弟**子树
+/// （SPINE 路径）里：改一只 POINSP，`nearest_unit` 上卷到 GENSEC 只重建了梁自己，
+/// `placement_input_changed` 只认 POS/ORI，datum 底下的 FIXING 一个都不会重算；STWALL 的
+/// POSS 挪了，墙上 FITT 模板里的件同样停在原处。
+///
+/// 判据照桥架那条取最保守也最便宜的一档：命中就把整棵宿主子树级联重建。穿过 FIXING
 /// （或任何别的 noun）就不算——那以下的改动只影响它自己的子树，owner 链上的级联够得着。
-fn gensec_datum_host_of(set: &Arc<DbSet>, refno: RefNo) -> Result<Option<RefNo>, DbElementError> {
+fn implicit_frame_host_of(set: &Arc<DbSet>, refno: RefNo) -> Result<Option<RefNo>, DbElementError> {
     let mut current = set.element(refno);
     match current.exists() {
         Ok(true) => {}
         Ok(false) | Err(DbElementError::NotFound { .. }) => return Ok(None),
         Err(error) => return Err(error),
     }
+    let owns = |host: &DbElement, noun: &str| -> Result<Option<RefNo>, DbElementError> {
+        for member in host.members()? {
+            if member.element_type()? == noun {
+                return Ok(Some(host.refno()));
+            }
+        }
+        Ok(None)
+    };
     // POINSP → SPINE → GENSEC 与 PLDATU → JLDATU → GENSEC 都是两跳。
     for _ in 0..3 {
-        let noun = current.element_type()?;
-        if noun == "GENSEC" {
-            for member in current.members()? {
-                if member.element_type()? == "JLDATU" {
-                    return Ok(Some(current.refno()));
-                }
-            }
-            return Ok(None);
-        }
-        if !GENSEC_DATUM_INPUT_NOUNS.contains(&noun.as_str()) {
-            return Ok(None);
+        match current.element_type()?.as_str() {
+            "GENSEC" => return owns(&current, "JLDATU"),
+            "SCTN" | "STWALL" => return owns(&current, "FITT"),
+            "SPINE" | "POINSP" | "CURVE" | "JLDATU" | "PLDATU" | "FITT" => {}
+            _ => return Ok(None),
         }
         match current.owner()? {
             Some(owner) if owner.refno() != current.refno() => current = owner,
@@ -1270,10 +1274,10 @@ pub fn plan_update_with(
         Ok(Some(fanout))
     }
 
-    /// GENSEC datum 级联（见 [`gensec_datum_host_of`]）：候选在 `lookup` 这一端是某只
-    /// 带 JLDATU 的 GENSEC 的标架输入 → 在 target 端把整棵 GENSEC 子树收进计划。
+    /// 现算标架级联（见 [`implicit_frame_host_of`]）：候选在 `lookup` 这一端是某个现算标架
+    /// 的输入 → 在 target 端把整棵宿主子树收进计划。
     #[allow(clippy::too_many_arguments)]
-    fn cascade_gensec_datums(
+    fn cascade_implicit_frames(
         lookup: &Arc<DbSet>,
         target: &Arc<DbSet>,
         refno: RefNo,
@@ -1283,7 +1287,7 @@ pub fn plan_update_with(
         report: &mut IncrementReport,
         visits: &mut CascadeVisits,
     ) -> Result<Option<CascadeFanout>, DbElementError> {
-        let Some(host) = gensec_datum_host_of(lookup, refno)? else {
+        let Some(host) = implicit_frame_host_of(lookup, refno)? else {
             return Ok(None);
         };
         match target.element(host).exists() {
@@ -1291,7 +1295,7 @@ pub fn plan_update_with(
             Ok(false) | Err(DbElementError::NotFound { .. }) => return Ok(None),
             Err(error) => return Err(error),
         }
-        if !visits.datum_hosts.insert(key(host)) {
+        if !visits.implicit_hosts.insert(key(host)) {
             return Ok(Some(CascadeFanout {
                 hits: 0,
                 overlapped: 1,
@@ -1309,8 +1313,7 @@ pub fn plan_update_with(
             refno,
             noun,
             format!(
-                "GENSEC datum 标架输入变了（{noun} 在 GENSEC {host} 名下），级联重建整棵 GENSEC 子树 \
-                 {} 个单元{}",
+                "现算标架的输入变了（{noun} 落在宿主 {host} 名下），级联重建整棵宿主子树 {} 个单元{}",
                 fanout.hits,
                 if fanout.overlapped > 0 {
                     format!("，另 {} 处已由本窗更早的级联覆盖", fanout.overlapped)
@@ -1366,7 +1369,7 @@ pub fn plan_update_with(
                     )
                     .map_err(|error| format!("新增候选的桥架分支级联失败：{error}"))
                     .and_then(|tray| {
-                        cascade_gensec_datums(
+                        cascade_implicit_frames(
                             target,
                             target,
                             refno,
@@ -1377,7 +1380,7 @@ pub fn plan_update_with(
                             &mut visits,
                         )
                         .map(|datum| [tray, datum])
-                        .map_err(|error| format!("新增候选的 GENSEC datum 级联失败：{error}"))
+                        .map_err(|error| format!("新增候选的现算标架级联失败：{error}"))
                     });
                     match cascades {
                         Ok(fanouts) => {
@@ -1438,7 +1441,7 @@ pub fn plan_update_with(
                     )
                     .map_err(|error| format!("删除候选的桥架分支级联失败：{error}"))
                     .and_then(|tray| {
-                        cascade_gensec_datums(
+                        cascade_implicit_frames(
                             base,
                             target,
                             refno,
@@ -1449,7 +1452,7 @@ pub fn plan_update_with(
                             &mut visits,
                         )
                         .map(|datum| [tray, datum])
-                        .map_err(|error| format!("删除候选的 GENSEC datum 级联失败：{error}"))
+                        .map_err(|error| format!("删除候选的现算标架级联失败：{error}"))
                     });
                     match cascades {
                         Ok(fanouts) => {
@@ -1653,10 +1656,10 @@ pub fn plan_update_with(
                     }
                 }
 
-                // GENSEC datum 级联：候选是宿主 GENSEC、它的 SPINE 路径或 JLDATU / PLDATU，
-                // datum 底下的 FIXING 标架都可能变了（见 `gensec_datum_host_of`）。
+                // 现算标架级联：候选是宿主（GENSEC / SCTN / STWALL）、GENSEC 的 SPINE 路径、
+                // JLDATU / PLDATU 或 FITT，挂在下面的件标架都可能变了（见 `implicit_frame_host_of`）。
                 if resolved {
-                    match cascade_gensec_datums(
+                    match cascade_implicit_frames(
                         target,
                         target,
                         refno,
@@ -1677,7 +1680,7 @@ pub fn plan_update_with(
                                 &mut ledger,
                                 refno,
                                 &diff.noun,
-                                format!("GENSEC datum 级联失败：{error}"),
+                                format!("现算标架级联失败：{error}"),
                                 true,
                             );
                         }
@@ -1935,11 +1938,11 @@ pub fn increment_update(
 mod tests {
     use super::*;
 
-    /// `gensec_datum_host_of` 在 aps250110 真库上的形状（库或模板不在就跳过）：
+    /// `implicit_frame_host_of` 在 aps250110 真库上的形状（库或模板不在就跳过）：
     /// SPINE 点与 PLDATU 都上溯到名下有 JLDATU 的宿主；FIXING 以下不算；没有 JLDATU 的
-    /// GENSEC（FIXING 模板里的那种）连同它的 SPINE 都不算。
+    /// GENSEC（FIXING 模板里的那种）连同它的 SPINE 都不算；STWALL 名下的 FITT 上溯到墙。
     #[test]
-    fn gensec_datum_inputs_climb_to_a_host_that_owns_datums() {
+    fn implicit_frame_inputs_climb_to_their_host() {
         let db = Path::new(r"D:\AVEVA\Projects\E3D3.1\AvevaPlantSample\aps000\aps250110_0001");
         let template = Path::new(r"E:\reverse\e3d\shadow_e3d31_aps_all");
         if !db.exists() || !template.join("attlib.dat").exists() {
@@ -1953,7 +1956,7 @@ mod tests {
             sesno: None,
         })
         .unwrap();
-        let host_of = |w1| gensec_datum_host_of(&set, RefNo::new(2013286654, w1)).unwrap();
+        let host_of = |w1| implicit_frame_host_of(&set, RefNo::new(2013286654, w1)).unwrap();
         let host = Some(RefNo::new(2013286654, 2223));
         assert_eq!(host_of(2223), host, "GENSEC 3 of /AREA02_WS_AXIS_WS.1 自己");
         assert_eq!(host_of(24523), host, "POINSP → SPINE → GENSEC");
@@ -1969,6 +1972,9 @@ mod tests {
             "FIXING 模板里的 GENSEC 名下没有 JLDATU"
         );
         assert_eq!(host_of(31618), None, "它的 SPINE 同样不算");
+        let wall = Some(RefNo::new(2013286654, 39));
+        assert_eq!(host_of(39), wall, "名下有 FITT 的 STWALL 自己");
+        assert_eq!(host_of(40), wall, "FITT → STWALL");
     }
 
     fn incident_n(n: usize) -> Vec<Incident> {

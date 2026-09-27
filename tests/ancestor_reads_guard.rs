@@ -148,10 +148,18 @@ const OWNER_WALK_SITES: &[Site] = &[
     },
     Site {
         file: "increment.rs",
-        func: "gensec_datum_host_of",
+        func: "implicit_frame_host_of",
         climb: Climb::NounOnly,
         reads: &[],
-        why: "GENSEC datum 标架输入上溯到宿主 GENSEC：只看 noun，再看宿主名下有没有 JLDATU",
+        why: "现算标架的输入上溯到宿主（GENSEC / SCTN / STWALL）：只看 noun，再看宿主名下有没有 JLDATU / FITT",
+    },
+    Site {
+        file: "transform.rs",
+        func: "implicit_frame",
+        climb: Climb::NounOnly,
+        reads: &[],
+        why: "判一个元素的标架是不是由属主现算：FITT 取 owner 只核 noun 是不是 SCTN / STWALL；拿到的宿主交给 \
+              section_fitting_placement 读（见 ANCESTOR_CONSUMERS）。JLDATU / PLDATU 那支转给 datum::host_and_joint",
     },
     Site {
         file: "datum.rs",
@@ -169,7 +177,7 @@ const OWNER_WALK_SITES: &[Site] = &[
         why: "JLDATU.HPREF 指的 POINSP：取它的 owner（SPINE）与 owner²（只比 refno 是不是宿主 GENSEC），读 POINSP 的 POS \
               并经 local_matrix 折 SPINE 的 POS / ORI。POINSP 在宿主 GENSEC 的 SPINE 下，读者是挂在 datum 下、自成单元的 \
               FIXING 及其 TMPL 件——在它们的单元之上。根口径下（POINSP 改了 → 祖先闭包命中 GENSEC 所在的 FRMW / STRU 根 \
-              → 整棵重算）覆盖；ADR-080 单元级发布下由 increment::gensec_datum_host_of 的整棵 GENSEC 子树级联覆盖——\
+              → 整棵重算）覆盖；ADR-080 单元级发布下由 increment::implicit_frame_host_of 的整棵 GENSEC 子树级联覆盖——\
               与 fixing_host_frame 那条（gen-model issue #39）同型，这一条的单元规划已经补上",
     },
 ];
@@ -209,8 +217,18 @@ const ANCESTOR_CONSUMERS: &[(&str, &str, &[&str], &str)] = &[
         ],
         "GENSEC 名下 JLDATU / PLDATU 的现算标架：读 datum 自己（PLDATU 的 POSL / YDIR）、它的 JLDATU（ZDIS / PKDI / \
          HPREF）与宿主 GENSEC（BANG / LMIRR / JUSL，SPRE 经 section_catalogue、SPINE 经 spine_path）。读者是 datum 下的 \
-         FIXING 与 TMPL 件，这些都在它们的单元之上：根口径下整棵重算覆盖；单元级规划由 increment::gensec_datum_host_of \
+         FIXING 与 TMPL 件，这些都在它们的单元之上：根口径下整棵重算覆盖；单元级规划由 increment::implicit_frame_host_of \
          把整棵 GENSEC 子树级联进计划覆盖（datum 输入改了、宿主 GENSEC 或 SPINE 路径改了都命中）",
+    ),
+    (
+        "section.rs",
+        "section_fitting_placement",
+        &[
+            "BANG", "DELP", "DX", "DY", "JUSL", "PKEY", "POSE", "POSL", "POSS", "PSTR", "ZDIS",
+        ],
+        "SCTN / STWALL 名下 FITT 的现算标架：读宿主（POSS / POSE / BANG / JUSL，SPRE 目录的 PSTR 线 PKEY / DX / DY）与 FITT \
+         自己（POSL / ZDIS / BANG / DELP）。SCTN 名下的 FITT 本就并进 SCTN 单元（单元内）；STWALL 名下 FITT 模板里的件自成单元，\
+         宿主在它们之上：根口径下整棵重算覆盖；单元级规划由 increment::implicit_frame_host_of 把整棵宿主子树级联进计划覆盖",
     ),
     (
         "elmodl.rs",

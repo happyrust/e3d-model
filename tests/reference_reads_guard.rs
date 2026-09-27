@@ -44,7 +44,7 @@ const ACCEPTED_NO_TABLE_REFERENCES: &[(&str, &str)] = &[
         "HPREF",
         "GENSEC 名下 JLDATU 的站位起算点（crate::datum），目标是同一只宿主 GENSEC 的 SPINE 下的 POINSP；\
          读者是挂在 datum 下、自成单元的 FIXING 及其 TMPL 件，所以跨单元。目标一变就落在宿主 GENSEC 子树里，\
-         increment::gensec_datum_host_of 把整棵 GENSEC 子树级联进计划——不靠反向表也覆盖",
+         increment::implicit_frame_host_of 把整棵 GENSEC 子树级联进计划——不靠反向表也覆盖",
     ),
 ];
 

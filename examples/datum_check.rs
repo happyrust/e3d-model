@@ -68,21 +68,19 @@ fn main() -> anyhow::Result<()> {
                     continue;
                 };
                 let el = set.element(RefNo::new(w0.parse()?, w1.parse()?));
-                let host = el.owner()?.context("FITT 没有属主")?;
-                let placed = world_matrix(&host)
-                    .map_err(anyhow::Error::from)
-                    .and_then(|w| Ok(w * section_fitting_placement(&host, &el)?));
-                let row = match placed {
-                    Ok(world) => json!({
+                let solve = || -> anyhow::Result<Value> {
+                    let host = el.owner()?.context("FITT 没有属主")?;
+                    let placed = world_matrix(&host)? * section_fitting_placement(&host, &el)?;
+                    Ok(json!({
                         "refno": level["refno"], "type": "FITT",
                         "host": format!("{} {}", host.element_type()?, host.refno()),
-                        "truth": level, "gen": frame_json(world),
+                        "truth": level, "gen": frame_json(placed),
                         "generic": frame_json(world_matrix(&el)?),
-                    }),
-                    Err(error) => {
-                        json!({"refno": level["refno"], "type": "FITT", "error": error.to_string()})
-                    }
+                    }))
                 };
+                let row = solve().unwrap_or_else(|error| {
+                    json!({"refno": level["refno"], "type": "FITT", "error": error.to_string()})
+                });
                 writeln!(writer, "{row}")?;
                 continue;
             }
