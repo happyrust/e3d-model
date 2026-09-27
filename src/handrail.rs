@@ -769,7 +769,7 @@ pub fn detailed_item_local_solid(
         //
         // **正负没有基准可对**：`sub_105AB2C0` 传给 offsetPath 的是 `-this[63]`，
         // 而那个字段是不是 `XOFF`、offsetPath 的正向朝哪一侧，两处都没坐实。
-        profile.justification[0] -= x_offset;
+        profile.justification[0] += x_offset;
         notes.push(format!(
             "XOFF={x_offset} 按截面平面 +x 侧偏（等价于偏路径）；偏向未对拍"
         ));

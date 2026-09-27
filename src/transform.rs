@@ -407,22 +407,17 @@ fn handrail_path_tangent(
     let Some(to_pos) = to.get_position("POS")? else {
         return Ok(None);
     };
-    // A CURVE member can replace the first straight edge.  Detailed posts
-    // anchored at that first point follow the curve's recorded control
-    // direction; using the next POINTR alone loses the lateral component.
+    // A CURVE member replaces the first straight edge.  Use the tangent of
+    // the actual circular station, rather than the chord to its control point
+    // (which is only correct at the start of the arc).
     if index == 0 {
-        if let Some(curve_pos) = rpath.members()?.find_map(|member| {
-            member
-                .element_type()
-                .ok()
-                .filter(|noun| noun == "CURVE")
-                .and_then(|_| member.get_position("POS").ok().flatten())
-        }) {
-            let curve = DVec3::from_array(curve_pos) - DVec3::from_array(from_pos);
-            if zdis <= curve.length() {
-                if let Some(curve_tangent) = curve.try_normalize() {
-                    return Ok(Some(curve_tangent));
-                }
+        if handrail_curve_station(handrail, point, zdis)?.is_some() {
+            let step = 0.1;
+            let tangent = handrail_curve_station(handrail, point, zdis + step)?
+                .zip(handrail_curve_station(handrail, point, (zdis - step).max(0.0))?)
+                .and_then(|(next, previous)| (next - previous).try_normalize());
+            if tangent.is_some() {
+                return Ok(tangent);
             }
         }
     }
