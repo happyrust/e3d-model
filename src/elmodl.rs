@@ -1337,7 +1337,10 @@ pub(crate) fn fixing_host_frame(wall: &DbElement, fixing: &DbElement) -> Result<
     let zdis = require_double(&jldatu, "JLDATU", "ZDIS", "WALL joint datum")?;
     let (p0, pm, p1) = wall_spine_points(wall)?;
     let (curve_center, radius, a0, sweep) = circular_spine_geometry(&[p0, pm, p1])?;
-    let joint = wall_joint_frame(curve_center, radius, a0, sweep, zdis);
+    let datum_radius = wall_profile_thickness(wall)
+        .map(|thickness| radius + thickness)
+        .unwrap_or(radius);
+    let joint = wall_joint_frame(curve_center, datum_radius, a0, sweep, zdis);
     // PLDATU POSL=OBOW is E3D's implicit wall pline: PLAX=-X. With
     // YDIR=+Z, cal_ori_by_ydir gives columns (-Y,+Z,-X).
     // Wall POSL=IBOW is the inner-bottom line, not the catalogue origin.  In
@@ -1349,7 +1352,21 @@ pub(crate) fn fixing_host_frame(wall: &DbElement, fixing: &DbElement) -> Result<
         .and_then(|values| values.first().copied())
         .filter(|value| value.is_finite() && *value > 0.0)
         .unwrap_or(0.0);
-    let ibow_z = (wall_height - 600.0).max(0.0);
+    // Door FIXINGs carry the opening height/width in a two-value DESP and
+    // are centred in the wall: the live 1700x2045 door spans from the wall
+    // base to 2045 mm.  Window FIXINGs use the standard IBOW datum instead.
+    let door_fixing = fixing
+        .get_double_array("DESP")?
+        .is_some_and(|values| values.len() >= 2);
+    // The standard wall fixing datum stays at the 3400 mm design level for
+    // the shorter 3800 mm wall family as well: its generated fixing is 1100
+    // mm above the wall base in both the 4000 and 3800 mm live samples.  Do
+    // not lower the frame just because DESP reports the shorter wall height.
+    let ibow_z = if door_fixing {
+        wall_height * 0.5
+    } else {
+        (wall_height - 600.0).max(3400.0)
+    };
     let pldatum = DMat4::from_translation(DVec3::new(0.0, ibow_z, 0.0))
         * DMat4::from_cols(
         DVec3::NEG_Y.extend(0.0),
@@ -1358,6 +1375,21 @@ pub(crate) fn fixing_host_frame(wall: &DbElement, fixing: &DbElement) -> Result<
         DVec3::ZERO.extend(1.0),
     );
     Ok(world_matrix(wall)? * joint * pldatum)
+}
+
+fn wall_profile_thickness(wall: &DbElement) -> Option<f64> {
+    let crate::section::SectionChain::Resolved(catalogue) =
+        crate::section::section_catalogue(wall).ok()?
+    else {
+        return None;
+    };
+    catalogue
+        .sprf
+        .get_double_array("PARA")
+        .ok()
+        .flatten()
+        .and_then(|values| values.first().copied())
+        .filter(|value| value.is_finite() && *value > 0.0)
 }
 
 /// JLDATU 在圆弧墙 spine 上的站位标架（WALL 局部系）：列 = (朝圆心, 上, 沿墙)，原点在站位。
