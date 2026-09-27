@@ -186,11 +186,56 @@ fn handrail_post_world(post: &DbElement) -> Result<Option<DMat4>, DbElementError
     // `ZDIS` is the distance along the handrail path (despite the legacy
     // name), not a world-Z elevation.  Use the adjacent RPATH point to get
     // the local tangent; this is what places repeated posts between corners.
-    let tangent = handrail_path_tangent(&handrail, &point, zdis)?.unwrap_or(DVec3::Z);
+    let tangent = handrail_path_tangent(&handrail, &point, zdis)?;
+    let path_tangent = tangent.unwrap_or(DVec3::Z);
     let distance = handrail_straight_run_distance(&handrail, &point, zdis)?;
     let path_position = handrail_curve_station(&handrail, &point, zdis)?
-        .unwrap_or_else(|| DVec3::from_array(position) + tangent * distance);
-    let local = DMat4::from_translation(path_position);
+        .unwrap_or_else(|| DVec3::from_array(position) + path_tangent * distance);
+    // HRPOST catalogue templates use their local +X axis back along the
+    // handrail run.  The station itself is measured in the forward path
+    // direction, but the template's profile origin is oriented by the
+    // opposite tangent (verified on the +X and +Y straight runs in the live
+    // APS sample).  Keeping this orientation on the implicit frame also
+    // rotates every nested template primitive consistently.
+    let post_kind = post.element_type()?;
+    let justification = post.get_string("HRJUSL")?;
+    let terminal_template = post.get_ref("SPRE")?;
+    // The 36004 terminal catalogue is the transverse LEFT variant.  Other
+    // LEFT terminals in the sample use the ordinary unrotated frame.
+    let orient_term = post_kind == "HRTERM"
+        && (justification.as_deref() != Some("LEFT")
+            || terminal_template.is_some_and(|reference| reference.word1 == 36004));
+    let local = if (post_kind == "HRPOST" || orient_term)
+        && let Some(run) = tangent.and_then(|value| value.try_normalize())
+    {
+        // LEFT and RIGH are mirror placements of the same catalogue post.
+        // Their local +X axis points respectively with or against the path
+        // tangent; treating both as RIGH mirrors an entire handrail run.
+        let x_axis = match justification.as_deref() {
+            // LEFT terminal templates are transverse to the path; their
+            // catalogue +X axis follows the horizontal normal.
+            Some("LEFT")
+                if post_kind == "HRTERM"
+                    && terminal_template.is_some_and(|reference| reference.word1 == 36004) =>
+            {
+                run.cross(DVec3::Z).normalize()
+            }
+            Some("LEFT") => run,
+            // FORW posts use the path's left-hand horizontal normal rather
+            // than the run axis (the 36007 catalogue in the live sample).
+            Some("FORW") => run.cross(DVec3::Z).normalize(),
+            _ => -run,
+        };
+        let y_axis = DVec3::Z.cross(x_axis).normalize();
+        DMat4::from_cols(
+            x_axis.extend(0.0),
+            y_axis.extend(0.0),
+            DVec3::Z.extend(0.0),
+            path_position.extend(1.0),
+        )
+    } else {
+        DMat4::from_translation(path_position)
+    };
     if post.element_type()?.as_str() == "HRGATE" {
         let width = post.get_double("WIDT")?.unwrap_or(0.0);
         let gate_frame = DMat4::from_translation(DVec3::new(0.0, width * 0.5, 0.0))
