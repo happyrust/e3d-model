@@ -1656,7 +1656,7 @@ fn catalogue_member_world(member: &DbElement) -> Result<DMat4, ModelError> {
         && let Some(wall) = crate::elmodl::fixing_host_wall(member)?
     {
         return Ok(crate::elmodl::fixing_host_frame(&wall, member)?
-            * crate::transform::local_matrix(member)?);
+            * crate::elmodl::fixing_local_matrix(member)?);
     }
     Ok(world_matrix(member)?)
 }
@@ -3831,7 +3831,14 @@ pub(crate) fn required_number(
     what: &'static str,
 ) -> Result<f64, ModelError> {
     let outcome = element.get_number(name, env)?;
-    if matches!(outcome, AttributeNumber::NotNumeric) && raw_zero_tuple(element, name) {
+    // Some catalogue SVER coordinates are stored as an explicit all-zero
+    // tuple but the parameter evaluator reports that tuple as unresolved.
+    // The tuple is the value in that case, just as it is for NotNumeric.
+    if matches!(
+        outcome,
+        AttributeNumber::NotNumeric | AttributeNumber::Unresolved { .. }
+    ) && raw_zero_tuple(element, name)
+    {
         return Ok(0.0);
     }
     outcome

@@ -1364,16 +1364,21 @@ pub(crate) fn fixing_host_frame(wall: &DbElement, fixing: &DbElement) -> Result<
     // not lower the frame just because DESP reports the shorter wall height.
     let ibow_z = if door_fixing {
         wall_height * 0.5
+            + fixing
+                .get_double_array("DESP")?
+                .and_then(|values| values.get(1).copied())
+                .filter(|value| value.is_finite())
+                .unwrap_or(0.0)
     } else {
         (wall_height - 600.0).max(3400.0)
     };
     let pldatum = DMat4::from_translation(DVec3::new(0.0, ibow_z, 0.0))
         * DMat4::from_cols(
-        DVec3::NEG_Y.extend(0.0),
-        DVec3::Z.extend(0.0),
-        DVec3::NEG_X.extend(0.0),
-        DVec3::ZERO.extend(1.0),
-    );
+            DVec3::NEG_Y.extend(0.0),
+            DVec3::Z.extend(0.0),
+            DVec3::NEG_X.extend(0.0),
+            DVec3::ZERO.extend(1.0),
+        );
     Ok(world_matrix(wall)? * joint * pldatum)
 }
 
@@ -1443,6 +1448,22 @@ pub(crate) fn fixing_host_wall(fixing: &DbElement) -> Result<Option<DbElement>, 
     Ok(None)
 }
 
+/// WALL FIXING 的 `POS[1]`/`POS[2]` 是目录件的定位输入，不是目录几何
+/// 实例的附加平移。Core3D 将它们留给墙体 p-line / SFIT 求值；若把完整
+/// `local_matrix(FIXING)` 再乘到目录实体上，窗件会按 `POS[1]` 在墙向重复
+/// 平移（APS250110 的 77.965/50.847/20.339 mm 三组 RVM 偏差正好相等）。
+/// `POS[0]` 与 `ORI` 仍是实例标架的一部分；门的 `DESP[1]` 高程偏置在
+/// `fixing_host_frame` 中消费，不能再把 `POS[1]` 当作第二次平移。
+pub(crate) fn fixing_local_matrix(fixing: &DbElement) -> Result<DMat4, ModelError> {
+    let local = crate::transform::local_matrix(fixing)?;
+    Ok(DMat4::from_cols(
+        local.x_axis,
+        local.y_axis,
+        local.z_axis,
+        DVec3::new(local.w_axis.x, 0.0, 0.0).extend(1.0),
+    ))
+}
+
 fn fixing_world_cutter(wall: &DbElement, fixing: &DbElement) -> Result<Manifold, ModelError> {
     let desp = fixing
         .get_double_array("DESP")?
@@ -1452,7 +1473,7 @@ fn fixing_world_cutter(wall: &DbElement, fixing: &DbElement) -> Result<Manifold,
             name: "DESP",
             what: "host cutter",
         })?;
-    let local_to_world = fixing_host_frame(wall, fixing)? * crate::transform::local_matrix(fixing)?;
+    let local_to_world = fixing_host_frame(wall, fixing)? * fixing_local_matrix(fixing)?;
     let local = match desp.as_slice() {
         [_, outer_diam, _, length, _, _, _, x, y, z, ..] if *outer_diam > 0.0 && *length > 0.0 => {
             let segments = if *outer_diam <= 240.0 { 8 } else { 12 };
