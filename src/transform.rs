@@ -188,8 +188,96 @@ fn handrail_post_world(post: &DbElement) -> Result<Option<DMat4>, DbElementError
     // the local tangent; this is what places repeated posts between corners.
     let tangent = handrail_path_tangent(&handrail, &point, zdis)?.unwrap_or(DVec3::Z);
     let distance = handrail_straight_run_distance(&handrail, &point, zdis)?;
-    let local = DMat4::from_translation(DVec3::from_array(position) + tangent * distance);
+    let path_position = handrail_curve_station(&handrail, &point, zdis)?
+        .unwrap_or_else(|| DVec3::from_array(position) + tangent * distance);
+    let local = DMat4::from_translation(path_position);
+    if post.element_type()?.as_str() == "HRGATE" {
+        let width = post.get_double("WIDT")?.unwrap_or(0.0);
+        let gate_frame = DMat4::from_translation(DVec3::new(0.0, width * 0.5, 0.0))
+            * DMat4::from_rotation_z(-std::f64::consts::FRAC_PI_2);
+        return Ok(Some(world_matrix(&handrail)? * local * gate_frame));
+    }
     Ok(Some(world_matrix(&handrail)? * local))
+}
+
+/// Resolve a detailed post on the first point of a THRU RPATH curve to the
+/// actual circular station.  Core3D places these posts on the arc itself;
+/// using the through-point chord as a constant tangent loses the lateral
+/// displacement that becomes large near the end of the arc.
+fn handrail_curve_station(
+    handrail: &DbElement,
+    point: &DbElement,
+    zdis: f64,
+) -> Result<Option<DVec3>, DbElementError> {
+    if zdis < 0.0 {
+        return Ok(None);
+    }
+    let Some(rpath) = handrail
+        .members()?
+        .find(|member| member.element_type().is_ok_and(|noun| noun == "RPATH"))
+    else {
+        return Ok(None);
+    };
+    let points: Vec<DbElement> = rpath
+        .members()?
+        .filter(|member| member.element_type().is_ok_and(|noun| noun == "POINTR"))
+        .collect();
+    if points.first().map(|candidate| candidate.refno()) != Some(point.refno()) {
+        return Ok(None);
+    }
+    let Some(next) = points.get(1) else {
+        return Ok(None);
+    };
+    let Some(start_pos) = point.get_position("POS")? else {
+        return Ok(None);
+    };
+    let Some(end_pos) = next.get_position("POS")? else {
+        return Ok(None);
+    };
+    let Some(curve) = rpath
+        .members()?
+        .find(|member| member.element_type().is_ok_and(|noun| noun == "CURVE"))
+    else {
+        return Ok(None);
+    };
+    if curve.get_string("CURTYP")?.as_deref() != Some("THRU") {
+        return Ok(None);
+    }
+    let Some(through_pos) = curve.get_position("POS")? else {
+        return Ok(None);
+    };
+    let start = DVec3::from_array(start_pos);
+    let through = DVec3::from_array(through_pos);
+    let end = DVec3::from_array(end_pos);
+    let normal = (through - start).cross(end - through);
+    if normal.length_squared() <= 1e-12 {
+        return Ok(None);
+    }
+    let centre = circumcentre(start, through, end, normal);
+    let radius_vector = start - centre;
+    let radius = radius_vector.length();
+    if radius <= 1e-9 {
+        return Ok(None);
+    }
+    let axis = normal.normalize();
+    let mut sweep = axis
+        .dot(radius_vector.cross(end - centre))
+        .atan2(radius_vector.dot(end - centre));
+    if sweep < 0.0 {
+        sweep += std::f64::consts::TAU;
+    }
+    let arc_length = radius * sweep;
+    if zdis > arc_length + 1e-6 {
+        return Ok(None);
+    }
+    Ok(Some(centre + crate::section::rotate_about(radius_vector, axis, zdis / radius)))
+}
+
+fn circumcentre(a: DVec3, b: DVec3, c: DVec3, normal: DVec3) -> DVec3 {
+    let ab = b - a;
+    let ac = c - a;
+    let denom = 2.0 * normal.length_squared();
+    a + (normal.cross(ab) * ac.length_squared() + ac.cross(normal) * ab.length_squared()) / denom
 }
 
 /// A detailed post anchored just past a straight path endpoint is clamped to
