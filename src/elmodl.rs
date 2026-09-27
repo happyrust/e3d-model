@@ -1340,7 +1340,18 @@ pub(crate) fn fixing_host_frame(wall: &DbElement, fixing: &DbElement) -> Result<
     let joint = wall_joint_frame(curve_center, radius, a0, sweep, zdis);
     // PLDATU POSL=OBOW is E3D's implicit wall pline: PLAX=-X. With
     // YDIR=+Z, cal_ori_by_ydir gives columns (-Y,+Z,-X).
-    let pldatum = DMat4::from_cols(
+    // Wall POSL=IBOW is the inner-bottom line, not the catalogue origin.  In
+    // the AMS wall family the line sits one 600 mm fixing clearance below the
+    // wall top (DESP[0]); leaving it at zero drops every wall FIXING by
+    // `height - 600` (4000 -> 3400 mm in the real sample).
+    let wall_height = wall
+        .get_double_array("DESP")?
+        .and_then(|values| values.first().copied())
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(0.0);
+    let ibow_z = (wall_height - 600.0).max(0.0);
+    let pldatum = DMat4::from_translation(DVec3::new(0.0, ibow_z, 0.0))
+        * DMat4::from_cols(
         DVec3::NEG_Y.extend(0.0),
         DVec3::Z.extend(0.0),
         DVec3::NEG_X.extend(0.0),

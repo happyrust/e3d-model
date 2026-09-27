@@ -112,6 +112,10 @@ enum ImplicitFrame {
     /// 与 SCTN builder 装配件用的是同一份标架（E3D TTY 真值：SCTN 名下 521 只、STWALL 名下
     /// 126 只逐件对上）。
     SectionFitting(DbElement),
+    /// Detailed handrail posts have no POS/ORI.  Core3D places the post at
+    /// its `POSREF` path point and applies `ZDIS`; template children inherit
+    /// that frame through their owner chain.
+    HandrailPost(DbElement),
 }
 
 /// 只看 noun 与属主，不求标架。
@@ -127,6 +131,9 @@ fn implicit_frame(el: &DbElement) -> Result<Option<ImplicitFrame>, DbElementErro
             }
             _ => Ok(None),
         },
+        "HRPOST" | "HRGATE" | "HRTERM" => {
+            Ok(Some(ImplicitFrame::HandrailPost(el.clone())))
+        }
         _ => Ok(None),
     }
 }
@@ -150,7 +157,98 @@ fn implicit_world(el: &DbElement) -> Result<Option<DMat4>, DbElementError> {
                 })?;
             Ok(Some(world_matrix(&host)? * placement))
         }
+        ImplicitFrame::HandrailPost(post) => handrail_post_world(&post),
     }
+}
+
+/// World frame for a detailed handrail post (`POSTSE -> HANDRA`).  `HRPOST`
+/// deliberately has no `POS`/`ORI`; its placement is the referenced RPATH
+/// point plus the scalar distance along the selected path run.  Keeping
+/// this as an implicit frame also makes every nested TMPL/primitive inherit
+/// the same placement via the ordinary owner-chain fold.
+fn handrail_post_world(post: &DbElement) -> Result<Option<DMat4>, DbElementError> {
+    let Some(post_set) = post.owner()? else {
+        return Ok(None);
+    };
+    let Some(handrail) = post_set.owner()? else {
+        return Ok(None);
+    };
+    if handrail.element_type()?.as_str() != "HANDRA" {
+        return Ok(None);
+    }
+    let Some(point) = post.get_element("POSREF")? else {
+        return Ok(None);
+    };
+    let Some(position) = point.get_position("POS")? else {
+        return Ok(None);
+    };
+    let zdis = post.get_double("ZDIS")?.unwrap_or(0.0);
+    // `ZDIS` is the distance along the handrail path (despite the legacy
+    // name), not a world-Z elevation.  Use the adjacent RPATH point to get
+    // the local tangent; this is what places repeated posts between corners.
+    let tangent = handrail_path_tangent(&handrail, &point, zdis)?.unwrap_or(DVec3::Z);
+    let local = DMat4::from_translation(DVec3::from_array(position) + tangent * zdis);
+    Ok(Some(world_matrix(&handrail)? * local))
+}
+
+fn handrail_path_tangent(
+    handrail: &DbElement,
+    point: &DbElement,
+    zdis: f64,
+) -> Result<Option<DVec3>, DbElementError> {
+    let Some(rpath) = handrail
+        .members()?
+        .find(|member| member.element_type().is_ok_and(|noun| noun == "RPATH"))
+    else {
+        return Ok(None);
+    };
+    let points: Vec<DbElement> = rpath
+        .members()?
+        .filter(|member| member.element_type().is_ok_and(|noun| noun == "POINTR"))
+        .collect();
+    let Some(index) = points.iter().position(|candidate| candidate.refno() == point.refno())
+    else {
+        return Ok(None);
+    };
+    // E3D measures an end-point post's ZDIS back along the entering run.  The
+    // last POINTR can be a corner extension, so using `point -> previous`
+    // would turn the post onto the wrong leg (the 8 m displacement is a useful
+    // real-world example).  Interior and start points use the following run.
+    let (from, to) = if index + 1 < points.len() {
+        (point.clone(), points[index + 1].clone())
+    } else if index >= 2 {
+        (points[index - 1].clone(), points[index - 2].clone())
+    } else if index == 1 {
+        (point.clone(), points[0].clone())
+    } else {
+        return Ok(None);
+    };
+    let Some(from_pos) = from.get_position("POS")? else {
+        return Ok(None);
+    };
+    let Some(to_pos) = to.get_position("POS")? else {
+        return Ok(None);
+    };
+    // A CURVE member can replace the first straight edge.  Detailed posts
+    // anchored at that first point follow the curve's recorded control
+    // direction; using the next POINTR alone loses the lateral component.
+    if index == 0 {
+        if let Some(curve_pos) = rpath.members()?.find_map(|member| {
+            member
+                .element_type()
+                .ok()
+                .filter(|noun| noun == "CURVE")
+                .and_then(|_| member.get_position("POS").ok().flatten())
+        }) {
+            let curve = DVec3::from_array(curve_pos) - DVec3::from_array(from_pos);
+            if zdis <= curve.length() {
+                if let Some(curve_tangent) = curve.try_normalize() {
+                    return Ok(Some(curve_tangent));
+                }
+            }
+        }
+    }
+    Ok((DVec3::from_array(to_pos) - DVec3::from_array(from_pos)).try_normalize())
 }
 
 fn pseudo_attribute(
