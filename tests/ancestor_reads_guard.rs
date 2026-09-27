@@ -218,7 +218,9 @@ const ANCESTOR_CONSUMERS: &[(&str, &str, &[&str], &str)] = &[
         "GENSEC 名下 JLDATU / PLDATU 的现算标架：读 datum 自己（PLDATU 的 POSL / YDIR）、它的 JLDATU（ZDIS / PKDI / \
          HPREF）与宿主 GENSEC（BANG / LMIRR / JUSL，SPRE 经 section_catalogue、SPINE 经 spine_path）。读者是 datum 下的 \
          FIXING 与 TMPL 件，这些都在它们的单元之上：根口径下整棵重算覆盖；单元级规划由 increment::implicit_frame_host_of \
-         把整棵 GENSEC 子树级联进计划覆盖（datum 输入改了、宿主 GENSEC 或 SPINE 路径改了都命中）",
+         把整棵 GENSEC 子树级联进计划覆盖（datum 输入改了、宿主 GENSEC 或 SPINE 路径改了都命中）。经 JOIS / JOIE 取这些 \
+         TMPL 负体扣端头的梁（elmodl::collect_joint_negatives）不在宿主子树里，由 increment::joint_consumer_of 跟着 \
+         FIXING 一起进计划",
     ),
     (
         "section.rs",

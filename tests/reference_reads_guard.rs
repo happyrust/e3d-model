@@ -46,6 +46,20 @@ const ACCEPTED_NO_TABLE_REFERENCES: &[(&str, &str)] = &[
          读者是挂在 datum 下、自成单元的 FIXING 及其 TMPL 件，所以跨单元。目标一变就落在宿主 GENSEC 子树里，\
          increment::implicit_frame_host_of 把整棵 GENSEC 子树级联进计划——不靠反向表也覆盖",
     ),
+    (
+        "JOIS",
+        "GENSEC 起点关节（elmodl::collect_joint_negatives），目标是另一根构件 datum 下自成单元的 FIXING，\
+         梁取走它 TMPL 里的负体扣端头。aps250110 的会话目录里没有 JOIS 表。FIXING 这边要重建或删除时，\
+         increment::joint_consumer_of 经 FIXING 的 CREF 回指找到梁、核对梁的 JOIS / JOIE 后一并重建\
+         （aps250110 522 个关节 522 个回指对上）；跨库关节（梁与 FIXING 不在同一库）单库窗管不到，记 note",
+    ),
+    ("JOIE", "GENSEC 终点关节，理由同 JOIS"),
+    (
+        "CREF",
+        "只在增量规划器里读（increment::joint_consumer_of）：FIXING 的连接回指，用来从关节 FIXING 找回 JOIS / JOIE \
+         指着它的梁。CREF 是 type-4/8 引用，没有反向表；它本身不进几何，读到的梁还要用梁自己的 JOIS / JOIE 核对，\
+         陈旧的 CREF 只会漏认、不会错认",
+    ),
 ];
 
 /// 间接读点：属性名不是字面量、经变量传进 `get_element(...)` 的那几处。**每一处都要在这里

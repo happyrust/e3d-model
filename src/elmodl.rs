@@ -431,6 +431,9 @@ pub fn model_element_with_cache(
     // `REPRESENTATION LEVEL n`，NOZZ 走 `LEVEL NOZZ`），与目录成员的显示过滤同一张表。
     let level = repre_level_of(el)?;
     let mut skipped = Vec::new();
+    if noun == "GENSEC" {
+        collect_joint_negatives(el, &mut negatives, &mut skipped, &mut notes)?;
+    }
     negatives.retain(|neg| {
         let (lo, hi) = negative_leve(neg);
         if design_leve_admits(lo, hi, level) {
@@ -920,9 +923,10 @@ fn section_fitting_parts(
 /// 四段对标 `DB_Sctn::DB_makeCSG@0x10738C30` 的前两个阶段（调试串 `profile` → `xsec1`）：
 /// 截面子树逐 GMSS 成员建体并集，再由 `DB_Scan_to_GML` 槽 28 拿两张切面切。
 ///
-/// **第 4 阶段（负体）还没接**：JOIS/JOIE 关节负体与成员链上的 FITT / CMFI(+SBFI) /
-/// SNOD→SJOI / SCOJ→SUBJ 都要先有 G1-1c 的目录路（负几何自己也走 `NGMR → NGMS`），
-/// 排在它之后。所以现在这根梁是「没扣关节与配件的毛坯」，RVM 对拍时端部会偏胖。
+/// **第 4 阶段（负体）只接了一条**：GENSEC 的 JOIS/JOIE 指向 FIXING 时，它 TMPL 里的负体
+/// 在 [`model_element_with_cache`] 的负体段扣（[`collect_joint_negatives`]）。目录侧的关节
+/// 负体（`NGMR → NGMS`）与成员链上的 FITT / CMFI(+SBFI) / SNOD→SJOI / SCOJ→SUBJ 都要先有
+/// G1-1c 的目录路，SCTN 的关节也还没接——这些梁端在 RVM 对拍时仍会偏胖。
 fn section_body(el: &DbElement, notes: &mut Vec<String>) -> Result<SectionBody, ModelError> {
     let catalogue = match section_catalogue(el)? {
         SectionChain::NoSpre => {
@@ -2017,9 +2021,10 @@ fn default_zero(el: &DbElement, name: &str) -> Result<f64, DbElementError> {
 /// 当然一件不剩；`TMPL "Flexible End Plate - 150mmx8mm"` 的端板则只剩两条 8.4mm
 /// 窄条，因为那件 `NBOX` 的 133.2×203.2 是 203×133 工字梁的截面、给梁让位用的。
 ///
-/// 也就是说这些负体扣的是**容器之外的宿主**（墙 / 梁 / 被连接的构件）。E3D 的这条
-/// 「构件在别处、洞开在宿主上」的路我们整条都还没有；在找到宿主的判据之前，
-/// 它们由管线记进 `Report::host_negatives` 挂账，不参与任何扣减。
+/// 也就是说这些负体扣的是**容器之外的宿主**（墙 / 梁 / 被连接的构件）。宿主的判据
+/// 目前只接了一条：FIXING 是某根 GENSEC 的 `JOIS` / `JOIE` 关节时，梁从另一头把它们
+/// 取走（[`collect_joint_negatives`]）。其余宿主（FIXING 自己的属主、墙上凹龛那类）
+/// 还没有，管线照旧把 TMPL 名下的负体记进 `Report::host_negatives`。
 fn collect_negatives(el: &DbElement, out: &mut Vec<DbElement>) -> Result<(), DbElementError> {
     for member in el.members()? {
         let noun = member.element_type()?;
@@ -2043,6 +2048,96 @@ fn collect_negatives_deep(el: &DbElement, out: &mut Vec<DbElement>) -> Result<()
         }
     }
     Ok(())
+}
+
+/// GENSEC 两端的关节负体：`JOIS` / `JOIE` 指向的 FIXING 名下 `TMPL` 里的负体，过了关节
+/// 路径的 NAPP 门就并进这根梁要扣的刀（DRWAND 表现级门与世界放置照直属负体走）。
+///
+/// 对标 `DB_Sctn::DB_makeCSG@0x10738C30`：截面实体切完两端之后，对 JOIS、JOIE 的目标各调
+/// 一次 `sub_10722D80(..., mode 0)`，逐负体过 `sub_1072B780` 的 NAPP 门（[`joint_napp_admits`]）。
+/// `aps250110` 上 1505 根 GENSEC 的 522 个非空关节全部指向 FIXING，FIXING 的 `CREF` 全部回指
+/// 这根梁；带 TMPL 的 229 个是「Flexible / Full Depth End Plate」与「Web Cleats」三种节点模板，
+/// 负体是 NBOX（NAPP -1，ZLEN 8 的端板让位）、NCYL（NAPP 7，螺栓孔）与少数 NXTR（NAPP -1，
+/// 翼缘切角）——端板那一刀就是梁对 E3D TTY RVM 两端各长 8 mm 的来源。
+///
+/// 只接了「FIXING 名下设计侧 TMPL」这一种来源。FIXING 的 `SPRE → CATR` 是目录 `JOIN` 的那批
+/// （檐口节点）负体在目录 `NGMS` 里，要先有目录负体求值；`SUBJ` 关节（`DB_makeCSG` 连它的属主
+/// 一起扫）语料里没有。这两种梁端照旧偏胖。
+///
+/// 关节读不出来（悬空引用、成员表读挂）不拖垮梁：记进 `skipped`，梁照出。
+fn collect_joint_negatives(
+    el: &DbElement,
+    out: &mut Vec<DbElement>,
+    skipped: &mut Vec<SkippedNegative>,
+    notes: &mut Vec<String>,
+) -> Result<(), ModelError> {
+    for (attr, joint) in [
+        ("JOIS", el.get_element("JOIS")?),
+        ("JOIE", el.get_element("JOIE")?),
+    ] {
+        let Some(joint) = joint else {
+            continue;
+        };
+        let mut found = Vec::new();
+        if let Err(error) = joint_template_negatives(&joint, &mut found) {
+            skipped.push(SkippedNegative {
+                refno: joint.refno(),
+                noun: joint.element_type().unwrap_or_else(|_| "?".into()),
+                reason: format!("{attr} 关节读不出来，端头负体没扣：{error}"),
+            });
+            continue;
+        }
+        for neg in found {
+            let napp = negative_napp(&neg);
+            if joint_napp_admits(napp) {
+                out.push(neg);
+            } else {
+                notes.push(format!(
+                    "{attr} 关节 {} 的负体 {} NAPP={} 在关节路径（mode 0）不放行，E3D 同样不拿它切梁",
+                    joint.refno(),
+                    neg.refno(),
+                    napp.map_or_else(|| "?".to_string(), |value| value.to_string())
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 关节目标名下能切梁的负体：目标是 FIXING 时，它每只 `TMPL` 成员里的负体（与
+/// [`collect_negatives`] 同一圈定：直属负体 + CMPF 深层）。别的 noun 不出。
+fn joint_template_negatives(
+    joint: &DbElement,
+    out: &mut Vec<DbElement>,
+) -> Result<(), DbElementError> {
+    if joint.element_type()? != "FIXING" {
+        return Ok(());
+    }
+    for member in joint.members()? {
+        if member.element_type()? == "TMPL" {
+            collect_negatives(&member, out)?;
+        }
+    }
+    Ok(())
+}
+
+/// 负体的 `NAPP`。文件里是一个字，`-1` 存成 `0xFFFF_FFFF`，按有符号读；未设、模板里
+/// 没有、形状不对都是 `None`（NAPP 门对「读不到」放行）。
+fn negative_napp(neg: &DbElement) -> Option<i32> {
+    match neg.attribute("NAPP") {
+        Ok(Some(DescriptorValue::Word { raw, .. })) => Some(raw as i32),
+        Ok(Some(DescriptorValue::Int(value))) => Some(value),
+        _ => None,
+    }
+}
+
+/// `sub_1072B780` 的 NAPP 门在关节路径（mode 0）上的判法：读不到 → 放行；`-1` → 放行
+/// （`-1` 只在 mode 0/3/4/5/6/9 放行）；其余看 `& 1`（mode 1–6/8/9 看 `& 2`，mode 7 看 `& 4`）。
+fn joint_napp_admits(napp: Option<i32>) -> bool {
+    match napp {
+        None | Some(-1) => true,
+        Some(value) => value & 1 != 0,
+    }
 }
 
 /// 单个负体的建模结论。
@@ -2320,6 +2415,18 @@ mod tests {
         let solid = revolve_rings_profile_faceted_inflated(profile, 180.0, 0.0).unwrap();
         let rvm_volume = 160_726_996.3865;
         assert!((solid.volume() - rvm_volume).abs() / rvm_volume < 0.0001);
+    }
+
+    #[test]
+    fn the_joint_napp_gate_is_mode_0_of_sub_1072b780() {
+        // 读不到放行；-1 放行（aps250110 节点模板的 NBOX / NXTR）；其余看 `& 1`（NCYL 的 7 放行）。
+        assert!(joint_napp_admits(None));
+        assert!(joint_napp_admits(Some(-1)));
+        assert!(joint_napp_admits(Some(7)));
+        assert!(joint_napp_admits(Some(1)));
+        for napp in [0, 2, 4, 6] {
+            assert!(!joint_napp_admits(Some(napp)), "NAPP={napp}");
+        }
     }
 
     #[test]

@@ -1037,6 +1037,64 @@ fn implicit_frame_host_of(set: &Arc<DbSet>, refno: RefNo) -> Result<Option<RefNo
     Ok(None)
 }
 
+/// [`joint_consumer_of`] 找到的那根梁。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JointConsumer {
+    /// 同库的 GENSEC，这一端的 JOIS / JOIE 指着这只 FIXING。
+    Beam(RefNo),
+    /// `CREF` 指到别的库：梁不在这个单库窗里，重建不了，只能点名。
+    OtherDatabase(RefNo),
+}
+
+/// FIXING（在 `set` 这一端）是某根 GENSEC 的 `JOIS` / `JOIE` 关节时，那根梁。不是 FIXING、
+/// 这一端不存在、`CREF` 空、或 `CREF` 指的梁这一端的 JOIS / JOIE 不指回它 → `None`。
+///
+/// # 为什么关节要单独一条腿
+///
+/// 梁从 JOIS / JOIE 指的 FIXING 那里取走它 TMPL 里的负体，扣自己的两端
+/// （`elmodl::collect_joint_negatives`）。梁的几何因此吃 FIXING 的整棵子树（TMPL 负体的尺寸、
+/// 位姿、NAPP、LEVE）与 FIXING 的世界标架——FIXING 挂在**另一根** GENSEC 的 datum 下，标架吃
+/// 那根的 SPINE / JUSL / …（[`implicit_frame_host_of`]）。这些都不在梁的 owner 链上，也不在梁的
+/// 子树里：改一只 NBOX，`nearest_unit` 上卷到 FIXING 只重建了端板，梁的端头停在旧刀口。
+///
+/// JOIS / JOIE 没有反向引用表（aps250110 的会话目录里只有 SPRE / HSTU / LSTU / CATR / … 这些），
+/// 反查走 E3D 自己维护的回指：连接时 FIXING 的 `CREF` 写成那根梁（aps250110 的 522 个关节，
+/// 522 个回指对上）。回指只当线索，认不认以梁这一端的 JOIS / JOIE 为准，陈旧的 CREF 只会漏认、
+/// 不会错认。
+fn joint_consumer_of(
+    set: &Arc<DbSet>,
+    refno: RefNo,
+) -> Result<Option<JointConsumer>, DbElementError> {
+    let fixing = set.element(refno);
+    match fixing.exists() {
+        Ok(true) => {}
+        Ok(false) | Err(DbElementError::NotFound { .. }) => return Ok(None),
+        Err(error) => return Err(error),
+    }
+    if fixing.element_type()? != "FIXING" {
+        return Ok(None);
+    }
+    let Some(beam) = fixing.get_ref("CREF")? else {
+        return Ok(None);
+    };
+    if beam.dbno() != refno.dbno() {
+        return Ok(Some(JointConsumer::OtherDatabase(beam)));
+    }
+    let beam = set.element(beam);
+    match beam.exists() {
+        Ok(true) => {}
+        Ok(false) | Err(DbElementError::NotFound { .. }) => return Ok(None),
+        Err(error) => return Err(error),
+    }
+    if beam.element_type()? != "GENSEC" {
+        return Ok(None);
+    }
+    if beam.get_ref("JOIS")? == Some(refno) || beam.get_ref("JOIE")? == Some(refno) {
+        return Ok(Some(JointConsumer::Beam(beam.refno())));
+    }
+    Ok(None)
+}
+
 /// 候选（含自身）上溯碰到的最近 `CWBRAN`。不在任何桥架分支里 → `None`；
 /// 起点在这一端不存在也是 `None`（Inserted 在 base、Deleted 在 target 是常态）。
 ///
@@ -1704,6 +1762,68 @@ pub fn plan_update_with(
             regenerate.insert(key(unit));
         }
     }
+    // 关节级联（见 [`joint_consumer_of`]）：本窗要重建或删除的 FIXING 若是某根 GENSEC 的
+    // JOIS / JOIE 关节，那根梁扣的端头负体跟着变。放在计划集收齐之后做，FIXING 从哪条腿进来
+    // （自己改了、TMPL 里的负体改了、宿主 GENSEC 的现算标架级联）都一样接得住。两端各问一次：
+    // 删掉的 FIXING 只有 base 认得，改接到别的梁时新旧两根都要重建。
+    let joint_sources: Vec<(u32, u32)> = regenerate.iter().chain(remove.iter()).copied().collect();
+    let mut joint_beams: BTreeSet<(u32, u32)> = BTreeSet::new();
+    let mut joint_notes: BTreeSet<((u32, u32), (u32, u32))> = BTreeSet::new();
+    for unit in joint_sources {
+        let fixing = refno_of(unit);
+        for side in [target, base] {
+            match joint_consumer_of(side, fixing) {
+                Ok(None) => {}
+                Ok(Some(JointConsumer::Beam(beam))) => {
+                    // 梁这一窗被删了：它自己的 Deleted 候选出 Remove。
+                    match target.element(beam).exists() {
+                        Ok(true) => {}
+                        Ok(false) | Err(DbElementError::NotFound { .. }) => continue,
+                        Err(error) => {
+                            report.notes.push(incident(
+                                beam,
+                                "GENSEC",
+                                format!(
+                                    "关节 FIXING {fixing} 要重建或已删除，这根梁在 target 端读不出，\
+                                     端头负体可能停在旧刀口：{error}"
+                                ),
+                            ));
+                            continue;
+                        }
+                    }
+                    if !joint_beams.insert(key(beam)) {
+                        continue;
+                    }
+                    regenerate.insert(key(beam));
+                    report.cascades.push(incident(
+                        fixing,
+                        "FIXING",
+                        format!(
+                            "关节负体的来源 FIXING 要重建或已删除，JOIS / JOIE 指着它的 GENSEC {beam} 一并重建"
+                        ),
+                    ));
+                    report.cascade_hits += 1;
+                }
+                Ok(Some(JointConsumer::OtherDatabase(beam))) => {
+                    if joint_notes.insert((unit, key(beam))) {
+                        report.notes.push(incident(
+                            fixing,
+                            "FIXING",
+                            format!(
+                                "关节 FIXING 的 CREF 指到别的库（{beam}），单库窗重建不了那根梁，\
+                                 它的端头负体可能停在旧刀口"
+                            ),
+                        ));
+                    }
+                }
+                Err(error) => report.notes.push(incident(
+                    fixing,
+                    "FIXING",
+                    format!("关节级联读挂，JOIS / JOIE 指着它的梁可能停在旧刀口：{error}"),
+                )),
+            }
+        }
+    }
     // Remove 赢：同一单元既要删又要建说明分类端点混了，删除语义优先。
     for gone in &remove {
         regenerate.remove(gone);
@@ -1975,6 +2095,47 @@ mod tests {
         let wall = Some(RefNo::new(2013286654, 39));
         assert_eq!(host_of(39), wall, "名下有 FITT 的 STWALL 自己");
         assert_eq!(host_of(40), wall, "FITT → STWALL");
+    }
+
+    /// `joint_consumer_of` 在 aps250110 / aps250108 真库上的形状（库或模板不在就跳过）：梁
+    /// GENSEC 2 of /B01_LEVEL_01_BEAMS（`/261`）两端的 FIXING 经 CREF 回指到它；梁自己、端板 TMPL、
+    /// CREF 空的 FIXING、回指 STWALL 的 FIXING 都不算；aps250108 里那只关节 FIXING 的 CREF 指回
+    /// aps250110 的梁，是跨库。
+    #[test]
+    fn joint_fixings_point_back_to_their_beam() {
+        let plant = Path::new(r"D:\AVEVA\Projects\E3D3.1\AvevaPlantSample\aps000");
+        let template = Path::new(r"E:\reverse\e3d\shadow_e3d31_aps_all");
+        let dbs = [plant.join("aps250110_0001"), plant.join("aps250108_0001")];
+        if dbs.iter().any(|db| !db.exists()) || !template.join("attlib.dat").exists() {
+            return;
+        }
+        let set = Arc::new(DbSet::with_attlib_file(&template.join("attlib.dat")).unwrap());
+        for db in dbs {
+            set.add_db(e3d_io::db_element::DbFilePin {
+                file: db,
+                template: e3d_io::db_element::template_file_for(template, "DESI").unwrap(),
+                db_type: Some("DESI".into()),
+                sesno: None,
+            })
+            .unwrap();
+        }
+        let consumer = |w0, w1| joint_consumer_of(&set, RefNo::new(w0, w1)).unwrap();
+        let beam = Some(JointConsumer::Beam(RefNo::new(2013286654, 261)));
+        assert_eq!(consumer(2013286654, 349), beam, "JOIS 那只 FIXING");
+        assert_eq!(consumer(2013286654, 376), beam, "JOIE 那只 FIXING");
+        assert_eq!(consumer(2013286654, 261), None, "梁自己不是 FIXING");
+        assert_eq!(consumer(2013286654, 26003), None, "端板 TMPL 不是 FIXING");
+        assert_eq!(consumer(2013286654, 208), None, "CREF 空的 FIXING");
+        assert_eq!(
+            consumer(2013286654, 872),
+            None,
+            "CREF 回指 STWALL，墙不吃关节负体"
+        );
+        assert_eq!(
+            consumer(2013286652, 390),
+            Some(JointConsumer::OtherDatabase(RefNo::new(2013286654, 1819))),
+            "aps250108 的关节 FIXING，梁在 aps250110"
+        );
     }
 
     fn incident_n(n: usize) -> Vec<Incident> {
