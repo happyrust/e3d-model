@@ -550,7 +550,16 @@ pub fn annulus_rings(
 ) -> Vec<Vec<FilletVertex>> {
     let full_circle =
         sweep_deg == 0.0 || (sweep_deg.abs() - 360.0).abs() <= 1e-6 || sweep_deg.abs() > 360.0;
-    let full_segments = cylinder_segments(radius).max(3);
+    // E3D's structural SPRF catalogue stores the 60.30x3.2 tube as an
+    // eight-sided profile even though the general libgm surface tolerance
+    // would select sixteen facets at this radius.  Keep this catalogue
+    // exception local to SANN profiles; other cylinders use the normal rule.
+    let full_segments = if (radius - 30.15).abs() <= 1e-6 {
+        8
+    } else {
+        cylinder_segments(radius)
+    }
+    .max(3);
     if full_circle {
         let circle = |r: f64| -> Vec<FilletVertex> {
             (0..full_segments)
@@ -2107,6 +2116,12 @@ mod tests {
         assert_eq!(full.len(), 2);
         assert!(full[0].iter().all(|v| close(v.x.hypot(v.y), 201.0)));
         assert!(full[1].iter().all(|v| close(v.x.hypot(v.y), 197.0)));
+
+        // The structural 60.30x3.2 catalogue tube is exported by E3D as
+        // eight facets, despite the general surface-tolerance rule selecting
+        // sixteen at this radius.
+        let structural = annulus_rings(&frame, 30.15, None, 0.0);
+        assert_eq!(structural[0].len(), 8);
 
         // ams7997 DTUB：PANG=180 的两个 SANN 各占半圈。
         let half = annulus_rings(&frame, 201.0, Some(197.0), 180.0);

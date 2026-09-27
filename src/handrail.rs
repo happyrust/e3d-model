@@ -509,6 +509,25 @@ fn rail_segment_solid(segment: &PathSegment) -> Result<Manifold, ModelError> {
             if let Some(normal) = mitre_end {
                 solid = cut_by_plane(&solid, *end, -*normal);
             }
+            // Open layout paths use horizontal end planes.  Without these
+            // caps an oblique rail keeps the circular section beyond the
+            // endpoint in Z, while E3D stops exactly at the rail height.
+            let sloped = (end.z - start.z).abs() > 1e-9;
+            let keep_above = end.z >= start.z;
+            if sloped && mitre_start.is_none() {
+                solid = if keep_above {
+                    cut_by_plane(&solid, *start, DVec3::Z)
+                } else {
+                    cut_by_plane(&solid, *start, -DVec3::Z)
+                };
+            }
+            if sloped && mitre_end.is_none() {
+                solid = if keep_above {
+                    cut_by_plane(&solid, *end, -DVec3::Z)
+                } else {
+                    cut_by_plane(&solid, *end, DVec3::Z)
+                };
+            }
             if solid.is_empty() || solid.num_tri() == 0 {
                 return Err(ModelError::Solid(SolidError::EmptyManifold {
                     what: "handrail straight",

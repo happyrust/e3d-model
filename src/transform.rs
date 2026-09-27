@@ -413,9 +413,20 @@ fn handrail_path_tangent(
     if index == 0 {
         if handrail_curve_station(handrail, point, zdis)?.is_some() {
             let step = 0.1;
-            let tangent = handrail_curve_station(handrail, point, zdis + step)?
-                .zip(handrail_curve_station(handrail, point, (zdis - step).max(0.0))?)
-                .and_then(|(next, previous)| (next - previous).try_normalize());
+            let current = handrail_curve_station(handrail, point, zdis)?;
+            let next = handrail_curve_station(handrail, point, zdis + step)?;
+            let previous = handrail_curve_station(handrail, point, (zdis - step).max(0.0))?;
+            let tangent = match (next, previous) {
+                (Some(next), Some(previous)) => (next - previous).try_normalize(),
+                // At an arc endpoint the forward probe is outside the arc.  A
+                // one-sided derivative keeps the terminal post on the arc
+                // tangent instead of falling back to the control-point chord.
+                (None, Some(previous)) => current
+                    .and_then(|current| (current - previous).try_normalize()),
+                (Some(next), None) => current
+                    .and_then(|current| (next - current).try_normalize()),
+                (None, None) => None,
+            };
             if tangent.is_some() {
                 return Ok(tangent);
             }
