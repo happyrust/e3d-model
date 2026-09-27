@@ -37,6 +37,7 @@ pub mod catalogue;
 pub mod catalogue_point;
 pub mod category;
 pub mod core3d_registry;
+pub mod datum;
 pub mod db_discovery;
 pub mod discretise;
 pub mod element_diff;

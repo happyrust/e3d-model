@@ -924,6 +924,8 @@ struct CascadeVisits {
     /// 也不再记一条 incident——一次导入 948 个桥架元素只该有一条「分支 X 级联」，
     /// 不是 812 条。
     tray_branches: BTreeSet<(u32, u32)>,
+    /// 本窗已经整棵重建过的 datum 宿主 GENSEC（[`gensec_datum_host_of`]），同上去重。
+    datum_hosts: BTreeSet<(u32, u32)>,
 }
 
 fn collect_unit_subtree(
@@ -983,6 +985,53 @@ fn collect_unit_subtree(
 
 /// 电缆桥架分支容器的 noun：桥架件放置的全部跨元素输入都在它名下。
 const CABLE_TRAY_BRANCH_NOUN: &str = "CWBRAN";
+
+/// GENSEC 名下 datum 的标架输入所在的 noun（[`crate::datum`]）：宿主 GENSEC 自己
+/// （JUSL/BANG/LMIRR/SPRE）、它的 SPINE 路径（SPINE 的 POS/ORI/YDIR，POINSP，CURVE），
+/// 以及 datum 自己（JLDATU 的 ZDIS/PKDI/HPREF、PLDATU 的 POSL/YDIR）。
+const GENSEC_DATUM_INPUT_NOUNS: [&str; 6] =
+    ["GENSEC", "SPINE", "POINSP", "CURVE", "JLDATU", "PLDATU"];
+
+/// 候选（含自身）是某只名下有 `JLDATU` 的 GENSEC 的 datum 标架输入时，那只 GENSEC。
+/// 从候选上溯只许穿过 [`GENSEC_DATUM_INPUT_NOUNS`]；起点在这一端不存在也是 `None`。
+///
+/// # 为什么 GENSEC 的 datum 要单独一条腿
+///
+/// GENSEC 名下 `JLDATU` / `PLDATU` 的世界标架是现算的（[`crate::datum`]），挂在下面的
+/// FIXING 连同它 TMPL 里的一切都吃这个标架。输入要么不是 POS/ORI，要么在宿主的**兄弟**
+/// 子树（SPINE 路径）里：改一只 POINSP，`nearest_unit` 上卷到 GENSEC 只重建了梁自己，
+/// `placement_input_changed` 只认 POS/ORI，datum 底下的 FIXING 一个都不会重算。
+///
+/// 判据照桥架那条取最保守也最便宜的一档：命中就把整棵 GENSEC 子树级联重建。穿过 FIXING
+/// （或任何别的 noun）就不算——那以下的改动只影响它自己的子树，owner 链上的级联够得着。
+fn gensec_datum_host_of(set: &Arc<DbSet>, refno: RefNo) -> Result<Option<RefNo>, DbElementError> {
+    let mut current = set.element(refno);
+    match current.exists() {
+        Ok(true) => {}
+        Ok(false) | Err(DbElementError::NotFound { .. }) => return Ok(None),
+        Err(error) => return Err(error),
+    }
+    // POINSP → SPINE → GENSEC 与 PLDATU → JLDATU → GENSEC 都是两跳。
+    for _ in 0..3 {
+        let noun = current.element_type()?;
+        if noun == "GENSEC" {
+            for member in current.members()? {
+                if member.element_type()? == "JLDATU" {
+                    return Ok(Some(current.refno()));
+                }
+            }
+            return Ok(None);
+        }
+        if !GENSEC_DATUM_INPUT_NOUNS.contains(&noun.as_str()) {
+            return Ok(None);
+        }
+        match current.owner()? {
+            Some(owner) if owner.refno() != current.refno() => current = owner,
+            _ => return Ok(None),
+        }
+    }
+    Ok(None)
+}
 
 /// 候选（含自身）上溯碰到的最近 `CWBRAN`。不在任何桥架分支里 → `None`；
 /// 起点在这一端不存在也是 `None`（Inserted 在 base、Deleted 在 target 是常态）。
@@ -1221,6 +1270,59 @@ pub fn plan_update_with(
         Ok(Some(fanout))
     }
 
+    /// GENSEC datum 级联（见 [`gensec_datum_host_of`]）：候选在 `lookup` 这一端是某只
+    /// 带 JLDATU 的 GENSEC 的标架输入 → 在 target 端把整棵 GENSEC 子树收进计划。
+    #[allow(clippy::too_many_arguments)]
+    fn cascade_gensec_datums(
+        lookup: &Arc<DbSet>,
+        target: &Arc<DbSet>,
+        refno: RefNo,
+        noun: &str,
+        regenerate: &mut BTreeSet<(u32, u32)>,
+        regenerate_derived: &mut BTreeSet<(u32, u32)>,
+        report: &mut IncrementReport,
+        visits: &mut CascadeVisits,
+    ) -> Result<Option<CascadeFanout>, DbElementError> {
+        let Some(host) = gensec_datum_host_of(lookup, refno)? else {
+            return Ok(None);
+        };
+        match target.element(host).exists() {
+            Ok(true) => {}
+            Ok(false) | Err(DbElementError::NotFound { .. }) => return Ok(None),
+            Err(error) => return Err(error),
+        }
+        if !visits.datum_hosts.insert(key(host)) {
+            return Ok(Some(CascadeFanout {
+                hits: 0,
+                overlapped: 1,
+            }));
+        }
+        let fanout = collect_unit_subtree(
+            target,
+            host,
+            regenerate,
+            regenerate_derived,
+            &mut report.notes,
+            visits,
+        )?;
+        report.cascades.push(incident(
+            refno,
+            noun,
+            format!(
+                "GENSEC datum 标架输入变了（{noun} 在 GENSEC {host} 名下），级联重建整棵 GENSEC 子树 \
+                 {} 个单元{}",
+                fanout.hits,
+                if fanout.overlapped > 0 {
+                    format!("，另 {} 处已由本窗更早的级联覆盖", fanout.overlapped)
+                } else {
+                    String::new()
+                }
+            ),
+        ));
+        report.cascade_hits += fanout.hits;
+        Ok(Some(fanout))
+    }
+
     /// 读不出来的候选：报告与账本各记一条，去向 `Unresolved`。账本上已经有它的
     /// 条目（L2 差分成功、L4 上卷才失败）就不再补 `Unresolved` 条目，只登记去向。
     fn give_up(
@@ -1251,7 +1353,8 @@ pub fn plan_update_with(
                         contributed = true;
                     }
                     // 新插进桥架分支的路径点 / 桥架件：整条分支的放置都变了。
-                    match cascade_cable_tray_branch(
+                    // 新插进 GENSEC SPINE 的点、新的 JLDATU / PLDATU：datum 下的 FIXING 都挪了位。
+                    let cascades = cascade_cable_tray_branch(
                         target,
                         target,
                         refno,
@@ -1260,24 +1363,37 @@ pub fn plan_update_with(
                         &mut regenerate_derived,
                         &mut report,
                         &mut visits,
-                    ) {
-                        Ok(fanout) => {
-                            let cascaded = fanout
-                                .is_some_and(|fanout| fanout.hits > 0 || fanout.overlapped > 0);
+                    )
+                    .map_err(|error| format!("新增候选的桥架分支级联失败：{error}"))
+                    .and_then(|tray| {
+                        cascade_gensec_datums(
+                            target,
+                            target,
+                            refno,
+                            &rollup.noun,
+                            &mut regenerate,
+                            &mut regenerate_derived,
+                            &mut report,
+                            &mut visits,
+                        )
+                        .map(|datum| [tray, datum])
+                        .map_err(|error| format!("新增候选的 GENSEC datum 级联失败：{error}"))
+                    });
+                    match cascades {
+                        Ok(fanouts) => {
+                            let cascaded = fanouts
+                                .iter()
+                                .flatten()
+                                .any(|fanout| fanout.hits > 0 || fanout.overlapped > 0);
                             if cascaded && !contributed {
                                 report.cascade_only += 1;
                             }
                             contributed |= cascaded;
                             settle(&mut report, &mut ledger, refno, &rollup.noun, contributed);
                         }
-                        Err(error) => give_up(
-                            &mut report,
-                            &mut ledger,
-                            refno,
-                            &rollup.noun,
-                            format!("新增候选的桥架分支级联失败：{error}"),
-                            true,
-                        ),
+                        Err(detail) => {
+                            give_up(&mut report, &mut ledger, refno, &rollup.noun, detail, true)
+                        }
                     }
                 }
                 Err(error) => give_up(
@@ -1308,8 +1424,9 @@ pub fn plan_update_with(
                         None => {}
                     }
                     // 从桥架分支里删掉一个路径点 / 桥架件：分支还在的话，剩下的托盘
-                    // 全都挪了位。分支在 base 端找，级联在 target 端做。
-                    match cascade_cable_tray_branch(
+                    // 全都挪了位。分支在 base 端找，级联在 target 端做。GENSEC 的
+                    // SPINE 点 / datum 被删同理：宿主在 base 端找，级联在 target 端做。
+                    let cascades = cascade_cable_tray_branch(
                         base,
                         target,
                         refno,
@@ -1318,24 +1435,37 @@ pub fn plan_update_with(
                         &mut regenerate_derived,
                         &mut report,
                         &mut visits,
-                    ) {
-                        Ok(fanout) => {
-                            let cascaded = fanout
-                                .is_some_and(|fanout| fanout.hits > 0 || fanout.overlapped > 0);
+                    )
+                    .map_err(|error| format!("删除候选的桥架分支级联失败：{error}"))
+                    .and_then(|tray| {
+                        cascade_gensec_datums(
+                            base,
+                            target,
+                            refno,
+                            &rollup.noun,
+                            &mut regenerate,
+                            &mut regenerate_derived,
+                            &mut report,
+                            &mut visits,
+                        )
+                        .map(|datum| [tray, datum])
+                        .map_err(|error| format!("删除候选的 GENSEC datum 级联失败：{error}"))
+                    });
+                    match cascades {
+                        Ok(fanouts) => {
+                            let cascaded = fanouts
+                                .iter()
+                                .flatten()
+                                .any(|fanout| fanout.hits > 0 || fanout.overlapped > 0);
                             if cascaded && !contributed {
                                 report.cascade_only += 1;
                             }
                             contributed |= cascaded;
                             settle(&mut report, &mut ledger, refno, &rollup.noun, contributed);
                         }
-                        Err(error) => give_up(
-                            &mut report,
-                            &mut ledger,
-                            refno,
-                            &rollup.noun,
-                            format!("删除候选的桥架分支级联失败：{error}"),
-                            true,
-                        ),
+                        Err(detail) => {
+                            give_up(&mut report, &mut ledger, refno, &rollup.noun, detail, true)
+                        }
                     }
                 }
                 Err(error) => give_up(
@@ -1517,6 +1647,37 @@ pub fn plan_update_with(
                                 refno,
                                 &diff.noun,
                                 format!("桥架分支级联失败：{error}"),
+                                true,
+                            );
+                        }
+                    }
+                }
+
+                // GENSEC datum 级联：候选是宿主 GENSEC、它的 SPINE 路径或 JLDATU / PLDATU，
+                // datum 底下的 FIXING 标架都可能变了（见 `gensec_datum_host_of`）。
+                if resolved {
+                    match cascade_gensec_datums(
+                        target,
+                        target,
+                        refno,
+                        &diff.noun,
+                        &mut regenerate,
+                        &mut regenerate_derived,
+                        &mut report,
+                        &mut visits,
+                    ) {
+                        Ok(fanout) => {
+                            cascade_contributed |= fanout
+                                .is_some_and(|fanout| fanout.hits > 0 || fanout.overlapped > 0);
+                        }
+                        Err(error) => {
+                            resolved = false;
+                            give_up(
+                                &mut report,
+                                &mut ledger,
+                                refno,
+                                &diff.noun,
+                                format!("GENSEC datum 级联失败：{error}"),
                                 true,
                             );
                         }
@@ -1773,6 +1934,42 @@ pub fn increment_update(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `gensec_datum_host_of` 在 aps250110 真库上的形状（库或模板不在就跳过）：
+    /// SPINE 点与 PLDATU 都上溯到名下有 JLDATU 的宿主；FIXING 以下不算；没有 JLDATU 的
+    /// GENSEC（FIXING 模板里的那种）连同它的 SPINE 都不算。
+    #[test]
+    fn gensec_datum_inputs_climb_to_a_host_that_owns_datums() {
+        let db = Path::new(r"D:\AVEVA\Projects\E3D3.1\AvevaPlantSample\aps000\aps250110_0001");
+        let template = Path::new(r"E:\reverse\e3d\shadow_e3d31_aps_all");
+        if !db.exists() || !template.join("attlib.dat").exists() {
+            return;
+        }
+        let set = Arc::new(DbSet::with_attlib_file(&template.join("attlib.dat")).unwrap());
+        set.add_db(e3d_io::db_element::DbFilePin {
+            file: db.to_path_buf(),
+            template: e3d_io::db_element::template_file_for(template, "DESI").unwrap(),
+            db_type: Some("DESI".into()),
+            sesno: None,
+        })
+        .unwrap();
+        let host_of = |w1| gensec_datum_host_of(&set, RefNo::new(2013286654, w1)).unwrap();
+        let host = Some(RefNo::new(2013286654, 2223));
+        assert_eq!(host_of(2223), host, "GENSEC 3 of /AREA02_WS_AXIS_WS.1 自己");
+        assert_eq!(host_of(24523), host, "POINSP → SPINE → GENSEC");
+        assert_eq!(host_of(24525), host, "PLDATU → JLDATU → GENSEC");
+        assert_eq!(
+            host_of(3236),
+            None,
+            "datum 下的 FIXING 走 owner 链级联，不在这条腿上"
+        );
+        assert_eq!(
+            host_of(31617),
+            None,
+            "FIXING 模板里的 GENSEC 名下没有 JLDATU"
+        );
+        assert_eq!(host_of(31618), None, "它的 SPINE 同样不算");
+    }
 
     fn incident_n(n: usize) -> Vec<Incident> {
         (0..n)

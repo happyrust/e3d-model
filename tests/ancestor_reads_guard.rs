@@ -146,6 +146,32 @@ const OWNER_WALK_SITES: &[Site] = &[
         reads: &[],
         why: "桥架件上溯到 CWBRAN：只看 noun",
     },
+    Site {
+        file: "increment.rs",
+        func: "gensec_datum_host_of",
+        climb: Climb::NounOnly,
+        reads: &[],
+        why: "GENSEC datum 标架输入上溯到宿主 GENSEC：只看 noun，再看宿主名下有没有 JLDATU",
+    },
+    Site {
+        file: "datum.rs",
+        func: "host_and_joint",
+        climb: Climb::NounOnly,
+        reads: &[],
+        why: "PLDATU → JLDATU → GENSEC 连取 owner，只核 noun；拿到的宿主 GENSEC 与 JLDATU 交给 datum::solve 读\
+              （见 ANCESTOR_CONSUMERS）",
+    },
+    Site {
+        file: "datum.rs",
+        func: "point_on_host",
+        climb: Climb::AboveUnit,
+        reads: &["POS"],
+        why: "JLDATU.HPREF 指的 POINSP：取它的 owner（SPINE）与 owner²（只比 refno 是不是宿主 GENSEC），读 POINSP 的 POS \
+              并经 local_matrix 折 SPINE 的 POS / ORI。POINSP 在宿主 GENSEC 的 SPINE 下，读者是挂在 datum 下、自成单元的 \
+              FIXING 及其 TMPL 件——在它们的单元之上。根口径下（POINSP 改了 → 祖先闭包命中 GENSEC 所在的 FRMW / STRU 根 \
+              → 整棵重算）覆盖；ADR-080 单元级发布下由 increment::gensec_datum_host_of 的整棵 GENSEC 子树级联覆盖——\
+              与 fixing_host_frame 那条（gen-model issue #39）同型，这一条的单元规划已经补上",
+    },
 ];
 
 /// 接过一个祖先元素去读它的函数：`(文件名, fn 名, 一共读到的属性名, 理由)`。
@@ -174,6 +200,17 @@ const ANCESTOR_CONSUMERS: &[(&str, &str, &[&str], &str)] = &[
         "justification_offset",
         &["WJUSL", "WTHICK", "XOFF"],
         "桥架件的对正偏移读 CWBRAN.WTHICK：CWBRAN 是这些件的单元根，单元内",
+    ),
+    (
+        "datum.rs",
+        "solve",
+        &[
+            "BANG", "HPREF", "JUSL", "LMIRR", "PKDI", "POSL", "YDIR", "ZDIS",
+        ],
+        "GENSEC 名下 JLDATU / PLDATU 的现算标架：读 datum 自己（PLDATU 的 POSL / YDIR）、它的 JLDATU（ZDIS / PKDI / \
+         HPREF）与宿主 GENSEC（BANG / LMIRR / JUSL，SPRE 经 section_catalogue、SPINE 经 spine_path）。读者是 datum 下的 \
+         FIXING 与 TMPL 件，这些都在它们的单元之上：根口径下整棵重算覆盖；单元级规划由 increment::gensec_datum_host_of \
+         把整棵 GENSEC 子树级联进计划覆盖（datum 输入改了、宿主 GENSEC 或 SPINE 路径改了都命中）",
     ),
     (
         "elmodl.rs",

@@ -336,7 +336,10 @@ impl MemberFrame {
     }
 }
 
-fn member_frame(member: &DbElement, env: &DbElementParamEnv) -> Result<MemberFrame, SectionError> {
+pub(crate) fn member_frame(
+    member: &DbElement,
+    env: &DbElementParamEnv,
+) -> Result<MemberFrame, SectionError> {
     let offset = [
         optional_number(member, "PX", env).unwrap_or(0.0),
         optional_number(member, "PY", env).unwrap_or(0.0),
@@ -1278,14 +1281,14 @@ fn ccw_angle(u: DVec3, v: DVec3, axis: DVec3) -> f64 {
 }
 
 /// 罗德里格斯旋转：`v` 绕单位轴 `axis` 右手转 `angle`。
-fn rotate_about(v: DVec3, axis: DVec3, angle: f64) -> DVec3 {
+pub(crate) fn rotate_about(v: DVec3, axis: DVec3, angle: f64) -> DVec3 {
     let (sin, cos) = angle.sin_cos();
     v * cos + axis.cross(v) * sin + axis * (axis.dot(v) * (1.0 - cos))
 }
 
 /// GSPNY4 的 `VECROT`：把「`from` 转到 `to`」的那个最小旋转施加在 `v` 上。
 /// 两向量平行（含反向）时无从定轴，`v` 原样返回。
-fn rotate_between(v: DVec3, from: DVec3, to: DVec3) -> DVec3 {
+pub(crate) fn rotate_between(v: DVec3, from: DVec3, to: DVec3) -> DVec3 {
     let cross = from.cross(to);
     let sin = cross.length();
     if sin < 1e-12 {

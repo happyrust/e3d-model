@@ -76,10 +76,14 @@ pub fn local_matrix(el: &DbElement) -> Result<DMat4, DbElementError> {
 }
 
 /// 世界矩阵：owner 链折叠（根 → 自身逐级右乘）。
+///
+/// 链上遇到 GENSEC 名下的 `JLDATU` / `PLDATU` 就在那一级截住，改用它现算的世界标架
+/// （[`crate::datum`]）——这两级没有 POS/ORI，逐级右乘只会乘进单位阵。
 pub fn world_matrix(el: &DbElement) -> Result<DMat4, DbElementError> {
     let _timing = crate::perf::world_matrix_scope();
-    let mut chain = vec![local_matrix(el)?];
-    let mut cursor = el.owner()?;
+    let mut chain = Vec::new();
+    let mut world = DMat4::IDENTITY;
+    let mut cursor = Some(el.clone());
     while let Some(current) = cursor {
         if chain.len() > MAX_ANCESTOR_DEPTH {
             return Err(DbElementError::OwnerCycle {
@@ -87,14 +91,53 @@ pub fn world_matrix(el: &DbElement) -> Result<DMat4, DbElementError> {
                 at: current.refno(),
             });
         }
+        if let Some(frame) = implicit_datum_world(&current)? {
+            world = frame;
+            break;
+        }
         chain.push(local_matrix(&current)?);
         cursor = current.owner()?;
     }
-    let mut world = DMat4::IDENTITY;
     for local in chain.iter().rev() {
         world *= *local;
     }
     Ok(world)
+}
+
+fn is_implicit_datum(el: &DbElement) -> Result<bool, DbElementError> {
+    let noun = el.element_type()?;
+    if noun != "JLDATU" && noun != "PLDATU" {
+        return Ok(false);
+    }
+    crate::datum::is_gensec_datum(el).map_err(|error| match error {
+        crate::elmodl::ModelError::Db(error) => error,
+        other => DbElementError::PseudoAttribute {
+            refno: el.refno(),
+            noun,
+            name: "POS".into(),
+            detail: other.to_string(),
+        },
+    })
+}
+
+/// GENSEC 名下 `JLDATU` / `PLDATU` 的世界标架；别的元素交 `None`。
+///
+/// 求不出来（宿主 SPINE 读坏之类）按伪属性现算失败报，与桥架件同一种错。
+fn implicit_datum_world(el: &DbElement) -> Result<Option<DMat4>, DbElementError> {
+    let noun = el.element_type()?;
+    if noun != "JLDATU" && noun != "PLDATU" {
+        return Ok(None);
+    }
+    match crate::datum::gensec_datum_world(el) {
+        Ok(frame) => Ok(frame),
+        Err(crate::elmodl::ModelError::Db(error)) => Err(error),
+        Err(other) => Err(DbElementError::PseudoAttribute {
+            refno: el.refno(),
+            noun,
+            name: "POS".into(),
+            detail: other.to_string(),
+        }),
+    }
 }
 
 /// [`matrix_relative_to`] 的失败面。
@@ -118,6 +161,7 @@ pub fn matrix_relative_to(
     ancestor: &DbElement,
 ) -> Result<DMat4, RelativeMatrixError> {
     let mut chain = vec![local_matrix(descendant)?];
+    let mut through_datum = is_implicit_datum(descendant)?;
     let mut cursor = descendant.owner()?;
     loop {
         let Some(current) = cursor else {
@@ -136,8 +180,13 @@ pub fn matrix_relative_to(
             }
             .into());
         }
+        through_datum |= is_implicit_datum(&current)?;
         chain.push(local_matrix(&current)?);
         cursor = current.owner()?;
+    }
+    // 中间隔着现算标架的 datum 时，逐级右乘不成立，改由两端的世界矩阵求。
+    if through_datum {
+        return Ok(world_matrix(ancestor)?.inverse() * world_matrix(descendant)?);
     }
     let mut rel = DMat4::IDENTITY;
     for local in chain.iter().rev() {
