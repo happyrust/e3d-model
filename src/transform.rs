@@ -187,8 +187,53 @@ fn handrail_post_world(post: &DbElement) -> Result<Option<DMat4>, DbElementError
     // name), not a world-Z elevation.  Use the adjacent RPATH point to get
     // the local tangent; this is what places repeated posts between corners.
     let tangent = handrail_path_tangent(&handrail, &point, zdis)?.unwrap_or(DVec3::Z);
-    let local = DMat4::from_translation(DVec3::from_array(position) + tangent * zdis);
+    let distance = handrail_straight_run_distance(&handrail, &point, zdis)?;
+    let local = DMat4::from_translation(DVec3::from_array(position) + tangent * distance);
     Ok(Some(world_matrix(&handrail)? * local))
+}
+
+/// A detailed post anchored just past a straight path endpoint is clamped to
+/// that endpoint by Core3D.  Keep the rule narrow: CURVE/RSECT paths have a
+/// separate stationing model and must not be clamped using chord lengths.
+fn handrail_straight_run_distance(
+    handrail: &DbElement,
+    point: &DbElement,
+    zdis: f64,
+) -> Result<f64, DbElementError> {
+    let Some(rpath) = handrail
+        .members()?
+        .find(|member| member.element_type().is_ok_and(|noun| noun == "RPATH"))
+    else {
+        return Ok(zdis);
+    };
+    if rpath
+        .members()?
+        .any(|member| member.element_type().is_ok_and(|noun| noun != "POINTR"))
+    {
+        return Ok(zdis);
+    }
+    let points: Vec<DbElement> = rpath
+        .members()?
+        .filter(|member| member.element_type().is_ok_and(|noun| noun == "POINTR"))
+        .collect();
+    let Some(index) = points.iter().position(|candidate| candidate.refno() == point.refno())
+    else {
+        return Ok(zdis);
+    };
+    let (a, b) = if let Some(next) = points.get(index + 1) {
+        (point, next)
+    } else if let Some(previous) = index.checked_sub(1).and_then(|i| points.get(i)) {
+        // The terminal post's tangent looks back along the entering run,
+        // but its station clamp is measured from that entering point to the
+        // terminal point itself.
+        (previous, point)
+    } else {
+        return Ok(zdis);
+    };
+    let (Some(a), Some(b)) = (a.get_position("POS")?, b.get_position("POS")?) else {
+        return Ok(zdis);
+    };
+    Ok(zdis.min((DVec3::from_array(b) - DVec3::from_array(a)).length()))
 }
 
 fn handrail_path_tangent(
