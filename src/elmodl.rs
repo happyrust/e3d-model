@@ -13,6 +13,8 @@
 //! - 负几何单个失败**不拖垮正体**：记进 [`GeneratedElement::negatives_skipped`]，
 //!   正体照出——RVM 对拍时这类元素会以体积偏大暴露，报告里有对应记录。
 
+use std::cell::Cell;
+
 use glam::{DMat3, DMat4, DVec3};
 use manifold_csg::Manifold;
 
@@ -431,8 +433,17 @@ pub fn model_element_with_cache(
     // `REPRESENTATION LEVEL n`，NOZZ 走 `LEVEL NOZZ`），与目录成员的显示过滤同一张表。
     let level = repre_level_of(el)?;
     let mut skipped = Vec::new();
+    let mut host_catalogue_cuts = Vec::new();
     if noun == "GENSEC" {
         collect_joint_negatives(el, &mut negatives, &mut skipped, &mut notes)?;
+        collect_host_fixing_negatives(
+            el,
+            &mut negatives,
+            &mut host_catalogue_cuts,
+            &mut skipped,
+            &mut notes,
+            cache,
+        )?;
     }
     negatives.retain(|neg| {
         let (lo, hi) = negative_leve(neg);
@@ -447,7 +458,7 @@ pub fn model_element_with_cache(
         false
     });
     drop(gate_timing);
-    let had_negative_members = !negatives.is_empty();
+    let had_negative_members = !negatives.is_empty() || !host_catalogue_cuts.is_empty();
 
     // SCTN 的局部系不是它自己的 POS/ORI——那两个属性它根本没存（实测 `24381/47163`
     // 只有 POSS/POSE/DRNS/DRNE/BANG/JUSL），标架是 GTSTDT 从 POSS→POSE + BANG +
@@ -689,6 +700,7 @@ pub fn model_element_with_cache(
             reason,
         });
     }
+    applied.extend(host_catalogue_cuts);
     if noun == "WALL" {
         let mut fixings = Vec::new();
         collect_host_fixings(el, &mut fixings)?;
@@ -2054,7 +2066,7 @@ fn collect_negatives_deep(el: &DbElement, out: &mut Vec<DbElement>) -> Result<()
 /// 路径的 NAPP 门就并进这根梁要扣的刀（DRWAND 表现级门与世界放置照直属负体走）。
 ///
 /// 对标 `DB_Sctn::DB_makeCSG@0x10738C30`：截面实体切完两端之后，对 JOIS、JOIE 的目标各调
-/// 一次 `sub_10722D80(..., mode 0)`，逐负体过 `sub_1072B780` 的 NAPP 门（[`joint_napp_admits`]）。
+/// 一次 `sub_10722D80(..., mode 0)`，逐负体过 `sub_1072B780` 的 NAPP 门（[`design_napp_admits`]）。
 /// `aps250110` 上 1505 根 GENSEC 的 522 个非空关节全部指向 FIXING，FIXING 的 `CREF` 全部回指
 /// 这根梁；带 TMPL 的 229 个是「Flexible / Full Depth End Plate」与「Web Cleats」三种节点模板，
 /// 负体是 NBOX（NAPP -1，ZLEN 8 的端板让位）、NCYL（NAPP 7，螺栓孔）与少数 NXTR（NAPP -1，
@@ -2089,7 +2101,7 @@ fn collect_joint_negatives(
         }
         for neg in found {
             let napp = negative_napp(&neg);
-            if joint_napp_admits(napp) {
+            if design_napp_admits(JOINT_MODE, napp) {
                 out.push(neg);
             } else {
                 notes.push(format!(
@@ -2131,13 +2143,147 @@ fn negative_napp(neg: &DbElement) -> Option<i32> {
     }
 }
 
-/// `sub_1072B780` 的 NAPP 门在关节路径（mode 0）上的判法：读不到 → 放行；`-1` → 放行
-/// （`-1` 只在 mode 0/3/4/5/6/9 放行）；其余看 `& 1`（mode 1–6/8/9 看 `& 2`，mode 7 看 `& 4`）。
-fn joint_napp_admits(napp: Option<i32>) -> bool {
+/// 关节路径（JOIS / JOIE）的 mode。
+const JOINT_MODE: u32 = 0;
+/// 宿主 FIXING 扫描在几何源不是 SFIT 时落到的 mode（`sub_10722680` 把 9 改写成 `2*(TYPE==SFIT)+1`）。
+const HOST_FIXING_MODE: u32 = 1;
+/// 宿主 FIXING 扫描在几何源是 SFIT 时落到的 mode。
+const HOST_FITTING_MODE: u32 = 3;
+
+/// `sub_1072B780`（设计图元）的 NAPP 门：读不到 → 放行；`-1` 只在 mode 0/3/4/5/6/9 放行；
+/// 其余按 mode 取位（[`napp_mask`]）。
+fn design_napp_admits(mode: u32, napp: Option<i32>) -> bool {
     match napp {
-        None | Some(-1) => true,
-        Some(value) => value & 1 != 0,
+        None => true,
+        Some(-1) => matches!(mode, 0 | 3 | 4 | 5 | 6 | 9),
+        Some(value) => value & napp_mask(mode) != 0,
     }
+}
+
+/// `sub_1072A790`（目录图元）的 NAPP 门：与设计那道只差 `-1` 在 mode 9 不放行。
+fn catalogue_napp_admits(mode: u32, napp: Option<i32>) -> bool {
+    match napp {
+        None => true,
+        Some(-1) => matches!(mode, 0 | 3 | 4 | 5 | 6),
+        Some(value) => value & napp_mask(mode) != 0,
+    }
+}
+
+/// 两道 NAPP 门共用的取位：mode 0 看 `& 1`，mode 7 看 `& 4`，mode 1–6 / 8 / 9 看 `& 2`。
+fn napp_mask(mode: u32) -> i32 {
+    match mode {
+        0 => 1,
+        7 => 4,
+        _ => 2,
+    }
+}
+
+/// GENSEC 自己 datum 树里的 FIXING 给它扣的负体。
+///
+/// 对标 `DB_Gensec::makeCSG@0x107311D0`：JOIS / JOIE 之后对自己名下每只 FIXING 调一次
+/// `sub_10722D80(..., mode 9)`；取几何源时（`sub_10722680`：FIXING 的首个 `TMPL` 成员，没有
+/// 就是 `SPRE → CATR` 的目录件）把 9 改写成「源是 SFIT ? 3 : 1」。
+///
+/// - TMPL 源（端板、腹板连接件）：mode 1，设计负体过 [`design_napp_admits`]——NBOX / NXTR 的
+///   `-1` 不放行（端板让位只给梁），NCYL 的 7 放行：螺栓孔穿过柱翼缘。
+/// - 目录源：`NGMR` 名下的负体过 [`catalogue_napp_admits`]。柱底板 SFIT 是 mode 3，NSBO（NAPP 2）
+///   按 `OPAR` 取柱截面、切掉柱底一个板厚，NSCY（NAPP 4，锚栓孔）不放行；JOIN（檐口、加腋
+///   节点）是 mode 1，NSCY（NAPP 6）放行，NSEX / NSBO（NAPP 1 / -1）不放行。
+///
+/// 真值（aps250110 E3D TTY RVM）：柱 `/277` 名下两只 Flexible、两只 Full Depth 端板共 20 个
+/// 螺栓孔，E3D 那组面片的亏格正好是 20；24 根柱底比 E3D 低出的 30 / 20 mm 是底板厚。
+///
+/// 设计负体交回 `negatives`（照直属负体走表现级门与世界放置），目录负体已在世界系，进
+/// `catalogue_cuts`。一只 FIXING 读挂只记 `skipped`，不拖垮这根构件。
+fn collect_host_fixing_negatives(
+    el: &DbElement,
+    negatives: &mut Vec<DbElement>,
+    catalogue_cuts: &mut Vec<Manifold>,
+    skipped: &mut Vec<SkippedNegative>,
+    notes: &mut Vec<String>,
+    cache: &mut CatalogueMeshCache,
+) -> Result<(), ModelError> {
+    let mut fixings = Vec::new();
+    collect_datum_fixings(el, &mut fixings)?;
+    let rejected = Cell::new(0usize);
+    for fixing in fixings {
+        let template = fixing
+            .members()?
+            .into_iter()
+            .find(|member| matches!(member.element_type().as_deref(), Ok("TMPL")));
+        if let Some(template) = template {
+            let mut found = Vec::new();
+            if let Err(error) = collect_negatives(&template, &mut found) {
+                skipped.push(SkippedNegative {
+                    refno: fixing.refno(),
+                    noun: "FIXING".into(),
+                    reason: format!("宿主 FIXING 扫描读不出模板负体：{error}"),
+                });
+                continue;
+            }
+            for neg in found {
+                if design_napp_admits(HOST_FIXING_MODE, negative_napp(&neg)) {
+                    negatives.push(neg);
+                } else {
+                    rejected.set(rejected.get() + 1);
+                }
+            }
+            continue;
+        }
+        let Some(component) = crate::catalogue_point::catalogue_component(&fixing)? else {
+            continue;
+        };
+        let mode = if component.element_type()? == "SFIT" {
+            HOST_FITTING_MODE
+        } else {
+            HOST_FIXING_MODE
+        };
+        let admit = |neg: &DbElement| {
+            let admitted = catalogue_napp_admits(mode, negative_napp(neg));
+            if !admitted {
+                rejected.set(rejected.get() + 1);
+            }
+            admitted
+        };
+        match crate::catalogue::catalogue_host_cuts(&fixing, &admit, cache) {
+            Ok(cuts) => {
+                catalogue_cuts.extend(cuts.cutters);
+                notes.extend(
+                    cuts.diagnostics
+                        .into_iter()
+                        .map(|line| format!("宿主 FIXING {} 的目录负体：{line}", fixing.refno())),
+                );
+            }
+            Err(error) => skipped.push(SkippedNegative {
+                refno: fixing.refno(),
+                noun: "FIXING".into(),
+                reason: format!("宿主 FIXING 扫描（mode {mode}）的目录负体求不出：{error}"),
+            }),
+        }
+    }
+    if rejected.get() > 0 {
+        notes.push(format!(
+            "宿主 FIXING 扫描：NAPP 门挡下 {} 把刀，E3D 同样不拿它们切这根构件",
+            rejected.get()
+        ));
+    }
+    Ok(())
+}
+
+/// 构件自己 datum 树里的 FIXING：沿成员往下找，SPINE（路径）与 TMPL（FIXING 自己的几何）
+/// 两种子树不进；FIXING 名下再挂的 FIXING 也算。
+fn collect_datum_fixings(el: &DbElement, out: &mut Vec<DbElement>) -> Result<(), DbElementError> {
+    for member in el.members()? {
+        match member.element_type()?.as_str() {
+            "SPINE" | "TMPL" => {}
+            "FIXING" => {
+                collect_datum_fixings(&member, out)?;
+                out.push(member);
+            }
+            _ => collect_datum_fixings(&member, out)?,
+        }
+    }
+    Ok(())
 }
 
 /// 单个负体的建模结论。
@@ -2420,13 +2566,34 @@ mod tests {
     #[test]
     fn the_joint_napp_gate_is_mode_0_of_sub_1072b780() {
         // 读不到放行；-1 放行（aps250110 节点模板的 NBOX / NXTR）；其余看 `& 1`（NCYL 的 7 放行）。
-        assert!(joint_napp_admits(None));
-        assert!(joint_napp_admits(Some(-1)));
-        assert!(joint_napp_admits(Some(7)));
-        assert!(joint_napp_admits(Some(1)));
+        assert!(design_napp_admits(JOINT_MODE, None));
+        assert!(design_napp_admits(JOINT_MODE, Some(-1)));
+        assert!(design_napp_admits(JOINT_MODE, Some(7)));
+        assert!(design_napp_admits(JOINT_MODE, Some(1)));
         for napp in [0, 2, 4, 6] {
-            assert!(!joint_napp_admits(Some(napp)), "NAPP={napp}");
+            assert!(!design_napp_admits(JOINT_MODE, Some(napp)), "NAPP={napp}");
         }
+    }
+
+    #[test]
+    fn the_host_fixing_scan_gates_are_modes_1_and_3() {
+        // TMPL 源 mode 1：端板让位 NBOX / NXTR 的 -1 挡下，螺栓孔 NCYL 的 7 放行。
+        assert!(!design_napp_admits(HOST_FIXING_MODE, Some(-1)));
+        assert!(design_napp_admits(HOST_FIXING_MODE, Some(7)));
+        // SFIT 源 mode 3：底板 NSBO 的 2 放行、锚栓孔 NSCY 的 4 挡下；目录的 -1 在 mode 3 放行。
+        assert!(catalogue_napp_admits(HOST_FITTING_MODE, Some(2)));
+        assert!(!catalogue_napp_admits(HOST_FITTING_MODE, Some(4)));
+        assert!(catalogue_napp_admits(HOST_FITTING_MODE, Some(-1)));
+        // JOIN 源 mode 1：NSCY 的 6 放行，NSEX 的 1 与 -1 挡下。
+        assert!(catalogue_napp_admits(HOST_FIXING_MODE, Some(6)));
+        assert!(!catalogue_napp_admits(HOST_FIXING_MODE, Some(1)));
+        assert!(!catalogue_napp_admits(HOST_FIXING_MODE, Some(-1)));
+        // 两道门只差 -1 在 mode 9 上：设计图元放行，目录图元不放行。
+        assert!(design_napp_admits(9, Some(-1)));
+        assert!(!catalogue_napp_admits(9, Some(-1)));
+        // mode 7（TMPL 属主）看 `& 4`。
+        assert!(design_napp_admits(7, Some(4)));
+        assert!(!design_napp_admits(7, Some(3)));
     }
 
     #[test]

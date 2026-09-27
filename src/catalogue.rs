@@ -1557,6 +1557,66 @@ pub fn model_catalogue_member_with_cache(
     })
 }
 
+/// [`catalogue_host_cuts`] 的结果：世界系的刀，外加求值失败的那几行。
+pub(crate) struct CatalogueHostCuts {
+    pub cutters: Vec<Manifold>,
+    pub diagnostics: Vec<String>,
+}
+
+/// 目录件 `NGMR` 名下给**宿主**扣的负体：`member`（FIXING 这类设计件）在目录件那一侧挂的
+/// `NGMS`，逐把先过调用方的 `admit`（NAPP 门由调用方按路径定），再过与正体同一张显示筛，
+/// 在 `member` 的目录局部系求值后放到世界系（与正体同一个 [`catalogue_member_world`]）。
+///
+/// 刀与宿主共壁是常态（柱底板那把 NSBO 的四个侧面正好落在柱翼缘外表面与翼缘边上），所以
+/// 与设计侧负体同一口径，在刀自己的局部系让 [`crate::solid::MANIFOLD_NUDGE_MM`] 再放置。
+///
+/// 没有目录件、目录件没有 `NGMR` 都是空集。单把刀求不出按 Core 的逐图元错误边界记进
+/// `diagnostics`，其余照扣。
+pub(crate) fn catalogue_host_cuts(
+    member: &DbElement,
+    admit: &dyn Fn(&DbElement) -> bool,
+    cache: &mut CatalogueMeshCache,
+) -> Result<CatalogueHostCuts, ModelError> {
+    let empty = CatalogueHostCuts {
+        cutters: Vec::new(),
+        diagnostics: Vec::new(),
+    };
+    let Some(component) = catalogue_component(member)? else {
+        return Ok(empty);
+    };
+    let Some(negative_set) = component.get_element("NGMR")? else {
+        return Ok(empty);
+    };
+    let env =
+        DbElementParamEnv::new(Some(member.clone()), Some(component.clone())).without_insulation();
+    let (evaluated, diagnostics) = collect_owned_negatives_where(
+        member,
+        &component,
+        &negative_set,
+        &env,
+        cache,
+        DMat4::IDENTITY,
+        admit,
+    )?;
+    if evaluated.is_empty() {
+        return Ok(CatalogueHostCuts {
+            cutters: Vec::new(),
+            diagnostics,
+        });
+    }
+    let world = catalogue_member_world(member)?;
+    let mut cutters = Vec::with_capacity(evaluated.len());
+    for cutter in &evaluated {
+        let (local, transform) = cutter_solid(cutter)?;
+        let local = crate::solid::inflate_about_center(&local, crate::solid::MANIFOLD_NUDGE_MM);
+        cutters.push(placed(&local, world * transform));
+    }
+    Ok(CatalogueHostCuts {
+        cutters,
+        diagnostics,
+    })
+}
+
 /// 目录件成员的世界矩阵。
 ///
 /// `FIXING` 是例外：它的 owner 链上 `JLDATU` 与 `PLDATU` 两级**都没有 POS/ORI**，标架是
@@ -2185,6 +2245,19 @@ fn collect_owned_negatives(
     cache: &mut CatalogueMeshCache,
     rebase: DMat4,
 ) -> Result<(Vec<EvaluatedCatalogueCut>, Vec<String>), ModelError> {
+    collect_owned_negatives_where(member, component, owner, env, cache, rebase, &|_| true)
+}
+
+/// [`collect_owned_negatives`]，但每把刀先问 `admit`：答否的不求值、不记账。
+fn collect_owned_negatives_where(
+    member: &DbElement,
+    component: &DbElement,
+    owner: &DbElement,
+    env: &DbElementParamEnv,
+    cache: &mut CatalogueMeshCache,
+    rebase: DMat4,
+    admit: &dyn Fn(&DbElement) -> bool,
+) -> Result<(Vec<EvaluatedCatalogueCut>, Vec<String>), ModelError> {
     let mut cutters = Vec::new();
     let mut diagnostics = Vec::new();
     // 每把刀也过一遍与正体同一张显示筛（`CSG_TreeBuilderCat::addNegatives` 对每个负体调
@@ -2199,7 +2272,7 @@ fn collect_owned_negatives(
     let member_level = repre_level_of(member)?;
     for child in owner.members()? {
         let noun = child.element_type()?;
-        if noun.eq_ignore_ascii_case("SLOO") {
+        if noun.eq_ignore_ascii_case("SLOO") || !admit(&child) {
             continue;
         }
         if display_filtered(&child, member_level)?.is_some() {

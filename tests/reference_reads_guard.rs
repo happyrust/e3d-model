@@ -18,9 +18,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// (a) 语料里实测有反向引用表的属性名（含 CATA 侧链：SPCO→SCOM→GMSE/PTSE/…）。
+/// `NGMR`（目录件 → 负体集）2026-09-27 补：acp250702 的会话表里有它（同库还有 CATR / DTRE / GMRE /
+/// PSTR / PTRE）。
 const FILE_TABLE_REFERENCES: &[&str] = &[
-    "SPRE", "CATR", "PRTREF", "PTRE", "GMRE", "GSTR", "PSTR", "HSTU", "LSTU", "POSREF", "STAREF",
-    "ENDREF",
+    "SPRE", "CATR", "PRTREF", "PTRE", "GMRE", "NGMR", "GSTR", "PSTR", "HSTU", "LSTU", "POSREF",
+    "STAREF", "ENDREF",
 ];
 
 /// (b) 无表、目标在同一单元内。

@@ -1095,6 +1095,45 @@ fn joint_consumer_of(
     Ok(None)
 }
 
+/// [`datum_fixing_host_of`] 从 FIXING 往上最多爬几层。aps250110 的 598 只全是
+/// GENSEC → JLDATU → PLDATU → FIXING（三层）；8 只是防环。
+const DATUM_FIXING_CLIMB: usize = 8;
+
+/// FIXING（在 `set` 这一端）挂在某根 GENSEC 自己的 datum 树里时，那根 GENSEC。不是 FIXING、
+/// 这一端不存在、上溯先碰到 `TMPL` / `SPINE`（FIXING 模板里的件、路径）或根本没有 GENSEC → `None`。
+/// 与 `elmodl::collect_datum_fixings` 的下钻口径互逆：那边只不进 SPINE / TMPL 两种子树。
+///
+/// # 为什么宿主 FIXING 要单独一条腿
+///
+/// GENSEC 建模时扫自己 datum 树里的每只 FIXING，扣它 TMPL 里的螺栓孔、它目录件 `NGMR` 里的
+/// 底板让位（`elmodl::collect_host_fixing_negatives`）。FIXING 是单元，改它、改它模板里的一只
+/// NCYL，`nearest_unit` 上卷到 FIXING 为止，只重建了 FIXING 自己；它上面那根柱是另一个单元，
+/// 孔与底面停在旧处。[`implicit_frame_host_of`] 管的是反方向（宿主变 → datum 下的件跟着变）。
+fn datum_fixing_host_of(set: &Arc<DbSet>, refno: RefNo) -> Result<Option<RefNo>, DbElementError> {
+    let fixing = set.element(refno);
+    match fixing.exists() {
+        Ok(true) => {}
+        Ok(false) | Err(DbElementError::NotFound { .. }) => return Ok(None),
+        Err(error) => return Err(error),
+    }
+    if fixing.element_type()? != "FIXING" {
+        return Ok(None);
+    }
+    let mut current = fixing;
+    for _ in 0..DATUM_FIXING_CLIMB {
+        let owner = match current.owner()? {
+            Some(owner) if owner.refno() != current.refno() => owner,
+            _ => return Ok(None),
+        };
+        match owner.element_type()?.as_str() {
+            "GENSEC" => return Ok(Some(owner.refno())),
+            "TMPL" | "SPINE" => return Ok(None),
+            _ => current = owner,
+        }
+    }
+    Ok(None)
+}
+
 /// 候选（含自身）上溯碰到的最近 `CWBRAN`。不在任何桥架分支里 → `None`；
 /// 起点在这一端不存在也是 `None`（Inserted 在 base、Deleted 在 target 是常态）。
 ///
@@ -1824,6 +1863,54 @@ pub fn plan_update_with(
             }
         }
     }
+    // 宿主 FIXING 级联（见 [`datum_fixing_host_of`]）：本窗要重建或删除的 FIXING 挂在某根
+    // GENSEC 的 datum 树里，那根构件扣的螺栓孔 / 底板让位跟着变。同样放在计划集收齐之后、两端
+    // 各问一次：新挂上的 FIXING 只有 target 认得，删掉的只有 base 认得。
+    let host_sources: Vec<(u32, u32)> = regenerate.iter().chain(remove.iter()).copied().collect();
+    for unit in host_sources {
+        let fixing = refno_of(unit);
+        for side in [target, base] {
+            let host = match datum_fixing_host_of(side, fixing) {
+                Ok(Some(host)) => host,
+                Ok(None) => continue,
+                Err(error) => {
+                    report.notes.push(incident(
+                        fixing,
+                        "FIXING",
+                        format!("宿主 FIXING 级联读挂，挂着它的 GENSEC 可能停在旧刀口：{error}"),
+                    ));
+                    continue;
+                }
+            };
+            // 宿主这一窗被删了：它自己的 Deleted 候选出 Remove。
+            match target.element(host).exists() {
+                Ok(true) => {}
+                Ok(false) | Err(DbElementError::NotFound { .. }) => continue,
+                Err(error) => {
+                    report.notes.push(incident(
+                        host,
+                        "GENSEC",
+                        format!(
+                            "宿主 FIXING {fixing} 要重建或已删除，这根构件在 target 端读不出，\
+                             螺栓孔与底板让位可能停在旧处：{error}"
+                        ),
+                    ));
+                    continue;
+                }
+            }
+            if !regenerate.insert(key(host)) {
+                continue;
+            }
+            report.cascades.push(incident(
+                fixing,
+                "FIXING",
+                format!(
+                    "宿主扫描负体的来源 FIXING 要重建或已删除，名下挂着它的 GENSEC {host} 一并重建"
+                ),
+            ));
+            report.cascade_hits += 1;
+        }
+    }
     // Remove 赢：同一单元既要删又要建说明分类端点混了，删除语义优先。
     for gone in &remove {
         regenerate.remove(gone);
@@ -2136,6 +2223,33 @@ mod tests {
             Some(JointConsumer::OtherDatabase(RefNo::new(2013286654, 1819))),
             "aps250108 的关节 FIXING，梁在 aps250110"
         );
+    }
+
+    /// `datum_fixing_host_of` 在 aps250110 真库上的形状（库或模板不在就跳过）：柱 GENSEC 1 of
+    /// /B01_LEVEL_01_COLUMNS（`/277`）datum 树里的底板 FIXING 与端板 FIXING 都上溯到它；柱自己、
+    /// 端板 TMPL、挂在 WALL 上的 FIXING 都不算。
+    #[test]
+    fn datum_fixings_climb_to_their_host_gensec() {
+        let db = Path::new(r"D:\AVEVA\Projects\E3D3.1\AvevaPlantSample\aps000\aps250110_0001");
+        let template = Path::new(r"E:\reverse\e3d\shadow_e3d31_aps_all");
+        if !db.exists() || !template.join("attlib.dat").exists() {
+            return;
+        }
+        let set = Arc::new(DbSet::with_attlib_file(&template.join("attlib.dat")).unwrap());
+        set.add_db(e3d_io::db_element::DbFilePin {
+            file: db.to_path_buf(),
+            template: e3d_io::db_element::template_file_for(template, "DESI").unwrap(),
+            db_type: Some("DESI".into()),
+            sesno: None,
+        })
+        .unwrap();
+        let host_of = |w1| datum_fixing_host_of(&set, RefNo::new(2013286654, w1)).unwrap();
+        let column = Some(RefNo::new(2013286654, 277));
+        assert_eq!(host_of(25397), column, "底板 FIXING（SFIT）");
+        assert_eq!(host_of(283), column, "端板 FIXING（TMPL）");
+        assert_eq!(host_of(277), None, "柱自己不是 FIXING");
+        assert_eq!(host_of(26003), None, "端板 TMPL 不是 FIXING");
+        assert_eq!(host_of(208), None, "WALL 上的 FIXING");
     }
 
     fn incident_n(n: usize) -> Vec<Incident> {

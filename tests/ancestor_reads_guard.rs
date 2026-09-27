@@ -154,6 +154,13 @@ const OWNER_WALK_SITES: &[Site] = &[
         why: "现算标架的输入上溯到宿主（GENSEC / SCTN / STWALL）：只看 noun，再看宿主名下有没有 JLDATU / FITT",
     },
     Site {
+        file: "increment.rs",
+        func: "datum_fixing_host_of",
+        climb: Climb::NounOnly,
+        reads: &[],
+        why: "FIXING 上溯到挂着它的 GENSEC（碰到 TMPL / SPINE 就停）：只看 noun，只收 refno",
+    },
+    Site {
         file: "transform.rs",
         func: "implicit_frame",
         climb: Climb::NounOnly,
