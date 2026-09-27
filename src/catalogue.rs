@@ -860,8 +860,7 @@ pub fn model_catalogue_member_with_cache(
             )),
         });
     };
-    let env =
-        DbElementParamEnv::new(Some(member.clone()), Some(component.clone())).without_insulation();
+    let env = crate::catalogue_point::member_env(member, &component);
     let mut solids = Vec::new();
     let mut ignored_lines = 0usize;
     let mut sext_total = 0usize;
@@ -1484,6 +1483,34 @@ pub fn model_catalogue_member_with_cache(
                 .collect::<Vec<_>>(),
         ),
     };
+    // Core's catalogue CSG owns `NGMR` at the component level.  It is not a
+    // member of any one positive GMRE primitive, so the per-SEXT negative
+    // collection above cannot see it.  Apply those cutters after composing
+    // the visible primitives, preserving the same mode-0 NAPP gate used by
+    // the joint path.
+    let (component_cutters, component_cut_diagnostics) =
+        if let Some(negative_set) = component.get_element("NGMR")? {
+            collect_owned_negatives_where(
+                member,
+                &component,
+                &negative_set,
+                &env,
+                cache,
+                DMat4::IDENTITY,
+                &|negative| {
+                    crate::elmodl::catalogue_napp_admits(0, crate::elmodl::negative_napp(negative))
+                },
+            )?
+        } else {
+            (Vec::new(), Vec::new())
+        };
+    catalogue_negatives += component_cutters.len();
+    diagnostics.extend(component_cut_diagnostics);
+    let local = if component_cutters.is_empty() {
+        local
+    } else {
+        subtract_owned_negatives(local, &component_cutters, "catalogue component after negatives")?
+    };
     let world = catalogue_member_world(member)?;
     let noun = member.element_type()?;
     // E3D RVM keeps the visible catalogue primitives as independent display
@@ -1587,8 +1614,7 @@ pub(crate) fn catalogue_host_cuts(
     let Some(negative_set) = component.get_element("NGMR")? else {
         return Ok(empty);
     };
-    let env =
-        DbElementParamEnv::new(Some(member.clone()), Some(component.clone())).without_insulation();
+    let env = crate::catalogue_point::member_env(member, &component);
     let (evaluated, diagnostics) = collect_owned_negatives_where(
         member,
         &component,
@@ -2065,7 +2091,58 @@ fn profile_rings(
             noun: noun.into(),
         });
     }
-    Ok(Some(rings))
+    let Some((outer_index, _)) = rings
+        .iter()
+        .enumerate()
+        .max_by(|(_, left), (_, right)| ring_area(left).total_cmp(&ring_area(right)))
+    else {
+        return Ok(None);
+    };
+    let outer = rings[outer_index].clone();
+    let mut selected = vec![outer.clone()];
+    for (index, ring) in rings.into_iter().enumerate() {
+        if index == outer_index || ring_area(&ring) >= ring_area(&outer) {
+            continue;
+        }
+        // A disjoint loop cannot be a hole of this SEXT. Core rejects the
+        // primitive instead of turning an unrelated construction loop into a
+        // second solid or extending the member's AABB.
+        if !ring.iter().all(|point| point_in_ring(*point, &outer)) {
+            return Ok(None);
+        }
+        selected.push(ring);
+    }
+    Ok(Some(selected))
+}
+
+fn ring_area(ring: &[[f64; 2]]) -> f64 {
+    ring.iter()
+        .zip(ring.iter().cycle().skip(1))
+        .take(ring.len())
+        .map(|([x1, y1], [x2, y2])| x1 * y2 - x2 * y1)
+        .sum::<f64>()
+        .abs()
+        * 0.5
+}
+
+fn point_in_ring(point: [f64; 2], ring: &[[f64; 2]]) -> bool {
+    let mut inside = false;
+    for (a, b) in ring
+        .iter()
+        .zip(ring.iter().cycle().skip(1))
+        .take(ring.len())
+    {
+        let [x, y] = point;
+        let [ax, ay] = *a;
+        let [bx, by] = *b;
+        if (ay > y) != (by > y) {
+            let crossing_x = (bx - ax) * (y - ay) / (by - ay) + ax;
+            if x < crossing_x {
+                inside = !inside;
+            }
+        }
+    }
+    inside
 }
 
 /// PAAX/PBAX → 右手标架（Core `ORTHOG`：保第一根轴，第二根由补全的第三根反求）。

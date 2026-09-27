@@ -433,13 +433,20 @@ pub fn model_element_with_cache(
     // `REPRESENTATION LEVEL n`，NOZZ 走 `LEVEL NOZZ`），与目录成员的显示过滤同一张表。
     let level = repre_level_of(el)?;
     let mut skipped = Vec::new();
-    let mut host_catalogue_cuts = Vec::new();
+    let mut fixing_catalogue_cuts = Vec::new();
     if noun == "GENSEC" {
-        collect_joint_negatives(el, &mut negatives, &mut skipped, &mut notes)?;
+        collect_joint_negatives(
+            el,
+            &mut negatives,
+            &mut fixing_catalogue_cuts,
+            &mut skipped,
+            &mut notes,
+            cache,
+        )?;
         collect_host_fixing_negatives(
             el,
             &mut negatives,
-            &mut host_catalogue_cuts,
+            &mut fixing_catalogue_cuts,
             &mut skipped,
             &mut notes,
             cache,
@@ -458,7 +465,7 @@ pub fn model_element_with_cache(
         false
     });
     drop(gate_timing);
-    let had_negative_members = !negatives.is_empty() || !host_catalogue_cuts.is_empty();
+    let had_negative_members = !negatives.is_empty() || !fixing_catalogue_cuts.is_empty();
 
     // SCTN 的局部系不是它自己的 POS/ORI——那两个属性它根本没存（实测 `24381/47163`
     // 只有 POSS/POSE/DRNS/DRNE/BANG/JUSL），标架是 GTSTDT 从 POSS→POSE + BANG +
@@ -700,7 +707,7 @@ pub fn model_element_with_cache(
             reason,
         });
     }
-    applied.extend(host_catalogue_cuts);
+    applied.extend(fixing_catalogue_cuts);
     if noun == "WALL" {
         let mut fixings = Vec::new();
         collect_host_fixings(el, &mut fixings)?;
@@ -2062,26 +2069,31 @@ fn collect_negatives_deep(el: &DbElement, out: &mut Vec<DbElement>) -> Result<()
     Ok(())
 }
 
-/// GENSEC 两端的关节负体：`JOIS` / `JOIE` 指向的 FIXING 名下 `TMPL` 里的负体，过了关节
-/// 路径的 NAPP 门就并进这根梁要扣的刀（DRWAND 表现级门与世界放置照直属负体走）。
+/// GENSEC 两端的关节负体：`JOIS` / `JOIE` 指向的 FIXING 给这根梁的刀（[`fixing_negatives`]，
+/// mode 0）。
 ///
 /// 对标 `DB_Sctn::DB_makeCSG@0x10738C30`：截面实体切完两端之后，对 JOIS、JOIE 的目标各调
-/// 一次 `sub_10722D80(..., mode 0)`，逐负体过 `sub_1072B780` 的 NAPP 门（[`design_napp_admits`]）。
-/// `aps250110` 上 1505 根 GENSEC 的 522 个非空关节全部指向 FIXING，FIXING 的 `CREF` 全部回指
-/// 这根梁；带 TMPL 的 229 个是「Flexible / Full Depth End Plate」与「Web Cleats」三种节点模板，
-/// 负体是 NBOX（NAPP -1，ZLEN 8 的端板让位）、NCYL（NAPP 7，螺栓孔）与少数 NXTR（NAPP -1，
-/// 翼缘切角）——端板那一刀就是梁对 E3D TTY RVM 两端各长 8 mm 的来源。
+/// 一次 `sub_10722D80(..., mode 0)`。`aps250110` 上 1505 根 GENSEC 的 522 个非空关节全部指向
+/// FIXING，FIXING 的 `CREF` 全部回指这根梁：
 ///
-/// 只接了「FIXING 名下设计侧 TMPL」这一种来源。FIXING 的 `SPRE → CATR` 是目录 `JOIN` 的那批
-/// （檐口节点）负体在目录 `NGMS` 里，要先有目录负体求值；`SUBJ` 关节（`DB_makeCSG` 连它的属主
-/// 一起扫）语料里没有。这两种梁端照旧偏胖。
+/// - 带 TMPL 的 229 个是「Flexible / Full Depth End Plate」与「Web Cleats」三种节点模板，负体是
+///   NBOX（NAPP -1，ZLEN 8 的端板让位）、NCYL（NAPP 7，螺栓孔）与少数 NXTR（NAPP -1，翼缘切角）
+///   ——端板那一刀就是梁对 E3D TTY RVM 两端各长 8 mm 的来源。
+/// - `SPRE → CATR` 是目录 JOIN 的那批（檐口加腋节点）负体在 `NGMR` 里：NSEX（NAPP 1）按连接对象
+///   的翼缘宽（`APAR[2]`）与设计表的 `BONE` / `BTWO` 围出截面，挤 `PARA[1] + 1` = 16 mm——斜梁
+///   檐口端对 E3D 长出的就是这 16 mm；NSCY（NAPP 6，螺栓孔）在 mode 0 不放行。
+///
+/// `SUBJ` 关节（`DB_makeCSG` 连它的属主一起扫）与 FIXING 套 FIXING（`DB_Gensec::makeCSG` 沿关节
+/// 目标的属主链往上、只要还是 FIXING 就接着扫）语料里都没有，没接。
 ///
 /// 关节读不出来（悬空引用、成员表读挂）不拖垮梁：记进 `skipped`，梁照出。
 fn collect_joint_negatives(
     el: &DbElement,
-    out: &mut Vec<DbElement>,
+    negatives: &mut Vec<DbElement>,
+    catalogue_cuts: &mut Vec<Manifold>,
     skipped: &mut Vec<SkippedNegative>,
     notes: &mut Vec<String>,
+    cache: &mut CatalogueMeshCache,
 ) -> Result<(), ModelError> {
     for (attr, joint) in [
         ("JOIS", el.get_element("JOIS")?),
@@ -2090,52 +2102,144 @@ fn collect_joint_negatives(
         let Some(joint) = joint else {
             continue;
         };
-        let mut found = Vec::new();
-        if let Err(error) = joint_template_negatives(&joint, &mut found) {
-            skipped.push(SkippedNegative {
-                refno: joint.refno(),
-                noun: joint.element_type().unwrap_or_else(|_| "?".into()),
-                reason: format!("{attr} 关节读不出来，端头负体没扣：{error}"),
-            });
+        if joint.element_type()? != "FIXING" {
             continue;
         }
-        for neg in found {
-            let napp = negative_napp(&neg);
-            if design_napp_admits(JOINT_MODE, napp) {
-                out.push(neg);
-            } else {
-                notes.push(format!(
-                    "{attr} 关节 {} 的负体 {} NAPP={} 在关节路径（mode 0）不放行，E3D 同样不拿它切梁",
-                    joint.refno(),
-                    neg.refno(),
-                    napp.map_or_else(|| "?".to_string(), |value| value.to_string())
-                ));
-            }
+        match fixing_negatives(&joint, JOINT_MODE, negatives, catalogue_cuts, notes, cache) {
+            Ok(0) => {}
+            Ok(rejected) => notes.push(format!(
+                "{attr} 关节 {}：NAPP 门在关节路径（mode 0）挡下 {rejected} 把刀，E3D 同样不拿它们切梁",
+                joint.refno()
+            )),
+            Err(error) => skipped.push(SkippedNegative {
+                refno: joint.refno(),
+                noun: "FIXING".into(),
+                reason: format!("{attr} 关节读不出来，端头负体没扣：{error}"),
+            }),
         }
     }
     Ok(())
 }
 
-/// 关节目标名下能切梁的负体：目标是 FIXING 时，它每只 `TMPL` 成员里的负体（与
-/// [`collect_negatives`] 同一圈定：直属负体 + CMPF 深层）。别的 noun 不出。
-fn joint_template_negatives(
-    joint: &DbElement,
-    out: &mut Vec<DbElement>,
-) -> Result<(), DbElementError> {
-    if joint.element_type()? != "FIXING" {
-        return Ok(());
+/// FIXING 的 `AANGXZ` / `AANGYZ`（度），见 [`attachment_angles`]。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct AttachmentAngles {
+    pub xz: f64,
+    pub yz: f64,
+}
+
+/// Core3D `pllib/PATANG` 现算的两个伪属性：FIXING 连着的截面（`CREF`，它的 JOIS 或 JOIE 得指回这只
+/// FIXING）在关节那一端、指向截面里面的轴向，换到 FIXING 的标架里，投到 YZ / XZ 平面上从 Z 轴量起的
+/// 转角。`AANGYZ` 是绕 X 的右手转角（Z 转向 −Y 为正），`AANGXZ` 绕 Y（Z 转向 +X 为正）。
+///
+/// 目录的檐口加腋节点 JOIN `/J2S4_EAV_PFI_PFI_003` 拿它定斜梁的斜度：设计表 `ANYZ = -AANGYZ`，再推出
+/// `BLEN = APAR[1] / COS(ANYZ)`、`OPYZ = ADJA * TAN(ANYZ)`，刀与加腋板的尺寸都吃它。E3D TTY 在 aps250110
+/// 的四只檐口 FIXING 上 `Q AANGYZ` 都是 -14.481°、`Q AANGXZ` 是 0°（斜梁 1000 / 3872 的坡）。
+///
+/// 只接了 GENSEC（轴向取 SPINE 在那一端的切向）。连着 SCTN 的关节语料里没有，不答（E3D 的 SCTN 走
+/// `POSS → POSE`）；`CREF` 空、不回指、截面没有 SPINE 也不答——表达式照旧按未解报。
+pub(crate) fn attachment_angles(fixing: &DbElement) -> Result<Option<AttachmentAngles>, ModelError> {
+    if fixing.element_type()? != "FIXING" {
+        return Ok(None);
     }
-    for member in joint.members()? {
-        if member.element_type()? == "TMPL" {
-            collect_negatives(&member, out)?;
+    let Some(section) = fixing.get_element("CREF")? else {
+        return Ok(None);
+    };
+    if section.element_type()? != "GENSEC" {
+        return Ok(None);
+    }
+    let at_start = section.get_ref("JOIS")? == Some(fixing.refno());
+    if !at_start && section.get_ref("JOIE")? != Some(fixing.refno()) {
+        return Ok(None);
+    }
+    let Some(path) = crate::section::spine_path(&section)? else {
+        return Ok(None);
+    };
+    let tangent = if at_start {
+        path.segments.first().map(|segment| segment.tangents().0)
+    } else {
+        path.segments.last().map(|segment| -segment.tangents().1)
+    };
+    let Some(tangent) = tangent else {
+        return Ok(None);
+    };
+    let into_section = DMat3::from_mat4(world_matrix(&section)?) * tangent;
+    let local = DMat3::from_mat4(world_matrix(fixing)?).inverse() * into_section;
+    if !local.is_finite() || local.length_squared() < 1e-18 {
+        return Ok(None);
+    }
+    Ok(Some(AttachmentAngles {
+        xz: local.x.atan2(local.z).to_degrees(),
+        yz: (-local.y).atan2(local.z).to_degrees(),
+    }))
+}
+
+/// 宿主扫描的 mode：`sub_10722680` 取到几何源之后才改写成 [`HOST_FIXING_MODE`] /
+/// [`HOST_FITTING_MODE`]。
+const HOST_SCAN_MODE: u32 = 9;
+
+/// 一只 FIXING 给别的构件扣的刀，按 `sub_10722680` 取几何源：首个 `TMPL` 成员，没有就是
+/// `SPRE → CATR` 的目录件。`mode` 是 [`HOST_SCAN_MODE`] 时按源改写（SFIT 3，否则 1），别的原样用。
+///
+/// TMPL 的设计负体（与 [`collect_negatives`] 同一圈定：直属负体 + CMPF 深层）过
+/// [`design_napp_admits`] 交回 `negatives`，照直属负体走表现级门与世界放置；目录件 `NGMR` 的负体
+/// 过 [`catalogue_napp_admits`] 后求值，已在世界系，进 `catalogue_cuts`（单把求不出的进 `notes`）。
+/// 返回 NAPP 门挡下的把数。
+fn fixing_negatives(
+    fixing: &DbElement,
+    mode: u32,
+    negatives: &mut Vec<DbElement>,
+    catalogue_cuts: &mut Vec<Manifold>,
+    notes: &mut Vec<String>,
+    cache: &mut CatalogueMeshCache,
+) -> Result<usize, ModelError> {
+    let template = fixing
+        .members()?
+        .into_iter()
+        .find(|member| matches!(member.element_type().as_deref(), Ok("TMPL")));
+    if let Some(template) = template {
+        let mode = if mode == HOST_SCAN_MODE {
+            HOST_FIXING_MODE
+        } else {
+            mode
+        };
+        let mut found = Vec::new();
+        collect_negatives(&template, &mut found)?;
+        let before = found.len();
+        found.retain(|neg| design_napp_admits(mode, negative_napp(neg)));
+        let rejected = before - found.len();
+        negatives.extend(found);
+        return Ok(rejected);
+    }
+    let Some(component) = crate::catalogue_point::catalogue_component(fixing)? else {
+        return Ok(0);
+    };
+    let mode = match mode {
+        HOST_SCAN_MODE if component.element_type()? == "SFIT" => HOST_FITTING_MODE,
+        HOST_SCAN_MODE => HOST_FIXING_MODE,
+        other => other,
+    };
+    let rejected = Cell::new(0usize);
+    let admit = |neg: &DbElement| {
+        let admitted = catalogue_napp_admits(mode, negative_napp(neg));
+        if !admitted {
+            rejected.set(rejected.get() + 1);
         }
-    }
-    Ok(())
+        admitted
+    };
+    let cuts = crate::catalogue::catalogue_host_cuts(fixing, &admit, cache)?;
+    catalogue_cuts.extend(cuts.cutters);
+    notes.extend(
+        cuts.diagnostics
+            .into_iter()
+            .map(|line| format!("FIXING {} 的目录负体（mode {mode}）：{line}", fixing.refno())),
+    );
+    Ok(rejected.get())
 }
 
 /// 负体的 `NAPP`。文件里是一个字，`-1` 存成 `0xFFFF_FFFF`，按有符号读；未设、模板里
 /// 没有、形状不对都是 `None`（NAPP 门对「读不到」放行）。
-fn negative_napp(neg: &DbElement) -> Option<i32> {
+pub(crate) fn negative_napp(neg: &DbElement) -> Option<i32> {
     match neg.attribute("NAPP") {
         Ok(Some(DescriptorValue::Word { raw, .. })) => Some(raw as i32),
         Ok(Some(DescriptorValue::Int(value))) => Some(value),
@@ -2161,7 +2265,7 @@ fn design_napp_admits(mode: u32, napp: Option<i32>) -> bool {
 }
 
 /// `sub_1072A790`（目录图元）的 NAPP 门：与设计那道只差 `-1` 在 mode 9 不放行。
-fn catalogue_napp_admits(mode: u32, napp: Option<i32>) -> bool {
+pub(crate) fn catalogue_napp_admits(mode: u32, napp: Option<i32>) -> bool {
     match napp {
         None => true,
         Some(-1) => matches!(mode, 0 | 3 | 4 | 5 | 6),
@@ -2194,7 +2298,7 @@ fn napp_mask(mode: u32) -> i32 {
 /// 螺栓孔，E3D 那组面片的亏格正好是 20；24 根柱底比 E3D 低出的 30 / 20 mm 是底板厚。
 ///
 /// 设计负体交回 `negatives`（照直属负体走表现级门与世界放置），目录负体已在世界系，进
-/// `catalogue_cuts`。一只 FIXING 读挂只记 `skipped`，不拖垮这根构件。
+/// `catalogue_cuts`（[`fixing_negatives`]）。一只 FIXING 读挂只记 `skipped`，不拖垮这根构件。
 fn collect_host_fixing_negatives(
     el: &DbElement,
     negatives: &mut Vec<DbElement>,
@@ -2205,66 +2309,20 @@ fn collect_host_fixing_negatives(
 ) -> Result<(), ModelError> {
     let mut fixings = Vec::new();
     collect_datum_fixings(el, &mut fixings)?;
-    let rejected = Cell::new(0usize);
+    let mut rejected = 0usize;
     for fixing in fixings {
-        let template = fixing
-            .members()?
-            .into_iter()
-            .find(|member| matches!(member.element_type().as_deref(), Ok("TMPL")));
-        if let Some(template) = template {
-            let mut found = Vec::new();
-            if let Err(error) = collect_negatives(&template, &mut found) {
-                skipped.push(SkippedNegative {
-                    refno: fixing.refno(),
-                    noun: "FIXING".into(),
-                    reason: format!("宿主 FIXING 扫描读不出模板负体：{error}"),
-                });
-                continue;
-            }
-            for neg in found {
-                if design_napp_admits(HOST_FIXING_MODE, negative_napp(&neg)) {
-                    negatives.push(neg);
-                } else {
-                    rejected.set(rejected.get() + 1);
-                }
-            }
-            continue;
-        }
-        let Some(component) = crate::catalogue_point::catalogue_component(&fixing)? else {
-            continue;
-        };
-        let mode = if component.element_type()? == "SFIT" {
-            HOST_FITTING_MODE
-        } else {
-            HOST_FIXING_MODE
-        };
-        let admit = |neg: &DbElement| {
-            let admitted = catalogue_napp_admits(mode, negative_napp(neg));
-            if !admitted {
-                rejected.set(rejected.get() + 1);
-            }
-            admitted
-        };
-        match crate::catalogue::catalogue_host_cuts(&fixing, &admit, cache) {
-            Ok(cuts) => {
-                catalogue_cuts.extend(cuts.cutters);
-                notes.extend(
-                    cuts.diagnostics
-                        .into_iter()
-                        .map(|line| format!("宿主 FIXING {} 的目录负体：{line}", fixing.refno())),
-                );
-            }
+        match fixing_negatives(&fixing, HOST_SCAN_MODE, negatives, catalogue_cuts, notes, cache) {
+            Ok(count) => rejected += count,
             Err(error) => skipped.push(SkippedNegative {
                 refno: fixing.refno(),
                 noun: "FIXING".into(),
-                reason: format!("宿主 FIXING 扫描（mode {mode}）的目录负体求不出：{error}"),
+                reason: format!("宿主 FIXING 扫描读不出这只 FIXING 的负体：{error}"),
             }),
         }
     }
-    if rejected.get() > 0 {
+    if rejected > 0 {
         notes.push(format!(
-            "宿主 FIXING 扫描：NAPP 门挡下 {} 把刀，E3D 同样不拿它们切这根构件",
-            rejected.get()
+            "宿主 FIXING 扫描：NAPP 门挡下 {rejected} 把刀，E3D 同样不拿它们切这根构件"
         ));
     }
     Ok(())
@@ -2573,6 +2631,58 @@ mod tests {
         for napp in [0, 2, 4, 6] {
             assert!(!design_napp_admits(JOINT_MODE, Some(napp)), "NAPP={napp}");
         }
+    }
+
+    /// `attachment_angles` 对 aps250110 四只檐口 FIXING 与 E3D TTY 的 `Q AANGYZ` / `Q AANGXZ` 逐只相等
+    /// （-14.481° / 0°，TTY 打到千分之一度）。库或模板不在就跳过。
+    #[test]
+    fn attachment_angles_match_e3d_on_the_eaves_joints() {
+        let plant = std::path::Path::new(r"D:\AVEVA\Projects\E3D3.1\AvevaPlantSample\aps000");
+        let acp = std::path::Path::new(r"D:\AVEVA\Projects\E3D3.1\AvevaCatalogue\acp000");
+        let template = std::path::Path::new(r"E:\reverse\e3d\shadow_e3d31_aps_all");
+        if !plant.join("aps250110_0001").exists()
+            || !acp.exists()
+            || !template.join("attlib.dat").exists()
+        {
+            return;
+        }
+        // 斜梁的截面目录在 250701：datum 标架的 JUSL 偏移要它。
+        let resolver = crate::db_discovery::DirectoryDbResolver::scan(
+            &[plant.to_path_buf(), acp.to_path_buf()],
+            template,
+        )
+        .unwrap();
+        let set = std::sync::Arc::new(
+            e3d_io::db_element::DbSet::with_attlib_file_and_resolver(
+                &template.join("attlib.dat"),
+                Box::new(resolver),
+            )
+            .unwrap(),
+        );
+        set.add_db(e3d_io::db_element::DbFilePin {
+            file: plant.join("aps250110_0001"),
+            template: e3d_io::db_element::template_file_for(template, "DESI").unwrap(),
+            db_type: Some("DESI".into()),
+            sesno: None,
+        })
+        .unwrap();
+        for w1 in [2232, 2246, 2283, 2334] {
+            let fixing = set.element(RefNo::new(2013286654, w1));
+            let first = attachment_angles(&fixing).unwrap();
+            let fixing_world = world_matrix(&fixing).unwrap();
+            let second = attachment_angles(&fixing).unwrap();
+            eprintln!("{w1}: first {first:?} second {second:?} fixing world {fixing_world:?}");
+            let angles = attachment_angles(&fixing).unwrap().expect("檐口 FIXING 连着斜梁");
+            assert!((angles.yz - -14.481).abs() < 5e-4, "{w1}: {angles:?}");
+            assert!(angles.xz.abs() < 5e-4, "{w1}: {angles:?}");
+        }
+        let beam_fixing = set.element(RefNo::new(2013286654, 283));
+        assert!(attachment_angles(&beam_fixing).unwrap().is_some(), "端板 FIXING 也连着梁");
+        assert_eq!(
+            attachment_angles(&set.element(RefNo::new(2013286654, 208))).unwrap(),
+            None,
+            "CREF 空的 WALL FIXING"
+        );
     }
 
     #[test]
