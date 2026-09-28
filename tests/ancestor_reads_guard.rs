@@ -100,9 +100,11 @@ const OWNER_WALK_SITES: &[Site] = &[
         file: "elmodl.rs",
         func: "fixing_host_frame",
         climb: Climb::AboveUnit,
-        reads: &["OWNER", "ZDIS"],
+        reads: &["DESP", "OWNER", "ZDIS"],
         why: "FIXING 自成模型单元（category::is_model_unit），它的实例标架却读 owner²=JLDATU 的 ZDIS（OWNER 是报错文案里的名字），再经 \
-              wall_spine_points / world_matrix 读宿主 WALL——两者都在 FIXING 单元之上。整棵子树重算的根口径下 \
+              wall_spine_points / world_matrix 读宿主 WALL，09-28 起还读宿主 WALL 的 DESP[0]（墙高 → IBOW 站位）与经 \
+              wall_profile_thickness 读墙型材的 PARA[0]（墙厚 → datum 半径，见 ANCESTOR_CONSUMERS）——都在 FIXING 单元之上；\
+              FIXING 自己的 DESP（门洞高宽）是同一个字面量，在单元内。整棵子树重算的根口径下 \
               （JLDATU 改了 → 祖先闭包命中 WALL 所在的 STRU / FRMW / SBFR 根 → 整棵重算）FIXING 跟着重生成；\
               ADR-080 单元级发布只重建 plan_update 点名的单元，FIXING 不在 JLDATU 的子树里 → 不点名 → 实例停在旧站位。\
               开 model_unit_level_publish 之前要把这条边补进单元规划（gen-model issue #39 / #37）",
@@ -187,6 +189,21 @@ const OWNER_WALK_SITES: &[Site] = &[
               → 整棵重算）覆盖；ADR-080 单元级发布下由 increment::implicit_frame_host_of 的整棵 GENSEC 子树级联覆盖——\
               与 fixing_host_frame 那条（gen-model issue #39）同型，这一条的单元规划已经补上",
     },
+    Site {
+        file: "transform.rs",
+        func: "handrail_post_world",
+        climb: Climb::AboveUnit,
+        reads: &["HRJUSL", "POS", "POSREF", "SPRE", "WIDT", "ZDIS"],
+        why: "详图式扶手的 HRPOST / HRTERM / HRGATE 没有 POS / ORI，标架按 Core3D 现算（transform::ImplicitFrame::HandrailPost）：\
+              读立柱自己的 POSREF / ZDIS / HRJUSL / SPRE / WIDT，取 owner²=HANDRA 只核 noun、经 world_matrix 折它的位姿，再把 HANDRA \
+              交给 handrail_path_tangent / handrail_straight_run_distance / handrail_curve_station 读它 RPATH 下 POINTR / CURVE 的 \
+              POS / CURTYP（见 ANCESTOR_CONSUMERS）；POSREF 指的 POINTR 的 POS 也在那棵 RPATH 下。读者是立柱 TMPL 里自成单元的 \
+              EXTR / CYLI / GENSEC / PANE 件（aps250110 栏杆 ~1780 件），立柱与 HANDRA 的 RPATH 都在它们的单元之上。整棵子树重算的\
+              根口径下（POINTR / ZDIS 改了 → 祖先闭包命中 HANDRA 所在的 STRU 根 → 整棵重算）覆盖；ADR-080 单元级发布只重建 \
+              plan_update 点名的单元，RPATH 与立柱都不在模板件的子树里 → 不点名 → 模板件停在旧站位。increment::implicit_frame_host_of \
+              只接了 GENSEC datum 与 SCTN / STWALL FITT 两支，HANDRA 这一支还没接——与 fixing_host_frame 那条同型的在案缺口\
+              （gen-model issue #39），补法同 datum：命中 HANDRA 子树里的 RPATH / POINTR / CURVE / HRPOST 就把整棵 HANDRA 子树级联进计划",
+    },
 ];
 
 /// 接过一个祖先元素去读它的函数：`(文件名, fn 名, 一共读到的属性名, 理由)`。
@@ -245,6 +262,35 @@ const ANCESTOR_CONSUMERS: &[(&str, &str, &[&str], &str)] = &[
         &["POS"],
         "宿主 WALL 的 SPINE 成员点位：被 fixing_host_frame 用在 FIXING 单元之上（AboveUnit，理由见那一条）；\
          WALL 自己的生成也用它，那一侧在单元内",
+    ),
+    (
+        "elmodl.rs",
+        "wall_profile_thickness",
+        &["PARA"],
+        "宿主 WALL 的型材（SPRE → SPCO → CATR → SPRF）PARA[0] = 墙厚：fixing_host_frame 用它把 JLDATU 站位半径从 spine 推到 \
+         datum 面。目录件不在设计库，走目录读取集合那一侧；宿主 WALL 的 SPRE 改了在 FIXING 单元之上（AboveUnit，理由见 \
+         fixing_host_frame 那一条）",
+    ),
+    (
+        "transform.rs",
+        "handrail_path_tangent",
+        &["POS"],
+        "HANDRA（立柱的 owner²）名下 RPATH 的 POINTR 位置：立柱在这一站的路径切向（端点回看进入段；起点带 CURVE 时转 \
+         handrail_curve_station 取圆弧切向）。RPATH 在立柱模板件的单元之上，覆盖口径见 OWNER_WALK_SITES 的 handrail_post_world",
+    ),
+    (
+        "transform.rs",
+        "handrail_straight_run_distance",
+        &["POS"],
+        "HANDRA 名下 RPATH 相邻 POINTR 的位置：纯直段路径上把越过端点的 ZDIS 夹回端点（Core3D 的做法）。RPATH 在立柱模板件的\
+         单元之上，覆盖口径同 handrail_post_world",
+    ),
+    (
+        "transform.rs",
+        "handrail_curve_station",
+        &["CURTYP", "POS"],
+        "HANDRA 名下 RPATH 的首两只 POINTR 与 CURVE（CURTYP == THRU）的位置：THRU 圆弧上按 ZDIS 走出的实际站位。RPATH 在\
+         立柱模板件的单元之上，覆盖口径同 handrail_post_world",
     ),
 ];
 

@@ -289,9 +289,16 @@ impl GeneratedElement {
         )
     }
 
+    /// 各分量亏格之和（一块分量的亏格 = 穿透它的环柄数，一只贯穿孔加一）。
+    ///
+    /// 多分量的 [`Manifold`] 直接问 `genus()` 拿到的是 1 − χ/2 把所有分量的欧拉数混在一起：
+    /// 两块实心体算成 −1，一块两孔梁加一片零厚尖条（`restore_sloped_joint_tips` 给斜接梁补的
+    /// 那片，E3D 自己的 facets 也留着它）算成 1——`aps250110 /1819` 的真库门就是这样把两只腹板
+    /// 螺栓孔数成一只的。所以先 `decompose` 再逐块求和；单分量结果不变，SCTN 那种本就分块交出来的
+    /// 照旧按 `parts` 求和。
     pub fn genus(&self) -> i32 {
         self.parts.as_ref().map_or_else(
-            || self.solid.genus(),
+            || self.solid.decompose().iter().map(Manifold::genus).sum(),
             |parts| parts.iter().map(Manifold::genus).sum(),
         )
     }

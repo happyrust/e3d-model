@@ -36,6 +36,7 @@
 "HEIG",
 "HPOS",
 "HPREF",
+"HRJUSL",
 "HSRO",
 "HSTU",
 "ITLE",
@@ -123,6 +124,7 @@
 "VSHAPE",
 "VWIDT",
 "VXREF",
+"WIDT",
 "WJUSL",
 "WTHICK",
 "XBOT",
@@ -148,6 +150,8 @@
 "SPAMAP"
 ],
 "non_attribute_literals":[
+"AANGXZ",
+"AANGYZ",
 "ABOR",
 "ARRHEI",
 "ARRWID",
@@ -161,6 +165,7 @@
 "COVER",
 "COVR",
 "DCEN",
+"FORW",
 "HEAD",
 "IASLCO",
 "ICABCO",
