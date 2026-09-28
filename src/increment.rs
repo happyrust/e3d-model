@@ -1095,6 +1095,46 @@ fn joint_consumer_of(
     Ok(None)
 }
 
+/// GENSEC（在 `set` 这一端）的 `JOIS` / `JOIE` 指着、`CREF` 又回指它的同库 FIXING——
+/// [`joint_consumer_of`] 的反方向。不是 GENSEC、这一端不存在、关节空或不回指 → 空。
+///
+/// # 为什么梁变了关节 FIXING 也要重建
+///
+/// FIXING 的目录件求值经 `CREF` 读这根梁：`APAR` / `ADES`（梁的型材参数，e3d-io 参数环境）与
+/// `AANGXZ` / `AANGYZ`（梁在关节那一端的轴向，`elmodl::attachment_angles`）。檐口加腋节点的刀与加腋板
+/// 都吃它们。FIXING 挂在**柱**的 datum 下，不在梁的子树里：梁换了型材、SPINE 改了坡，
+/// `nearest_unit` 上卷到梁为止，FIXING 与柱上按它扣的孔都停在旧处。
+fn joint_fixings_of(set: &Arc<DbSet>, refno: RefNo) -> Result<Vec<RefNo>, DbElementError> {
+    let beam = set.element(refno);
+    match beam.exists() {
+        Ok(true) => {}
+        Ok(false) | Err(DbElementError::NotFound { .. }) => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    }
+    if beam.element_type()? != "GENSEC" {
+        return Ok(Vec::new());
+    }
+    let mut fixings = Vec::new();
+    for joint in [beam.get_ref("JOIS")?, beam.get_ref("JOIE")?]
+        .into_iter()
+        .flatten()
+    {
+        if joint.dbno() != refno.dbno() {
+            continue;
+        }
+        let fixing = set.element(joint);
+        match fixing.exists() {
+            Ok(true) => {}
+            Ok(false) | Err(DbElementError::NotFound { .. }) => continue,
+            Err(error) => return Err(error),
+        }
+        if fixing.element_type()? == "FIXING" && fixing.get_ref("CREF")? == Some(refno) {
+            fixings.push(joint);
+        }
+    }
+    Ok(fixings)
+}
+
 /// [`datum_fixing_host_of`] 从 FIXING 往上最多爬几层。aps250110 的 598 只全是
 /// GENSEC → JLDATU → PLDATU → FIXING（三层）；8 只是防环。
 const DATUM_FIXING_CLIMB: usize = 8;
@@ -1801,6 +1841,55 @@ pub fn plan_update_with(
             regenerate.insert(key(unit));
         }
     }
+    // 反向关节级联（见 [`joint_fixings_of`]）：本窗要重建或删除的梁，它 JOIS / JOIE 指着的 FIXING
+    // 经 CREF 读它，一并重建。放在下面两条之前：这里补进来的 FIXING 还要再带出它挂的柱；而由
+    // FIXING 带出来的梁只是被扣的刀变了、属性没动，不必再回头重建它另一端的 FIXING。两端各问一次：
+    // 梁被删了只有 base 认得它的关节。
+    let beam_sources: Vec<(u32, u32)> = regenerate.iter().chain(remove.iter()).copied().collect();
+    for unit in beam_sources {
+        let beam = refno_of(unit);
+        for side in [target, base] {
+            let fixings = match joint_fixings_of(side, beam) {
+                Ok(fixings) => fixings,
+                Err(error) => {
+                    report.notes.push(incident(
+                        beam,
+                        "GENSEC",
+                        format!("反向关节级联读挂，关节 FIXING 可能停在旧几何：{error}"),
+                    ));
+                    continue;
+                }
+            };
+            for fixing in fixings {
+                match target.element(fixing).exists() {
+                    Ok(true) => {}
+                    Ok(false) | Err(DbElementError::NotFound { .. }) => continue,
+                    Err(error) => {
+                        report.notes.push(incident(
+                            fixing,
+                            "FIXING",
+                            format!(
+                                "梁 {beam} 要重建或已删除，它的关节 FIXING 在 target 端读不出，\
+                                 可能停在旧几何：{error}"
+                            ),
+                        ));
+                        continue;
+                    }
+                }
+                if !regenerate.insert(key(fixing)) {
+                    continue;
+                }
+                report.cascades.push(incident(
+                    beam,
+                    "GENSEC",
+                    format!(
+                        "关节 FIXING {fixing} 经 CREF 读这根梁（APAR / AANGYZ），梁要重建或已删除，它一并重建"
+                    ),
+                ));
+                report.cascade_hits += 1;
+            }
+        }
+    }
     // 关节级联（见 [`joint_consumer_of`]）：本窗要重建或删除的 FIXING 若是某根 GENSEC 的
     // JOIS / JOIE 关节，那根梁扣的端头负体跟着变。放在计划集收齐之后做，FIXING 从哪条腿进来
     // （自己改了、TMPL 里的负体改了、宿主 GENSEC 的现算标架级联）都一样接得住。两端各问一次：
@@ -1830,7 +1919,7 @@ pub fn plan_update_with(
                             continue;
                         }
                     }
-                    if !joint_beams.insert(key(beam)) {
+                    if regenerate.contains(&key(beam)) || !joint_beams.insert(key(beam)) {
                         continue;
                     }
                     regenerate.insert(key(beam));
@@ -2223,6 +2312,35 @@ mod tests {
             Some(JointConsumer::OtherDatabase(RefNo::new(2013286654, 1819))),
             "aps250108 的关节 FIXING，梁在 aps250110"
         );
+    }
+
+    /// `joint_fixings_of` 在 aps250110 真库上的形状（库或模板不在就跳过）：梁 `/261` 两端的端板 FIXING、
+    /// 檐口斜梁 `/2209` 终点的加腋 FIXING；柱（关节空）与 FIXING 自己都是空。
+    #[test]
+    fn beams_name_their_joint_fixings() {
+        let db = Path::new(r"D:\AVEVA\Projects\E3D3.1\AvevaPlantSample\aps000\aps250110_0001");
+        let template = Path::new(r"E:\reverse\e3d\shadow_e3d31_aps_all");
+        if !db.exists() || !template.join("attlib.dat").exists() {
+            return;
+        }
+        let set = Arc::new(DbSet::with_attlib_file(&template.join("attlib.dat")).unwrap());
+        set.add_db(e3d_io::db_element::DbFilePin {
+            file: db.to_path_buf(),
+            template: e3d_io::db_element::template_file_for(template, "DESI").unwrap(),
+            db_type: Some("DESI".into()),
+            sesno: None,
+        })
+        .unwrap();
+        let fixings_of = |w1| joint_fixings_of(&set, RefNo::new(2013286654, w1)).unwrap();
+        let refnos = |w1s: &[u32]| {
+            w1s.iter()
+                .map(|w1| RefNo::new(2013286654, *w1))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(fixings_of(261), refnos(&[349, 376]), "端板梁两端");
+        assert_eq!(fixings_of(2209), refnos(&[2232]), "檐口斜梁终点");
+        assert!(fixings_of(2223).is_empty(), "柱的关节空");
+        assert!(fixings_of(2232).is_empty(), "FIXING 不是梁");
     }
 
     /// `datum_fixing_host_of` 在 aps250110 真库上的形状（库或模板不在就跳过）：柱 GENSEC 1 of

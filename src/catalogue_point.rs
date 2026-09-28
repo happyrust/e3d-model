@@ -381,8 +381,7 @@ fn catalogue_point_local_checked_at(
         Ok(point) => point,
         Err(failure) => return Ok(Err(failure)),
     };
-    let env =
-        DbElementParamEnv::new(Some(member.clone()), Some(component.clone())).without_insulation();
+    let env = member_env(member, component);
     let noun = point.element_type()?;
     let local = match noun.as_str() {
         CARTESIAN_POINT => cartesian(&point, &env),
@@ -457,6 +456,19 @@ fn mixed(point: &DbElement, env: &DbElementParamEnv) -> Result<(DVec3, DVec3), P
     Ok((pos, DVec3::from_array(dir)))
 }
 
+/// 设计件 + 目录件的求值环境（窄口径，不带保温）。FIXING 另交 Core3D 按世界几何现算的
+/// `AANGXZ` / `AANGYZ`（[`crate::elmodl::attachment_angles`]）；算不出就不交，表达式照旧按未解报。
+pub(crate) fn member_env(member: &DbElement, component: &DbElement) -> DbElementParamEnv {
+    let env =
+        DbElementParamEnv::new(Some(member.clone()), Some(component.clone())).without_insulation();
+    match crate::elmodl::attachment_angles(member) {
+        Ok(Some(angles)) => env
+            .with_derived("AANGXZ", angles.xz)
+            .with_derived("AANGYZ", angles.yz),
+        _ => env,
+    }
+}
+
 /// `SPRE`（→ `CATR`）→ 目录件；`NOZZ` 那一族从 `CATR` 直接起跳，见
 /// [`catalogue_entry_attribute`]。
 pub(crate) fn catalogue_component(member: &DbElement) -> Result<Option<DbElement>, DbElementError> {
@@ -490,8 +502,7 @@ pub(crate) fn resolve_catalogue_axis(
     component: &DbElement,
     words: &[u32],
 ) -> Result<Result<CatalogueAxis, CatalogueAxisFailure>, DbElementError> {
-    let env =
-        DbElementParamEnv::new(Some(member.clone()), Some(component.clone())).without_insulation();
+    let env = member_env(member, component);
     if let Some(direction) = axis_spec::direction(words, &env) {
         let direction = DVec3::from_array(direction);
         return Ok(
