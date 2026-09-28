@@ -237,7 +237,7 @@ pub struct GeneratedElement {
     /// programs because E3D preserves their primitives as separate display meshes.
     pub parts: Option<Vec<Manifold>>,
     /// 与 `parts` 逐块对齐的目录图元名词（`SBOX` / `SCYL` / `LPYR` / `LSNO`…）。
-    /// 空表 = 出身不明（设计侧实体、型材本体、FITT 拼出来的那几块都没有）。
+    /// 空表 = 出身不明（设计侧实体、型材本体都没有）。
     ///
     /// **RVM 的记录种类由出身定，不由网格长相定。** E3D 的写出器按目录图元挑
     /// （LPYR→DRPYR、LSNO/SCON→DRSNO、SBOX→DRBOX…），一只 PAAX/PBAX 退化成正方盒的
@@ -363,10 +363,10 @@ pub fn model_element_with_cache(
     //
     // `FIXING` 也走这一条：它同属目录件，但几何不是型材截面而是目录构件的 GMRE
     // 求值结果，入口与路由成员一样是 `SPRE`（`category::builds_from_catalogue_component`）。
-    // `FITT` 同路：墙上的门窗（aps250110 `FITTING n of STWALL m`）是 SFIT 的 GMRE 求值结果，
-    // 标架由属主现算（`transform::ImplicitFrame::SectionFitting`），`world_matrix` 已经给出。
-    // SCTN 名下的 FITT 到不了这里——SCTN 是 gb==1 容器，全量不下钻、增量上卷到梁，
-    // 那些由 [`section_fitting_parts`] 并进梁体。
+    // `FITT` 同路：SCTN / STWALL 上的配件（aps250110 墙上的门窗 `FITTING n of STWALL m`、
+    // ams7997 梁上的端板 `FITTING n of SCTN …`）是 SFIT 的 GMRE 求值结果，标架由属主现算
+    // （`transform::ImplicitFrame::SectionFitting`），`world_matrix` 已经给出；E3D 的 RVM
+    // 给每只各开一组，梁 / 墙的组里只有本体。哪些 FITT 算单元由 `category::is_model_unit_of` 定。
     let noun = el.element_type()?;
     if category == Category::RouteMember
         || (matches!(category, Category::Composite(CompositeFamily::CoreClass28))
@@ -570,7 +570,7 @@ pub fn model_element_with_cache(
         Category::Catalog if noun == "WALL" => (wall_local_solid(el, &mut notes)?, None),
         // 详图式扶手的栏杆与踢脚板：目录截面沿属主 HANDRA 的 RPATH 扫一段
         // （`crate::handrail`，recheck-4 §五 W4-1 施工图·续 七）。截面链与 SCTN 同一条，
-        // 三种结局也同口径，只是没有 FITT 那一支——`RAIL`/`KICKPL` 底下不挂配件。
+        // 三种结局也同口径。
         Category::Catalog if crate::handrail::is_detailed_item(&noun) => {
             match crate::handrail::detailed_item_local_solid(el, &mut notes)? {
                 crate::handrail::RailBuild::Solid(solid) => (solid, None),
@@ -600,80 +600,25 @@ pub fn model_element_with_cache(
                 section_member_sources = member_sources;
                 (solid, None)
             }
-            body @ (SectionBody::CentrelineOnly(_) | SectionBody::NoShape(_)) => {
-                let (kind, reason) = match body {
-                    SectionBody::CentrelineOnly(reason) => (SkipKind::CentrelineOnly, reason),
-                    SectionBody::NoShape(reason) => (SkipKind::NoShape, reason),
-                    _ => unreachable!(),
-                };
-                let fitting_parts = section_fitting_parts_of(&noun, el, cache, &mut notes)?;
-                if fitting_parts.is_empty() {
-                    return Ok(Modeled::Skipped {
-                        kind,
-                        reason: format!("{reason}; {}", notes.join("; ")),
-                    });
-                }
-                notes.push(format!("{noun} 本体无实体：{reason}；保留 FITT 可见几何"));
-                let solid = match fitting_parts.as_slice() {
-                    [only] => only.clone(),
-                    many => Manifold::compose(many),
-                };
-                return Ok(Modeled::Solid(Box::new(GeneratedElement {
-                    geometry_id: GeometryId::Element {
-                        refno: el.refno().to_string(),
-                    },
-                    refno: el.refno(),
-                    noun,
-                    is_invalid_tubi: false,
-                    name: el.stored_name()?,
-                    solid,
-                    parts: Some(fitting_parts),
-                    part_catalogue_nouns: Vec::new(),
-                    part_record_repeats: Vec::new(),
-                    degenerate_parts: Vec::new(),
-                    world: world_matrix(el)?,
-                    primitive_instance: None,
-                    analytic_primitive: None,
-                    negatives_applied: 0,
-                    negatives_skipped: skipped,
-                    notes,
-                })));
+            // 本体建不出来就是这一件没有：名下 FITT 的几何不在这里兜——它们自己是单元
+            // （`category::is_model_unit_of`），全量遍历各建各的，E3D 的 RVM 也各写一组。
+            SectionBody::CentrelineOnly(reason) => {
+                return Ok(Modeled::Skipped {
+                    kind: SkipKind::CentrelineOnly,
+                    reason: format!("{reason}; {}", notes.join("; ")),
+                });
+            }
+            SectionBody::NoShape(reason) => {
+                return Ok(Modeled::Skipped {
+                    kind: SkipKind::NoShape,
+                    reason: format!("{reason}; {}", notes.join("; ")),
+                });
             }
             SectionBody::ChainBroken(reason) => {
-                let fitting_parts = section_fitting_parts_of(&noun, el, cache, &mut notes)?;
-                if fitting_parts.is_empty() {
-                    return Ok(Modeled::Skipped {
-                        kind: SkipKind::CatalogueChainBroken,
-                        reason: format!("{reason}; {}", notes.join("; ")),
-                    });
-                }
-                notes.push(format!(
-                    "{noun} 本体目录链断开：{reason}；保留 FITT 可见几何"
-                ));
-                let solid = match fitting_parts.as_slice() {
-                    [only] => only.clone(),
-                    many => Manifold::compose(many),
-                };
-                return Ok(Modeled::Solid(Box::new(GeneratedElement {
-                    geometry_id: GeometryId::Element {
-                        refno: el.refno().to_string(),
-                    },
-                    refno: el.refno(),
-                    noun,
-                    is_invalid_tubi: false,
-                    name: el.stored_name()?,
-                    solid,
-                    parts: Some(fitting_parts),
-                    part_catalogue_nouns: Vec::new(),
-                    part_record_repeats: Vec::new(),
-                    degenerate_parts: Vec::new(),
-                    world: world_matrix(el)?,
-                    primitive_instance: None,
-                    analytic_primitive: None,
-                    negatives_applied: 0,
-                    negatives_skipped: skipped,
-                    notes,
-                })));
+                return Ok(Modeled::Skipped {
+                    kind: SkipKind::CatalogueChainBroken,
+                    reason: format!("{reason}; {}", notes.join("; ")),
+                });
             }
         },
         other => {
@@ -790,44 +735,30 @@ pub fn model_element_with_cache(
         }));
     }
 
-    // SCTN 的 FITT 是 graphicsBehaviour=1 属主下面的数据，不是独立模型单元；
-    // 全量遍历会有意剪掉它，增量也会把 FITT 的变化上卷到 SCTN。因此必须在 SCTN
-    // builder 内复用目录求值器，并把可见目录图元作为同一根的组件保留下来。
+    // SCTN 名下的 FITT **不**并进梁体：它自己是一件（`category::is_model_unit_of`，
+    // 与 STWALL 名下的同一口径），E3D 的 RVM 也给它自己开一组——ams7997
+    // `/1TFA004MP-SUPP-01-V1` 的组里只有梁那一条面片，`FITTING 1 / 2 of SCTN …` 各是自己的
+    // CNTB（`test_data/rvm/SCTN-HW150-C80.rvm`）。2026-09-29 之前这里把 FITT 的目录几何拼进
+    // 梁的 `parts`，梁的 AABB 因此吞掉端板，而 FITT 自己在模型集里没有一行。
     let mut part_catalogue_nouns: Vec<String> = Vec::new();
     let parts = if noun == "SCTN" {
         // 本体那几块：E3D 逐 GMSS 成员写记录（管型材的截面是两个 `PANG=180` 的 SANN 半环，
         // 基准 RVM 里就是同心反向的两条面片），所以记录单位取并集前的成员，而不是并集后的
         // 一块。带负体时只有并集体是可见结果——`parts` 按定义是「非布尔」的那一份，退回整只。
-        let mut section_parts = if negatives_applied == 0 && section_members.len() > 1 {
+        if negatives_applied == 0 && section_members.len() > 1 {
             // 逐块的出身跟着一起交出去：E3D 对 `SREC` 成员走 DRPYR，对 `SPRO` / `SANN`
             // 才走拉伸体的面片（见 [`GeneratedElement::part_catalogue_nouns`]）。
             part_catalogue_nouns = section_member_sources
                 .iter()
                 .map(|source| section_source_noun(*source).to_string())
                 .collect();
-            section_members
-                .iter()
-                .map(|member| placed(member, world))
-                .collect()
+            Some(
+                section_members
+                    .iter()
+                    .map(|member| placed(member, world))
+                    .collect(),
+            )
         } else {
-            vec![solid.clone()]
-        };
-        let fittings = section_fitting_parts(el, cache, &mut notes)?;
-        if !fittings.is_empty() {
-            // FITT 不在 `solid` 里，得并进可见实体；本体那几块本来就在，别重复并。
-            let mut composed = vec![solid.clone()];
-            composed.extend(fittings.iter().cloned());
-            solid = Manifold::compose(&composed);
-            section_parts.extend(fittings);
-            // FITT 那几块是目录构件拼出来的，出身与本体成员不是一回事，留空。
-            if !part_catalogue_nouns.is_empty() {
-                part_catalogue_nouns.resize(section_parts.len(), String::new());
-            }
-        }
-        if section_parts.len() > 1 {
-            Some(section_parts)
-        } else {
-            part_catalogue_nouns.clear();
             None
         }
     } else {
@@ -981,29 +912,6 @@ fn is_section_like(noun: &str) -> bool {
     matches!(noun, "SCTN" | "GENSEC" | "STWALL")
 }
 
-/// 截面链本体建不出来时，还要不要把成员 FITT 的目录几何留下。
-///
-/// `SCTN` 的 FITT 是 graphicsBehaviour=1 属主下面的数据（见 [`section_fitting_parts`]），
-/// 本体退化也要保留它们。`STWALL` 的成员（ams1112：FITT 86 / CMFI 3 / SNOD 2）**不**并进
-/// 本体：E3D 的 RVM 导出里 `STWALL n of CWALL /1RS-WF03-W-C-RR001` 每条都是 6 面 24 顶点
-/// 的裸盒（`test_data/rvm/1RS-WF03-W-C-RR001.rvm`），配件没有随墙一起画出来。
-/// 把 FITT 并进去会让对拍从 `exact` 变 `off`，而看起来像是墙本身算错了。
-/// 墙上的 FITT 是**自己一件**：STWALL 不是 gb==1 容器，全量遍历走得到它，
-/// `category::is_model_unit("FITT")` 让它按目录构件路（[`model_element_with_cache`] 开头
-/// 那条臂）出一件挂在自己 refno 上的实体——aps250110 的 RVM 里正是 `FITTING n of STWALL m
-/// of CWALL /…` 独立一组（63 组，57 组有几何）。
-fn section_fitting_parts_of(
-    noun: &str,
-    section: &DbElement,
-    cache: &mut CatalogueMeshCache,
-    notes: &mut Vec<String>,
-) -> Result<Vec<Manifold>, ModelError> {
-    if noun == "STWALL" {
-        return Ok(Vec::new());
-    }
-    section_fitting_parts(section, cache, notes)
-}
-
 /// [`section_body`] 的三种结局。三条各有各的账，混成一句话就分不出
 /// 「E3D 画了中心线我们没画」与「目录链根本走不通」。
 enum SectionBody {
@@ -1030,47 +938,6 @@ fn section_source_noun(source: SectionSource) -> &'static str {
         SectionSource::Sann => "SANN",
         SectionSource::Spro { .. } => "SPRO",
     }
-}
-
-/// 求值 SCTN 直属 FITT 的目录几何。FITT 位于 graphicsBehaviour=1 容器之下，
-/// 所以只从 SCTN builder 进入；返回的每一块已经处于世界坐标系。
-fn section_fitting_parts(
-    section: &DbElement,
-    cache: &mut CatalogueMeshCache,
-    notes: &mut Vec<String>,
-) -> Result<Vec<Manifold>, ModelError> {
-    let mut parts = Vec::new();
-    let section_world = world_matrix(section)?;
-    for member in section.members()? {
-        if member.element_type()? != "FITT" {
-            continue;
-        }
-        let build = model_catalogue_member_with_cache(&member, cache)?;
-        for diagnostic in build.diagnostics {
-            notes.push(format!("FITT {}: {diagnostic}", member.refno()));
-        }
-        match build.generated {
-            Some(generated) => {
-                let fitting_world =
-                    section_world * crate::section::section_fitting_placement(section, &member)?;
-                let correction = fitting_world * generated.world.inverse();
-                match generated.parts {
-                    Some(fitting_parts) => parts.extend(
-                        fitting_parts
-                            .into_iter()
-                            .map(|part| placed(&part, correction)),
-                    ),
-                    None => parts.push(placed(&generated.solid, correction)),
-                }
-            }
-            None => notes.push(format!(
-                "FITT {} 无可见目录几何：{}",
-                member.refno(),
-                build.no_shape.unwrap_or_else(|| "原因未记".to_string())
-            )),
-        }
-    }
-    Ok(parts)
 }
 
 /// SCTN 直段（G1-1a 第 2 + 3 步）：目录截面 → GTSTDT 标架 → 挤出 → 两端切平面。

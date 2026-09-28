@@ -527,9 +527,10 @@ pub fn is_model_unit(noun: &str) -> bool {
         // （与路由成员同一个求值器，见 [`builds_from_catalogue_component`]）。
         // `FITT` 与 `FIXING` 同一条路，只是标架由属主现算（`transform::ImplicitFrame::
         // SectionFitting`）。noun 这一层说的是「可以成件」；它到底是不是一件由**属主**定
-        // （[`is_model_unit_of`] / [`fitting_stands_alone_under`]）：SCTN 名下的 FITT 随梁并进
-        // `section_body`，是梁那一件的组件；STWALL 名下的在 E3D 的 RVM 里自成一组
-        // （aps250110：`FITTING n of STWALL m of CWALL /B01_LEV01_INT_WALLS` 63 组，57 组有几何）。
+        // （[`is_model_unit_of`] / [`fitting_stands_alone_under`]）：SCTN / STWALL 名下的在 E3D
+        // 的 RVM 里各自一组（aps250110：`FITTING n of STWALL m of CWALL /B01_LEV01_INT_WALLS`
+        // 63 组，57 组有几何；ams7997：`FITTING 1 / 2 of SCTN /1TFA004MP-SUPP-01-V1`），
+        // 别的属主下的没有标架、不成件。
         Category::Catalog => matches!(
             noun,
             "SBFI" | "WALL" | "SCTN" | "GENSEC" | "STWALL" | "RAIL" | "KICKPL" | "FIXING" | "FITT"
@@ -591,10 +592,10 @@ pub fn is_model_unit(noun: &str) -> bool {
 
 /// [`is_model_unit`] 落到**元素**上：noun 说「可以成件」之后，再问属主要不要把它吃掉。
 ///
-/// 今天只有一条属主规则——`FITT` 的（[`fitting_stands_alone_under`]）：SCTN 名下的 FITT 由
-/// `elmodl::section_fitting_parts` 并进梁体，是梁那一件的组件而不是自己一件；STWALL 名下的
-/// 才是单元（aps250110：`FITTING n of STWALL m of CWALL /…` 在 E3D 的 RVM 里自成一组）。
-/// 别的属主下的 FITT（CMPF 里的那些）没有现算标架可用，照旧不成件、留在 `catalog_pending`。
+/// 今天只有一条属主规则——`FITT` 的（[`fitting_stands_alone_under`]）：SCTN / STWALL 名下的
+/// FITT 自己成件（E3D 的 RVM 给每只各开一组：aps250110 `FITTING n of STWALL m of CWALL /…`、
+/// ams7997 `FITTING n of SCTN /1TFA004MP-SUPP-01-V1`）；别的属主下的 FITT（CMPF 里的那些）
+/// 没有现算标架可用，照旧不成件、留在 `catalog_pending`。
 ///
 /// 全量管线（`pipeline` 的 `Category::Catalog` 臂）、增量的上卷（`increment::nearest_unit`）、
 /// 子树收集（`increment::collect_unit_subtree`）与重建（`increment::execute`）都走这一个；
@@ -613,13 +614,18 @@ pub fn is_model_unit_of(el: &DbElement) -> Result<bool, DbElementError> {
     Ok(true)
 }
 
-/// 这个属主名下的 `FITT` **自己成件**。只有 `STWALL`：墙不把配件并进本体
-/// （`elmodl::section_fitting_parts_of`），E3D 的 RVM 也把它们各写一组。`SCTN` 名下的由
-/// `elmodl::section_fitting_parts` 并进梁体，从 G1-1a 起就是这样建、这样对拍的；其余属主
-/// （CMPF 等）下的 FITT 连现算标架都没有（`transform::ImplicitFrame::SectionFitting` 只认
-/// SCTN / STWALL），成了件也摆不对，照旧欠着。
+/// 这个属主名下的 `FITT` **自己成件**：`SCTN` 与 `STWALL`，正是 `transform::ImplicitFrame::
+/// SectionFitting` 认的两个宿主——FITT 没有 POS / ORI，标架是宿主 POSL 线上的
+/// `section_fitting_placement`，有了它才摆得对。E3D 的 RVM 给每只各开一组 CNTB、梁 / 墙的组里
+/// 只有本体（`test_data/rvm/SCTN-HW150-C80.rvm`：`/1TFA004MP-SUPP-01-V1` 一条面片，`FITTING 1 /
+/// 2 of SCTN …` 各自一组；aps250110 的 63 组 `FITTING n of STWALL m`）。2026-09-29 之前 SCTN 名下的
+/// 由 `elmodl` 拼进梁的 `parts`，梁的 AABB 因此吞掉端板、FITT 自己在模型集里没有一行。其余属主
+/// （CMPF 等）下的 FITT 连现算标架都没有，成了件也摆不对，照旧欠着。
 pub fn fitting_stands_alone_under(owner_noun: &str) -> bool {
-    owner_noun.trim().eq_ignore_ascii_case("STWALL")
+    matches!(
+        owner_noun.trim().to_ascii_uppercase().as_str(),
+        "SCTN" | "STWALL"
+    )
 }
 
 /// 这个 noun 的目录件直接挂在 `CATR` 上，没有 `SPRE` 那一跳。
@@ -1626,17 +1632,15 @@ mod tests {
         for noun in ["PANE", "FLOOR", "BOX", "CYLI", "REVO", "POLYHE", "AEXTR"] {
             assert!(is_model_unit(noun), "{noun} 是正体，必然是模型单元");
         }
-        // FITT：与 FIXING 同一条目录构件路（aps250110 墙上的门窗，`FITTING n of STWALL m`
-        // 在 E3D 的 RVM 里自成一组）。noun 层说「可以成件」，属主层再定：SCTN 名下的那些
-        // 由 `section_fitting_parts` 并进梁体，不是自己一件；`is_model_unit_of` 问的就是这个。
+        // FITT：与 FIXING 同一条目录构件路（aps250110 墙上的门窗 `FITTING n of STWALL m`、
+        // ams7997 梁上的 `FITTING n of SCTN …` 在 E3D 的 RVM 里各自一组）。noun 层说「可以成件」，
+        // 属主层再定——只有 `ImplicitFrame::SectionFitting` 认的两个宿主；`is_model_unit_of`
+        // 问的就是这个。
         assert_eq!(classify("FITT"), Category::Catalog);
         assert!(is_model_unit("FITT"));
         assert!(builds_from_catalogue_component("FITT"));
         assert!(fitting_stands_alone_under("STWALL"));
-        assert!(
-            !fitting_stands_alone_under("SCTN"),
-            "SCTN 名下的 FITT 是梁的组件"
-        );
+        assert!(fitting_stands_alone_under("SCTN"));
         assert!(
             !fitting_stands_alone_under("CMPF"),
             "CMPF 里的 FITT 没有现算标架，照旧欠着"

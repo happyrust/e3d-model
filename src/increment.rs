@@ -24,7 +24,7 @@
 //!    整个窗口失败，没有半截结果可以拿去更新模型（ADR-017 整窗口口径）。
 //! 2. **候选分类** [`plan_update`]：把索引级候选（refno + 增/删/改）折算成
 //!    **模型单元**动作。模型单元的判据只有一份，在 [`crate::category::is_model_unit`]（落到元素上是
-//!    [`is_model_unit_of`]：FITT 在 SCTN 下是梁的组件、在 STWALL 下自己成件）——全量管线按它
+//!    [`is_model_unit_of`]：FITT 在 SCTN / STWALL 下自己成件、在别的属主下不成件）——全量管线按它
 //!    产出、这里按它上卷，两边各写一份名单就会静默漏件（见该函数文档记的那次事故）。
 //!    与 Core3D `PartialUpdateDesiMgr` 的 significant/primitive 上卷同构：
 //!    - 候选自己是单元 → 单元就是它；
@@ -838,7 +838,7 @@ fn nearest_unit(set: &Arc<DbSet>, refno: RefNo) -> Result<Rollup, DbElementError
             unit = None;
             route_container = None;
         }
-        // 按元素判（`is_model_unit_of`）：SCTN 名下的 FITT 不是单元，上卷到梁；STWALL 名下的是。
+        // 按元素判（`is_model_unit_of`）：SCTN / STWALL 名下的 FITT 是单元，别的属主下的不是、往上卷。
         if unit.is_none() && is_model_unit_of(&current)? {
             unit = Some(current.refno());
         }
@@ -2164,7 +2164,7 @@ pub fn execute_plan(target: &Arc<DbSet>, plan: UpdatePlan) -> IncrementOutcome {
             // 合法到达：类型变更把 base 端的单元送了进来，而它在 target 端的新 noun
             // 不再出几何——与 `Modeled::Skipped` 同款处置（先擦后画，画不出保持
             // 擦掉），不算失败。计划集没被手工改过的话，这里只有类型变更（或 FITT 改挂到
-            // SCTN 下、成了梁的组件）能到。
+            // SCTN / STWALL 之外的属主下、没了现算标架）能到。
             removals.insert(element_id(unit));
             report.regen_skipped.push(incident(
                 refno,

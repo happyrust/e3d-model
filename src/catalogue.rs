@@ -1483,34 +1483,14 @@ pub fn model_catalogue_member_with_cache(
                 .collect::<Vec<_>>(),
         ),
     };
-    // Core's catalogue CSG owns `NGMR` at the component level.  It is not a
-    // member of any one positive GMRE primitive, so the per-SEXT negative
-    // collection above cannot see it.  Apply those cutters after composing
-    // the visible primitives, preserving the same mode-0 NAPP gate used by
-    // the joint path.
-    let (component_cutters, component_cut_diagnostics) =
-        if let Some(negative_set) = component_negative_set(&component)? {
-            collect_owned_negatives_where(
-                member,
-                &component,
-                &negative_set,
-                &env,
-                cache,
-                DMat4::IDENTITY,
-                &|negative| {
-                    crate::elmodl::catalogue_napp_admits(0, crate::elmodl::negative_napp(negative))
-                },
-            )?
-        } else {
-            (Vec::new(), Vec::new())
-        };
-    catalogue_negatives += component_cutters.len();
-    diagnostics.extend(component_cut_diagnostics);
-    let local = if component_cutters.is_empty() {
-        local
-    } else {
-        subtract_owned_negatives(local, &component_cutters, "catalogue component after negatives")?
-    };
+    // 目录件自己的 `NGMR`（→ NGMS）是给**宿主**扣的刀（[`catalogue_host_cuts`]：柱底板让柱让位、
+    // 门窗在墙上开孔、关节切梁端），**不扣它自己**。2026-09-28 `6ff5dac` 曾在这里按 mode-0 NAPP 门
+    // 把它扣到组装好的正体上；aps250110 的 E3D TTY RVM 说不对——57 只墙上门窗里 50 只、50 只
+    // FIXING 里 8 只的正体会被自己的 NGMS 扣掉一截（门 `/IS-SRO-NS/900x2045` 的 NSBO 是整个
+    // 门洞，扣完只剩门扇伸出墙外的那一角；檐口加腋节点 `2013286654/208` 扣完只剩 31 mm 一片），
+    // 而 RVM 里 107 只全按**未扣**的 `parts` 逐件对上。对拍此前看不出来是因为 `mesh()` 走 `parts`；
+    // 它唯一露头的地方是正体被整只扣空时的 `EmptyManifold`——ams7997 62 只 STWALL 上的
+    // `/W-HOLE` 墙洞 FITT 因此整件 failed。
     let world = catalogue_member_world(member)?;
     let noun = member.element_type()?;
     // E3D RVM keeps the visible catalogue primitives as independent display

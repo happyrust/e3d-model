@@ -87,7 +87,7 @@ const OWNER_WALK_SITES: &[Site] = &[
         func: "is_model_unit_of",
         climb: Climb::NounOnly,
         reads: &[],
-        why: "FITT 是不是自己一件：只看 owner 的 noun 是不是 STWALL（SCTN 名下的随梁并进 section_body）。\
+        why: "FITT 是不是自己一件：只看 owner 的 noun 是不是 SCTN / STWALL（别的属主下没有现算标架，不成件）。\
               改挂本身是索引级候选，两端属主都上卷（nearest_unit），不靠属性闭包",
     },
     Site {
