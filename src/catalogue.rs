@@ -1489,7 +1489,7 @@ pub fn model_catalogue_member_with_cache(
     // the visible primitives, preserving the same mode-0 NAPP gate used by
     // the joint path.
     let (component_cutters, component_cut_diagnostics) =
-        if let Some(negative_set) = component.get_element("NGMR")? {
+        if let Some(negative_set) = component_negative_set(&component)? {
             collect_owned_negatives_where(
                 member,
                 &component,
@@ -1590,6 +1590,20 @@ pub(crate) struct CatalogueHostCuts {
     pub diagnostics: Vec<String>,
 }
 
+/// 目录件的 `NGMR`（→ `NGMS`）。`NGMR` 只在结构目录件（`SFIT` / `JOIN` / `STCA` 这一族）的
+/// 模板里；管件 `SCOM`、HVAC / 桥架构件的模板根本没有这个属性，e3d-io 对「模板里没有」是
+/// `Err(UnknownAttribute)` 而不是 `Ok(None)`（与逻辑 unset 分开），直接 `get_element` 会把
+/// aps250110 的 34 只 FLAN / ELBO / VALV / NOZZ / REDU / TEE 整件打死。这里先问模板认不认识，
+/// 不认识 = 没有负体集，与「有属性但 unset」同一口径。
+fn component_negative_set(
+    component: &DbElement,
+) -> Result<Option<DbElement>, e3d_io::db_element::DbElementError> {
+    if !component.has_attribute("NGMR")? {
+        return Ok(None);
+    }
+    component.get_element("NGMR")
+}
+
 /// 目录件 `NGMR` 名下给**宿主**扣的负体：`member`（FIXING 这类设计件）在目录件那一侧挂的
 /// `NGMS`，逐把先过调用方的 `admit`（NAPP 门由调用方按路径定），再过与正体同一张显示筛，
 /// 在 `member` 的目录局部系求值后放到世界系（与正体同一个 [`catalogue_member_world`]）。
@@ -1611,7 +1625,7 @@ pub(crate) fn catalogue_host_cuts(
     let Some(component) = catalogue_component(member)? else {
         return Ok(empty);
     };
-    let Some(negative_set) = component.get_element("NGMR")? else {
+    let Some(negative_set) = component_negative_set(&component)? else {
         return Ok(empty);
     };
     let env = crate::catalogue_point::member_env(member, &component);
