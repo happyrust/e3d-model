@@ -196,6 +196,13 @@ pub fn handrail_local_solid(
             rails += 1;
         }
     }
+    if params.show_kickplate {
+        for segment in &segments {
+            // The default kickplate is attached at the path elevation, not at
+            // either handrail height.
+            parts.push(kickplate_segment_solid(segment)?);
+        }
+    }
     let posts = post_positions(&segments, &params);
     let post_height = params.rail_heights.iter().cloned().fold(0.0, f64::max)
         - POST_TOP_CLEARANCE
@@ -231,10 +238,7 @@ pub fn handrail_local_solid(
         params.rail_heights.len(),
     ));
     if params.show_kickplate {
-        notes.push(
-            "SHOWKP=true：踢脚板（ASL_CSGDefaultKickplate）本期未接，E3D 这里多画一块板"
-                .to_string(),
-        );
+        notes.push("SHOWKP=true：已生成默认 8 x 110 mm 踢脚板".to_string());
     }
     if gates > 0 {
         notes.push(format!(
@@ -474,6 +478,17 @@ fn rail_segment_solid(segment: &PathSegment) -> Result<Manifold, ModelError> {
             mitre_end,
         } => {
             let d = (*end - *start).normalize();
+            let sloped = (end.z - start.z).abs() > 1e-9;
+            let horizontal = (d.x * d.x + d.y * d.y).sqrt();
+            let slope_extension = if sloped
+                && horizontal > 1e-9
+                && mitre_start.is_none()
+                && mitre_end.is_none()
+            {
+                RAIL_RADIUS * d.z.abs() / horizontal
+            } else {
+                0.0
+            };
             let extension = |normal: &Option<DVec3>| -> f64 {
                 // 斜接面把圆柱端头切成椭圆，椭圆沿轴向探出 r·tan(θ/2)；圆柱先按这个量
                 // 加长，再让切面把多出来的削掉。θ 由法向与轴向的夹角还原：
@@ -491,8 +506,11 @@ fn rail_segment_solid(segment: &PathSegment) -> Result<Manifold, ModelError> {
             };
             let ext_start = extension(mitre_start);
             let ext_end = extension(mitre_end);
-            let origin = *start - d * ext_start;
-            let length = (*end - *start).length() + ext_start + ext_end;
+            let origin = *start - d * (ext_start + if d.z < 0.0 { slope_extension } else { 0.0 });
+            let length = (*end - *start).length()
+                + ext_start
+                + ext_end
+                + slope_extension;
             let body = Manifold::cylinder(
                 length,
                 RAIL_RADIUS,
@@ -509,10 +527,9 @@ fn rail_segment_solid(segment: &PathSegment) -> Result<Manifold, ModelError> {
             if let Some(normal) = mitre_end {
                 solid = cut_by_plane(&solid, *end, -*normal);
             }
-            // Open layout paths use horizontal end planes.  Without these
+            // Open layout paths use horizontal end planes. Without these
             // caps an oblique rail keeps the circular section beyond the
             // endpoint in Z, while E3D stops exactly at the rail height.
-            let sloped = (end.z - start.z).abs() > 1e-9;
             let keep_above = end.z >= start.z;
             if sloped && mitre_start.is_none() {
                 solid = if keep_above {
@@ -555,6 +572,52 @@ fn rail_segment_solid(segment: &PathSegment) -> Result<Manifold, ModelError> {
             Ok(placed(&torus, frame))
         }
     }
+}
+
+/// 默认布局式踢脚板：8 mm 厚、110 mm 高，沿同一条路径扫掠。
+/// Core3D 的 `ASL_CSGDefaultKickplate` 使用这个固定截面；截面原点在板的
+/// 中心线处，故沿截面 +Y 平移半高后再复用栏杆段标架。
+fn kickplate_segment_solid(segment: &PathSegment) -> Result<Manifold, ModelError> {
+    let PathSegment::Line {
+        start,
+        end,
+        mitre_start,
+        mitre_end,
+    } = segment
+    else {
+        return Err(ModelError::Solid(SolidError::Degenerate {
+            what: "kickplate arc",
+            detail: "layout kickplate does not support arc segments".to_string(),
+        }));
+    };
+    let d = (*end - *start).normalize();
+    let horizontal = DVec3::new(d.x, d.y, 0.0).try_normalize().unwrap_or(DVec3::X);
+    let normal = DVec3::Z.cross(horizontal);
+    let half = normal * 4.0;
+    let points = [
+        *start - half,
+        *start + half,
+        *start - half + DVec3::Z * 110.0,
+        *start + half + DVec3::Z * 110.0,
+        *end - half,
+        *end + half,
+        *end - half + DVec3::Z * 110.0,
+        *end + half + DVec3::Z * 110.0,
+    ];
+    let points = points.map(|point| point.to_array());
+    let mut solid = Manifold::hull_pts(&points);
+    if let Some(normal) = mitre_start {
+        solid = cut_by_plane(&solid, *start, *normal);
+    }
+    if let Some(normal) = mitre_end {
+        solid = cut_by_plane(&solid, *end, -*normal);
+    }
+    if solid.is_empty() || solid.num_tri() == 0 {
+        return Err(ModelError::Solid(SolidError::EmptyManifold {
+            what: "handrail kickplate",
+        }));
+    }
+    Ok(solid)
 }
 
 /// 把局部 +Z 转到 `d` 的旋转（列 = 新基）。

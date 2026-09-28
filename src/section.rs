@@ -48,7 +48,7 @@ use crate::catalogue::{display_filtered, optional_number, repre_level_of, requir
 use crate::discretise::{FilletVertex, flatten_ring};
 use crate::elmodl::ModelError;
 use crate::solid::{
-    MANIFOLD_NUDGE_MM, cut_by_plane, cylinder_segments, extrude_rings, placed, revolve_rings,
+    MANIFOLD_NUDGE_MM, cut_by_plane, cylinder_segments, extrude_rings, placed,
 };
 
 /// 缺省对齐线：`JUSL` 未设时 E3D 用中性轴。
@@ -1660,7 +1660,10 @@ pub fn spine_swept_solid(
                             "截面成员 {member} 在第 {index} 段弧上跨过回转轴（弯曲半径 {radius:.3} 小于截面半宽），轴另一侧被裁掉"
                         ));
                     }
-                    match revolve_rings(rings_uv(rings), sweep.to_degrees()) {
+                    match crate::solid::revolve_rings_profile_faceted(
+                        rings_uv(rings),
+                        sweep.to_degrees(),
+                    ) {
                         Ok(solid) => pieces.push(placed(&solid, frame * uvw)),
                         Err(error) => notes.push(format!(
                             "截面成员 {member} 在第 {index} 段（弧 R={radius:.3} 扫 {:.3}°）回转失败：{error}",
@@ -2759,11 +2762,12 @@ mod tests {
             (min[2] - -8.0).abs() < 1e-3 && (max[2] - 8.0).abs() < 1e-3,
             "{min:?} {max:?}"
         );
-        // 体积 ≈ 截面积 × 路径长（弧按中心线长）。
+        // FacetGroup 回转用 E3D 的离散环带，端部/弧段的三角化会让体积
+        // 比连续扫掠的截面积 × 中心线长略低；保留一个小的离散化余量。
         let length: f64 = path.segments.iter().map(SpineSegment::length).sum();
         let expected = PI * 64.0 * length;
         assert!(
-            (solid.volume() - expected).abs() / expected < 0.02,
+            (solid.volume() - expected).abs() / expected < 0.03,
             "体积 {} vs {expected}",
             solid.volume()
         );

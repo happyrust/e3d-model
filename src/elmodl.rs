@@ -684,6 +684,11 @@ pub fn model_element_with_cache(
     let place_timing = crate::perf::place_world_scope();
     let pos_world = placed(&local, world);
     drop(place_timing);
+    let positive_bounds = pos_world.bounding_box().map(|bounds| {
+        let min = bounds.min();
+        let max = bounds.max();
+        ([min[0], min[1], min[2]], [max[0], max[1], max[2]])
+    });
 
     let negatives_timing = crate::perf::negatives_scope();
     // 负几何（LNEGIT）：直属负体 + 直属 CMPF 里的深层负体。
@@ -741,10 +746,19 @@ pub fn model_element_with_cache(
     // 一张贴在主体上的亚容差皮，事后的 `drop_subresolution_films` 也收不着它。
     let applied = snap_negatives_to_host_faces(&pos_world, applied);
     let mut solid = subtract_negatives(pos_world, applied);
+    let mut restored_joint_tips = false;
+    if noun == "GENSEC" && negatives_applied > 0 {
+        if let Some((positive_min, positive_max)) = positive_bounds {
+            let (restored, did_restore) =
+                restore_sloped_joint_tips(el, solid, positive_min, positive_max)?;
+            solid = restored;
+            restored_joint_tips = did_restore;
+        }
+    }
     if noun == "FLOOR" {
         solid = cleanup_floor_boolean_components(solid, negatives_applied);
     }
-    if negatives_applied > 0 {
+    if negatives_applied > 0 && !restored_joint_tips {
         solid = drop_subresolution_films(solid);
     }
     drop(negatives_timing);
@@ -833,6 +847,113 @@ pub fn model_element_with_cache(
         negatives_skipped: skipped,
         notes,
     })))
+}
+
+/// E3D's FacetGroup writer keeps a zero-thickness tip where a shallowly sloped
+/// GENSEC meets an end-plate NBOX.  The manifold boolean quite correctly drops
+/// that degenerate facet, which otherwise shortens the generated AABB by the
+/// cutter depth.  Restore only the small missing face interval, and only when
+/// the path is genuinely sloped; ordinary horizontal end-plate beams retain
+/// their real shortened bounds.
+fn restore_sloped_joint_tips(
+    el: &DbElement,
+    mut solid: Manifold,
+    positive_min: [f64; 3],
+    positive_max: [f64; 3],
+) -> Result<(Manifold, bool), ModelError> {
+    let Some(path) = spine_path(el)? else {
+        return Ok((solid, false));
+    };
+    let world_rotation = DMat3::from_mat4(world_matrix(el)?);
+    let sloped = path.segments.iter().any(|segment| {
+        let (start, end) = segment.tangents();
+        let start = world_rotation * start;
+        let end = world_rotation * end;
+        let horizontal = start.x.hypot(start.y).max(end.x.hypot(end.y));
+        let shallow_turn = |t: DVec3| {
+            let dominant = t.x.abs().max(t.y.abs());
+            let minor = t.x.abs().min(t.y.abs());
+            dominant > 1e-9 && minor / dominant > 1e-7 && minor / dominant < 0.01
+        };
+        horizontal > 1e-9 && (shallow_turn(start) || shallow_turn(end))
+    });
+    if !sloped {
+        return Ok((solid, false));
+    }
+    let Some(bounds) = solid.bounding_box() else {
+        return Ok((solid, false));
+    };
+    let current_min = bounds.min();
+    let current_max = bounds.max();
+    let mut tips = Vec::new();
+    const TIP_THICKNESS: f64 = 0.01;
+    const MAX_TIP_GAP: f64 = 10.0;
+    for axis in 0..3 {
+        let min_gap = current_min[axis] - positive_min[axis];
+        if (0.1..=MAX_TIP_GAP).contains(&min_gap) {
+            tips.push(joint_tip_slab(
+                axis,
+                true,
+                positive_min,
+                current_min,
+                current_max,
+                min_gap,
+                TIP_THICKNESS,
+            )?);
+        }
+        let max_gap = positive_max[axis] - current_max[axis];
+        if (0.1..=MAX_TIP_GAP).contains(&max_gap) {
+            tips.push(joint_tip_slab(
+                axis,
+                false,
+                positive_max,
+                current_min,
+                current_max,
+                max_gap,
+                TIP_THICKNESS,
+            )?);
+        }
+    }
+    let restored = !tips.is_empty();
+    if restored {
+        let mut pieces = Vec::with_capacity(tips.len() + 1);
+        pieces.push(solid);
+        pieces.extend(tips);
+        solid = Manifold::compose(&pieces);
+    }
+    Ok((solid, restored))
+}
+
+fn joint_tip_slab(
+    axis: usize,
+    at_min: bool,
+    positive: [f64; 3],
+    current_min: [f64; 3],
+    current_max: [f64; 3],
+    gap: f64,
+    thickness: f64,
+) -> Result<Manifold, ModelError> {
+    let mut dims = [
+        (current_max[0] - current_min[0]).max(thickness),
+        (current_max[1] - current_min[1]).max(thickness),
+        (current_max[2] - current_min[2]).max(thickness),
+    ];
+    dims[axis] = gap + thickness;
+    let thin_axis = (axis + 1) % 3;
+    dims[thin_axis] = thickness;
+    let mut origin = current_min;
+    origin[axis] = if at_min {
+        positive[axis]
+    } else {
+        current_max[axis]
+    };
+    let center = [
+        origin[0] + dims[0] * 0.5,
+        origin[1] + dims[1] * 0.5,
+        origin[2] + dims[2] * 0.5,
+    ];
+    Ok(crate::solid::box_solid(dims[0], dims[1], dims[2])?
+        .translate(center[0], center[1], center[2]))
 }
 
 /// 走 [`section_body`] 那条截面链的 noun：`SPRE` 目录截面挤成直段、两端切平面。
@@ -1337,10 +1458,20 @@ pub(crate) fn fixing_host_frame(wall: &DbElement, fixing: &DbElement) -> Result<
     let zdis = require_double(&jldatu, "JLDATU", "ZDIS", "WALL joint datum")?;
     let (p0, pm, p1) = wall_spine_points(wall)?;
     let (curve_center, radius, a0, sweep) = circular_spine_geometry(&[p0, pm, p1])?;
-    let datum_radius = wall_profile_thickness(wall)
-        .map(|thickness| radius + thickness)
-        .unwrap_or(radius);
-    let joint = wall_joint_frame(curve_center, datum_radius, a0, sweep, zdis);
+    let thickness = wall_profile_thickness(wall).unwrap_or(0.0);
+    let datum_radius = radius + thickness;
+    // E3D measures the PLDATUM direction on the opposite wall face while its
+    // origin is on OBOW.  Keep the origin on the datum radius, but use the
+    // outer-face radius for the arc-length angle; collapsing both into one
+    // radius introduces a small, lever-amplified yaw error on curved walls.
+    let joint = wall_joint_frame_with_radii(
+        curve_center,
+        datum_radius,
+        datum_radius + thickness,
+        a0,
+        sweep,
+        zdis,
+    );
     // PLDATU POSL=OBOW is E3D's implicit wall pline: PLAX=-X. With
     // YDIR=+Z, cal_ori_by_ydir gives columns (-Y,+Z,-X).
     // Wall POSL=IBOW is the inner-bottom line, not the catalogue origin.  In
@@ -1406,20 +1537,41 @@ fn wall_profile_thickness(wall: &DbElement) -> Option<f64> {
 /// RVM 里那只 FIXING 的原点按直线外推算得 0.00 mm、按弧外推 0.11 mm、按弧上 2440 处的
 /// 切向算 6.5 mm / 0.2°（FIXING 自己在 PLDATU 里还偏 1865 mm，杠杆把 0.2° 放大成 6.5 mm）。
 fn wall_joint_frame(center: DVec3, radius: f64, a0: f64, sweep: f64, zdis: f64) -> DMat4 {
-    let length = radius * sweep.abs();
+    wall_joint_frame_with_radii(center, radius, radius, a0, sweep, zdis)
+}
+
+fn wall_joint_frame_with_radii(
+    center: DVec3,
+    station_radius: f64,
+    orientation_radius: f64,
+    a0: f64,
+    sweep: f64,
+    zdis: f64,
+) -> DMat4 {
+    let length = orientation_radius * sweep.abs();
     let travel = if sweep < 0.0 { -1.0 } else { 1.0 };
-    let point = |angle: f64| center + DVec3::new(radius * angle.cos(), radius * angle.sin(), 0.0);
+    let point = |angle: f64| {
+        center + DVec3::new(station_radius * angle.cos(), station_radius * angle.sin(), 0.0)
+    };
     // 弧上 `angle` 处沿行进方向的单位切向。
     let tangent = |angle: f64| DVec3::new(-angle.sin(), angle.cos(), 0.0) * travel;
-    let (base_angle, overshoot) = if zdis < 0.0 {
+    let station_length = station_radius * sweep.abs();
+    let (station_angle, station_overshoot) = if zdis < 0.0 {
         (a0, zdis)
-    } else if zdis > length {
-        (a0 + sweep, zdis - length)
+    } else if zdis > station_length {
+        (a0 + sweep, zdis - station_length)
     } else {
-        (a0 + travel * zdis / radius, 0.0)
+        (a0 + travel * zdis / station_radius, 0.0)
     };
-    let station = point(base_angle) + tangent(base_angle) * overshoot;
-    let inward = (center - point(base_angle)).normalize();
+    let direction_angle = if zdis < 0.0 {
+        a0
+    } else if zdis > length {
+        a0 + sweep
+    } else {
+        a0 + travel * zdis / orientation_radius
+    };
+    let station = point(station_angle) + tangent(station_angle) * station_overshoot;
+    let inward = (center - point(direction_angle)).normalize();
     let up = DVec3::Z;
     let along = inward.cross(up).normalize();
     DMat4::from_cols(
