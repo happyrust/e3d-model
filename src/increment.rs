@@ -992,7 +992,10 @@ const CABLE_TRAY_BRANCH_NOUN: &str = "CWBRAN";
 ///   它的 SPINE 路径（SPINE 的 POS/ORI/YDIR，POINSP，CURVE），以及 datum 自己（JLDATU 的
 ///   ZDIS/PKDI/HPREF、PLDATU 的 POSL/YDIR）；
 /// - 名下有 `FITT` 的 SCTN / STWALL（`section::section_fitting_placement`）：宿主自己
-///   （POSS/POSE/BANG/JUSL/SPRE），以及 FITT 自己（POSL/ZDIS/BANG/DELP）。
+///   （POSS/POSE/BANG/JUSL/SPRE），以及 FITT 自己（POSL/ZDIS/BANG/DELP）；
+/// - 带详图式立柱的 HANDRA（`transform::handrail_post_world`，名下有 POSTSE / HRFEAT，或 RAILSE 里
+///   有 HRTERM）：它的 RPATH 路径（POINTR / CURVE 的 POS、CURVE 的 CURTYP），以及立柱 HRPOST / HRTERM /
+///   HRGATE 自己（POSREF / ZDIS / HRJUSL / SPRE / WIDT）。
 ///
 /// 从候选上溯只许穿过上面这些 noun；起点在这一端不存在也是 `None`。
 ///
@@ -1002,10 +1005,13 @@ const CABLE_TRAY_BRANCH_NOUN: &str = "CWBRAN";
 /// 下面的 FIXING / TMPL 件都吃这个标架。输入要么不是 POS/ORI，要么在宿主的**兄弟**子树
 /// （SPINE 路径）里：改一只 POINSP，`nearest_unit` 上卷到 GENSEC 只重建了梁自己，
 /// `placement_input_changed` 只认 POS/ORI，datum 底下的 FIXING 一个都不会重算；STWALL 的
-/// POSS 挪了，墙上 FITT 模板里的件同样停在原处。
+/// POSS 挪了，墙上 FITT 模板里的件同样停在原处。详图式扶手同型：立柱的模板件自成单元，
+/// 挪一只 POINTR 或改立柱的 ZDIS，`nearest_unit` 上卷到 HANDRA 只重建布局式那一件实体，
+/// 立柱模板里的 EXTR / CYLI / GENSEC / PANE（aps250110 栏杆 ~1780 件）全停在旧站位。
 ///
-/// 判据照桥架那条取最保守也最便宜的一档：命中就把整棵宿主子树级联重建。穿过 FIXING
+/// 判据照桥架那条取最保守也最便宜的一档：命中就把整棵宿主子树级联重建。穿过 FIXING / TMPL
 /// （或任何别的 noun）就不算——那以下的改动只影响它自己的子树，owner 链上的级联够得着。
+/// 布局式 HANDRA（只有 RPATH，没有立柱）不算：它自己就是单元，RPATH 改了上卷到它就够。
 fn implicit_frame_host_of(set: &Arc<DbSet>, refno: RefNo) -> Result<Option<RefNo>, DbElementError> {
     let mut current = set.element(refno);
     match current.exists() {
@@ -1021,12 +1027,33 @@ fn implicit_frame_host_of(set: &Arc<DbSet>, refno: RefNo) -> Result<Option<RefNo
         }
         Ok(None)
     };
-    // POINSP → SPINE → GENSEC 与 PLDATU → JLDATU → GENSEC 都是两跳。
+    // 详图式扶手：立柱集 POSTSE、门 HRFEAT，或 RAILSE 里夹着的端头 HRTERM，任一在场就算。
+    let detailed_handrail = |host: &DbElement| -> Result<Option<RefNo>, DbElementError> {
+        for member in host.members()? {
+            match member.element_type()?.as_str() {
+                "POSTSE" | "HRFEAT" => return Ok(Some(host.refno())),
+                "RAILSE" => {
+                    for rail in member.members()? {
+                        if rail.element_type()? == "HRTERM" {
+                            return Ok(Some(host.refno()));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(None)
+    };
+    // POINSP → SPINE → GENSEC 与 PLDATU → JLDATU → GENSEC 都是两跳；POINTR → RPATH → HANDRA、
+    // HRPOST → POSTSE → HANDRA、HRTERM → RAILSE → HANDRA、HRGATE → HRFEAT → HANDRA 也是。
     for _ in 0..3 {
         match current.element_type()?.as_str() {
             "GENSEC" => return owns(&current, "JLDATU"),
             "SCTN" | "STWALL" => return owns(&current, "FITT"),
+            "HANDRA" => return detailed_handrail(&current),
             "SPINE" | "POINSP" | "CURVE" | "JLDATU" | "PLDATU" | "FITT" => {}
+            "RPATH" | "POINTR" | "POSTSE" | "RAILSE" | "HRFEAT" | "HRPOST" | "HRTERM"
+            | "HRGATE" => {}
             _ => return Ok(None),
         }
         match current.owner()? {
@@ -2271,6 +2298,54 @@ mod tests {
         let wall = Some(RefNo::new(2013286654, 39));
         assert_eq!(host_of(39), wall, "名下有 FITT 的 STWALL 自己");
         assert_eq!(host_of(40), wall, "FITT → STWALL");
+    }
+
+    /// `implicit_frame_host_of` 的 HANDRA 支在 aps250110 真库上的形状（库或模板不在就跳过）：
+    /// 详图式扶手 `/BUILDING_02_LEVEL_04/HR_001`（POSTSE + RAILSE 里带 HRTERM）的 RPATH 点、立柱、
+    /// 端头、各集合容器都上溯到它；`/BUILDING_01_LEVEL_03/HR_001` 的 HRGATE 经 HRFEAT、CURVE 经 RPATH
+    /// 也到；立柱 TMPL 里的件不算（owner 链级联够得着）；只有 RPATH 的布局式 HANDRA 不算。
+    #[test]
+    fn handrail_post_inputs_climb_to_their_handrail() {
+        let db = Path::new(r"D:\AVEVA\Projects\E3D3.1\AvevaPlantSample\aps000\aps250110_0001");
+        let template = Path::new(r"E:\reverse\e3d\shadow_e3d31_aps_all");
+        if !db.exists() || !template.join("attlib.dat").exists() {
+            return;
+        }
+        let set = Arc::new(DbSet::with_attlib_file(&template.join("attlib.dat")).unwrap());
+        set.add_db(e3d_io::db_element::DbFilePin {
+            file: db.to_path_buf(),
+            template: e3d_io::db_element::template_file_for(template, "DESI").unwrap(),
+            db_type: Some("DESI".into()),
+            sesno: None,
+        })
+        .unwrap();
+        let host_of = |w1| implicit_frame_host_of(&set, RefNo::new(2013286654, w1)).unwrap();
+        let handrail = Some(RefNo::new(2013286654, 3397));
+        assert_eq!(
+            host_of(3397),
+            handrail,
+            "HANDRA /BUILDING_02_LEVEL_04/HR_001 自己"
+        );
+        assert_eq!(host_of(3471), handrail, "RPATH → HANDRA");
+        assert_eq!(host_of(3473), handrail, "POINTR → RPATH → HANDRA");
+        assert_eq!(host_of(3398), handrail, "POSTSE → HANDRA");
+        assert_eq!(host_of(3409), handrail, "HRPOST → POSTSE → HANDRA");
+        assert_eq!(host_of(3466), handrail, "RAILSE → HANDRA");
+        assert_eq!(host_of(13569), handrail, "HRTERM → RAILSE → HANDRA");
+        assert_eq!(
+            host_of(12337),
+            None,
+            "立柱 TMPL 里的 GENSEC 走 owner 链级联，不在这条腿上"
+        );
+        let gated = Some(RefNo::new(2013286654, 3335));
+        assert_eq!(host_of(4715), gated, "HRGATE → HRFEAT → HANDRA");
+        assert_eq!(host_of(3391), gated, "RPATH 里的 CURVE → HANDRA");
+        assert_eq!(
+            host_of(8599),
+            None,
+            "只有 RPATH 的布局式 HANDRA 自己就是单元，不级联"
+        );
+        assert_eq!(host_of(8601), None, "它的 POINTR 同样不算");
     }
 
     /// `joint_consumer_of` 在 aps250110 / aps250108 真库上的形状（库或模板不在就跳过）：梁

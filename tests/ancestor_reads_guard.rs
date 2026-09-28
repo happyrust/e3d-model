@@ -153,7 +153,8 @@ const OWNER_WALK_SITES: &[Site] = &[
         func: "implicit_frame_host_of",
         climb: Climb::NounOnly,
         reads: &[],
-        why: "现算标架的输入上溯到宿主（GENSEC / SCTN / STWALL）：只看 noun，再看宿主名下有没有 JLDATU / FITT",
+        why: "现算标架的输入上溯到宿主（GENSEC / SCTN / STWALL / 详图式 HANDRA）：只看 noun，再看宿主名下有没有 JLDATU / FITT / \
+              POSTSE·HRFEAT·带 HRTERM 的 RAILSE",
     },
     Site {
         file: "increment.rs",
@@ -200,9 +201,9 @@ const OWNER_WALK_SITES: &[Site] = &[
               POS / CURTYP（见 ANCESTOR_CONSUMERS）；POSREF 指的 POINTR 的 POS 也在那棵 RPATH 下。读者是立柱 TMPL 里自成单元的 \
               EXTR / CYLI / GENSEC / PANE 件（aps250110 栏杆 ~1780 件），立柱与 HANDRA 的 RPATH 都在它们的单元之上。整棵子树重算的\
               根口径下（POINTR / ZDIS 改了 → 祖先闭包命中 HANDRA 所在的 STRU 根 → 整棵重算）覆盖；ADR-080 单元级发布只重建 \
-              plan_update 点名的单元，RPATH 与立柱都不在模板件的子树里 → 不点名 → 模板件停在旧站位。increment::implicit_frame_host_of \
-              只接了 GENSEC datum 与 SCTN / STWALL FITT 两支，HANDRA 这一支还没接——与 fixing_host_frame 那条同型的在案缺口\
-              （gen-model issue #39），补法同 datum：命中 HANDRA 子树里的 RPATH / POINTR / CURVE / HRPOST 就把整棵 HANDRA 子树级联进计划",
+              plan_update 点名的单元，RPATH 与立柱都不在模板件的子树里 → 不点名；ADR-080 单元级发布下由 increment::implicit_frame_host_of \
+              的 HANDRA 支覆盖——候选落在带立柱的 HANDRA 子树里（RPATH / POINTR / CURVE、POSTSE / RAILSE / HRFEAT、立柱本身）就把\
+              整棵 HANDRA 子树级联进计划，与 point_on_host 那条同型（gen-model issue #39），单元规划已经补上",
     },
 ];
 
