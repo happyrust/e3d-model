@@ -770,7 +770,14 @@ pub fn section_fitting_placement(
     let mut rotation = raw_rotation;
     let mut start = poss;
     let mut line = axis;
-    let mut radial_angle = 0.0;
+    // 截面目录不在（链断、库没开）时的兜底，与下面解得开时 `POSL = NA` 那一档同一口径：
+    // 装在中性轴上、径向 π/2（`π/2 − neutral_angle + mount.rotation + π/2`，mount 就是 NA
+    // 时两项相消），只是 NA 的 PLAX 转角与 JUSL 偏移读不到、按 0 算。此前这里是 0，
+    // 与解得开时差整整 90° 的滚转：ams7997 `/-KX-CAM-S4001-V1/F1`（`DESP[8..9] = (−8.7, 8.7)`
+    // 的角钢端板）在 E3D 的 RVM 里板心落在截面包围盒中心，按 0 算就绕梁轴转到另一侧，
+    // y / z 各差 17.4 mm；`fitting_mount_matches_cam_native_axes_and_origin` 钉的
+    // S4003-BAR-1 真值也是 π/2。
+    let mut radial_angle = FRAC_PI_2;
     if let SectionChain::Resolved(catalogue) = section_catalogue(section)? {
         let env = DbElementParamEnv::new(Some(section.clone()), Some(catalogue.sprf.clone()))
             .without_insulation();
