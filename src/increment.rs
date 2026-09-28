@@ -23,7 +23,8 @@
 //!    flag 不参与判定）。先全量拿完 [`CompletedIndexDiff`] 再消费，差分中途失败
 //!    整个窗口失败，没有半截结果可以拿去更新模型（ADR-017 整窗口口径）。
 //! 2. **候选分类** [`plan_update`]：把索引级候选（refno + 增/删/改）折算成
-//!    **模型单元**动作。模型单元的判据只有一份，在 [`is_model_unit`]——全量管线按它
+//!    **模型单元**动作。模型单元的判据只有一份，在 [`crate::category::is_model_unit`]（落到元素上是
+//!    [`is_model_unit_of`]：FITT 在 SCTN 下是梁的组件、在 STWALL 下自己成件）——全量管线按它
 //!    产出、这里按它上卷，两边各写一份名单就会静默漏件（见该函数文档记的那次事故）。
 //!    与 Core3D `PartialUpdateDesiMgr` 的 significant/primitive 上卷同构：
 //!    - 候选自己是单元 → 单元就是它；
@@ -66,7 +67,7 @@
 //!
 //! 反过来，「谁是根」（MDU / significant owner 枚举）与「哪些根被触到」
 //! （`touches_roots`）按 ADR-057 D4 / D5 都归本 crate：它们对 `DbSet` 是纯遍历，
-//! 与 [`is_model_unit`] 是同一棵树上的两层粒度（`BOX` 是单元不是根，`EQUI` 是根不是
+//! 与 [`crate::category::is_model_unit`] 是同一棵树上的两层粒度（`BOX` 是单元不是根，`EQUI` 是根不是
 //! 单元），并存、不互相替换。
 //!
 //! ## 与 Core3D 的一处有意分歧：变换级联
@@ -131,7 +132,7 @@ use e3d_io::refno::RefNo;
 use e3d_io::session::DbView;
 
 use crate::catalogue::CatalogueMeshCache;
-use crate::category::{classify, derives_implied_tubes, graphics_ignored_below, is_model_unit};
+use crate::category::{classify, derives_implied_tubes, graphics_ignored_below, is_model_unit_of};
 use crate::element_diff::{ElementDiff, diff_element};
 use crate::elmodl::{GeneratedElement, GeometryId, Modeled, model_element_with_cache};
 use crate::ledger::{ChangeLedger, ChangeTally, Disposition};
@@ -794,7 +795,7 @@ struct Rollup {
     owner: Option<RefNo>,
     /// 最近的模型单元（含自身）。`None` = 这条改动上方没有任何会被建模的东西。
     unit: Option<RefNo>,
-    /// 路上跨过的最近一个路由容器（含自身）。它不会成为 `unit`——[`is_model_unit`]
+    /// 路上跨过的最近一个路由容器（含自身）。它不会成为 `unit`——[`crate::category::is_model_unit`]
     /// 有意排除它，因为它自己 refno 上没有「一件」几何——而是走 [`derives_implied_tubes`]
     /// 那条路，让整条链上的隐式管身按两端键重算一遍。
     ///
@@ -804,7 +805,8 @@ struct Rollup {
 }
 
 /// 沿 owner 链同时找最近的模型单元与最近的路由容器（都含自身）。判据分别是
-/// [`is_model_unit`]（与全量管线同一份）与 [`derives_implied_tubes`]。
+/// [`is_model_unit_of`]（与全量管线同一份；noun 层是 [`crate::category::is_model_unit`]，FITT 再看属主）
+/// 与 [`derives_implied_tubes`]。
 /// `SignificantOwner` 语义：从自身起判、跨过一切不命中的属主。
 ///
 /// # 两条搜索必须解耦：命中单元不许提前收工
@@ -836,7 +838,8 @@ fn nearest_unit(set: &Arc<DbSet>, refno: RefNo) -> Result<Rollup, DbElementError
             unit = None;
             route_container = None;
         }
-        if unit.is_none() && is_model_unit(&noun) {
+        // 按元素判（`is_model_unit_of`）：SCTN 名下的 FITT 不是单元，上卷到梁；STWALL 名下的是。
+        if unit.is_none() && is_model_unit_of(&current)? {
             unit = Some(current.refno());
         }
         if route_container.is_none() && derives_implied_tubes(&current)? {
@@ -885,7 +888,7 @@ fn nearest_unit(set: &Arc<DbSet>, refno: RefNo) -> Result<Rollup, DbElementError
 /// # 为什么派生单元也要一起收
 ///
 /// 我们的产出是**世界坐标网格**。一个 ZONE 挪了位置，它名下每根隐式管身的顶点
-/// 全都过期了，可路由容器不是模型单元、[`is_model_unit`] 那一关根本拦不住它——
+/// 全都过期了，可路由容器不是模型单元、[`crate::category::is_model_unit`] 那一关根本拦不住它——
 /// 只收 `out` 的话，级联会不声不响地把整片路由留在原地。真库门今天抓不到这个：
 /// `implied_tubes.built` 还是 0，没有管身可对拍。等目录求值一落地它立刻变成
 /// 「全量说管身动了、增量说没动」的静默分歧，所以现在就得收全。
@@ -905,7 +908,7 @@ fn nearest_unit(set: &Arc<DbSet>, refno: RefNo) -> Result<Rollup, DbElementError
 /// # gb==1 节点不往下走
 ///
 /// 它的成员是它属主几何的数据（[`graphics_ignored_below`]，与 `nearest_unit` 同口径），
-/// 不是独立单元；节点自己按 [`is_model_unit`] / [`derives_implied_tubes`] 照常判（今天恒否）。
+/// 不是独立单元；节点自己按 [`is_model_unit_of`] / [`derives_implied_tubes`] 照常判（今天恒否）。
 #[derive(Debug, Clone, Copy)]
 struct CascadeFanout {
     /// 这次遍历新到达并命中的单元 / 派生容器数（含已在计划集里的）。
@@ -966,7 +969,7 @@ fn collect_unit_subtree(
                 None => {}
             }
             let noun = member.element_type()?;
-            if is_model_unit(&noun) {
+            if is_model_unit_of(&member)? {
                 out.insert(key(member.refno()));
                 fanout.hits += 1;
             }
@@ -2147,10 +2150,21 @@ pub fn execute_plan(target: &Arc<DbSet>, plan: UpdatePlan) -> IncrementOutcome {
             }
         };
         let category = classify(&noun);
-        if !is_model_unit(&noun) {
+        let is_unit = match is_model_unit_of(&el) {
+            Ok(is_unit) => is_unit,
+            Err(error) => {
+                removals.insert(element_id(unit));
+                report
+                    .regen_failed
+                    .push(incident(refno, noun, format!("读不出属主：{error}")));
+                continue;
+            }
+        };
+        if !is_unit {
             // 合法到达：类型变更把 base 端的单元送了进来，而它在 target 端的新 noun
             // 不再出几何——与 `Modeled::Skipped` 同款处置（先擦后画，画不出保持
-            // 擦掉），不算失败。计划集没被手工改过的话，这里只有类型变更能到。
+            // 擦掉），不算失败。计划集没被手工改过的话，这里只有类型变更（或 FITT 改挂到
+            // SCTN 下、成了梁的组件）能到。
             removals.insert(element_id(unit));
             report.regen_skipped.push(incident(
                 refno,

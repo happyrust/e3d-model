@@ -83,6 +83,14 @@ const OWNER_WALK_SITES: &[Site] = &[
         why: "路由容器的学科：只看 owner 的 noun 是不是 HVAC",
     },
     Site {
+        file: "category.rs",
+        func: "is_model_unit_of",
+        climb: Climb::NounOnly,
+        reads: &[],
+        why: "FITT 是不是自己一件：只看 owner 的 noun 是不是 STWALL（SCTN 名下的随梁并进 section_body）。\
+              改挂本身是索引级候选，两端属主都上卷（nearest_unit），不靠属性闭包",
+    },
+    Site {
         file: "handrail.rs",
         func: "owning_handrail",
         climb: Climb::NounOnly,

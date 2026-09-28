@@ -525,9 +525,14 @@ pub fn is_model_unit(noun: &str) -> bool {
         // `STAREF`/`ENDREF` 取一段（`crate::handrail::detailed_item_local_solid`）。
         // `FIXING` 是第八个例外，走的却不是截面链而是目录构件 GMRE 求值那条
         // （与路由成员同一个求值器，见 [`builds_from_catalogue_component`]）。
+        // `FITT` 与 `FIXING` 同一条路，只是标架由属主现算（`transform::ImplicitFrame::
+        // SectionFitting`）。noun 这一层说的是「可以成件」；它到底是不是一件由**属主**定
+        // （[`is_model_unit_of`] / [`fitting_stands_alone_under`]）：SCTN 名下的 FITT 随梁并进
+        // `section_body`，是梁那一件的组件；STWALL 名下的在 E3D 的 RVM 里自成一组
+        // （aps250110：`FITTING n of STWALL m of CWALL /B01_LEV01_INT_WALLS` 63 组，57 组有几何）。
         Category::Catalog => matches!(
             noun,
-            "SBFI" | "WALL" | "SCTN" | "GENSEC" | "STWALL" | "RAIL" | "KICKPL" | "FIXING"
+            "SBFI" | "WALL" | "SCTN" | "GENSEC" | "STWALL" | "RAIL" | "KICKPL" | "FIXING" | "FITT"
         ),
 
         // 路由成员的实体 = 目录 GMRE 程序求值（`crate::catalogue`），键正是
@@ -584,6 +589,39 @@ pub fn is_model_unit(noun: &str) -> bool {
     }
 }
 
+/// [`is_model_unit`] 落到**元素**上：noun 说「可以成件」之后，再问属主要不要把它吃掉。
+///
+/// 今天只有一条属主规则——`FITT` 的（[`fitting_stands_alone_under`]）：SCTN 名下的 FITT 由
+/// `elmodl::section_fitting_parts` 并进梁体，是梁那一件的组件而不是自己一件；STWALL 名下的
+/// 才是单元（aps250110：`FITTING n of STWALL m of CWALL /…` 在 E3D 的 RVM 里自成一组）。
+/// 别的属主下的 FITT（CMPF 里的那些）没有现算标架可用，照旧不成件、留在 `catalog_pending`。
+///
+/// 全量管线（`pipeline` 的 `Category::Catalog` 臂）、增量的上卷（`increment::nearest_unit`）、
+/// 子树收集（`increment::collect_unit_subtree`）与重建（`increment::execute`）都走这一个；
+/// 少一处就是 SBFI 同型缺口——两边各写一份名单，被删的那些永远不出 Remove。
+pub fn is_model_unit_of(el: &DbElement) -> Result<bool, DbElementError> {
+    let noun = el.element_type()?;
+    if !is_model_unit(&noun) {
+        return Ok(false);
+    }
+    if noun.trim().eq_ignore_ascii_case("FITT") {
+        return Ok(match el.owner()? {
+            Some(owner) => fitting_stands_alone_under(&owner.element_type()?),
+            None => false,
+        });
+    }
+    Ok(true)
+}
+
+/// 这个属主名下的 `FITT` **自己成件**。只有 `STWALL`：墙不把配件并进本体
+/// （`elmodl::section_fitting_parts_of`），E3D 的 RVM 也把它们各写一组。`SCTN` 名下的由
+/// `elmodl::section_fitting_parts` 并进梁体，从 G1-1a 起就是这样建、这样对拍的；其余属主
+/// （CMPF 等）下的 FITT 连现算标架都没有（`transform::ImplicitFrame::SectionFitting` 只认
+/// SCTN / STWALL），成了件也摆不对，照旧欠着。
+pub fn fitting_stands_alone_under(owner_noun: &str) -> bool {
+    owner_noun.trim().eq_ignore_ascii_case("STWALL")
+}
+
 /// 这个 noun 的目录件直接挂在 `CATR` 上，没有 `SPRE` 那一跳。
 ///
 /// 路由成员的目录链从规格起跳（`SPRE → SPCO --CATR--> SCOM`），`NOZZ` 不是：设计侧
@@ -606,15 +644,23 @@ pub fn enters_catalogue_by_catref(noun: &str) -> bool {
 /// `POSS→POSE`（或 SPINE / RPATH）挤成一段。`FIXING` 身上没有路径可挤——它是一件
 /// 就地摆放的参数化构件，`POS`/`ORI` 直接给世界位姿。
 ///
-/// 只认 `FIXING`：`FITT`/`PFIT`/`CMFI` 手上还没有对得上的语料，把它们一并放进来
+/// 认 `FIXING` 与 `FITT`：`PFIT`/`CMFI` 手上还没有对得上的语料，把它们一并放进来
 /// 等于拿一条没验过的入口去换它们账上那笔如实的欠款。
 ///
 /// 取证（SLYK `/石楼装卸车-SUPP1`，2026-09-14）：69 只 FIXING 全部 `SPRE` 有值，
 /// 指向 `/FHG-PLAT-RECT(G)-C`（`DESP=[200,200,10]`，E3D 导的是 Box 200×200×10）
 /// 与 `/FHG-ExpansionBolt(S)-M12`（`DESP=[160]`，E3D 导的是 Snout + FacetGroup +
 /// Cylinder×2 一套膨胀螺栓）。两条 SPCO 都带 `CATR`，后面那一段与路由成员共用。
+///
+/// `FITT`（aps250110 墙上的门窗，2026-09-29）：`SPRE → SPCO --CATR--> SFIT --GMRE-->`，
+/// SFIT 与 SCOM 对求值器是同一组接口（`catalogue_point::follow_catalogue_component`
+/// 以 GMRE 为终点），`DESP=[ISET, ANGL]` 经 DTSE 表进 `RPRO`。`/IS-SRO-NS/900x2045`
+/// 的门扇 SEXT 与三根门框 SEXT 与 E3D TTY RVM 的 `FITTING 1 of STWALL 5 of CWALL
+/// /B01_LEV01_INT_WALLS` 四块逐块对上（SRTO / SBOX 两块 `OBST=2 TUFL=false` 两边都不画）。
+/// 标架不读自己的 POS/ORI，是 `transform::ImplicitFrame::SectionFitting`（属主的 POSL 线 +
+/// ZDIS / BANG / DELP），`catalogue_member_world` 走 `world_matrix` 拿到的就是它。
 pub fn builds_from_catalogue_component(noun: &str) -> bool {
-    noun.trim().eq_ignore_ascii_case("FIXING")
+    matches!(noun.trim().to_ascii_uppercase().as_str(), "FIXING" | "FITT")
 }
 
 /// 这个 noun 会不会**在自己名下派生出一批几何**——即全量管线不为它本身出实体，
@@ -1580,10 +1626,25 @@ mod tests {
         for noun in ["PANE", "FLOOR", "BOX", "CYLI", "REVO", "POLYHE", "AEXTR"] {
             assert!(is_model_unit(noun), "{noun} 是正体，必然是模型单元");
         }
+        // FITT：与 FIXING 同一条目录构件路（aps250110 墙上的门窗，`FITTING n of STWALL m`
+        // 在 E3D 的 RVM 里自成一组）。noun 层说「可以成件」，属主层再定：SCTN 名下的那些
+        // 由 `section_fitting_parts` 并进梁体，不是自己一件；`is_model_unit_of` 问的就是这个。
+        assert_eq!(classify("FITT"), Category::Catalog);
+        assert!(is_model_unit("FITT"));
+        assert!(builds_from_catalogue_component("FITT"));
+        assert!(fitting_stands_alone_under("STWALL"));
+        assert!(
+            !fitting_stands_alone_under("SCTN"),
+            "SCTN 名下的 FITT 是梁的组件"
+        );
+        assert!(
+            !fitting_stands_alone_under("CMPF"),
+            "CMPF 里的 FITT 没有现算标架，照旧欠着"
+        );
         // 其余目录件本期不出几何，不能被顺手一起认成单元——那会让增量对着一批
-        // 模型集里根本不存在的 refno 发 Remove。`FIXING` 与它们同族同入口
-        // （都是 `SPRE`），语料只覆盖了 `FIXING`，另外三个照旧欠着。
-        for noun in ["FITT", "PFIT", "CMFI"] {
+        // 模型集里根本不存在的 refno 发 Remove。`FIXING` / `FITT` 与它们同族同入口
+        // （都是 `SPRE`），语料只覆盖了那两个，另外两个照旧欠着。
+        for noun in ["PFIT", "CMFI"] {
             assert_eq!(classify(noun), Category::Catalog, "{noun}");
             assert!(!is_model_unit(noun), "{noun} 本期不产实体");
             assert!(!builds_from_catalogue_component(noun), "{noun} 还没有语料");

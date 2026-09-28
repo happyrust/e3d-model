@@ -363,6 +363,10 @@ pub fn model_element_with_cache(
     //
     // `FIXING` 也走这一条：它同属目录件，但几何不是型材截面而是目录构件的 GMRE
     // 求值结果，入口与路由成员一样是 `SPRE`（`category::builds_from_catalogue_component`）。
+    // `FITT` 同路：墙上的门窗（aps250110 `FITTING n of STWALL m`）是 SFIT 的 GMRE 求值结果，
+    // 标架由属主现算（`transform::ImplicitFrame::SectionFitting`），`world_matrix` 已经给出。
+    // SCTN 名下的 FITT 到不了这里——SCTN 是 gb==1 容器，全量不下钻、增量上卷到梁，
+    // 那些由 [`section_fitting_parts`] 并进梁体。
     let noun = el.element_type()?;
     if category == Category::RouteMember
         || (matches!(category, Category::Composite(CompositeFamily::CoreClass28))
@@ -984,6 +988,10 @@ fn is_section_like(noun: &str) -> bool {
 /// 本体：E3D 的 RVM 导出里 `STWALL n of CWALL /1RS-WF03-W-C-RR001` 每条都是 6 面 24 顶点
 /// 的裸盒（`test_data/rvm/1RS-WF03-W-C-RR001.rvm`），配件没有随墙一起画出来。
 /// 把 FITT 并进去会让对拍从 `exact` 变 `off`，而看起来像是墙本身算错了。
+/// 墙上的 FITT 是**自己一件**：STWALL 不是 gb==1 容器，全量遍历走得到它，
+/// `category::is_model_unit("FITT")` 让它按目录构件路（[`model_element_with_cache`] 开头
+/// 那条臂）出一件挂在自己 refno 上的实体——aps250110 的 RVM 里正是 `FITTING n of STWALL m
+/// of CWALL /…` 独立一组（63 组，57 组有几何）。
 fn section_fitting_parts_of(
     noun: &str,
     section: &DbElement,

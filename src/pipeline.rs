@@ -37,8 +37,8 @@ use crate::catalogue::{
 };
 use crate::catalogue_point::{CataloguePoints, tube_outer_diameter_from_stub};
 use crate::category::{
-    BuildDisposition, Category, CompositeFamily, RouteDiscipline, decision,
-    derives_implied_tubes, enters_catalogue_by_catref, graphics_ignored_below, is_model_unit,
+    BuildDisposition, Category, CompositeFamily, RouteDiscipline, decision, derives_implied_tubes,
+    enters_catalogue_by_catref, graphics_ignored_below, is_model_unit, is_model_unit_of,
 };
 use crate::elmodl::{GeneratedElement, GeometryId, Modeled, SkipKind, model_element_with_cache};
 use crate::extrusion_reuse::ExtrusionReuseStats;
@@ -494,7 +494,10 @@ pub fn generate_subtree_with_cache(
             // 「DESP 够不够长」那道门也曾写在这里，同样只写了这一份：增量直接调
             // `model_element`，短 DESP 在那边成了 `regen_failed`，在这边却是没这件事。
             // 现在门在 `elmodl` 里，短 DESP 两边统一落 `Skipped`。
-            Category::Catalog if is_model_unit(&noun) => {
+            //
+            // 按**元素**判而不只按 noun：FITT 在 STWALL 下自己成件，在 SCTN 下是梁的组件
+            // （`category::is_model_unit_of`）——后者落到下面的 `catalog_pending` 臂，与从前一样。
+            Category::Catalog if is_model_unit_of(&el)? => {
                 match model_element_with_cache(&el, category, catalogue_mesh_cache) {
                     Ok(Modeled::Solid(generated)) => {
                         for note in &generated.notes {
