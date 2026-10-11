@@ -2040,6 +2040,108 @@ pub fn pyramid_geometry(world: &glam::DMat4, pyramid: &RecognisedPyramid) -> Ana
     }
 }
 
+/// 出身的放置标架在手时，四棱台记录的**轴向照目录 Z 写**。
+///
+/// [`pyramid_geometry`] 的 Z 是网格认出来的那根轴。E3D 的 DRPYR 写的是目录图元自己的
+/// 标架：高沿 Z，底 / 顶边沿 X / Y。阀门 `/1WCC096VN`（`24383/66600`）上两边不共线——
+/// E3D 把 120 mm 当沿 X 的高，网格把 245 mm 当沿 −Z 的高，底边和高度对调了。
+///
+/// 两档：
+/// - 目录 Z 与识别轴共线：矩阵改用标架（含符号和滚角），反向时底顶对调、偏移反号，
+///   再投到标架的 X / Y 上。尺寸仍是网格的。
+/// - 上下同形、不偏心（长得像盒子的棱台）：三条边长可以换轴。目录的 X / Y / Z 各自
+///   与识别轴或一条底边共线时，把对应边长写成底 X、底 Y、高。对不上任何一条就退回
+///   [`pyramid_geometry`]。有锥度或偏心、但目录 Z 又不贴识别轴时同样退回——锥度只沿
+///   识别轴，换到一条底边上就不是同一只 RVM `Pyramid`。
+pub fn pyramid_geometry_in_frame(
+    world: &glam::DMat4,
+    pyramid: &RecognisedPyramid,
+    frame: &glam::DMat4,
+) -> AnalyticCandidate {
+    let rotation = glam::DMat3::from_mat4(*frame);
+    let axis = pyramid.axis.normalize_or_zero();
+    let x_axis = pyramid.x.normalize_or_zero();
+    let y_axis = axis.cross(x_axis);
+    if axis == glam::DVec3::ZERO || x_axis == glam::DVec3::ZERO || y_axis.length_squared() < 0.5 {
+        return pyramid_geometry(world, pyramid);
+    }
+    let y_axis = y_axis.normalize();
+
+    let snap = |value: f64| if value.abs() < 1e-9 { 0.0 } else { value };
+    let place = |primitive: Primitive| {
+        let placed = *world
+            * (glam::DMat4::from_translation(pyramid.centre) * glam::DMat4::from_mat3(rotation));
+        let cols = placed.to_cols_array();
+        let matrix3 = [
+            cols[0], cols[1], cols[2], cols[4], cols[5], cols[6], cols[8], cols[9], cols[10],
+        ]
+        .map(|value| value / M_TO_MM);
+        let record_bbox = primitive.local_aabb_mm().unwrap_or([0.0; 6]);
+        AnalyticCandidate {
+            geometry: RvmGeometry {
+                tag: "PRIM".to_string(),
+                flags: 1,
+                primitive,
+                matrix3,
+                translation_mm: [cols[12], cols[13], cols[14]],
+                record_bbox,
+                bbox_frame: crate::rvm_read::BboxFrame::Local,
+                level: None,
+            },
+            sagitta_mm: 0.0,
+        }
+    };
+
+    if axes_collinear(rotation.z_axis, axis) {
+        let same_way = rotation.z_axis.dot(axis) > 0.0;
+        let (bottom, top) = if same_way {
+            (pyramid.bottom, pyramid.top)
+        } else {
+            (pyramid.top, pyramid.bottom)
+        };
+        let sign = if same_way { 1.0 } else { -1.0 };
+        let offset = (x_axis * pyramid.offset[0] + y_axis * pyramid.offset[1]) * sign;
+        return place(Primitive::Pyramid([
+            bottom[0],
+            bottom[1],
+            top[0],
+            top[1],
+            snap(offset.dot(rotation.x_axis)),
+            snap(offset.dot(rotation.y_axis)),
+            pyramid.height,
+        ]));
+    }
+
+    let boxy = (pyramid.top[0] - pyramid.bottom[0]).abs() < 1e-6
+        && (pyramid.top[1] - pyramid.bottom[1]).abs() < 1e-6
+        && pyramid.offset[0].abs() < 1e-6
+        && pyramid.offset[1].abs() < 1e-6;
+    if !boxy {
+        return pyramid_geometry(world, pyramid);
+    }
+    let extent = |dir: glam::DVec3| {
+        if axes_collinear(dir, axis) {
+            Some(pyramid.height)
+        } else if axes_collinear(dir, x_axis) {
+            Some(pyramid.bottom[0])
+        } else if axes_collinear(dir, y_axis) {
+            Some(pyramid.bottom[1])
+        } else {
+            None
+        }
+    };
+    let (Some(bottom_x), Some(bottom_y), Some(height)) = (
+        extent(rotation.x_axis),
+        extent(rotation.y_axis),
+        extent(rotation.z_axis),
+    ) else {
+        return pyramid_geometry(world, pyramid);
+    };
+    place(Primitive::Pyramid([
+        bottom_x, bottom_y, bottom_x, bottom_y, 0.0, 0.0, height,
+    ]))
+}
+
 /// 一只球的识别结果，全在局部系 mm。
 #[derive(Debug, Clone, Copy)]
 pub struct RecognisedSphere {
@@ -2979,13 +3081,21 @@ mod tests {
         let eps = 1e-17;
         // (1,−1,0) × (ε,ε,1) = (−1, −1, 2ε)：z 是 +2e-17 的噪声。旧判法「z > 0 就保留」
         // 留下 y < 0 的那一侧；按 y 定符号该翻到 (+, +, ·)。
-        let points = [DVec3::ZERO, DVec3::new(1.0, -1.0, 0.0), DVec3::new(eps, eps, 1.0)];
+        let points = [
+            DVec3::ZERO,
+            DVec3::new(1.0, -1.0, 0.0),
+            DVec3::new(eps, eps, 1.0),
+        ];
         let [axis] = face_normal_axes(&points, &[[0, 1, 2]])[..] else {
             panic!("one cap normal");
         };
         assert!(axis.x > 0.0 && axis.y > 0.0, "{axis:?}");
         // 噪声换个符号，答案不变。
-        let points = [DVec3::ZERO, DVec3::new(1.0, -1.0, 0.0), DVec3::new(-eps, -eps, 1.0)];
+        let points = [
+            DVec3::ZERO,
+            DVec3::new(1.0, -1.0, 0.0),
+            DVec3::new(-eps, -eps, 1.0),
+        ];
         let [other] = face_normal_axes(&points, &[[0, 1, 2]])[..] else {
             panic!("one cap normal");
         };
@@ -3595,5 +3705,66 @@ mod tests {
         let mesh = crate::mesh::TriMesh::from_manifold(&solid);
         let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
         assert!(elliptical_dish_from_local_mesh(&mesh.vertices, &triangles).is_none());
+    }
+
+    /// `/1WCC096VN`（24383/66600）：网格把 245 mm 当沿 −Z 的高，目录把 120 mm 当沿 +X 的高。
+    /// 上下同形、不偏心，边长换到标架上之后参数是 E3D 的 `[245, 206, 245, 206, 0, 0, 120]`。
+    #[test]
+    fn pyramid_in_frame_swaps_height_onto_the_catalogue_axis() {
+        let pyramid = RecognisedPyramid {
+            bottom: [120.0, 206.0],
+            top: [120.0, 206.0],
+            height: 245.0,
+            offset: [0.0, 0.0],
+            centre: glam::DVec3::ZERO,
+            axis: glam::DVec3::new(0.0, 0.0, -1.0),
+            x: glam::DVec3::X,
+        };
+        // 目录 Z = +X（120 mm 那条边），目录 X = 网格轴（245 mm）。
+        let frame = glam::DMat4::from_cols(
+            glam::DVec3::new(0.0, 0.0, -1.0).extend(0.0),
+            glam::DVec3::Y.extend(0.0),
+            glam::DVec3::X.extend(0.0),
+            glam::DVec4::W,
+        );
+        let got = pyramid_geometry_in_frame(&glam::DMat4::IDENTITY, &pyramid, &frame);
+        match got.geometry.primitive {
+            Primitive::Pyramid(params) => {
+                for (got, want) in params.iter().zip([245.0, 206.0, 245.0, 206.0, 0.0, 0.0, 120.0]) {
+                    assert!((got - want).abs() < 1e-6, "{params:?} vs {want}");
+                }
+            }
+            other => panic!("不是 Pyramid：{other:?}"),
+        }
+        let z = [
+            got.geometry.matrix3[6] * M_TO_MM,
+            got.geometry.matrix3[7] * M_TO_MM,
+            got.geometry.matrix3[8] * M_TO_MM,
+        ];
+        assert!((z[0] - 1.0).abs() < 1e-9 && z[1].abs() < 1e-9 && z[2].abs() < 1e-9, "{z:?}");
+    }
+
+    /// 目录轴和三条边都不共线时不改参数，仍按网格轴写。
+    #[test]
+    fn pyramid_in_frame_falls_back_when_the_catalogue_axis_misses_the_box() {
+        let pyramid = RecognisedPyramid {
+            bottom: [120.0, 206.0],
+            top: [120.0, 206.0],
+            height: 245.0,
+            offset: [0.0, 0.0],
+            centre: glam::DVec3::ZERO,
+            axis: glam::DVec3::Z,
+            x: glam::DVec3::X,
+        };
+        let frame = glam::DMat4::from_mat3(glam::DMat3::from_axis_angle(
+            glam::DVec3::new(1.0, 0.3, 0.2).normalize(),
+            0.4,
+        ));
+        let got = pyramid_geometry_in_frame(&glam::DMat4::IDENTITY, &pyramid, &frame);
+        let plain = pyramid_geometry(&glam::DMat4::IDENTITY, &pyramid);
+        match (got.geometry.primitive, plain.geometry.primitive) {
+            (Primitive::Pyramid(a), Primitive::Pyramid(b)) => assert_eq!(a, b),
+            other => panic!("{other:?}"),
+        }
     }
 }

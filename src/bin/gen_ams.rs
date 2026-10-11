@@ -200,10 +200,12 @@ fn recogniser_for_design_noun(noun: &str) -> Option<Recogniser> {
 /// `Cylinder`（长成那样的多半**就是** SBOX / SCYL）；按出身认时不让——E3D 的 DRPYR /
 /// DRSNO 不看退化成什么，LPYR 一律 `Pyramid`、LSNO 一律 `Snout`。
 ///
-/// `frame` = 出身给的放置标架（元素局部系），只有目录图元有。有它时圆柱 / 圆台记录的矩阵
-/// 照它写（Z 列 = 目录轴含符号、X/Y = ORIMAT 副轴、圆台底顶按 PBDM/PTDM），不照网格反推
-/// ——E3D 的 DRCYL / DRSNO 写的就是这只标架（happyrust/e3d-model#1）。尺寸仍由网格说了算，
-/// 自校闸照过。其它族暂不接：盒子 / 球与朝向无关或没有取证，环已经逐列对上。
+/// `frame` = 出身给的放置标架（元素局部系），只有目录图元有。有它时圆柱 / 圆台 / 四棱台
+/// 记录的矩阵照它写（Z 列 = 目录轴含符号、X/Y = ORIMAT 副轴、圆台底顶按 PBDM/PTDM），
+/// 不照网格反推——E3D 的 DRCYL / DRSNO / DRPYR 写的就是这只标架（happyrust/e3d-model#1）。
+/// 四棱台在目录 Z 与识别轴不共线、但上下同形不偏心时，把三条边长换到标架的 X/Y/Z 上
+/// （`/1WCC096VN` 的 120 mm 高沿目录 X，不沿网格 −Z）。对不上就退回网格轴。尺寸仍由网格
+/// 说了算，自校闸照过。盒子 / 球 / 碟 / 矩形环本条不接。
 fn analytic_candidate(
     recogniser: Recogniser,
     world: &glam::DMat4,
@@ -255,7 +257,10 @@ fn analytic_candidate(
             } else {
                 write::pyramid_from_local_mesh(local_vertices, triangles)?
             };
-            Some(write::pyramid_geometry(world, &pyramid))
+            Some(match frame {
+                Some(frame) => write::pyramid_geometry_in_frame(world, &pyramid, frame),
+                None => write::pyramid_geometry(world, &pyramid),
+            })
         }
         Recogniser::Sphere => {
             let sphere = write::sphere_from_local_mesh(local_vertices, triangles)?;
