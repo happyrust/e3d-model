@@ -106,6 +106,13 @@ const OWNER_WALK_SITES: &[Site] = &[
     },
     Site {
         file: "elmodl.rs",
+        func: "pldatu_posl",
+        climb: Climb::AboveUnit,
+        reads: &["POSL"],
+        why: "FIXING 自成模型单元，这里上溯一跳读属主 PLDATU 的 POSL（OBOW 走站位原点，其余走门窗 IBOW）。POSL 在 FIXING 单元之上：整棵子树重算时祖先闭包带上 WALL 所在根，FIXING 跟着重生成；ADR-080 单元级发布不覆盖这条边，与 fixing_host_frame 同一缺口（gen-model issue #39）",
+    },
+    Site {
+        file: "elmodl.rs",
         func: "fixing_host_frame",
         climb: Climb::AboveUnit,
         reads: &["DESP", "OWNER", "ZDIS"],
