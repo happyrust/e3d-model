@@ -2745,6 +2745,51 @@ pub fn elliptical_dish_geometry(
     )
 }
 
+/// 出身标架在手时，折边碟的 **X/Y 改用目录 `ORIMAT` 副轴**，Z 仍沿碟轴。
+///
+/// [`dish_geometry`] 的局部 X 是 `axis.any_orthonormal_vector()`，绕已经对上的 Z 随便滚。
+/// ZONE 66457 有 10 只 EllipticalDish 因此只差 X·Y（代表 `/1WCC778WV`，`24383/66767`，
+/// Z 两侧都是 `(0,0,-1)`）。目录 `SDSH` 的放置矩阵本身就是 `ORIMAT(PAXI)`。
+/// 标架 Z 与碟轴不同向，或 X 退化时，退回 [`elliptical_dish_geometry`]。球形碟不走这里。
+pub fn elliptical_dish_geometry_in_frame(
+    world: &glam::DMat4,
+    dish: &RecognisedEllipticalDish,
+    frame: &glam::DMat4,
+) -> AnalyticCandidate {
+    let raw = glam::DMat3::from_mat4(*frame);
+    let z = raw.z_axis.normalize_or_zero();
+    let axis = dish.axis.normalize_or_zero();
+    let mut x = raw.x_axis - z * raw.x_axis.dot(z);
+    if z.dot(axis) < 0.5 || x.length_squared() < 1e-8 {
+        return elliptical_dish_geometry(world, dish);
+    }
+    x = x.normalize();
+    let y = z.cross(x);
+    let rotation = glam::DMat3::from_cols(x, y, z);
+    let placed =
+        *world * (glam::DMat4::from_translation(dish.centre) * glam::DMat4::from_mat3(rotation));
+    let cols = placed.to_cols_array();
+    let matrix3 = [
+        cols[0], cols[1], cols[2], cols[4], cols[5], cols[6], cols[8], cols[9], cols[10],
+    ]
+    .map(|value| value / M_TO_MM);
+    let primitive = Primitive::EllipticalDish([dish.base_radius, dish.height]);
+    let record_bbox = primitive.local_aabb_mm().unwrap_or([0.0; 6]);
+    AnalyticCandidate {
+        geometry: RvmGeometry {
+            tag: "PRIM".to_string(),
+            flags: 1,
+            primitive,
+            matrix3,
+            translation_mm: [cols[12], cols[13], cols[14]],
+            record_bbox,
+            bbox_frame: crate::rvm_read::BboxFrame::Local,
+            level: None,
+        },
+        sagitta_mm: dish.sagitta_mm,
+    }
+}
+
 /// 生成侧的 `HEAD` / `MODL`。banner 刻意不像 E3D，好让快照一眼看出来源。
 pub fn generated_header(
     note: impl Into<String>,
@@ -3842,5 +3887,43 @@ mod tests {
             got.geometry.matrix3[8],
         ) * M_TO_MM;
         assert!((got_z - z).length() < 1e-9, "{got_z:?} vs {z:?}");
+    }
+
+    /// `/1WCC778WV`：Z 已经是 (0,0,-1)，X/Y 改用目录副轴，不再用任意正交基。
+    #[test]
+    fn elliptical_dish_in_frame_takes_the_catalogue_xy() {
+        let dish = RecognisedEllipticalDish {
+            base_radius: 40.0,
+            height: 20.0,
+            centre: glam::DVec3::new(1.0, 2.0, 3.0),
+            axis: glam::DVec3::new(0.0, 0.0, -1.0),
+            segments: 16,
+            sagitta_mm: 0.1,
+        };
+        let frame = glam::DMat4::from_cols(
+            glam::DVec3::X.extend(0.0),
+            glam::DVec3::new(0.0, -1.0, 0.0).extend(0.0),
+            glam::DVec3::new(0.0, 0.0, -1.0).extend(0.0),
+            glam::DVec4::W,
+        );
+        let got = elliptical_dish_geometry_in_frame(&glam::DMat4::IDENTITY, &dish, &frame);
+        let x = glam::DVec3::new(
+            got.geometry.matrix3[0],
+            got.geometry.matrix3[1],
+            got.geometry.matrix3[2],
+        ) * M_TO_MM;
+        let z = glam::DVec3::new(
+            got.geometry.matrix3[6],
+            got.geometry.matrix3[7],
+            got.geometry.matrix3[8],
+        ) * M_TO_MM;
+        assert!((x - glam::DVec3::X).length() < 1e-9, "{x:?}");
+        assert!((z - glam::DVec3::new(0.0, 0.0, -1.0)).length() < 1e-9, "{z:?}");
+        match got.geometry.primitive {
+            Primitive::EllipticalDish([r, h]) => {
+                assert!((r - 40.0).abs() < 1e-9 && (h - 20.0).abs() < 1e-9);
+            }
+            other => panic!("{other:?}"),
+        }
     }
 }

@@ -277,7 +277,10 @@ fn analytic_candidate(
         // 种类对得上；形状损失算进候选自己的 `sagitta_mm`，仍由自校闸按 r/h 算出来的量放行。
         Recogniser::EllipticalDish => {
             let dish = write::elliptical_dish_from_local_mesh(local_vertices, triangles)?;
-            Some(write::elliptical_dish_geometry(world, &dish))
+            Some(match frame {
+                Some(frame) => write::elliptical_dish_geometry_in_frame(world, &dish, frame),
+                None => write::elliptical_dish_geometry(world, &dish),
+            })
         }
     }
 }
