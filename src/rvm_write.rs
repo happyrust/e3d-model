@@ -2255,6 +2255,48 @@ pub fn sphere_geometry(world: &glam::DMat4, sphere: &RecognisedSphere) -> Analyt
     }
 }
 
+/// 出身的放置标架在手时，球记录的**旋转照目录标架写**，球心和半径不动。
+///
+/// [`sphere_geometry`] 只乘元素世界帧。ZONE 66457 的 11 只阀球（代表 `/1WCC189VN`，
+/// `24383/66791`）E3D 的 Z 躺在 XY 里，我们写成 `(0,0,1)`：半径和 T 相同，列不同。
+/// 球没有几何朝向，但这条矩阵是 E3D 记下来的目录标架。
+pub fn sphere_geometry_in_frame(
+    world: &glam::DMat4,
+    sphere: &RecognisedSphere,
+    frame: &glam::DMat4,
+) -> AnalyticCandidate {
+    // 球的放置矩阵有时是「平移 × 半径缩放」，三列不是单位轴。先丢掉缩放，只留方向。
+    let raw = glam::DMat3::from_mat4(*frame);
+    let z = raw.z_axis.normalize_or_zero();
+    let mut x = raw.x_axis - z * raw.x_axis.dot(z);
+    if z.length_squared() < 0.25 || x.length_squared() < 1e-8 {
+        return sphere_geometry(world, sphere);
+    }
+    x = x.normalize();
+    let rotation = glam::DMat3::from_cols(x, z.cross(x), z);
+    let placed = *world
+        * (glam::DMat4::from_translation(sphere.centre) * glam::DMat4::from_mat3(rotation));
+    let cols = placed.to_cols_array();
+    let matrix3 = [
+        cols[0], cols[1], cols[2], cols[4], cols[5], cols[6], cols[8], cols[9], cols[10],
+    ]
+    .map(|value| value / M_TO_MM);
+    let r = sphere.radius;
+    AnalyticCandidate {
+        geometry: RvmGeometry {
+            tag: "PRIM".to_string(),
+            flags: 1,
+            primitive: Primitive::Sphere([r]),
+            matrix3,
+            translation_mm: [cols[12], cols[13], cols[14]],
+            record_bbox: [-r, -r, -r, r, r, r],
+            bbox_frame: crate::rvm_read::BboxFrame::Local,
+            level: None,
+        },
+        sagitta_mm: sphere.sagitta_mm,
+    }
+}
+
 /// 一只球形碟（`SphericalDish`）的识别结果，全在局部系 mm。
 #[derive(Debug, Clone, Copy)]
 pub struct RecognisedSphericalDish {
@@ -3766,5 +3808,39 @@ mod tests {
             (Primitive::Pyramid(a), Primitive::Pyramid(b)) => assert_eq!(a, b),
             other => panic!("{other:?}"),
         }
+    }
+
+    /// `/1WCC189VN`：E3D 的球 Z 躺在 XY，半径和球心不变，矩阵改用目录标架。
+    #[test]
+    fn sphere_in_frame_uses_the_catalogue_axes_and_keeps_the_centre() {
+        let sphere = RecognisedSphere {
+            radius: 12.5,
+            centre: glam::DVec3::new(17700.0, -10780.0, 7900.0),
+            sagitta_mm: 0.2,
+        };
+        let z = glam::DVec3::new(-0.961, -0.276, 0.0).normalize();
+        let x = glam::DVec3::Z.cross(z).normalize();
+        let y = z.cross(x);
+        let frame = glam::DMat4::from_cols(
+            x.extend(0.0),
+            y.extend(0.0),
+            z.extend(0.0),
+            glam::DVec4::W,
+        );
+        let got = sphere_geometry_in_frame(&glam::DMat4::IDENTITY, &sphere, &frame);
+        match got.geometry.primitive {
+            Primitive::Sphere([r]) => assert!((r - 12.5).abs() < 1e-9),
+            other => panic!("{other:?}"),
+        }
+        let t = got.geometry.translation_mm;
+        assert!((t[0] - sphere.centre.x).abs() < 1e-6);
+        assert!((t[1] - sphere.centre.y).abs() < 1e-6);
+        assert!((t[2] - sphere.centre.z).abs() < 1e-6);
+        let got_z = glam::DVec3::new(
+            got.geometry.matrix3[6],
+            got.geometry.matrix3[7],
+            got.geometry.matrix3[8],
+        ) * M_TO_MM;
+        assert!((got_z - z).length() < 1e-9, "{got_z:?} vs {z:?}");
     }
 }

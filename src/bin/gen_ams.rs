@@ -200,7 +200,7 @@ fn recogniser_for_design_noun(noun: &str) -> Option<Recogniser> {
 /// `Cylinder`（长成那样的多半**就是** SBOX / SCYL）；按出身认时不让——E3D 的 DRPYR /
 /// DRSNO 不看退化成什么，LPYR 一律 `Pyramid`、LSNO 一律 `Snout`。
 ///
-/// `frame` = 出身给的放置标架（元素局部系），只有目录图元有。有它时圆柱 / 圆台 / 四棱台
+/// `frame` = 出身给的放置标架（元素局部系），只有目录图元有。有它时圆柱 / 圆台 / 四棱台 / 球
 /// 记录的矩阵照它写（Z 列 = 目录轴含符号、X/Y = ORIMAT 副轴、圆台底顶按 PBDM/PTDM），
 /// 不照网格反推——E3D 的 DRCYL / DRSNO / DRPYR 写的就是这只标架（happyrust/e3d-model#1）。
 /// 四棱台在目录 Z 与识别轴不共线、但上下同形不偏心时，把三条边长换到标架的 X/Y/Z 上
@@ -264,7 +264,10 @@ fn analytic_candidate(
         }
         Recogniser::Sphere => {
             let sphere = write::sphere_from_local_mesh(local_vertices, triangles)?;
-            Some(write::sphere_geometry(world, &sphere))
+            Some(match frame {
+                Some(frame) => write::sphere_geometry_in_frame(world, &sphere, frame),
+                None => write::sphere_geometry(world, &sphere),
+            })
         }
         Recogniser::SphericalDish => {
             let dish = write::spherical_dish_from_local_mesh(local_vertices, triangles)?;

@@ -485,7 +485,10 @@ struct EvaluatedSnout {
 
 struct EvaluatedSphere {
     mesh_key: CatalogueMeshKey,
+    /// 单位球的放置：平移到球心，再按半径缩放。网格和布尔用这只。
     transform: DMat4,
+    /// 记录矩阵：`ORIMAT(PAXI)`，平移在球心，不含半径缩放。E3D 的球记录 Z 是这条轴。
+    record_frame: DMat4,
 }
 
 struct EvaluatedSlopeCylinder {
@@ -1283,7 +1286,12 @@ pub fn model_catalogue_member_with_cache(
                             },
                         );
                         match outcome {
-                            Ok(true) => {}
+                            Ok(true) => {
+                                // 网格矩阵带半径缩放；记录要的是 ORIMAT(PAXI)，不是那只缩放。
+                                if let Some(part) = solids.last_mut() {
+                                    part.frame = evaluated.record_frame;
+                                }
+                            }
                             Ok(false) => member_duplicates += 1,
                             Err(error) => diagnostics.push(local_failure(&primitive, &error)),
                         }
@@ -2968,12 +2976,19 @@ fn evaluate_catalogue_sphere(
     let distance = required_number(sphere, "PDIS", env, "catalogue sphere")?;
     let centre = axis.origin + direction * distance;
     let segments = cylinder_segments(radius);
+    let rotation = orimat(direction).ok_or_else(|| {
+        ModelError::Solid(SolidError::Degenerate {
+            what: "catalogue sphere axis",
+            detail: format!("PAXI={direction:?} 配不出 ORIMAT"),
+        })
+    })?;
     Ok(Some(EvaluatedSphere {
         mesh_key: CatalogueMeshKey::Sphere {
             tessellation_version: SPHERE_TESSELLATION_VERSION,
             segments,
         },
         transform: DMat4::from_translation(centre) * DMat4::from_scale(DVec3::splat(radius)),
+        record_frame: DMat4::from_translation(centre) * DMat4::from_mat3(rotation),
     }))
 }
 
