@@ -205,6 +205,49 @@ fn allow_box_recogniser(catalogue_noun: Option<&str>) -> bool {
     catalogue_noun != Some("SEXT")
 }
 
+/// 桥架 / 托盘的负体不进 RVM 记录。C-IY `FTUBE 1`（`24384/22405`）E3D 的三条 Box
+/// 就是未扣减的 SBOX：`1500×100×50`、`1500×103×50`、`1500×103×100`。
+/// BOARD 那只网格被负体切成 28 个三角、体积只剩 4.5e5 mm³，包围盒仍是 1500×103×50。
+/// 槽弯的 FacetGroup 也没有孔轮廓。NOZZ 相反：两个 SCYL 扣膛之后 E3D 仍写**一条**面片。
+/// 所以只在可见块全是 `SBOX` / `SEXT` / `SREV` 时按 `parts` 拆开写，其余带负体的仍整只一条。
+fn write_uncut_catalogue_parts(negatives_applied: usize, nouns: &[String]) -> bool {
+    negatives_applied > 0
+        && !nouns.is_empty()
+        && nouns
+            .iter()
+            .all(|noun| matches!(noun.as_str(), "SBOX" | "SEXT" | "SREV"))
+}
+
+/// 小角度槽弯多出来的那一块。12 只 4° 弯我们有 4 个组件、E3D 只有 3 条 FacetGroup；
+/// 多出来的最小边是 0.0004–0.26 mm，不到其余块中位最小边的一成。90° 弯 9 块的最小边
+/// 都 ≥ 48.5 mm，一条都不扔。绝对 1 mm 会把整只已经缩到 0.03 mm 的弯（BEND 18）一起扔掉。
+fn is_record_splinter(min_edge_mm: f64, sibling_min_edges_mm: &[f64]) -> bool {
+    if !(min_edge_mm < 1.0) || sibling_min_edges_mm.is_empty() {
+        return false;
+    }
+    let mut siblings = sibling_min_edges_mm.to_vec();
+    siblings.sort_by(|a, b| a.total_cmp(b));
+    let mid = siblings[siblings.len() / 2];
+    min_edge_mm < mid * 0.1
+}
+
+fn mesh_min_edge_mm(vertices: &[[f64; 3]]) -> f64 {
+    let Some(first) = vertices.first() else {
+        return 0.0;
+    };
+    let mut lo = *first;
+    let mut hi = *first;
+    for vertex in vertices {
+        for axis in 0..3 {
+            lo[axis] = lo[axis].min(vertex[axis]);
+            hi[axis] = hi[axis].max(vertex[axis]);
+        }
+    }
+    (0..3)
+        .map(|axis| hi[axis] - lo[axis])
+        .fold(f64::MAX, f64::min)
+}
+
 /// `by_provenance` = 这把识别器是**出身**挑的，不是按长相轮到的。
 ///
 /// 差别只在两处退化：按长相认时，长得像盒子的棱台让给 `Box`、两端等径的圆台让给
@@ -228,12 +271,17 @@ fn analytic_candidate(
     use e3d_model::rvm_write as write;
     match recogniser {
         Recogniser::Box => {
-            let lengths = write::box_from_local_mesh(local_vertices, triangles)?;
-            let centre = [0, 1, 2].map(|axis| {
-                let lo = local_vertices.iter().fold(f64::MAX, |m, v| m.min(v[axis]));
-                let hi = local_vertices.iter().fold(f64::MIN, |m, v| m.max(v[axis]));
-                (lo + hi) / 2.0
-            });
+            let (lo, hi) = aabb_of_points(local_vertices.iter().copied())?;
+            let centre = [0, 1, 2].map(|axis| (lo[axis] + hi[axis]) / 2.0);
+            let lengths = write::box_from_local_mesh(local_vertices, triangles).or_else(|| {
+                // 出身是 SBOX 时，切过的网格不再是 12 个三角。E3D 写的仍是未扣减的盒，
+                // 而这只盒子的包围盒还在（负体没削掉角）。按长相认时不走这条，免得把开孔盒写成实心盒。
+                if !by_provenance {
+                    return None;
+                }
+                let lengths = [0, 1, 2].map(|axis| hi[axis] - lo[axis]);
+                lengths.iter().all(|len| *len > 0.0).then_some(lengths)
+            })?;
             Some(write::box_geometry(world, lengths, centre))
         }
         Recogniser::Cylinder => {
@@ -992,25 +1040,39 @@ fn main() -> anyhow::Result<()> {
                 // 合成一条会让 `Cylinder×2 → FacetGroup` 这类差异永远消不掉。
                 // `components()` 有 `parts` 就用它，没有就按连通性拆——单块实体拆出来还是一块。
                 //
-                // **扣过负体的是例外，整只一条。** E3D 对布尔结果没有解析图元可写，只能把整只
-                // 元素的结果交给面片写出器，出来就是一条记录。取证是全量的：全 sweep 24 118 个
-                // 元素里落了负体的只有 218 个，其中 199 只 NOZZ（两个 SCYL 各扣一把 NSCY 膛刀）
-                // 基准侧**清一色一条**面片——颈与法兰装在同一条记录里，两端的环形面靠多轮廓
-                // 表达（`/PH-3601出口1` 那条 32 个多边形里 4 个带孔：外圈 12 边、内圈 8 边）；
-                // 我们的网格是分开的两块，逐组件写就平白多出一条。剩下 19 只本来就是单块，
-                // 两种口径同解。一个反例都没有。
-                let component_meshes: Vec<TriMesh> = if generated.negatives_applied > 0 {
-                    vec![mesh.clone()]
-                } else {
-                    generated
-                        .components()
+                // **扣过负体、又不是桥架那一类可见图元的，整只一条。** NOZZ 的两个
+                // SCYL 扣完膛，E3D 写成一条面片。桥架 / 托盘的 SBOX / SEXT / SREV
+                // 相反：负体不进记录，每只可见图元各写一条未扣减的（C-IY 三条 Box
+                // 尺寸就是 SBOX 自己的 1500×100×50 / 1500×103×50 / 1500×103×100）。
+                let split_uncut = write_uncut_catalogue_parts(
+                    generated.negatives_applied,
+                    &generated.part_catalogue_nouns,
+                );
+                let component_meshes: Vec<TriMesh> =
+                    if generated.negatives_applied > 0 && !split_uncut {
+                        vec![mesh.clone()]
+                    } else {
+                        generated
+                            .components()
+                            .iter()
+                            .map(TriMesh::from_manifold)
+                            .collect()
+                    }
+                    .into_iter()
+                    .filter(|m| !m.indices.is_empty())
+                    .collect();
+                let part_min_edges: Vec<f64> = if split_uncut {
+                    component_meshes
                         .iter()
-                        .map(TriMesh::from_manifold)
+                        .map(|component| {
+                            let local: Vec<[f64; 3]> =
+                                component.vertices.iter().map(to_local).collect();
+                            mesh_min_edge_mm(&local)
+                        })
                         .collect()
-                }
-                .into_iter()
-                .filter(|m| !m.indices.is_empty())
-                .collect();
+                } else {
+                    Vec::new()
+                };
                 // 拉伸体族与多面体照 E3D 的写法一律面片，不进识别器（见 [`e3d_exports_facets_only`]）。
                 let facets_only = e3d_exports_facets_only(&generated.noun);
                 // `PrimitiveInstance` / `AnalyticPrimitive` 描述的都是**整个元素**（在元素
@@ -1087,6 +1149,17 @@ fn main() -> anyhow::Result<()> {
                     for (index, component) in component_meshes.iter().enumerate() {
                         let local: Vec<[f64; 3]> =
                             component.vertices.iter().map(to_local).collect();
+                        if split_uncut {
+                            let siblings: Vec<f64> = part_min_edges
+                                .iter()
+                                .enumerate()
+                                .filter(|(other, _)| *other != index)
+                                .map(|(_, edge)| *edge)
+                                .collect();
+                            if is_record_splinter(part_min_edges[index], &siblings) {
+                                continue;
+                            }
+                        }
                         let tris: Vec<[u32; 3]> = component.indices.as_chunks::<3>().0.to_vec();
                         // `SDSH` + `PRAD > 0`：种类由折边开关定，不由 r/h。半球（r = h）
                         // 按长相会被球形碟先认走，E3D 写的仍是 `EllipticalDish`。
@@ -1334,7 +1407,10 @@ fn aabb_of_points(points: impl IntoIterator<Item = [f64; 3]>) -> Option<([f64; 3
 
 #[cfg(test)]
 mod tests {
-    use super::{allow_box_recogniser, recogniser_for_catalogue_noun, Recogniser};
+    use super::{
+        Recogniser, allow_box_recogniser, is_record_splinter, recogniser_for_catalogue_noun,
+        write_uncut_catalogue_parts,
+    };
 
     /// `/1RX07-LCT` 的 90° 槽弯是 SEXT，网格是盒子，E3D 写 FacetGroup。
     /// `SBOX` 仍由出身先挑中 Box。出身不明时不挡。
@@ -1345,5 +1421,30 @@ mod tests {
         assert!(allow_box_recogniser(Some("SBOX")));
         assert_eq!(recogniser_for_catalogue_noun("SBOX"), Some(Recogniser::Box));
         assert!(allow_box_recogniser(None));
+    }
+
+    /// C-IY 带负体的托盘 / 槽弯按可见 SBOX / SEXT / SREV 拆开。NOZZ 的 SCYL 仍整只一条。
+    /// 4° 弯多出来的薄片扔掉；整只都缩到 0.03 mm 时真块留下。
+    #[test]
+    fn negatives_on_tray_parts_split_unless_they_are_splinters() {
+        assert!(write_uncut_catalogue_parts(
+            1,
+            &["SBOX".into(), "SBOX".into(), "SBOX".into()]
+        ));
+        assert!(write_uncut_catalogue_parts(
+            1,
+            &["SEXT".into(), "SREV".into()]
+        ));
+        assert!(!write_uncut_catalogue_parts(
+            1,
+            &["SCYL".into(), "SCYL".into()]
+        ));
+        assert!(!write_uncut_catalogue_parts(0, &["SBOX".into()]));
+        assert!(!write_uncut_catalogue_parts(1, &[]));
+        assert!(is_record_splinter(0.105, &[7.18, 7.18, 7.36]));
+        assert!(!is_record_splinter(7.18, &[0.105, 7.18, 7.36]));
+        assert!(is_record_splinter(0.0004, &[0.027, 0.027, 0.028]));
+        assert!(!is_record_splinter(0.027, &[0.0004, 0.027, 0.028]));
+        assert!(!is_record_splinter(48.5, &[50.0, 50.0, 100.0]));
     }
 }
