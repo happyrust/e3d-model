@@ -1378,34 +1378,45 @@ pub(crate) fn fixing_host_frame(wall: &DbElement, fixing: &DbElement) -> Result<
     );
     // PLDATU POSL=OBOW is E3D's implicit wall pline: PLAX=-X. With
     // YDIR=+Z, cal_ori_by_ydir gives columns (-Y,+Z,-X).
-    // Wall POSL=IBOW is the inner-bottom line, not the catalogue origin.  In
-    // the AMS wall family the line sits one 600 mm fixing clearance below the
-    // wall top (DESP[0]); leaving it at zero drops every wall FIXING by
-    // `height - 600` (4000 -> 3400 mm in the real sample).
-    let wall_height = wall
-        .get_double_array("DESP")?
-        .and_then(|values| values.first().copied())
-        .filter(|value| value.is_finite() && *value > 0.0)
-        .unwrap_or(0.0);
-    // Door FIXINGs carry the opening height/width in a two-value DESP and
-    // are centred in the wall: the live 1700x2045 door spans from the wall
-    // base to 2045 mm.  Window FIXINGs use the standard IBOW datum instead.
-    let door_fixing = fixing
-        .get_double_array("DESP")?
-        .is_some_and(|values| values.len() >= 2);
-    // The standard wall fixing datum stays at the 3400 mm design level for
-    // the shorter 3800 mm wall family as well: its generated fixing is 1100
-    // mm above the wall base in both the 4000 and 3800 mm live samples.  Do
-    // not lower the frame just because DESP reports the shorter wall height.
-    let ibow_z = if door_fixing {
-        wall_height * 0.5
-            + fixing
-                .get_double_array("DESP")?
-                .and_then(|values| values.get(1).copied())
-                .filter(|value| value.is_finite())
-                .unwrap_or(0.0)
+    //
+    // OBOW（ams1112 WF03 `/1RS-WF03-W-C-RR001` 的 38 只穿墙套管 FIXING，WALL FUNC=RING）：
+    // E3D TTY RVM 里 PLDATUM 的原点就是 JLDATUM 的站位（高差 0），FIXING 的 POS 三分量
+    // 全部从那里量——38/38 满足 |POS| = |T_fixi − T_pldatu|、竖向 = −POS.x、水平模长相等，
+    // 最大残差 0.001 mm（plant-model-5 `outputs/rvm-check-20261010/wall-1112/_hypothesis.py`）。
+    // 下面那套 IBOW 抬高 + `fixing_local_matrix` 清 POS[1]/POS[2] 套在它身上，38 只全部
+    // off 0.8–12.2 m。这里不抬高，POS 由 [`fixing_local_matrix`] 原样保留。
+    let ibow_z = if pldatu_posl(fixing)?.as_deref() == Some("OBOW") {
+        0.0
     } else {
-        (wall_height - 600.0).max(3400.0)
+        // Wall POSL=IBOW is the inner-bottom line, not the catalogue origin.  In
+        // the AMS wall family the line sits one 600 mm fixing clearance below the
+        // wall top (DESP[0]); leaving it at zero drops every wall FIXING by
+        // `height - 600` (4000 -> 3400 mm in the real sample).
+        let wall_height = wall
+            .get_double_array("DESP")?
+            .and_then(|values| values.first().copied())
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .unwrap_or(0.0);
+        // Door FIXINGs carry the opening height/width in a two-value DESP and
+        // are centred in the wall: the live 1700x2045 door spans from the wall
+        // base to 2045 mm.  Window FIXINGs use the standard IBOW datum instead.
+        let door_fixing = fixing
+            .get_double_array("DESP")?
+            .is_some_and(|values| values.len() >= 2);
+        // The standard wall fixing datum stays at the 3400 mm design level for
+        // the shorter 3800 mm wall family as well: its generated fixing is 1100
+        // mm above the wall base in both the 4000 and 3800 mm live samples.  Do
+        // not lower the frame just because DESP reports the shorter wall height.
+        if door_fixing {
+            wall_height * 0.5
+                + fixing
+                    .get_double_array("DESP")?
+                    .and_then(|values| values.get(1).copied())
+                    .filter(|value| value.is_finite())
+                    .unwrap_or(0.0)
+        } else {
+            (wall_height - 600.0).max(3400.0)
+        }
     };
     let pldatum = DMat4::from_translation(DVec3::new(0.0, ibow_z, 0.0))
         * DMat4::from_cols(
@@ -1504,14 +1515,38 @@ pub(crate) fn fixing_host_wall(fixing: &DbElement) -> Result<Option<DbElement>, 
     Ok(None)
 }
 
+/// FIXING 属主 PLDATU 的 `POSL`（大写、去空白）；属主不是 PLDATU 或没设返回 `None`。
+///
+/// 墙上 FIXING 的 PLDATU 标架按这条 p-line 分两套（见 [`fixing_host_frame`] /
+/// [`fixing_local_matrix`]）：`OBOW` 原点在 JLDATU 站位、FIXING 的 POS 全量生效；
+/// `IBOW`（aps250110 门窗）沿用 09-28 对 RVM 拟合的那套抬高 + 清 POS[1]/POS[2]。
+fn pldatu_posl(fixing: &DbElement) -> Result<Option<String>, ModelError> {
+    let Some(pldatu) = fixing.owner()? else {
+        return Ok(None);
+    };
+    if pldatu.element_type()? != "PLDATU" {
+        return Ok(None);
+    }
+    Ok(pldatu
+        .get_string("POSL")?
+        .map(|text| text.trim().to_ascii_uppercase())
+        .filter(|text| !text.is_empty()))
+}
+
 /// WALL FIXING 的 `POS[1]`/`POS[2]` 是目录件的定位输入，不是目录几何
 /// 实例的附加平移。Core3D 将它们留给墙体 p-line / SFIT 求值；若把完整
 /// `local_matrix(FIXING)` 再乘到目录实体上，窗件会按 `POS[1]` 在墙向重复
 /// 平移（APS250110 的 77.965/50.847/20.339 mm 三组 RVM 偏差正好相等）。
 /// `POS[0]` 与 `ORI` 仍是实例标架的一部分；门的 `DESP[1]` 高程偏置在
 /// `fixing_host_frame` 中消费，不能再把 `POS[1]` 当作第二次平移。
+///
+/// 以上只对 `POSL=IBOW` 那一族成立。`POSL=OBOW` 的穿墙套管（ams1112）E3D 把 POS 三分量
+/// 全部用上（取证见 [`fixing_host_frame`]），这里原样返回 `local_matrix`。
 pub(crate) fn fixing_local_matrix(fixing: &DbElement) -> Result<DMat4, ModelError> {
     let local = crate::transform::local_matrix(fixing)?;
+    if pldatu_posl(fixing)?.as_deref() == Some("OBOW") {
+        return Ok(local);
+    }
     Ok(DMat4::from_cols(
         local.x_axis,
         local.y_axis,
