@@ -195,6 +195,16 @@ fn recogniser_for_design_noun(noun: &str) -> Option<Recogniser> {
     }
 }
 
+/// 兜底次序里要不要试 `Box`。
+///
+/// E3D 的拉伸写出器对目录 `SEXT` 一律写 `FacetGroup`（`DRWEXT`，记录种类常数 11），
+/// 不因为截面是矩形就改走 `DRBOX`。90°、半径 0 的槽弯网格是 8 个角、12 个三角，
+/// `box_from_local_mesh` 认得出盒子——种类却和 E3D 相反（`/1RX07-LCT` 的 20 只 BEND）。
+/// `SBOX` 不走这里：它由 [`recogniser_for_catalogue_noun`] 先挑中 `Box`。出身不明时照旧按长相认。
+fn allow_box_recogniser(catalogue_noun: Option<&str>) -> bool {
+    catalogue_noun != Some("SEXT")
+}
+
 /// `by_provenance` = 这把识别器是**出身**挑的，不是按长相轮到的。
 ///
 /// 差别只在两处退化：按长相认时，长得像盒子的棱台让给 `Box`、两端等径的圆台让给
@@ -323,6 +333,7 @@ fn rvm_component_geometry(
     preferred: Option<Recogniser>,
     frame: Option<&glam::DMat4>,
     provenance_only: bool,
+    allow_box: bool,
     analytic_count: &mut usize,
     rejected_count: &mut usize,
 ) -> e3d_model::rvm_read::RvmGeometry {
@@ -338,6 +349,7 @@ fn rvm_component_geometry(
                 .iter()
                 .copied()
                 .filter(|recogniser| Some(*recogniser) != preferred)
+                .filter(|recogniser| allow_box || *recogniser != Recogniser::Box)
                 .find_map(|recogniser| {
                     analytic_candidate(recogniser, world, local_vertices, triangles, false, frame)
                 })
@@ -1101,6 +1113,9 @@ fn main() -> anyhow::Result<()> {
                         // 这一族只认出身挑的那一把，认不出来就是面片——按长相轮一遍正是
                         // 64f3f01 挡掉的那件事（矩形截面写成 `Box`）。
                         let provenance_only = facets_only;
+                        // `SEXT` 的矩形挤出长得像盒子，E3D 仍写 FacetGroup。`SBOX` 不受影响。
+                        let catalogue_noun = component_nouns.get(index).map(String::as_str);
+                        let allow_box = allow_box_recogniser(catalogue_noun);
                         let geometry = if provenance_only && preferred.is_none() {
                             rvm_extrusion_facets += 1;
                             e3d_model::rvm_write::facet_group_from_world_triangles(
@@ -1121,6 +1136,7 @@ fn main() -> anyhow::Result<()> {
                                 preferred,
                                 frame,
                                 provenance_only,
+                                allow_box,
                                 &mut rvm_analytic,
                                 &mut rvm_analytic_rejected,
                             )
@@ -1314,4 +1330,20 @@ fn aabb_of_points(points: impl IntoIterator<Item = [f64; 3]>) -> Option<([f64; 3
         }
     }
     Some((lo, hi))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{allow_box_recogniser, recogniser_for_catalogue_noun, Recogniser};
+
+    /// `/1RX07-LCT` 的 90° 槽弯是 SEXT，网格是盒子，E3D 写 FacetGroup。
+    /// `SBOX` 仍由出身先挑中 Box。出身不明时不挡。
+    #[test]
+    fn a_rectangular_sext_is_not_offered_the_box_recogniser() {
+        assert!(!allow_box_recogniser(Some("SEXT")));
+        assert!(recogniser_for_catalogue_noun("SEXT").is_none());
+        assert!(allow_box_recogniser(Some("SBOX")));
+        assert_eq!(recogniser_for_catalogue_noun("SBOX"), Some(Recogniser::Box));
+        assert!(allow_box_recogniser(None));
+    }
 }
