@@ -1052,12 +1052,21 @@ pub fn torus_from_local_mesh(
     // ——90° 的弯头与 270° 的弯头端盖完全一样。所以**拿实体自己的顶点定**：
     // 以某个端盖为起点绕 +axis 量角，真正的起点会让所有顶点的角位落在 [0, 包角] 内，
     // 取到的最大角位就是包角；反着取会得到 360° − 包角。两个候选取小的那个。
+    //
+    // 内缘贴轴（`RINS = 0`）的顶点平面半径是 0，没有角位。变换之后剩下 ~1e-13 mm
+    // 的噪声方向，`atan2` 会把它记成任意角，把 90° 弯头量成 180°/270°。矩形环识别
+    // 已经丢掉这一档。阈值 1e-4 mm：ams7997 那五只的贴轴半径都在 7e-13 mm 以下，
+    // 管面上相邻真顶点的平面半径是毫米级。
+    const AXIS_RHO_MM: f64 = 1e-4;
     let arm_dir = |arm: DVec3| (arm - axis * arm.dot(axis)).normalize();
     let sweep_extent = |start: DVec3| {
         let side = axis.cross(start);
         points.iter().fold(0.0f64, |acc, p| {
             let w = *p - centre;
             let planar = w - axis * w.dot(axis);
+            if planar.length() < AXIS_RHO_MM {
+                return acc;
+            }
             let mut phi = planar.dot(side).atan2(planar.dot(start));
             if phi < -1e-9 {
                 phi += std::f64::consts::TAU;
@@ -1074,10 +1083,14 @@ pub fn torus_from_local_mesh(
     }
 
     // 扫掠折线的段数：顶点的角位有几个不同值，就是几圈截面，段数少一。
+    // 贴轴顶点的噪声角位不算一圈，否则弦高按多出来的那段算，闸门余量是错的。
     let side = axis.cross(start);
     let mut rings: Vec<f64> = Vec::new();
     for p in &points {
         let planar = (*p - centre) - axis * (*p - centre).dot(axis);
+        if planar.length() < AXIS_RHO_MM {
+            continue;
+        }
         let mut phi = planar.dot(side).atan2(planar.dot(start));
         if phi < -1e-9 {
             phi += std::f64::consts::TAU;
@@ -2812,6 +2825,48 @@ mod tests {
             "angle={}",
             torus.angle.to_degrees()
         );
+    }
+
+    /// `RINS = 0` 的弯头内缘贴轴。顶点被夹到轴上之后，变换还会留下 ~1e-12 mm 的
+    /// 平面分量；那个方向没有意义，量角必须把它丢掉，否则 90° 会被抬成 270°。
+    #[test]
+    fn an_on_axis_pinch_vertex_does_not_inflate_the_sweep() {
+        let solid = crate::solid::circ_torus_solid(0.0, 33.0, 90.0).unwrap();
+        let mesh = crate::mesh::TriMesh::from_manifold(&solid);
+        let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
+        let clean = torus_from_local_mesh(&mesh.vertices, &triangles).expect("贴轴弯头");
+        assert!(
+            (clean.angle.to_degrees() - 90.0).abs() < 1e-3,
+            "clean angle={}",
+            clean.angle.to_degrees()
+        );
+        assert!((clean.offset - 16.5).abs() < 1e-6, "{}", clean.offset);
+        assert!((clean.radius - 16.5).abs() < 1e-6, "{}", clean.radius);
+
+        let mut vertices = mesh.vertices.clone();
+        let (index, rho) = vertices
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let w = glam::DVec3::from_array(*p) - clean.centre;
+                let planar = w - clean.axis * w.dot(clean.axis);
+                (i, planar.length())
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .unwrap();
+        assert!(rho < 1e-6, "内核应有贴轴顶点，ρ={rho}");
+        // 从起点往扫掠反方向拨 1e-12 mm。旧算法的 atan2 会把这一下记成将近 360°。
+        let backward = clean.axis.cross(clean.start).normalize();
+        let nudged = glam::DVec3::from_array(vertices[index]) - backward * 1e-12;
+        vertices[index] = nudged.to_array();
+        let noisy = torus_from_local_mesh(&vertices, &triangles).expect("噪声贴轴顶点仍是弯头");
+        assert!(
+            (noisy.angle.to_degrees() - 90.0).abs() < 1e-3,
+            "noisy angle={} ρ={rho}",
+            noisy.angle.to_degrees()
+        );
+        assert!((noisy.offset - 16.5).abs() < 1e-6, "{}", noisy.offset);
+        assert!((noisy.radius - 16.5).abs() < 1e-6, "{}", noisy.radius);
     }
 
     #[test]
