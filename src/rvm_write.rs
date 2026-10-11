@@ -1191,6 +1191,62 @@ pub fn circular_torus_geometry(world: &glam::DMat4, torus: &RecognisedTorus) -> 
     }
 }
 
+/// 出身标架在手时，圆环的矩阵改用标架。Z 与网格轴共线（含反向）、起扫 X 落在
+/// 这一档的端盖上才换，否则退回 [`circular_torus_geometry`]。
+///
+/// 87 只弯头是同一段弧从另一头起扫、轴取反。代表 ELBO 3（`24383/66487`）的 SCTO
+/// 写 `PAAX=P1`、`PBAX=P2`；E3D 记录的起扫端是 **P2**（离开），不是 P1。只把 Z
+/// 翻过来、X 留在识别起点，扫的是补弧，自校闸会把它退回面片。目录标架的 X 已经
+/// 在另一头，跟着用即可。`offset` / `radius` / `angle` 与圆心仍取网格。
+pub fn circular_torus_geometry_in_frame(
+    world: &glam::DMat4,
+    torus: &RecognisedTorus,
+    frame: &glam::DMat4,
+) -> AnalyticCandidate {
+    let raw = glam::DMat3::from_mat4(*frame);
+    let z = raw.z_axis.normalize_or_zero();
+    let axis = torus.axis.normalize_or_zero();
+    let start = torus.start.normalize_or_zero();
+    let mut x = raw.x_axis - z * raw.x_axis.dot(z);
+    let side = axis.cross(start);
+    let far = (start * torus.angle.cos() + side * torus.angle.sin()).normalize_or_zero();
+    let expected = if z.dot(axis) > 0.0 { start } else { far };
+    if !axes_collinear(z, axis)
+        || x.length_squared() < 1e-8
+        || expected.length_squared() < 0.5
+    {
+        return circular_torus_geometry(world, torus);
+    }
+    x = x.normalize();
+    // 1e-3：与矩阵普查的旋转容差同一量级。对不上端盖就是滚角或补弧，退回网格轴。
+    if x.cross(expected).length() > 1e-3 || x.dot(expected) <= 0.0 {
+        return circular_torus_geometry(world, torus);
+    }
+    let rotation = glam::DMat3::from_cols(x, z.cross(x), z);
+    let placed =
+        *world * (glam::DMat4::from_translation(torus.centre) * glam::DMat4::from_mat3(rotation));
+    let cols = placed.to_cols_array();
+    let matrix3 = [
+        cols[0], cols[1], cols[2], cols[4], cols[5], cols[6], cols[8], cols[9], cols[10],
+    ]
+    .map(|value| value / M_TO_MM);
+    let primitive = Primitive::CircularTorus([torus.offset, torus.radius, torus.angle]);
+    let record_bbox = primitive.local_aabb_mm().unwrap_or([0.0; 6]);
+    AnalyticCandidate {
+        geometry: RvmGeometry {
+            tag: "PRIM".to_string(),
+            flags: 1,
+            primitive,
+            matrix3,
+            translation_mm: [cols[12], cols[13], cols[14]],
+            record_bbox,
+            bbox_frame: crate::rvm_read::BboxFrame::Local,
+            level: None,
+        },
+        sagitta_mm: torus.sagitta_mm(),
+    }
+}
+
 /// 一段矩形环（目录 `SRTO` / 设计 `RTOR`）的识别结果，全在局部系 mm。
 #[derive(Debug, Clone, Copy)]
 pub struct RecognisedRectTorus {
@@ -3454,6 +3510,65 @@ mod tests {
             ..candidate
         };
         assert!(!fixed_tolerance.matches_mesh_aabb(lo, hi, 0.01));
+    }
+
+    /// 目录标架的起扫端可以和网格识别器相反。`circ_torus_solid` 从 +X 绕 +Z 扫，
+    /// 识别器有时把起点放到另一头并把 Z 翻过来。标架仍写 +X / +Z，实体盒不变。
+    /// 只翻 Z、X 留在原处是补弧，退回网格轴。轴不共线同样退回。
+    #[test]
+    fn circular_torus_in_frame_follows_the_catalogue_start() {
+        let solid = crate::solid::circ_torus_solid(145.0, 313.0, 45.0).unwrap();
+        let mesh = crate::mesh::TriMesh::from_manifold(&solid);
+        let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
+        let torus = torus_from_local_mesh(&mesh.vertices, &triangles).unwrap();
+        let (lo, hi) = world_aabb_of(&mesh.vertices, &glam::DMat4::IDENTITY);
+        let mesh_record = circular_torus_geometry(&glam::DMat4::IDENTITY, &torus);
+
+        let construction = glam::DMat4::from_cols(
+            glam::DVec3::X.extend(0.0),
+            glam::DVec3::Y.extend(0.0),
+            glam::DVec3::Z.extend(0.0),
+            glam::DVec4::W,
+        );
+        let got = circular_torus_geometry_in_frame(&glam::DMat4::IDENTITY, &torus, &construction);
+        assert!(got.matches_mesh_aabb(lo, hi, 0.01));
+        let column = |matrix: &[f64; 9], axis: usize| {
+            let i = axis * 3;
+            [
+                matrix[i] * M_TO_MM,
+                matrix[i + 1] * M_TO_MM,
+                matrix[i + 2] * M_TO_MM,
+            ]
+        };
+        let x = column(&got.geometry.matrix3, 0);
+        let z = column(&got.geometry.matrix3, 2);
+        assert!(
+            (x[0] - 1.0).abs() < 1e-6 && x[1].abs() < 1e-6 && x[2].abs() < 1e-6,
+            "起扫 X 应是目录 +X，得到 {x:?}"
+        );
+        assert!(
+            z[0].abs() < 1e-6 && z[1].abs() < 1e-6 && (z[2] - 1.0).abs() < 1e-6,
+            "Z 应是目录 +Z，得到 {z:?}"
+        );
+
+        let flipped_only = glam::DMat4::from_cols(
+            glam::DVec3::X.extend(0.0),
+            -glam::DVec3::Y.extend(0.0),
+            -glam::DVec3::Z.extend(0.0),
+            glam::DVec4::W,
+        );
+        let fallback =
+            circular_torus_geometry_in_frame(&glam::DMat4::IDENTITY, &torus, &flipped_only);
+        assert_eq!(fallback.geometry.matrix3, mesh_record.geometry.matrix3);
+
+        let missed = glam::DMat4::from_cols(
+            glam::DVec3::Z.extend(0.0),
+            glam::DVec3::Y.extend(0.0),
+            glam::DVec3::X.extend(0.0),
+            glam::DVec4::W,
+        );
+        let missed = circular_torus_geometry_in_frame(&glam::DMat4::IDENTITY, &torus, &missed);
+        assert_eq!(missed.geometry.matrix3, mesh_record.geometry.matrix3);
     }
 
     #[test]

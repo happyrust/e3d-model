@@ -200,12 +200,12 @@ fn recogniser_for_design_noun(noun: &str) -> Option<Recogniser> {
 /// `Cylinder`（长成那样的多半**就是** SBOX / SCYL）；按出身认时不让——E3D 的 DRPYR /
 /// DRSNO 不看退化成什么，LPYR 一律 `Pyramid`、LSNO 一律 `Snout`。
 ///
-/// `frame` = 出身给的放置标架（元素局部系），只有目录图元有。有它时圆柱 / 圆台 / 四棱台 / 球
-/// 记录的矩阵照它写（Z 列 = 目录轴含符号、X/Y = ORIMAT 副轴、圆台底顶按 PBDM/PTDM），
-/// 不照网格反推——E3D 的 DRCYL / DRSNO / DRPYR 写的就是这只标架（happyrust/e3d-model#1）。
+/// `frame` = 出身给的放置标架（元素局部系），只有目录图元有。有它时圆柱 / 圆台 / 四棱台 / 球 /
+/// 圆环记录的矩阵照它写（Z 列 = 目录轴含符号、X/Y = ORIMAT 副轴、圆台底顶按 PBDM/PTDM），
+/// 不照网格反推——E3D 的 DRCYL / DRSNO / DRPYR / DRCTO 写的就是这只标架（happyrust/e3d-model#1）。
 /// 四棱台在目录 Z 与识别轴不共线、但上下同形不偏心时，把三条边长换到标架的 X/Y/Z 上
-/// （`/1WCC096VN` 的 120 mm 高沿目录 X，不沿网格 −Z）。对不上就退回网格轴。尺寸仍由网格
-/// 说了算，自校闸照过。盒子 / 球 / 碟 / 矩形环本条不接。
+/// （`/1WCC096VN` 的 120 mm 高沿目录 X，不沿网格 −Z）。圆环的起扫 X 跟标架走：轴反号时起点
+/// 换到另一头，只翻 Z 会扫到补弧。对不上就退回网格轴。尺寸仍由网格说了算，自校闸照过。
 fn analytic_candidate(
     recogniser: Recogniser,
     world: &glam::DMat4,
@@ -245,7 +245,10 @@ fn analytic_candidate(
         }
         Recogniser::CircularTorus => {
             let torus = write::torus_from_local_mesh(local_vertices, triangles)?;
-            Some(write::circular_torus_geometry(world, &torus))
+            Some(match frame {
+                Some(frame) => write::circular_torus_geometry_in_frame(world, &torus, frame),
+                None => write::circular_torus_geometry(world, &torus),
+            })
         }
         Recogniser::RectangularTorus => {
             let torus = write::rect_torus_from_local_mesh(local_vertices, triangles)?;
@@ -1067,8 +1070,8 @@ fn main() -> anyhow::Result<()> {
                             .get(index)
                             .and_then(|noun| recogniser_for_catalogue_noun(noun))
                             .or(design_recogniser);
-                        // 出身的标架：圆柱 / 圆台记录的矩阵照它写（E3D 写的就是目录图元自己的
-                        // 标架），见 [`e3d_model::rvm_write::cylinder_geometry_in_frame`]。
+                        // 出身的标架：圆柱 / 圆台 / 圆环记录的矩阵照它写（E3D 写的就是目录图元
+                        // 自己的标架），见 [`e3d_model::rvm_write::cylinder_geometry_in_frame`]。
                         let frame = component_records
                             .get(index)
                             .and_then(|record| record.frame.as_ref());
