@@ -249,7 +249,10 @@ fn analytic_candidate(
         }
         Recogniser::RectangularTorus => {
             let torus = write::rect_torus_from_local_mesh(local_vertices, triangles)?;
-            Some(write::rectangular_torus_geometry(world, &torus))
+            Some(match frame {
+                Some(frame) => write::rectangular_torus_geometry_in_frame(world, &torus, frame),
+                None => write::rectangular_torus_geometry(world, &torus),
+            })
         }
         Recogniser::Pyramid => {
             let pyramid = if by_provenance {

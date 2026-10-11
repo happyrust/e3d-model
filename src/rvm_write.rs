@@ -1558,6 +1558,50 @@ pub fn rectangular_torus_geometry(
     }
 }
 
+/// 出身标架在手时，矩形环的矩阵改用标架。Z 与网格轴共线（含反向）才换，否则退回
+/// [`rectangular_torus_geometry`]。
+///
+/// 配上的 12 只（代表 `/1WCC-R230.022A/BV/ATTA-06`，`24383/68005`）参数和 T 相同，
+/// 生成侧 Z 正好是 E3D Z 的反号。网格轴的符号由顶点顺序定，目录标架的 Z 才是 E3D 写的那条。
+pub fn rectangular_torus_geometry_in_frame(
+    world: &glam::DMat4,
+    torus: &RecognisedRectTorus,
+    frame: &glam::DMat4,
+) -> AnalyticCandidate {
+    let raw = glam::DMat3::from_mat4(*frame);
+    let z = raw.z_axis.normalize_or_zero();
+    let axis = torus.axis.normalize_or_zero();
+    let mut x = raw.x_axis - z * raw.x_axis.dot(z);
+    if z.dot(axis).abs() < 0.5 || x.length_squared() < 1e-8 {
+        return rectangular_torus_geometry(world, torus);
+    }
+    x = x.normalize();
+    let rotation = glam::DMat3::from_cols(x, z.cross(x), z);
+    let placed =
+        *world * (glam::DMat4::from_translation(torus.centre) * glam::DMat4::from_mat3(rotation));
+    let cols = placed.to_cols_array();
+    let matrix3 = [
+        cols[0], cols[1], cols[2], cols[4], cols[5], cols[6], cols[8], cols[9], cols[10],
+    ]
+    .map(|value| value / M_TO_MM);
+    let primitive =
+        Primitive::RectangularTorus([torus.inner, torus.outer, torus.height, torus.angle]);
+    let record_bbox = primitive.local_aabb_mm().unwrap_or([0.0; 6]);
+    AnalyticCandidate {
+        geometry: RvmGeometry {
+            tag: "PRIM".to_string(),
+            flags: 1,
+            primitive,
+            matrix3,
+            translation_mm: [cols[12], cols[13], cols[14]],
+            record_bbox,
+            bbox_frame: crate::rvm_read::BboxFrame::Local,
+            level: None,
+        },
+        sagitta_mm: torus.sagitta_mm(),
+    }
+}
+
 /// 由 [`cylinder_from_local_mesh`] 认出来的圆柱造一条 `Cylinder` 记录。
 ///
 /// RVM 的 `Cylinder` 轴向是**局部 Z、沿 Z 居中**，所以要把识别出来的轴转到 Z。
