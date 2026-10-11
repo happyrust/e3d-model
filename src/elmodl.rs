@@ -221,6 +221,26 @@ pub struct DegenerateCataloguePart {
     pub height_mm: f64,
 }
 
+/// 与 `parts` 逐块对齐的**记录事实**：这一块要写几条记录、用哪只标架写。
+///
+/// 标架定**记录的矩阵**——E3D 的 DRCYL / DRSNO 写的是目录图元自己的标架（`ORIMAT(PAXI)`、
+/// LSNO 的 PAAX/PBAX 标架），Z 列带着目录轴的符号、X/Y 列是 ORIMAT 的副轴。网格识别器
+/// 反推出来的轴符号任意、副轴随 `from_rotation_arc`，ams7999 `/1WCC318VN` 16 件里只有 3 件
+/// 四列全同；几何一样，矩阵不一样（happyrust/e3d-model#1）。
+///
+/// 装在 [`GeneratedElement::part_record_repeats`] 里（名字还是旧的「份数」，字段名没改：
+/// `pipeline.rs` 的隐式管身字面量正被别的会话改着，这里不动它的一个字节；份数仍是这个
+/// 结构的一格）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct CataloguePartRecord {
+    /// 这一块在 GMSE 里被几个成员算成了同一只网格、同一个放置，RVM 就写几条记录。
+    pub repeats: usize,
+    /// 放置标架（元素局部系）：列 = 图元自己的 X / Y / Z，平移 = 图元自己的原点，
+    /// 就是 [`crate::catalogue`] 把局部网格摆到元素里用的那只矩阵。没有标架的（型材成员）
+    /// 是 `None`，记录照网格反推。
+    pub frame: Option<DMat4>,
+}
+
 pub struct GeneratedElement {
     /// 几何缓存、RVM 配对和增量更新使用的稳定身份。
     pub geometry_id: GeometryId,
@@ -243,14 +263,16 @@ pub struct GeneratedElement {
     /// （LPYR→DRPYR、LSNO/SCON→DRSNO、SBOX→DRBOX…），一只 PAAX/PBAX 退化成正方盒的
     /// LPYR 照样写 `Pyramid`。网格识别器不知来历，只能按长相先中先得，于是 300 只阀门的
     /// 手轮座写成了 `Box`、等径 LSNO 写成了 `Cylinder`——几何 exact，种类却不一致。
+    /// **记录的矩阵也由出身定**：标架在 [`Self::part_record_repeats`] 里一块一只。
     pub part_catalogue_nouns: Vec<String>,
-    /// 与 `parts` 逐块对齐的**记录份数**：这一块在 GMSE 里被几个成员算成了同一只网格、
-    /// 同一个放置，RVM 就写几条记录。空表 = 每块一条。
+    /// 与 `parts` 逐块对齐的**记录事实**（[`CataloguePartRecord`]）：份数 + 放置标架。
+    /// 空表 = 每块一条、没有标架。
     ///
-    /// 体只放一块（两块全同的体并起来是自交的，体积也会翻倍），但 E3D 的 RVM 驱动逐成员
-    /// 写记录、不管它们是不是长在同一个地方：`/Copy-of-7#管线-1/B1` 的 `VALV 3` 基准里
-    /// 第 5、6 两条是字节一样的两只圆柱。只写一条，两侧记录条数就对不上，而几何本来一致。
-    pub part_record_repeats: Vec<usize>,
+    /// 份数：体只放一块（两块全同的体并起来是自交的，体积也会翻倍），但 E3D 的 RVM 驱动
+    /// 逐成员写记录、不管它们是不是长在同一个地方：`/Copy-of-7#管线-1/B1` 的 `VALV 3`
+    /// 基准里第 5、6 两条是字节一样的两只圆柱。只写一条，两侧记录条数就对不上，而几何本来一致。
+    /// 标架：圆柱 / 圆台记录的矩阵照它写，不照网格反推（happyrust/e3d-model#1）。
+    pub part_record_repeats: Vec<CataloguePartRecord>,
     /// 退化成零尺寸的目录图元。Core 与我们都不出体，**E3D 的 RVM 驱动照样落一条记录**，
     /// 于是基准里凭空多出一条 `Cylinder[r=0 h=0]`。
     pub degenerate_parts: Vec<DegenerateCataloguePart>,

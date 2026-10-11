@@ -199,12 +199,18 @@ fn recogniser_for_design_noun(noun: &str) -> Option<Recogniser> {
 /// 差别只在两处退化：按长相认时，长得像盒子的棱台让给 `Box`、两端等径的圆台让给
 /// `Cylinder`（长成那样的多半**就是** SBOX / SCYL）；按出身认时不让——E3D 的 DRPYR /
 /// DRSNO 不看退化成什么，LPYR 一律 `Pyramid`、LSNO 一律 `Snout`。
+///
+/// `frame` = 出身给的放置标架（元素局部系），只有目录图元有。有它时圆柱 / 圆台记录的矩阵
+/// 照它写（Z 列 = 目录轴含符号、X/Y = ORIMAT 副轴、圆台底顶按 PBDM/PTDM），不照网格反推
+/// ——E3D 的 DRCYL / DRSNO 写的就是这只标架（happyrust/e3d-model#1）。尺寸仍由网格说了算，
+/// 自校闸照过。其它族暂不接：盒子 / 球与朝向无关或没有取证，环已经逐列对上。
 fn analytic_candidate(
     recogniser: Recogniser,
     world: &glam::DMat4,
     local_vertices: &[[f64; 3]],
     triangles: &[[u32; 3]],
     by_provenance: bool,
+    frame: Option<&glam::DMat4>,
 ) -> Option<e3d_model::rvm_write::AnalyticCandidate> {
     use e3d_model::rvm_write as write;
     match recogniser {
@@ -219,7 +225,10 @@ fn analytic_candidate(
         }
         Recogniser::Cylinder => {
             let cylinder = write::cylinder_from_local_mesh(local_vertices, triangles)?;
-            Some(write::cylinder_geometry(world, &cylinder))
+            Some(match frame {
+                Some(frame) => write::cylinder_geometry_in_frame(world, &cylinder, frame),
+                None => write::cylinder_geometry(world, &cylinder),
+            })
         }
         Recogniser::Snout => {
             let snout = if by_provenance {
@@ -227,7 +236,10 @@ fn analytic_candidate(
             } else {
                 write::snout_from_local_mesh(local_vertices, triangles)?
             };
-            Some(write::snout_geometry(world, &snout))
+            Some(match frame {
+                Some(frame) => write::snout_geometry_in_frame(world, &snout, frame),
+                None => write::snout_geometry(world, &snout),
+            })
         }
         Recogniser::CircularTorus => {
             let torus = write::torus_from_local_mesh(local_vertices, triangles)?;
@@ -282,13 +294,14 @@ fn rvm_component_geometry(
     world_lo: [f64; 3],
     world_hi: [f64; 3],
     preferred: Option<Recogniser>,
+    frame: Option<&glam::DMat4>,
     provenance_only: bool,
     analytic_count: &mut usize,
     rejected_count: &mut usize,
 ) -> e3d_model::rvm_read::RvmGeometry {
     let candidate = preferred
         .and_then(|recogniser| {
-            analytic_candidate(recogniser, world, local_vertices, triangles, true)
+            analytic_candidate(recogniser, world, local_vertices, triangles, true, frame)
         })
         .or_else(|| {
             if provenance_only {
@@ -299,7 +312,7 @@ fn rvm_component_geometry(
                 .copied()
                 .filter(|recogniser| Some(*recogniser) != preferred)
                 .find_map(|recogniser| {
-                    analytic_candidate(recogniser, world, local_vertices, triangles, false)
+                    analytic_candidate(recogniser, world, local_vertices, triangles, false, frame)
                 })
         });
     let had_candidate = candidate.is_some();
@@ -997,17 +1010,23 @@ fn main() -> anyhow::Result<()> {
                     } else {
                         &[]
                     };
-                // 逐块的记录份数，同一条对齐规矩。E3D 逐 GMSE 成员写记录，两个成员算出同一只
-                // 网格、同一个放置时它写两条字节一样的；我们体只放一块，记录照它的数补
+                // 逐块的记录事实（份数 + 放置标架），同一条对齐规矩。E3D 逐 GMSE 成员写记录，
+                // 两个成员算出同一只网格、同一个放置时它写两条字节一样的；我们体只放一块，
+                // 记录照它的数补；矩阵照出身的标架写
                 // （见 [`e3d_model::elmodl::GeneratedElement::part_record_repeats`]）。
-                let component_repeats: &[usize] =
+                let component_records: &[e3d_model::elmodl::CataloguePartRecord] =
                     if component_meshes.len() == generated.part_record_repeats.len() {
                         &generated.part_record_repeats
                     } else {
                         &[]
                     };
-                let repeats_of =
-                    |index: usize| component_repeats.get(index).copied().unwrap_or(1).max(1);
+                let repeats_of = |index: usize| {
+                    component_records
+                        .get(index)
+                        .map(|record| record.repeats)
+                        .unwrap_or(1)
+                        .max(1)
+                };
                 // 设计图元的出身就是元素自己的名词（[`recogniser_for_design_noun`]）。只在
                 // **单块、没扣负体、没有目录出身**时才说得准：多块是按连通性拆出来的，扣过
                 // 负体的是布尔结果（E3D 也只能写面片），有目录出身的听目录的。
@@ -1034,6 +1053,11 @@ fn main() -> anyhow::Result<()> {
                             .get(index)
                             .and_then(|noun| recogniser_for_catalogue_noun(noun))
                             .or(design_recogniser);
+                        // 出身的标架：圆柱 / 圆台记录的矩阵照它写（E3D 写的就是目录图元自己的
+                        // 标架），见 [`e3d_model::rvm_write::cylinder_geometry_in_frame`]。
+                        let frame = component_records
+                            .get(index)
+                            .and_then(|record| record.frame.as_ref());
                         // 拉伸体族一律面片，**除非这一块的出身另有说法**：SCTN 的 `SREC`
                         // 成员 E3D 走 DRPYR，不进拉伸体写出器（见 `e3d_exports_facets_only`）。
                         // 这一族只认出身挑的那一把，认不出来就是面片——按长相轮一遍正是
@@ -1057,6 +1081,7 @@ fn main() -> anyhow::Result<()> {
                                 clo,
                                 chi,
                                 preferred,
+                                frame,
                                 provenance_only,
                                 &mut rvm_analytic,
                                 &mut rvm_analytic_rejected,

@@ -1512,9 +1512,16 @@ pub fn model_catalogue_member_with_cache(
     } else {
         Vec::new()
     };
-    // 与 `parts` 逐块对齐的记录份数：同一放置出现了几次，RVM 就写几条（体只有一块）。
+    // 与 `parts` 逐块对齐的记录事实：同一放置出现了几次，RVM 就写几条（体只有一块）；
+    // 放置标架，记录的矩阵照它写（见 [`crate::elmodl::CataloguePartRecord`]）。
     let part_record_repeats = if preserve_components {
-        solids.iter().map(|part| part.repeats).collect()
+        solids
+            .iter()
+            .map(|part| crate::elmodl::CataloguePartRecord {
+                repeats: part.repeats,
+                frame: Some(part.frame),
+            })
+            .collect()
     } else {
         Vec::new()
     };
@@ -1901,7 +1908,20 @@ fn evaluate_catalogue_snout(
             "PBAX",
             "catalogue LSNO offset axis",
         )?;
-        let (dbot, dtop, height, offset) = normalize_lsnout_span(dbot, dtop, bottom, top, offset);
+        let (dbot, dtop, height, offset, ends_swapped) =
+            normalize_lsnout_span(dbot, dtop, bottom, top, offset);
+        // 底顶对调时 E3D 的 DRSNO 把局部 X 也调成 −PBAX，`XOFF` 照 `POFF` 的号写；此前这里
+        // 保留 PBAX、把 `XOFF` 取反——同一个实体，矩阵的 X/Y 列和 XOFF 的符号却与 E3D 相反
+        // （ams7999 `/1WCC318VN` 的两只 `PBDI 57.5 / PTDI 0 / POFF 7.4` LSNO，E3D 写
+        // `X = −PBAX, XOFF = +7.4`）。见 [`normalize_lsnout_span`]。
+        let pb = if ends_swapped {
+            crate::catalogue_point::CatalogueAxis {
+                direction: -pb.direction,
+                ..pb
+            }
+        } else {
+            pb
+        };
         let (centre, rotation) = lsnout_frame(pa, pb, bottom, top, offset)?;
         (dbot, dtop, height, offset, centre, rotation)
     };
@@ -1957,20 +1977,24 @@ fn scone_frame(
     ))
 }
 
+/// `(底径, 顶径, 高, 偏移, 底顶是否对调)`，把 PBDI/PTDI 的跨度整理成沿 PAAX 从低到高。
+///
+/// 跨度为负（PTDI < PBDI）时两端标签互换，PAAX 不动。偏移**不取反**：对调后的偏移方向
+/// 由调用方把局部 X 换成 −PBAX 来表达——E3D 的 DRSNO 就是这么写的（`X = −PBAX`、
+/// `XOFF = POFF`），这样记录的矩阵与 XOFF 的符号都与 E3D 相同；此前这里取反偏移、X 保持
+/// PBAX，实体一样，矩阵不一样。
 fn normalize_lsnout_span(
     dbot: f64,
     dtop: f64,
     bottom: f64,
     top: f64,
     offset: f64,
-) -> (f64, f64, f64, f64) {
+) -> (f64, f64, f64, f64, bool) {
     let height = top - bottom;
     if height < 0.0 {
-        // Re-parameterising the span from low to high swaps both end labels
-        // and the end-to-end eccentric offset. PAAX itself remains unchanged.
-        (dtop, dbot, -height, -offset)
+        (dtop, dbot, -height, offset, true)
     } else {
-        (dbot, dtop, height, offset)
+        (dbot, dtop, height, offset, false)
     }
 }
 
@@ -2970,6 +2994,10 @@ pub(crate) struct CataloguePart {
     pub(crate) solid: Manifold,
     /// 目录图元的名词（`SBOX` / `SCYL` / `LPYR` / `LSNO`…）。
     pub(crate) noun: String,
+    /// 把局部网格摆进元素局部系的那只矩阵：列 = 图元自己的 X / Y / Z（圆柱是 `ORIMAT(PAXI)`、
+    /// LSNO 是 PAAX / PBAX 标架…），平移 = 图元自己的原点。RVM 写出器照它写记录的矩阵，
+    /// 见 [`crate::elmodl::CataloguePartOrigin`]。
+    pub(crate) frame: DMat4,
     /// 这一个放置在 GMSE 里出现了几次：1 = 只此一块；2 = 另有一个成员算出了同一只网格、
     /// 同一个放置。体只放一块，记录按这个数写，见 [`place_part_once`]。
     pub(crate) repeats: usize,
@@ -3033,6 +3061,7 @@ fn place_part_once(
     solids.push(CataloguePart {
         solid: placed(local_mesh, transform),
         noun: noun.to_string(),
+        frame: transform,
         repeats: 1,
     });
     true
@@ -4181,11 +4210,18 @@ mod tests {
         assert!(!preserves_catalogue_components(false));
     }
 
+    /// 跨度为负时底顶对调、PAAX 不动、偏移**不取反**；偏移的方向改由调用方把局部 X 换成
+    /// −PBAX 来表达（E3D 的 DRSNO 写 `X = −PBAX, XOFF = POFF`）。两种写法是同一个实体：
+    /// 下面两组 `lsnout_frame` 用翻过的 PBAX + 正偏移算出的中心，与此前「PBAX + 负偏移」一样。
     #[test]
     fn negative_lsnout_span_reparameterizes_ends_without_reversing_paax() {
         assert_eq!(
             normalize_lsnout_span(84.42, 66.33, 115.2, 0.0, 12.06),
-            (66.33, 84.42, 115.2, -12.06)
+            (66.33, 84.42, 115.2, 12.06, true)
+        );
+        assert_eq!(
+            normalize_lsnout_span(66.33, 84.42, 0.0, 115.2, 12.06),
+            (66.33, 84.42, 115.2, 12.06, false)
         );
 
         let (centre, rotation) = lsnout_frame(
@@ -4195,15 +4231,16 @@ mod tests {
             },
             crate::catalogue_point::CatalogueAxis {
                 origin: DVec3::ZERO,
-                direction: DVec3::Z,
+                direction: -DVec3::Z, // PBAX = +Z，底顶对调后翻成 −Z
             },
             129.6,
             14.4,
-            -12.06,
+            12.06,
         )
         .unwrap();
         assert!(centre.abs_diff_eq(DVec3::new(-72.0, 0.0, -6.03), 1.0e-9));
         assert!(rotation.z_axis.abs_diff_eq(DVec3::X, 1.0e-9));
+        assert!(rotation.x_axis.abs_diff_eq(-DVec3::Z, 1.0e-9));
 
         let (centre, rotation) = lsnout_frame(
             crate::catalogue_point::CatalogueAxis {
@@ -4212,11 +4249,11 @@ mod tests {
             },
             crate::catalogue_point::CatalogueAxis {
                 origin: DVec3::ZERO,
-                direction: -DVec3::Z,
+                direction: DVec3::Z, // PBAX = −Z，翻成 +Z
             },
             129.6,
             14.4,
-            -12.06,
+            12.06,
         )
         .unwrap();
         assert!(centre.abs_diff_eq(DVec3::new(72.0, 0.0, 6.03), 1.0e-9));

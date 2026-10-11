@@ -552,7 +552,7 @@ fn same_point(a: &[f64; 3], b: &[f64; 3]) -> bool {
 }
 
 /// 轴向候选：端盖是平面多边形，**它的法向就是轴向**，而端盖法向一定出现在三角面法向里。
-/// 方向不分正负，统一朝一侧，省一半候选。
+/// 方向不分正负，统一朝一侧（[`canonical_axis_sign`]），省一半候选。
 fn face_normal_axes(points: &[glam::DVec3], triangles: &[[u32; 3]]) -> Vec<glam::DVec3> {
     let mut axes: Vec<glam::DVec3> = Vec::new();
     for tri in triangles {
@@ -561,14 +561,7 @@ fn face_normal_axes(points: &[glam::DVec3], triangles: &[[u32; 3]]) -> Vec<glam:
         if normal.length_squared() <= 0.0 {
             continue;
         }
-        let normal = normal.normalize();
-        let normal = if normal.z < 0.0
-            || (normal.z == 0.0 && (normal.y < 0.0 || (normal.y == 0.0 && normal.x < 0.0)))
-        {
-            -normal
-        } else {
-            normal
-        };
+        let normal = canonical_axis_sign(normal.normalize());
         if !axes
             .iter()
             .any(|existing| (*existing - normal).length() < 1e-9)
@@ -577,6 +570,31 @@ fn face_normal_axes(points: &[glam::DVec3], triangles: &[[u32; 3]]) -> Vec<glam:
         }
     }
     axes
+}
+
+/// 一个分量小到这个量级就当 0，轮到下一个分量定符号。
+///
+/// 端盖法向是 `(b − a) × (c − a)` 算出来的：轴**正好**躺在某个坐标面内时，理论为 0 的那个
+/// 分量实际是 ±1e-16 级的舍入噪声，拿它跟 0 比大小，符号就由噪声定。ams7999
+/// `/1WCC318VN` 手轮的两根辐条 LCYL（`PAXI P8` / `P9`，都在构件局部 XY 面内）就是这样
+/// 一根与目录轴同向、一根反向地写进 RVM——几何对称看不出来，RVM 矩阵的 Z 列却与 E3D
+/// 的 DRCYL（直接写目录轴）不同号（`plant-model-5/outputs/rvm-check-20261010/README.md`
+/// 「段 3」）。
+const AXIS_SIGN_TOL: f64 = 1e-9;
+
+/// 把一个无所谓正负的轴向统一到一侧：先看 z，|z| 在 [`AXIS_SIGN_TOL`] 内再看 y，再看 x；
+/// 第一个有分量的若为负就整体取反。
+///
+/// 这只保证**同一根轴每次给同一个符号**，不保证与 E3D 同号——E3D 写的是目录图元自己的
+/// 轴，要逐列对上得把「出身」那条通道里的轴向带到写出器（happyrust/e3d-model#1）。
+fn canonical_axis_sign(axis: glam::DVec3) -> glam::DVec3 {
+    let leading = [axis.z, axis.y, axis.x]
+        .into_iter()
+        .find(|component| component.abs() > AXIS_SIGN_TOL);
+    match leading {
+        Some(component) if component < 0.0 => -axis,
+        _ => axis,
+    }
 }
 
 /// 顶点沿 `axis` 恰好落在两个平面上时给出 `(低档, 高档)` 投影值（相对 `origin`）。
@@ -1634,6 +1652,107 @@ pub fn snout_geometry(world: &glam::DMat4, snout: &RecognisedSnout) -> AnalyticC
         snout.height,
         snout.offset,
         0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+    ]);
+    let record_bbox = primitive.local_aabb_mm().unwrap_or([0.0; 6]);
+    AnalyticCandidate {
+        geometry: RvmGeometry {
+            tag: "PRIM".to_string(),
+            flags: 1,
+            primitive,
+            matrix3,
+            translation_mm: [cols[12], cols[13], cols[14]],
+            record_bbox,
+            bbox_frame: crate::rvm_read::BboxFrame::Local,
+            level: None,
+        },
+        sagitta_mm: snout.sagitta_mm(),
+    }
+}
+
+/// 两个单位轴是否共线（同向或反向都算）。出身标架的 Z 与识别出的轴夹角超过这个量级，
+/// 就说明出身对不上这块网格，记录照识别结果写。
+fn axes_collinear(a: glam::DVec3, b: glam::DVec3) -> bool {
+    a.cross(b).length() <= 1e-6 && a.dot(b).abs() > 0.5
+}
+
+/// 出身的放置标架在手时，圆柱记录的**朝向照它写**，尺寸与轴心仍取识别结果。
+///
+/// E3D 的 DRCYL 写的是目录图元自己的标架：Z 列 = `PAXI`（含符号）、X/Y 列 = `ORIMAT` 的
+/// 副轴——正是 [`crate::catalogue`] 放这块网格时用的那只矩阵。[`cylinder_geometry`] 从网格
+/// 反推：端盖法向的符号由 [`canonical_axis_sign`] 定、副轴由 `from_rotation_arc` 定，两者都
+/// 与 E3D 不同——ams7999 `/1WCC318VN` 16 件里只有 3 件四列全同，其余 X/Y 列不同、5 件 Z 列
+/// 反号（happyrust/e3d-model#1）。几何一样（圆柱关于中心对称），只是矩阵不一样。
+///
+/// 半径 / 高 / 轴心是网格说了算的量，照旧取识别结果；自校闸也照旧按写出的记录重算 AABB。
+/// 识别轴与出身的 Z 不共线（夹角 > 1e-6）→ 出身对不上这块网格，退回 [`cylinder_geometry`]。
+pub fn cylinder_geometry_in_frame(
+    world: &glam::DMat4,
+    cylinder: &RecognisedCylinder,
+    frame: &glam::DMat4,
+) -> AnalyticCandidate {
+    let rotation = glam::DMat3::from_mat4(*frame);
+    if !axes_collinear(rotation.z_axis, cylinder.axis) {
+        return cylinder_geometry(world, cylinder);
+    }
+    let mut candidate = cylinder_geometry(world, cylinder);
+    let placed = *world
+        * (glam::DMat4::from_translation(cylinder.centre) * glam::DMat4::from_mat3(rotation));
+    let cols = placed.to_cols_array();
+    candidate.geometry.matrix3 = [
+        cols[0], cols[1], cols[2], cols[4], cols[5], cols[6], cols[8], cols[9], cols[10],
+    ]
+    .map(|value| value / M_TO_MM);
+    candidate.geometry.translation_mm = [cols[12], cols[13], cols[14]];
+    candidate
+}
+
+/// 出身的放置标架在手时，圆台记录的**朝向与底顶次序照它写**，尺寸与盖心仍取识别结果。
+///
+/// E3D 的 DRSNO 写目录 LSNO / SCON 自己的标架（`PAAX` 为 Z、偏移轴为 X），`PBDM` 是底、
+/// `PTDM` 是顶；识别器的轴符号任意，反过来时把两端半径对调了写（[`snout_geometry`] 的
+/// 文档就写着这一条）。这里把识别结果换到出身的标架里：识别轴与 Z 反向就底顶对调，
+/// 偏移向量跟着取反，再投到出身的 X / Y 上得 `XOFF` / `YOFF`。不共线 → 退回 [`snout_geometry`]。
+pub fn snout_geometry_in_frame(
+    world: &glam::DMat4,
+    snout: &RecognisedSnout,
+    frame: &glam::DMat4,
+) -> AnalyticCandidate {
+    let rotation = glam::DMat3::from_mat4(*frame);
+    if !axes_collinear(rotation.z_axis, snout.axis) {
+        return snout_geometry(world, snout);
+    }
+    let same_way = rotation.z_axis.dot(snout.axis) > 0.0;
+    let (bottom_radius, top_radius) = if same_way {
+        (snout.bottom_radius, snout.top_radius)
+    } else {
+        (snout.top_radius, snout.bottom_radius)
+    };
+    // 识别出的偏移：底心 → 顶心的横向部分，沿识别轴正向那端是顶。换轴向后底顶互换，
+    // 这个向量整个反号。
+    let offset = snout.start * snout.offset * if same_way { 1.0 } else { -1.0 };
+    // 盖心相减带 1e-13 级的舍入渣（`offset_x: 5.75e-13`），E3D 写的是 0.0；1e-9 mm 以下当 0。
+    let snap = |value: f64| if value.abs() < 1e-9 { 0.0 } else { value };
+    let (xoff, yoff) = (
+        snap(offset.dot(rotation.x_axis)),
+        snap(offset.dot(rotation.y_axis)),
+    );
+    let placed =
+        *world * (glam::DMat4::from_translation(snout.centre) * glam::DMat4::from_mat3(rotation));
+    let cols = placed.to_cols_array();
+    let matrix3 = [
+        cols[0], cols[1], cols[2], cols[4], cols[5], cols[6], cols[8], cols[9], cols[10],
+    ]
+    .map(|value| value / M_TO_MM);
+    let primitive = Primitive::Snout([
+        bottom_radius,
+        top_radius,
+        snout.height,
+        xoff,
+        yoff,
         0.0,
         0.0,
         0.0,
@@ -2794,6 +2913,37 @@ mod tests {
             let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
             assert!(rect_torus_from_local_mesh(&mesh.vertices, &triangles).is_none());
         }
+    }
+
+    /// 轴正好躺在坐标面内时，端盖法向理论为 0 的那个分量只剩舍入噪声，符号不能让它定。
+    /// ams7999 `/1WCC318VN` 手轮两根辐条（构件局部 XY 面内）此前一根同向、一根反向地
+    /// 写进 RVM，就是 `z < 0.0` 这一判被 ±1e-16 的噪声左右了。
+    #[test]
+    fn axis_sign_is_not_decided_by_rounding_noise() {
+        use glam::DVec3;
+        let eps = 1e-17;
+        // (1,−1,0) × (ε,ε,1) = (−1, −1, 2ε)：z 是 +2e-17 的噪声。旧判法「z > 0 就保留」
+        // 留下 y < 0 的那一侧；按 y 定符号该翻到 (+, +, ·)。
+        let points = [DVec3::ZERO, DVec3::new(1.0, -1.0, 0.0), DVec3::new(eps, eps, 1.0)];
+        let [axis] = face_normal_axes(&points, &[[0, 1, 2]])[..] else {
+            panic!("one cap normal");
+        };
+        assert!(axis.x > 0.0 && axis.y > 0.0, "{axis:?}");
+        // 噪声换个符号，答案不变。
+        let points = [DVec3::ZERO, DVec3::new(1.0, -1.0, 0.0), DVec3::new(-eps, -eps, 1.0)];
+        let [other] = face_normal_axes(&points, &[[0, 1, 2]])[..] else {
+            panic!("one cap normal");
+        };
+        assert!((axis - other).length() < 1e-9, "{axis:?} vs {other:?}");
+        // 真有 z 分量时照旧由 z 说了算；z、y 都在容差内才轮到 x。
+        assert_eq!(
+            canonical_axis_sign(DVec3::new(0.3, 0.4, -0.5)),
+            DVec3::new(-0.3, -0.4, 0.5)
+        );
+        assert_eq!(
+            canonical_axis_sign(DVec3::new(-1.0, 1e-12, -1e-12)),
+            DVec3::new(1.0, -1e-12, 1e-12)
+        );
     }
 
     #[test]

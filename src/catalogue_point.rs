@@ -107,10 +107,13 @@ pub(crate) enum CatalogueAxisFailure {
     NoPointSet,
     /// `Pn` names a point the PTSE does not have.
     PointMissing { number: u32, available: Vec<u32> },
-    /// The point's `PX`/`PY`/`PZ` (or `PDIS`) did not evaluate.
+    /// The point's `PDIS` did not evaluate, or the position came out
+    /// non-finite. (`PX`/`PY`/`PZ` never fail a point: a component that does
+    /// not evaluate is 0.0, as in `pplib/QPPOS` — see [`cartesian_position`].)
     PointPosition { number: u32, noun: String },
-    /// The point's direction did not evaluate: `PTCD` program failed with no
-    /// `DIR` behind it, `PAXI` unresolved, or a zero / non-finite vector.
+    /// The point's direction did not evaluate: `PAXI` unresolved, or a zero /
+    /// non-finite vector. (A `PTCD` that fails is +Y, as in `pplib/DPARAM` —
+    /// see [`cartesian`].)
     PointDirection { number: u32, noun: String },
     /// A named axis that came out zero or non-finite.
     Degenerate { words: Vec<u32> },
@@ -412,19 +415,28 @@ fn catalogue_point_local_checked_at(
 
 /// `PTCA`：三个坐标表达式 + PTCD 方向规格。
 fn cartesian(point: &DbElement, env: &DbElementParamEnv) -> Result<(DVec3, DVec3), PointPart> {
-    let pos = DVec3::new(
-        number_of(point, "PX", env).ok_or(PointPart::Position)?,
-        number_of(point, "PY", env).ok_or(PointPart::Position)?,
-        number_of(point, "PZ", env).ok_or(PointPart::Position)?,
-    );
-    // Core3D `pplib/QPDIR` (0x103BAC30) -> `DPARAM` (0x103BF9C0): the PTCD
-    // program is authoritative when it is set, and an unset or empty PTCD reads
-    // the `DIR` real array instead (its template default is local +Y).  The
-    // YKS handwheel points P4/P5/P7 carry no PTCD at all; E3D draws their
-    // spokes and rim along DIR, so a missing PTCD must not fail the point.
-    // DIR stays a fallback rather than the authority because expression-backed
-    // PTCA directions (PCLA torus points with ASIN(PARA[...]) in PTCD) differ
-    // from it.
+    let pos = cartesian_position(point, env);
+    // Core3D `pplib/QPDIR` (0x103BAC30) -> `DPARAM` (0x103BF9C0), three arms:
+    //
+    // * PTCD holds a program  -> `DOEVST`; **when that fails, the direction is
+    //   the constant `VUNIT(2)` = local +Y** (after the same `unable to
+    //   evaluate catalogue expression for attribute PTCD` message `PX`/`PY`
+    //   get). DIR is not consulted on this arm.
+    // * PTCD unset / empty    -> the `DIR` real array (template default +Y).
+    //   The YKS handwheel points P4/P5/P7 carry no PTCD at all; E3D draws
+    //   their spokes and rim along DIR, so a missing PTCD must not fail the
+    //   point.
+    // * neither               -> `VUNIT(3)` = local +Z.
+    //
+    // The seven `/1WCC-PIPE-RX` valves with no `DESP` (PTCA 4–7 of
+    // `/F2AH33BUN0-P`, `PTCD = E ( ATTRIB DESP[1 ] ) N`) are the first arm:
+    // E3D draws the actuator bodies along +Y, and the only reason the numbers
+    // agree with DIR is that DIR still has its template default.
+    // `plant-model-5/outputs/rvm-check-20261010/ida/README.md` §②.
+    //
+    // A program our decoder does not model collapses onto the same +Y as a
+    // program E3D cannot evaluate (DOEVST 359 / GATPAR 223 both end in
+    // `VUNIT(2)`); `examples/ppoint_probe` is where decoder gaps surface.
     let words = match point.attribute("PTCD").ok().flatten() {
         Some(DescriptorValue::RawWords(words) | DescriptorValue::WordArray(words)) => words,
         Some(DescriptorValue::IntArray(words)) => {
@@ -432,25 +444,45 @@ fn cartesian(point: &DbElement, env: &DbElementParamEnv) -> Result<(DVec3, DVec3
         }
         Some(_) | None => Vec::new(),
     };
-    let dir = direction_spec::direction(&words, env)
-        .map(DVec3::from_array)
-        .or_else(|| {
-            point
-                .get_direction("DIR")
-                .ok()
-                .flatten()
-                .map(DVec3::from_array)
-        })
-        .ok_or(PointPart::Direction)?;
+    let dir = if words.is_empty() {
+        point
+            .get_direction("DIR")
+            .ok()
+            .flatten()
+            .map(DVec3::from_array)
+            .unwrap_or(DVec3::Z)
+    } else {
+        direction_spec::direction(&words, env)
+            .map(DVec3::from_array)
+            .unwrap_or(DVec3::Y)
+    };
     Ok((pos, dir))
 }
 
+/// `PX` / `PY` / `PZ` of a `PTCA` / `PTMI` point, each on its own.
+///
+/// Core3D `pplib/QPPOS` (0x103BADAC) calls `YPARAM` three times with no shared
+/// error out-parameter, and `pplib/YPARUN` (0x103C453C) always returns a
+/// value: an expression that fails prints `unable to evaluate catalogue
+/// expression for attribute PX` and **that component is 0.0**, the other two
+/// keep what they evaluated to. The position never fails as a whole.
+///
+/// `/1WCC318VN` P4 (`PX`/`PY` in `SIN`/`COS` of a `DESP[1]` the valve does not
+/// have, `PZ` a plain 425) is (0, 0, 425) in E3D's RVM — the actuator cylinder
+/// sits centred on the stem axis, half its length up — not an unresolved point
+/// and not the (0, −52.5, 425) a 0-degree reading would give.
+/// `plant-model-5/outputs/rvm-check-20261010/ida/README.md` §①.
+fn cartesian_position(point: &DbElement, env: &DbElementParamEnv) -> DVec3 {
+    DVec3::new(
+        number_of(point, "PX", env).unwrap_or(0.0),
+        number_of(point, "PY", env).unwrap_or(0.0),
+        number_of(point, "PZ", env).unwrap_or(0.0),
+    )
+}
+
 fn mixed(point: &DbElement, env: &DbElementParamEnv) -> Result<(DVec3, DVec3), PointPart> {
-    let pos = DVec3::new(
-        number_of(point, "PX", env).ok_or(PointPart::Position)?,
-        number_of(point, "PY", env).ok_or(PointPart::Position)?,
-        number_of(point, "PZ", env).ok_or(PointPart::Position)?,
-    );
+    // `QPPOS` takes the `PTCA | PTMI` arm for both nouns: see `cartesian_position`.
+    let pos = cartesian_position(point, env);
     let words = axis_words(point).ok_or(PointPart::Direction)?;
     let dir = axis_spec::direction(&words, env).ok_or(PointPart::Direction)?;
     Ok((pos, DVec3::from_array(dir)))
