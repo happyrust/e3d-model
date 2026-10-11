@@ -342,6 +342,15 @@ impl ParamEnv for PreviousElementEnv {
     fn uda_number(&self, key: u32, subscript: Option<f64>) -> Option<f64> {
         self.inner.uda_number(key, subscript)
     }
+
+    fn fast_path_missing_parameter_is_zero(&self, name: &str, subscript: Option<f64>) -> bool {
+        self.inner
+            .fast_path_missing_parameter_is_zero(name, subscript)
+    }
+
+    fn direction_angle(&self, program: &[i32]) -> Option<f64> {
+        self.inner.direction_angle(program)
+    }
 }
 
 #[cfg(test)]
