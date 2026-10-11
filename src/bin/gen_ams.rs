@@ -151,8 +151,9 @@ const RECOGNISER_ORDER: [Recogniser; 8] = [
 /// 先中先得就把它们写成了 `Box` 与 `Cylinder`——几何 exact、种类却不一致，80 根严尺子上
 /// 是 302 件（300 只阀门的手轮座 + 2 只等径 LSNO）。
 ///
-/// 名单只列**一个目录图元对一种记录**的那几族。`SDSH` 不在里面：它按 r/h 分成折边碟、
-/// 球形碟与退化成圆盘三种结局，一个 noun 对不上一把识别器，仍交给兜底次序。
+/// 名单只列**一个目录图元对一种记录**的那几族。`SDSH` 不在里面：`PRAD > 0` 才是折边碟
+/// （见 [`e3d_model::elmodl::CataloguePartRecord::knuckled_dish`]），`PRAD ≤ 0` 是球形碟，
+/// `PHEI = 0` 退化成圆盘。一个 noun 对不上一把识别器。折边那一支在调用处单独挑。
 ///
 /// 挑中的那把**先试**，认不出来照旧走兜底次序——自校闸一道没少。`SRTO` 那把是例外中的
 /// 例外：它**只有**出身这一条路上场（见 [`Recogniser::RectangularTorus`]），兜底次序里没有它。
@@ -282,7 +283,16 @@ fn analytic_candidate(
         // 折边碟写出去的是半椭球——照抄 E3D 导出时就做了的那层近似，好让两边 RVM 的图元
         // 种类对得上；形状损失算进候选自己的 `sagitta_mm`，仍由自校闸按 r/h 算出来的量放行。
         Recogniser::EllipticalDish => {
-            let dish = write::elliptical_dish_from_local_mesh(local_vertices, triangles)?;
+            // 按长相认时半球留给球形碟。出身已说明是折边碟（`PRAD > 0`）时，r = h 的
+            // 半球也写成 `EllipticalDish`——`DRDISH` 只看折边开关。
+            let dish = if by_provenance {
+                write::elliptical_dish_from_local_mesh_including_hemispheres(
+                    local_vertices,
+                    triangles,
+                )?
+            } else {
+                write::elliptical_dish_from_local_mesh(local_vertices, triangles)?
+            };
             Some(match frame {
                 Some(frame) => write::elliptical_dish_geometry_in_frame(world, &dish, frame),
                 None => write::elliptical_dish_geometry(world, &dish),
@@ -1066,9 +1076,20 @@ fn main() -> anyhow::Result<()> {
                         let local: Vec<[f64; 3]> =
                             component.vertices.iter().map(to_local).collect();
                         let tris: Vec<[u32; 3]> = component.indices.as_chunks::<3>().0.to_vec();
+                        // `SDSH` + `PRAD > 0`：种类由折边开关定，不由 r/h。半球（r = h）
+                        // 按长相会被球形碟先认走，E3D 写的仍是 `EllipticalDish`。
+                        let knuckled_dish = component_records
+                            .get(index)
+                            .is_some_and(|record| record.knuckled_dish);
                         let preferred = component_nouns
                             .get(index)
-                            .and_then(|noun| recogniser_for_catalogue_noun(noun))
+                            .and_then(|noun| {
+                                if noun == "SDSH" && knuckled_dish {
+                                    Some(Recogniser::EllipticalDish)
+                                } else {
+                                    recogniser_for_catalogue_noun(noun)
+                                }
+                            })
                             .or(design_recogniser);
                         // 出身的标架：圆柱 / 圆台 / 圆环记录的矩阵照它写（E3D 写的就是目录图元
                         // 自己的标架），见 [`e3d_model::rvm_write::cylinder_geometry_in_frame`]。

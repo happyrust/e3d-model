@@ -1528,6 +1528,7 @@ pub fn model_catalogue_member_with_cache(
             .map(|part| crate::elmodl::CataloguePartRecord {
                 repeats: part.repeats,
                 frame: Some(part.frame),
+                knuckled_dish: part.knuckled_dish,
             })
             .collect()
     } else {
@@ -3016,6 +3017,9 @@ pub(crate) struct CataloguePart {
     /// 这一个放置在 GMSE 里出现了几次：1 = 只此一块；2 = 另有一个成员算出了同一只网格、
     /// 同一个放置。体只放一块，记录按这个数写，见 [`place_part_once`]。
     pub(crate) repeats: usize,
+    /// 网格键是折边碟（`PRAD > 0`），含被负体包了一层的那只。写出器据此选
+    /// `EllipticalDish`，不从网格长相猜——r = h 时两种碟是同一只半球。
+    pub(crate) knuckled_dish: bool,
 }
 
 /// 取网格 → 放置去重 → 摆放。G0-1c 三条臂共用这一份；其余臂的手抄版见计划 G2-5。
@@ -3078,8 +3082,19 @@ fn place_part_once(
         noun: noun.to_string(),
         frame: transform,
         repeats: 1,
+        knuckled_dish: mesh_key_is_knuckled_dish(mesh_key),
     });
     true
+}
+
+/// `SDSH` 的 `PRAD > 0` 留在网格键的 `knuckled` 上。负体把键包成 [`CatalogueMeshKey::Cut`]
+/// 之后，开关仍在里面那只碟上。
+fn mesh_key_is_knuckled_dish(key: &CatalogueMeshKey) -> bool {
+    match key {
+        CatalogueMeshKey::Dish { knuckled, .. } => *knuckled,
+        CatalogueMeshKey::Cut { base, .. } => mesh_key_is_knuckled_dish(base),
+        _ => false,
+    }
 }
 
 fn local_failure(primitive: &DbElement, error: &ModelError) -> String {

@@ -2732,8 +2732,8 @@ pub struct RecognisedEllipticalDish {
 /// **认不出半球形的折边碟。** r 与 h 相等时 `GM_EDish` 退化成整个半球
 /// （`isSpherical`），与 `GM_SDish` 逐点相同，上一条会先把它认成 `SphericalDish`；
 /// 而 E3D 写的是 `EllipticalDish`——`expdri/DRDISH`（`0x10003fb8`）只看折边半径是不是
-/// 零来选 5（椭圆碟）还是 6（球形碟），不看形状。网格里没有这个信息，只能等写侧能拿到
-/// 模型那一侧的碟种类时才分得开。
+/// 零来选 5（椭圆碟）还是 6（球形碟），不看形状。网格里没有这个信息。出身已经说明是
+/// 折边碟时走 [`elliptical_dish_from_local_mesh_including_hemispheres`]。
 pub fn elliptical_dish_from_local_mesh(
     vertices: &[[f64; 3]],
     triangles: &[[u32; 3]],
@@ -2746,6 +2746,32 @@ pub fn elliptical_dish_from_local_mesh(
     base_plane_candidates(&points, triangles)
         .into_iter()
         .find_map(|normal| elliptical_dish_on_base(&points, triangles, normal))
+}
+
+/// 出身已经说明这是折边碟（目录 `PRAD > 0`）时用的识别器。
+///
+/// 先走 [`elliptical_dish_from_local_mesh`]。认不出、且网格是一只半球（r = h）时，
+/// 按球形碟那条把底圆和轴解出来，种类仍记成折边碟。非半球的球形冠不收：那是
+/// `PRAD ≤ 0` 的 `SphericalDish`，网格上两种半球分不开，调用方必须自己已经知道种类。
+pub fn elliptical_dish_from_local_mesh_including_hemispheres(
+    vertices: &[[f64; 3]],
+    triangles: &[[u32; 3]],
+) -> Option<RecognisedEllipticalDish> {
+    if let Some(dish) = elliptical_dish_from_local_mesh(vertices, triangles) {
+        return Some(dish);
+    }
+    let spherical = spherical_dish_from_local_mesh(vertices, triangles)?;
+    if (spherical.base_radius - spherical.height).abs() > 1e-4 {
+        return None;
+    }
+    Some(RecognisedEllipticalDish {
+        base_radius: spherical.base_radius,
+        height: spherical.height,
+        centre: spherical.centre,
+        axis: spherical.axis,
+        segments: spherical.segments,
+        sagitta_mm: spherical.sagitta_mm,
+    })
 }
 
 /// [`elliptical_dish_from_local_mesh`] 的后半段：底盘法向已定，把碟解出来或否掉。
@@ -3946,11 +3972,39 @@ mod tests {
                 "{radius}/{height} 是球形碟"
             );
         }
-        // 半球：两种碟逐点相同，归球形碟那一条（函数文档里记着这笔认不出的账）。
+        // 半球：两种碟逐点相同，按长相仍归球形碟。出身已知是折边碟时才收。
         let solid = crate::solid::elliptical_dish_solid(100.0, 100.0, 100.0).unwrap();
         let mesh = crate::mesh::TriMesh::from_manifold(&solid);
         let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
         assert!(elliptical_dish_from_local_mesh(&mesh.vertices, &triangles).is_none());
+    }
+
+    /// `/RVCD-HANDL`（PDIA 50 / PHEI 25 / PRAD 10）：r = h = 25，折边碟退化成半球。
+    /// 按长相认不出；出身已是折边碟时参数仍是 `[25, 25]`。非半球的球形冠不收。
+    #[test]
+    fn a_hemispherical_knuckled_dish_is_recognised_when_the_kind_is_already_known() {
+        let radius = 25.0;
+        let height = 25.0;
+        let knuckle = crate::solid::dish_knuckle_radius(radius, height);
+        let solid = crate::solid::elliptical_dish_solid(radius, height, knuckle).unwrap();
+        let mesh = crate::mesh::TriMesh::from_manifold(&solid);
+        let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
+        assert!(elliptical_dish_from_local_mesh(&mesh.vertices, &triangles).is_none());
+        let dish = elliptical_dish_from_local_mesh_including_hemispheres(
+            &mesh.vertices,
+            &triangles,
+        )
+        .expect("折边半球");
+        assert!((dish.base_radius - radius).abs() < 1e-4, "{}", dish.base_radius);
+        assert!((dish.height - height).abs() < 1e-4, "{}", dish.height);
+        let cap = crate::solid::spherical_dish_solid(25.0, 10.0).unwrap();
+        let cap_mesh = crate::mesh::TriMesh::from_manifold(&cap);
+        let cap_tris: Vec<[u32; 3]> = cap_mesh.indices.as_chunks::<3>().0.to_vec();
+        assert!(elliptical_dish_from_local_mesh_including_hemispheres(
+            &cap_mesh.vertices,
+            &cap_tris
+        )
+        .is_none());
     }
 
     /// `/1WCC096VN`（24383/66600）：网格把 245 mm 当沿 −Z 的高，目录把 120 mm 当沿 +X 的高。

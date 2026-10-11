@@ -239,6 +239,9 @@ pub struct CataloguePartRecord {
     /// 就是 [`crate::catalogue`] 把局部网格摆到元素里用的那只矩阵。没有标架的（型材成员）
     /// 是 `None`，记录照网格反推。
     pub frame: Option<DMat4>,
+    /// 目录 `SDSH` 且 `PRAD > 0`。E3D 的 `DRDISH` 据此写 `EllipticalDish`，不看形状：
+    /// r = h 时形体退化成半球，与球形碟逐点相同，网格认不出种类。
+    pub knuckled_dish: bool,
 }
 
 pub struct GeneratedElement {
