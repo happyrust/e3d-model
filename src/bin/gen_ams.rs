@@ -1133,12 +1133,30 @@ fn main() -> anyhow::Result<()> {
                 // 闸门比的是解析候选与网格的 AABB，而这一条两样都没有。
                 for part in &generated.degenerate_parts {
                     rvm_zero_size += 1;
-                    geometries.push(e3d_model::rvm_write::bodyless_cylinder_geometry(
-                        &generated.world,
-                        &part.local_transform,
-                        part.radius_mm,
-                        part.height_mm,
-                    ));
+                    geometries.push(match part.shape {
+                        e3d_model::elmodl::DegenerateCatalogueShape::Cylinder {
+                            radius_mm,
+                            height_mm,
+                        } => e3d_model::rvm_write::bodyless_cylinder_geometry(
+                            &generated.world,
+                            &part.local_transform,
+                            radius_mm,
+                            height_mm,
+                        ),
+                        e3d_model::elmodl::DegenerateCatalogueShape::Snout {
+                            bottom_radius_mm,
+                            top_radius_mm,
+                            height_mm,
+                            offset_x_mm,
+                        } => e3d_model::rvm_write::bodyless_snout_geometry(
+                            &generated.world,
+                            &part.local_transform,
+                            bottom_radius_mm,
+                            top_radius_mm,
+                            height_mm,
+                            offset_x_mm,
+                        ),
+                    });
                 }
                 let name = rvm_display_name(
                     generated.name.as_ref(),

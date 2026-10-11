@@ -207,18 +207,32 @@ impl std::fmt::Display for GeometryId {
 
 /// 一块**没有体**的目录图元：参数化算下来零径或零高，Core 不出体，我们也建不出网格。
 ///
-/// 留着它是因为 E3D 的 RVM 驱动不在这一步收手——它照走 DRCYL 把算出来的那对参数写成一条
-/// 记录：格子空着的那只是 `Cylinder[radius=0 height=-0]`（基准 80 根上 132 条，全在阀门
-/// 身上），`PHEI` 真解成 0 的那只是 `Cylinder[radius=57 height=-0]`，半径照留。我们一条
-/// 不写，于是「两侧记录条数」对不上，而几何本来是一致的。
+/// 留着它是因为 E3D 的 RVM 驱动不在这一步收手。圆柱照走 DRCYL：格子空着的那只是
+/// `Cylinder[radius=0 height=-0]`（基准 80 根上 132 条，全在阀门身上），`PHEI` 真解成 0
+/// 的那只是 `Cylinder[radius=57 height=-0]`，半径照留。零高但直径还在的 LSNO 照走 DRSNO：
+/// `/1WCC188VN` 的 `13245/585575` 写成 `Snout[84.15, 84.15, 0, 0, 0]`。不写的话两侧记录
+/// 条数对不上，几何本来是一致的。
+#[derive(Debug, Clone, PartialEq)]
+pub enum DegenerateCatalogueShape {
+    Cylinder {
+        radius_mm: f64,
+        height_mm: f64,
+    },
+    /// 半径，不是直径。`height_mm` 为 0 时是一张圆盘，E3D 仍写 `Snout`。
+    Snout {
+        bottom_radius_mm: f64,
+        top_radius_mm: f64,
+        height_mm: f64,
+        offset_x_mm: f64,
+    },
+}
+
 pub struct DegenerateCataloguePart {
-    /// 目录图元的名词。现在只有 `SCYL` / `LCYL` 走到这里。
+    /// 目录图元的名词（`SCYL` / `LCYL` / `LSNO` / `SCON`）。
     pub noun: String,
     /// 图元在元素局部系里的放置：平移是图元原点，Z 轴是它的轴向。
     pub local_transform: DMat4,
-    /// 算出来的半径与高，照原样写进记录——其中至少一个是 0，否则它就有体了。
-    pub radius_mm: f64,
-    pub height_mm: f64,
+    pub shape: DegenerateCatalogueShape,
 }
 
 /// 与 `parts` 逐块对齐的**记录事实**：这一块要写几条记录、用哪只标架写。

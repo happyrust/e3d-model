@@ -1738,6 +1738,54 @@ pub fn bodyless_cylinder_geometry(
     }
 }
 
+/// 给一只**没有体**的目录圆台造一条 `Snout` 记录。
+///
+/// `/1WCC188VN` 的两只法兰盘：`PBDI = PTDI = 0`、直径 168.3。Core 不出体，E3D 的 DRSNO
+/// 仍写 `Snout[84.15, 84.15, 0, 0, 0]`。半径、高、XOFF 都是记录单位（mm），剪切为 0。
+pub fn bodyless_snout_geometry(
+    world: &glam::DMat4,
+    local: &glam::DMat4,
+    bottom_radius: f64,
+    top_radius: f64,
+    height: f64,
+    offset_x: f64,
+) -> crate::rvm_read::RvmGeometry {
+    let cols = (*world * *local).to_cols_array();
+    let matrix3 = [
+        cols[0], cols[1], cols[2], cols[4], cols[5], cols[6], cols[8], cols[9], cols[10],
+    ]
+    .map(|value| value / M_TO_MM);
+    let primitive = Primitive::Snout([
+        bottom_radius,
+        top_radius,
+        height,
+        offset_x,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+    ]);
+    let record_bbox = primitive.local_aabb_mm().unwrap_or([
+        -bottom_radius.max(top_radius),
+        -bottom_radius.max(top_radius),
+        -height / 2.0,
+        bottom_radius.max(top_radius),
+        bottom_radius.max(top_radius),
+        height / 2.0,
+    ]);
+    RvmGeometry {
+        tag: "PRIM".to_string(),
+        flags: 1,
+        primitive,
+        matrix3,
+        translation_mm: [cols[12], cols[13], cols[14]],
+        record_bbox,
+        bbox_frame: crate::rvm_read::BboxFrame::Local,
+        level: None,
+    }
+}
+
 /// 由 [`snout_from_local_mesh`] 认出来的圆台造一条 `Snout` 记录。
 ///
 /// RVM 的 `Snout`：轴向局部 **Z**、原点在两个面心的中点，`XOFF`/`YOFF` 是顶面中心相对
@@ -4005,6 +4053,28 @@ mod tests {
             &cap_tris
         )
         .is_none());
+    }
+
+    /// `/1WCC188VN` 的零高法兰：没有网格，记录仍是 `Snout[84.15, 84.15, 0]`。
+    #[test]
+    fn a_flat_snout_record_keeps_both_radii_and_zero_height() {
+        let geometry = bodyless_snout_geometry(
+            &glam::DMat4::IDENTITY,
+            &glam::DMat4::IDENTITY,
+            84.15,
+            84.15,
+            0.0,
+            0.0,
+        );
+        match geometry.primitive {
+            Primitive::Snout(params) => {
+                assert!((params[0] - 84.15).abs() < 1e-9);
+                assert!((params[1] - 84.15).abs() < 1e-9);
+                assert!(params[2].abs() < 1e-12);
+                assert!(params[3..].iter().all(|value| value.abs() < 1e-12));
+            }
+            other => panic!("不是 Snout：{other:?}"),
+        }
     }
 
     /// `/1WCC096VN`（24383/66600）：网格把 245 mm 当沿 −Z 的高，目录把 120 mm 当沿 +X 的高。

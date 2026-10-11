@@ -22,7 +22,9 @@ use crate::catalogue_point::{
 };
 use crate::category::{RepreDiscipline, repre_discipline};
 use crate::discretise::{FilletVertex, flatten_ring};
-use crate::elmodl::{DegenerateCataloguePart, GeneratedElement, GeometryId, ModelError};
+use crate::elmodl::{
+    DegenerateCataloguePart, DegenerateCatalogueShape, GeneratedElement, GeometryId, ModelError,
+};
 use crate::primitive_instance::instantiate_box;
 use crate::route::orimat;
 use crate::solid::{
@@ -1074,7 +1076,7 @@ pub fn model_catalogue_member_with_cache(
             }
             noun @ ("LSNO" | "SCON") => {
                 match evaluate_catalogue_snout(member, &component, &primitive, &env, noun) {
-                    Ok(Some(evaluated)) => {
+                    Ok(SnoutBuild::Solid(evaluated)) => {
                         let (mesh_key, cutters, mut cut_diagnostics) = owned_negatives_of(
                             member,
                             &component,
@@ -1117,7 +1119,26 @@ pub fn model_catalogue_member_with_cache(
                             Err(error) => diagnostics.push(local_failure(&primitive, &error)),
                         }
                     }
-                    Ok(None) => degenerate_other += 1,
+                    Ok(SnoutBuild::Flat {
+                        bottom_diameter,
+                        top_diameter,
+                        offset,
+                        transform,
+                    }) => {
+                        // 高为 0 仍有直径：Core 不出体，E3D 的 DRSNO 照写一条 Snout。
+                        degenerate_other += 1;
+                        degenerate_parts.push(DegenerateCataloguePart {
+                            noun: primitive_noun.clone(),
+                            local_transform: transform,
+                            shape: DegenerateCatalogueShape::Snout {
+                                bottom_radius_mm: bottom_diameter * 0.5,
+                                top_radius_mm: top_diameter * 0.5,
+                                height_mm: 0.0,
+                                offset_x_mm: offset,
+                            },
+                        });
+                    }
+                    Ok(SnoutBuild::None) => degenerate_other += 1,
                     Err(error) => diagnostics.push(local_failure(&primitive, &error)),
                 }
             }
@@ -1170,8 +1191,10 @@ pub fn model_catalogue_member_with_cache(
                         degenerate_parts.push(DegenerateCataloguePart {
                             noun: primitive_noun.clone(),
                             local_transform: transform,
-                            radius_mm: radius,
-                            height_mm: height,
+                            shape: DegenerateCatalogueShape::Cylinder {
+                                radius_mm: radius,
+                                height_mm: height,
+                            },
                         });
                     }
                     Err(error) => diagnostics.push(format!(
@@ -1890,13 +1913,25 @@ fn lpyr_axial_and_offsets(
     (top_distance, bottom_distance, xoff, yoff)
 }
 
+enum SnoutBuild {
+    Solid(EvaluatedSnout),
+    /// 高低于容差、至少一端直径还在。没有网格，记录照 DRSNO 写。
+    Flat {
+        bottom_diameter: f64,
+        top_diameter: f64,
+        offset: f64,
+        transform: DMat4,
+    },
+    None,
+}
+
 fn evaluate_catalogue_snout(
     member: &DbElement,
     component: &DbElement,
     snout: &DbElement,
     env: &DbElementParamEnv,
     noun: &str,
-) -> Result<Option<EvaluatedSnout>, ModelError> {
+) -> Result<SnoutBuild, ModelError> {
     let (dbot, dtop, height, xoff, centre, rotation) = if noun == "SCON" {
         let diameter = required_number(snout, "PDIA", env, "catalogue SCON")?.abs();
         let distance = required_number(snout, "PDIS", env, "catalogue SCON")?;
@@ -1934,17 +1969,32 @@ fn evaluate_catalogue_snout(
         let (centre, rotation) = lsnout_frame(pa, pb, bottom, top, offset)?;
         (dbot, dtop, height, offset, centre, rotation)
     };
-    if height < HEIGHT_TOL_MM || dbot.max(dtop) < HEIGHT_TOL_MM {
-        return Ok(None);
+    let transform = DMat4::from_translation(centre) * DMat4::from_mat3(rotation);
+    if height < HEIGHT_TOL_MM {
+        // `/1WCC188VN` 的两只法兰盘：PBDI = PTDI = 0、直径 168.3。E3D 写
+        // `Snout[84.15, 84.15, 0]`，不因为没有体积就丢掉。两端直径都没有时无记录可写。
+        return Ok(if dbot.max(dtop) < HEIGHT_TOL_MM {
+            SnoutBuild::None
+        } else {
+            SnoutBuild::Flat {
+                bottom_diameter: dbot,
+                top_diameter: dtop,
+                offset: xoff,
+                transform,
+            }
+        });
+    }
+    if dbot.max(dtop) < HEIGHT_TOL_MM {
+        return Ok(SnoutBuild::None);
     }
     let parameters = [dbot, dtop, height, xoff, 0.0];
-    Ok(Some(EvaluatedSnout {
+    Ok(SnoutBuild::Solid(EvaluatedSnout {
         mesh_key: CatalogueMeshKey::Snout {
             tessellation_version: SNOUT_TESSELLATION_VERSION,
             parameter_bits: parameters.map(|value| value.to_bits()),
         },
         parameters,
-        transform: DMat4::from_translation(centre) * DMat4::from_mat3(rotation),
+        transform,
     }))
 }
 
@@ -2478,7 +2528,7 @@ fn collect_owned_negatives_where(
                 "SCON"
             };
             match evaluate_catalogue_snout(member, component, &child, env, twin) {
-                Ok(Some(cutter)) => {
+                Ok(SnoutBuild::Solid(cutter)) => {
                     let mut parameters = cutter.parameters;
                     // §2.3：+0.01 轴向过切只属于圆柱/锥族的负臂；锥台居中建体，
                     // 加在高度上中心不动（与 NSCY 同款）。
@@ -2488,7 +2538,8 @@ fn collect_owned_negatives_where(
                         transform: rebase * cutter.transform,
                     });
                 }
-                Ok(None) => {}
+                // 零高的负圆台没有体积可扣，和改前 `Ok(None)` 一样丢掉。
+                Ok(SnoutBuild::Flat { .. } | SnoutBuild::None) => {}
                 Err(error) => diagnostics.push(format!(
                     "catalogue negative {} skipped by Core-style local failure: {error}",
                     child.refno()
