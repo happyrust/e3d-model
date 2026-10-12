@@ -227,6 +227,31 @@ pub fn facet_group_from_world_triangles(
     geometry
 }
 
+/// 角钢 FacetGroup：记录原点从对齐轴挪到目录轮廓原点。
+///
+/// `justification_xy` 是截面局部系里 `JUSL` 的 `(PX, PY)`。`rotation` 与
+/// [`facet_group_from_world_triangles`] 同一列序（局部 X/Y/Z 轴的世界分量）。
+/// 局部顶点加回这份偏移，记录平移减去 `R · (PX, PY, 0)`。世界点不变。
+pub fn facet_group_at_catalogue_origin(
+    rotation: [f64; 9],
+    origin_mm: [f64; 3],
+    local_vertices_mm: &[[f64; 3]],
+    triangles: &[[u32; 3]],
+    justification_xy: [f64; 2],
+) -> RvmGeometry {
+    let [jx, jy] = justification_xy;
+    let origin = [
+        origin_mm[0] - (rotation[0] * jx + rotation[3] * jy),
+        origin_mm[1] - (rotation[1] * jx + rotation[4] * jy),
+        origin_mm[2] - (rotation[2] * jx + rotation[5] * jy),
+    ];
+    let locals: Vec<[f64; 3]> = local_vertices_mm
+        .iter()
+        .map(|vertex| [vertex[0] + jx, vertex[1] + jy, vertex[2]])
+        .collect();
+    facet_group_from_world_triangles(rotation, origin, &locals, triangles)
+}
+
 /// §2.3 的 rotated 帧：`AABB(matrix3 · v × 1000)`，乘过旋转、未加平移。
 fn rotated_frame_bbox(geometry: &RvmGeometry) -> [f64; 6] {
     let m = &geometry.matrix3;
@@ -3116,6 +3141,56 @@ mod tests {
             assert_eq!(got.geometries.len(), want.geometries.len());
             for axis in 0..3 {
                 assert!((got.translation_mm[axis] - want.translation_mm[axis]).abs() < 1e-3);
+            }
+        }
+    }
+
+    #[test]
+    fn angle_facet_record_origin_is_the_catalogue_origin() {
+        // HW150 BAR-1：记录 X = 世界 +Y，JUSL=RTOS = (−40, 0)。
+        // 列序与 gen_ams 一致：局部 X/Y/Z 轴的世界分量。
+        let rotation = [0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, -1.0];
+        let origin = [15350.0, 34705.92, -11520.0];
+        let local = [[0.0, 0.0, 0.0], [80.0, 0.0, 0.0], [0.0, 43.0, 950.0]];
+        let triangles = [[0u32, 1, 2]];
+        let geometry = facet_group_at_catalogue_origin(
+            rotation,
+            origin,
+            &local,
+            &triangles,
+            [-40.0, 0.0],
+        );
+        let world_of = |vertex: [f64; 3], at: [f64; 3]| {
+            [
+                at[0]
+                    + rotation[0] * vertex[0]
+                    + rotation[3] * vertex[1]
+                    + rotation[6] * vertex[2],
+                at[1]
+                    + rotation[1] * vertex[0]
+                    + rotation[4] * vertex[1]
+                    + rotation[7] * vertex[2],
+                at[2]
+                    + rotation[2] * vertex[0]
+                    + rotation[5] * vertex[1]
+                    + rotation[8] * vertex[2],
+            ]
+        };
+        assert!((geometry.translation_mm[0] - 15350.0).abs() < 1e-6);
+        assert!((geometry.translation_mm[1] - 34745.92).abs() < 1e-6);
+        assert!((geometry.translation_mm[2] + 11520.0).abs() < 1e-6);
+        let Primitive::FacetGroup(polygons) = &geometry.primitive else {
+            panic!("expected FacetGroup");
+        };
+        let vertices = &polygons[0].contours[0].vertices;
+        assert!((vertices[0][0] + 40.0).abs() < 1e-9);
+        assert!((vertices[1][0] - 40.0).abs() < 1e-9);
+        assert!((vertices[2][1] - 43.0).abs() < 1e-9);
+        for (before, after) in local.iter().zip(vertices.iter()) {
+            let old = world_of(*before, origin);
+            let new = world_of(*after, geometry.translation_mm);
+            for axis in 0..3 {
+                assert!((old[axis] - new[axis]).abs() < 1e-6);
             }
         }
     }

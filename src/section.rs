@@ -47,9 +47,7 @@ use e3d_io::record::descriptor::DescriptorValue;
 use crate::catalogue::{display_filtered, optional_number, repre_level_of, required_number};
 use crate::discretise::{FilletVertex, flatten_ring};
 use crate::elmodl::ModelError;
-use crate::solid::{
-    MANIFOLD_NUDGE_MM, cut_by_plane, cylinder_segments, extrude_rings, placed,
-};
+use crate::solid::{MANIFOLD_NUDGE_MM, cut_by_plane, cylinder_segments, extrude_rings, placed};
 
 /// 缺省对齐线：`JUSL` 未设时 E3D 用中性轴。
 pub const DEFAULT_JUSTIFICATION_LINE: &str = "NA";
@@ -315,6 +313,35 @@ pub fn evaluate_section_profile(
         mirrored: matches!(design.get_bool("LMIRR"), Ok(Some(true))),
         notes,
     })
+}
+
+/// 角钢 `SCTN` 的 FacetGroup 记录原点要落在目录轮廓原点，而不是 `JUSL` 对齐轴。
+///
+/// 建体时截面已经减过 [`SectionProfile::justification`]，记录原点在 `POSS`。
+/// E3D 把记录原点留在目录轮廓原点，局部坐标是没减过的目录点；世界顶点相同。
+/// 返回值就是要加回局部点、并从记录原点里减掉的 `(PX, PY)`。
+///
+/// 只对 `GTYP=ANG` 且偏移非零。`JUSL` 已经在目录原点（CPAR 那批 `NA`）时返回
+/// `None`，记录不动。`GENSEC` 不进这里。
+pub fn angle_facet_catalogue_shift(
+    design: &DbElement,
+) -> Result<Option<[f64; 2]>, SectionError> {
+    if design.element_type()? != "SCTN" {
+        return Ok(None);
+    }
+    let gtyp = design.get_string("GTYP")?.unwrap_or_default();
+    if !gtyp.eq_ignore_ascii_case("ANG") {
+        return Ok(None);
+    }
+    let SectionChain::Resolved(catalogue) = section_catalogue(design)? else {
+        return Ok(None);
+    };
+    let profile = evaluate_section_profile(design, &catalogue)?;
+    let shift = profile.justification;
+    if shift[0].abs() < 1e-6 && shift[1].abs() < 1e-6 {
+        return Ok(None);
+    }
+    Ok(Some(shift))
 }
 
 /// 成员在 GMSS 平面里的标架：平移 `(PX, PY)` + `PLAX` 给的旋转（`pplib/QSPROF`）。

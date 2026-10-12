@@ -1034,6 +1034,16 @@ fn main() -> anyhow::Result<()> {
                     world.z_axis.y,
                     world.z_axis.z,
                 ];
+                // 角钢 FacetGroup 的记录原点改到目录轮廓原点。偏移是 JUSL 的 (PX, PY)；
+                // 为零或不是角钢 SCTN 时不挪。GENSEC / CPAR 的 NA 落在目录原点，这里是 None。
+                let angle_shift = match &generated.geometry_id {
+                    e3d_model::GeometryId::Element { .. } => {
+                        e3d_model::section::angle_facet_catalogue_shift(
+                            &set.element(generated.refno),
+                        )?
+                    }
+                    e3d_model::GeometryId::ImpliedTube { .. } => None,
+                };
                 // **逐组件一条记录**，不是逐元素一条。E3D 就是按目录件拆的
                 // （`GeneratedElement::parts` 那条注释说的就是这件事：
                 // 「E3D preserves touching catalogue primitives as separate display meshes」），
@@ -1191,12 +1201,22 @@ fn main() -> anyhow::Result<()> {
                         let allow_box = allow_box_recogniser(catalogue_noun);
                         let geometry = if provenance_only && preferred.is_none() {
                             rvm_extrusion_facets += 1;
-                            e3d_model::rvm_write::facet_group_from_world_triangles(
-                                rotation,
-                                world.w_axis.truncate().to_array(),
-                                &local,
-                                &tris,
-                            )
+                            if let Some(shift) = angle_shift {
+                                e3d_model::rvm_write::facet_group_at_catalogue_origin(
+                                    rotation,
+                                    world.w_axis.truncate().to_array(),
+                                    &local,
+                                    &tris,
+                                    shift,
+                                )
+                            } else {
+                                e3d_model::rvm_write::facet_group_from_world_triangles(
+                                    rotation,
+                                    world.w_axis.truncate().to_array(),
+                                    &local,
+                                    &tris,
+                                )
+                            }
                         } else {
                             let (clo, chi) = component.aabb().unwrap_or(([0.0; 3], [0.0; 3]));
                             rvm_component_geometry(
