@@ -1234,6 +1234,23 @@ fn main() -> anyhow::Result<()> {
                                 &mut rvm_analytic_rejected,
                             )
                         };
+                        // 出身是 SEXT / SREV 且这条最终写成面片：记录帧改目录轮廓标架。
+                        // SEXT 原点旋进标架，SREV 原点不旋，两只矩阵都在 CataloguePart.frame 里。
+                        // 解析图元和自校没过退回的面片不进这一臂。
+                        let geometry = if matches!(catalogue_noun, Some("SEXT" | "SREV"))
+                            && matches!(
+                                geometry.primitive,
+                                e3d_model::rvm_read::Primitive::FacetGroup(_)
+                            )
+                        {
+                            frame.map_or(geometry, |frame| {
+                                e3d_model::rvm_write::facet_group_in_frame(
+                                    world, frame, &local, &tris,
+                                )
+                            })
+                        } else {
+                            geometry
+                        };
                         push_repeated(geometry, repeats_of(index));
                     }
                 }

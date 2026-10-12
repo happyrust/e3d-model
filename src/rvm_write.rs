@@ -227,6 +227,53 @@ pub fn facet_group_from_world_triangles(
     geometry
 }
 
+/// 出身是 `SEXT` / `SREV` 时，FacetGroup 的记录帧用目录轮廓标架，不用元素帧。
+///
+/// `frame` 是 [`crate::catalogue`] 摆这块网格的矩阵。两族都是
+/// `ORTHOG(PAAX, PBAX)`。原点：SEXT = PAAX 轴原点 + 标架·(PX,PY,PZ)；
+/// SREV = PAAX 轴原点 + (PX,PY,PZ)（不旋转）。调用方传入的就是这一只。
+/// `local_vertices_mm` 在元素局部系，等于 `world⁻¹ ·` 世界顶点。
+/// 换成标架局部 = `frame⁻¹ ·` 元素局部点 = `(world · frame)⁻¹ ·` 世界顶点。
+/// 记录矩阵 = `world · frame`（刚体；落盘时旋转除以 1000，与元素帧同一口径）。
+/// 标架不可逆时退回元素帧。
+pub fn facet_group_in_frame(
+    world: &glam::DMat4,
+    frame: &glam::DMat4,
+    local_vertices_mm: &[[f64; 3]],
+    triangles: &[[u32; 3]],
+) -> RvmGeometry {
+    let inverse = frame.inverse();
+    if !inverse.is_finite() {
+        let cols = world.to_cols_array();
+        return facet_group_from_world_triangles(
+            [
+                cols[0], cols[1], cols[2], cols[4], cols[5], cols[6], cols[8], cols[9],
+                cols[10],
+            ],
+            [cols[12], cols[13], cols[14]],
+            local_vertices_mm,
+            triangles,
+        );
+    }
+    let framed: Vec<[f64; 3]> = local_vertices_mm
+        .iter()
+        .map(|vertex| {
+            (inverse * glam::DVec3::from_array(*vertex).extend(1.0))
+                .truncate()
+                .to_array()
+        })
+        .collect();
+    let cols = (*world * *frame).to_cols_array();
+    facet_group_from_world_triangles(
+        [
+            cols[0], cols[1], cols[2], cols[4], cols[5], cols[6], cols[8], cols[9], cols[10],
+        ],
+        [cols[12], cols[13], cols[14]],
+        &framed,
+        triangles,
+    )
+}
+
 /// 角钢 FacetGroup：记录原点从对齐轴挪到目录轮廓原点。
 ///
 /// `justification_xy` 是截面局部系里 `JUSL` 的 `(PX, PY)`。`rotation` 与
@@ -4282,6 +4329,62 @@ mod tests {
                 assert!((r - 40.0).abs() < 1e-9 && (h - 20.0).abs() < 1e-9);
             }
             other => panic!("{other:?}"),
+        }
+    }
+
+    /// LCT 那条：轮廓标架 Xe=X、Ye=Z、Ze=−Y，原点沿元素 Y 挪 101.5。
+    /// 世界点不变，记录平移跟着标架走。
+    #[test]
+    fn sext_facet_group_uses_profile_frame_without_moving_world_vertices() {
+        let frame = glam::DMat4::from_cols(
+            glam::DVec3::X.extend(0.0),
+            glam::DVec3::Z.extend(0.0),
+            glam::DVec3::new(0.0, -1.0, 0.0).extend(0.0),
+            glam::DVec3::new(0.0, 101.5, 0.0).extend(1.0),
+        );
+        let world = glam::DMat4::from_translation(glam::DVec3::new(3766.21, 23092.04, 44021.50));
+        let profile = [[0.0, 0.0, 0.0], [200.0, 0.0, 0.0], [0.0, 75.0, 0.0]];
+        let local: Vec<[f64; 3]> = profile
+            .iter()
+            .map(|vertex| {
+                (frame * glam::DVec3::from_array(*vertex).extend(1.0))
+                    .truncate()
+                    .to_array()
+            })
+            .collect();
+        let got = facet_group_in_frame(&world, &frame, &local, &[[0, 1, 2]]);
+        let placed = (world * frame).to_cols_array();
+        let rotation = got.rotation();
+        for (got_axis, expect) in rotation.iter().zip([
+            placed[0], placed[1], placed[2], placed[4], placed[5], placed[6], placed[8],
+            placed[9], placed[10],
+        ]) {
+            assert!((got_axis - expect).abs() < 1e-9, "{rotation:?}");
+        }
+        for axis in 0..3 {
+            assert!((got.translation_mm[axis] - placed[12 + axis]).abs() < 1e-6);
+        }
+        let Primitive::FacetGroup(polygons) = &got.primitive else {
+            panic!("{:?}", got.primitive);
+        };
+        let written = &polygons[0].contours[0].vertices;
+        for (got_vertex, expect) in written.iter().zip(profile) {
+            let delta = glam::DVec3::from_array(*got_vertex) - glam::DVec3::from_array(expect);
+            assert!(delta.length() < 1e-6, "{got_vertex:?} vs {expect:?}");
+        }
+        let m = &got.matrix3;
+        for (vertex, element_local) in written.iter().zip(&local) {
+            let rebuilt = [
+                (m[0] * vertex[0] + m[3] * vertex[1] + m[6] * vertex[2]) * M_TO_MM
+                    + got.translation_mm[0],
+                (m[1] * vertex[0] + m[4] * vertex[1] + m[7] * vertex[2]) * M_TO_MM
+                    + got.translation_mm[1],
+                (m[2] * vertex[0] + m[5] * vertex[1] + m[8] * vertex[2]) * M_TO_MM
+                    + got.translation_mm[2],
+            ];
+            let expect = (world * glam::DVec3::from_array(*element_local).extend(1.0)).truncate();
+            let delta = glam::DVec3::from_array(rebuilt) - expect;
+            assert!(delta.length() < 1e-6, "{rebuilt:?} vs {expect:?}");
         }
     }
 }
