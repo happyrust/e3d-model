@@ -3082,10 +3082,6 @@ mod tests {
         .unwrap();
         for w1 in [2232, 2246, 2283, 2334] {
             let fixing = set.element(RefNo::new(2013286654, w1));
-            let first = attachment_angles(&fixing).unwrap();
-            let fixing_world = world_matrix(&fixing).unwrap();
-            let second = attachment_angles(&fixing).unwrap();
-            eprintln!("{w1}: first {first:?} second {second:?} fixing world {fixing_world:?}");
             let angles = attachment_angles(&fixing)
                 .unwrap()
                 .expect("檐口 FIXING 连着斜梁");
