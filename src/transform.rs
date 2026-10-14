@@ -108,10 +108,19 @@ pub fn world_matrix(el: &DbElement) -> Result<DMat4, DbElementError> {
 enum ImplicitFrame {
     /// GENSEC 名下的 `JLDATU` / `PLDATU`（[`crate::datum`]）。
     GensecDatum,
-    /// SCTN / STWALL 名下的 `FITT`：`world(属主) * section_fitting_placement(属主, FITT)`，
+    /// SCTN / STWALL 名下的 `FITT` / `CMFI`：`world(属主) * section_fitting_placement(属主, 件)`，
     /// 与 SCTN builder 装配件用的是同一份标架（E3D TTY 真值：SCTN 名下 521 只、STWALL 名下
-    /// 126 只逐件对上）。
+    /// 126 只逐件对上）。CMFI 与 FITT 共用 `GFIORI` / `GFIORG`（recheck-3 §2.3 路由表），
+    /// 属性面（POSL / ZDIS / DELP / BANG）相同。
     SectionFitting(DbElement),
+    /// SCTN 名下的 `SNOD`：结构节点，`ZDIS` 是沿梁轴（POSS→POSE）的距离。
+    /// `world(属主 SCTN) * section_axis_frame(属主) * T(0,0,ZDIS)`——SCTN 自己没有 POS/ORI，
+    /// 轴架现算（`section_axis_frame`，不含中性轴自旋：绕 Z 转不动沿 Z 的度量）。
+    /// 只认 SCTN 属主；STWALL 名下 SNOD 的 ZDIS 是沿路径弧长，语义不同，不接。
+    ///
+    /// SNOD 名下的关节元素（`SJOI` 等）没有自己的隐式标架——`GJTORI` / `GJTORG` 内部
+    /// 未翻，暂按普通 owner 链折进 SNOD 标架（它们的 `DELP` / `BANG` 在语料里全是 0）。
+    SectionNode(DbElement),
     /// Detailed handrail posts have no POS/ORI.  Core3D places the post at
     /// its `POSREF` path point and applies `ZDIS`; template children inherit
     /// that frame through their owner chain.
@@ -125,9 +134,15 @@ fn implicit_frame(el: &DbElement) -> Result<Option<ImplicitFrame>, DbElementErro
         "JLDATU" | "PLDATU" => Ok(crate::datum::is_gensec_datum(el)
             .map_err(|error| pseudo_attribute(el, &noun, error))?
             .then_some(ImplicitFrame::GensecDatum)),
-        "FITT" => match el.owner()? {
+        "FITT" | "CMFI" => match el.owner()? {
             Some(host) if matches!(host.element_type()?.as_str(), "SCTN" | "STWALL") => {
                 Ok(Some(ImplicitFrame::SectionFitting(host)))
+            }
+            _ => Ok(None),
+        },
+        "SNOD" => match el.owner()? {
+            Some(host) if host.element_type()?.as_str() == "SCTN" => {
+                Ok(Some(ImplicitFrame::SectionNode(host)))
             }
             _ => Ok(None),
         },
@@ -154,6 +169,15 @@ fn implicit_world(el: &DbElement) -> Result<Option<DMat4>, DbElementError> {
                     pseudo_attribute(el, &noun, crate::elmodl::ModelError::from(error))
                 })?;
             Ok(Some(world_matrix(&host)? * placement))
+        }
+        ImplicitFrame::SectionNode(host) => {
+            let frame = crate::section::section_axis_frame(&host).map_err(|error| {
+                pseudo_attribute(el, &noun, crate::elmodl::ModelError::from(error))
+            })?;
+            let zdis = el.get_double("ZDIS")?.unwrap_or(0.0);
+            Ok(Some(
+                world_matrix(&host)? * frame * DMat4::from_translation(DVec3::new(0.0, 0.0, zdis)),
+            ))
         }
         ImplicitFrame::HandrailPost(post) => handrail_post_world(&post),
     }

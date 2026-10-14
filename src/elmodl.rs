@@ -484,9 +484,10 @@ pub fn model_element_with_cache(
     let level = repre_level_of(el)?;
     let mut skipped = Vec::new();
     let mut fixing_catalogue_cuts = Vec::new();
-    if noun == "GENSEC" {
+    if noun == "GENSEC" || noun == "SCTN" {
         collect_joint_negatives(
             el,
+            &noun,
             &mut negatives,
             &mut fixing_catalogue_cuts,
             &mut skipped,
@@ -501,6 +502,24 @@ pub fn model_element_with_cache(
             &mut notes,
             cache,
         )?;
+        if noun == "SCTN" {
+            collect_member_joint_negatives(
+                el,
+                &mut negatives,
+                &mut fixing_catalogue_cuts,
+                &mut skipped,
+                &mut notes,
+                cache,
+            )?;
+            collect_owner_template_negatives(
+                el,
+                &mut negatives,
+                &mut fixing_catalogue_cuts,
+                &mut skipped,
+                &mut notes,
+                cache,
+            )?;
+        }
     }
     negatives.retain(|neg| {
         let (lo, hi) = negative_leve(neg);
@@ -2246,12 +2265,17 @@ fn collect_negatives_deep(el: &DbElement, out: &mut Vec<DbElement>) -> Result<()
     Ok(())
 }
 
-/// GENSEC 两端的关节负体：`JOIS` / `JOIE` 指向的 FIXING 给这根梁的刀（[`fixing_negatives`]，
-/// mode 0）。
+/// GENSEC / SCTN 两端的关节负体：`JOIS` / `JOIE` 指向的关节元素给这根构件的刀
+/// （[`fixing_negatives`]）。
 ///
 /// 对标 `DB_Sctn::DB_makeCSG@0x10738C30`：截面实体切完两端之后，对 JOIS、JOIE 的目标各调
-/// 一次 `sub_10722D80(..., mode 0)`。`aps250110` 上 1505 根 GENSEC 的 522 个非空关节全部指向
-/// FIXING，FIXING 的 `CREF` 全部回指这根梁：
+/// 一次 `sub_10722D80(..., mode 0)`，wrapper 把 mode 0 改写成负体 mode 2
+/// （`2 − (mode≠0)`，recheck-2 §六锚点表）——SCTN 的关节负体过 `NAPP & 2` 门。
+/// GENSEC 侧的同一调用留在 [`JOINT_MODE`]（mode 0，`NAPP & 1`）——那是 `aps250110`
+/// 逐件 TTY 验过的口径（檐口 JOIN 的 NSEX `NAPP 1` 只有 mode 0 放行），不动它。
+///
+/// `aps250110` 上 1505 根 GENSEC 的 522 个非空关节全部指向 FIXING，FIXING 的 `CREF` 全部回指
+/// 这根梁：
 ///
 /// - 带 TMPL 的 229 个是「Flexible / Full Depth End Plate」与「Web Cleats」三种节点模板，负体是
 ///   NBOX（NAPP -1，ZLEN 8 的端板让位）、NCYL（NAPP 7，螺栓孔）与少数 NXTR（NAPP -1，翼缘切角）
@@ -2260,18 +2284,30 @@ fn collect_negatives_deep(el: &DbElement, out: &mut Vec<DbElement>) -> Result<()
 ///   的翼缘宽（`APAR[2]`）与设计表的 `BONE` / `BTWO` 围出截面，挤 `PARA[1] + 1` = 16 mm——斜梁
 ///   檐口端对 E3D 长出的就是这 16 mm；NSCY（NAPP 6，螺栓孔）在 mode 0 不放行。
 ///
+/// SCTN 的 JOIS/JOIE 指向的是 `SJOI`（aps250110 实测 `SCTN.JOIE → SJOI`，SJOI 的 `CREF`
+/// 回指被切的 SCTN；aps7200 一窗 94 只 SJOI）。SJOI 多数没有 TMPL 成员、`SPRE` 也空——按
+/// `sub_10722680` 的几何源口径（TMPL 成员 / SPRE→CATR）它产不出负体，这类元素记一条
+/// `skipped` 便于 RVM 归因：若 E3D 对这类关节还出刀（CUTP/CUTB 端切），缺口就显在这一行。
+///
 /// `SUBJ` 关节（`DB_makeCSG` 连它的属主一起扫）与 FIXING 套 FIXING（`DB_Gensec::makeCSG` 沿关节
 /// 目标的属主链往上、只要还是 FIXING 就接着扫）语料里都没有，没接。
 ///
-/// 关节读不出来（悬空引用、成员表读挂）不拖垮梁：记进 `skipped`，梁照出。
+/// 关节读不出来（悬空引用、成员表读挂）不拖垮构件：记进 `skipped`，构件照出。
 fn collect_joint_negatives(
     el: &DbElement,
+    noun: &str,
     negatives: &mut Vec<DbElement>,
     catalogue_cuts: &mut Vec<Manifold>,
     skipped: &mut Vec<SkippedNegative>,
     notes: &mut Vec<String>,
     cache: &mut CatalogueMeshCache,
 ) -> Result<(), ModelError> {
+    // SCTN 的 JOIS/JOIE 经 `sub_10722D80(mode 0)` 落到负体 mode 2；GENSEC 留在 mode 0。
+    let joint_mode = if noun == "SCTN" {
+        SCTN_JOINT_MODE
+    } else {
+        JOINT_MODE
+    };
     for (attr, joint) in [
         ("JOIS", el.get_element("JOIS")?),
         ("JOIE", el.get_element("JOIE")?),
@@ -2279,22 +2315,191 @@ fn collect_joint_negatives(
         let Some(joint) = joint else {
             continue;
         };
-        if joint.element_type()? != "FIXING" {
+        let joint_noun = joint.element_type()?;
+        // GENSEC 的关节集保持 `FIXING` 单值（语料实测如此）；SCTN 的 JOIS/JOIE 实测指 SJOI，
+        // SUBJ / PJOI / SCOJ / PCOJ / FIXING 同属一族一起放行——没有几何源的由
+        // `fixing_negatives` 自然给零并落下面的 skipped 记账。
+        let accepted = match noun {
+            "GENSEC" => joint_noun == "FIXING",
+            _ => matches!(
+                joint_noun.as_str(),
+                "FIXING" | "SJOI" | "PJOI" | "SCOJ" | "PCOJ" | "SUBJ"
+            ),
+        };
+        if !accepted {
             continue;
         }
-        match fixing_negatives(&joint, JOINT_MODE, negatives, catalogue_cuts, notes, cache) {
-            Ok(0) => {}
+        match fixing_negatives(&joint, joint_mode, negatives, catalogue_cuts, notes, cache) {
+            Ok(0) => {
+                if noun == "SCTN" {
+                    skipped.push(SkippedNegative {
+                        refno: joint.refno(),
+                        noun: joint_noun.clone(),
+                        reason: format!(
+                            "{attr} 关节没有几何源（TMPL 成员与 SPRE→CATR 都没有）；若 E3D 对它出\
+                             CUTP/CUTB 端切刀，缺口在这一行（DB_Sjoi 的负体 builder 语义待接）"
+                        ),
+                    });
+                }
+            }
             Ok(rejected) => notes.push(format!(
-                "{attr} 关节 {}：NAPP 门在关节路径（mode 0）挡下 {rejected} 把刀，E3D 同样不拿它们切梁",
+                "{attr} 关节 {}：NAPP 门在关节路径（mode {joint_mode}）挡下 {rejected} 把刀，E3D 同样不拿它们切构件",
                 joint.refno()
             )),
             Err(error) => skipped.push(SkippedNegative {
                 refno: joint.refno(),
-                noun: "FIXING".into(),
+                noun: joint_noun,
                 reason: format!("{attr} 关节读不出来，端头负体没扣：{error}"),
             }),
         }
     }
+    Ok(())
+}
+
+/// SCTN 的 JOIS / JOIE 关节在 `sub_10722D80(mode 0)` 里被改写成负体 mode 2（`NAPP & 2` 门）。
+const SCTN_JOINT_MODE: u32 = 2;
+
+/// SCTN 成员链上的关节 / 配件负体（`DB_Sctn::DB_makeCSG` 的 `sub_10721600(mode 3)` 扫描，
+/// recheck-2 §2.3 / recheck-3 N1-3）：
+///
+/// - 成员 `FITT` / `CMFI` → mode 3；`CMFI` 名下的 `SBFI` → mode 6；
+/// - 成员 `SNOD` 名下的 `SJOI` → mode 1；
+/// - 成员 `SCOJ` → mode 2，其名下 `SUBJ` → mode 1。
+///
+/// 几何源统一走 `sub_10722680` 同款解析（TMPL 成员 → 设计负体；`SPRE→CATR` → 目录负体），
+/// NAPP 门按各 mode 取位——`NAPP = −1` 只放 mode 3–6（`design_napp_admits` 的 `0|3|4|5|6|9`
+/// 与本路径的 mode 集 {1,2,3,6} 取交正好是 {3,6}）。`FITT` 成员下的负体定位吃
+/// `ImplicitFrame::SectionFitting`（`transform.rs` 已接）；`SNOD` 链下的关节元素若真解出
+/// 负体，标架吃 `ImplicitFrame::SectionNode` 的暂定实现（GJTORI/GJTORG 内部未翻，RVM 校）。
+///
+/// 成员读挂只记 `skipped`，构件照出。
+fn collect_member_joint_negatives(
+    el: &DbElement,
+    negatives: &mut Vec<DbElement>,
+    catalogue_cuts: &mut Vec<Manifold>,
+    skipped: &mut Vec<SkippedNegative>,
+    notes: &mut Vec<String>,
+    cache: &mut CatalogueMeshCache,
+) -> Result<(), ModelError> {
+    let mut feed = |source: &DbElement, mode: u32, via: &str| match fixing_negatives(
+        source,
+        mode,
+        negatives,
+        catalogue_cuts,
+        notes,
+        cache,
+    ) {
+        Ok(0) => skipped.push(SkippedNegative {
+            refno: source.refno(),
+            noun: source.element_type().unwrap_or_else(|_| "?".into()),
+            reason: format!(
+                "{via} 没有几何源（TMPL 成员与 SPRE→CATR 都没有）；若 E3D 对它出刀，\
+                     缺口在这一行"
+            ),
+        }),
+        Ok(rejected) => notes.push(format!(
+            "{via} {}：NAPP 门（mode {mode}）挡下 {rejected} 把刀，E3D 同样不切",
+            source.refno()
+        )),
+        Err(error) => skipped.push(SkippedNegative {
+            refno: source.refno(),
+            noun: source.element_type().unwrap_or_else(|_| "?".into()),
+            reason: format!("{via} 负体读不出来：{error}"),
+        }),
+    };
+    for member in el.members()? {
+        let member_noun = member.element_type()?;
+        if let Some(mode) = member_chain_mode(&member_noun, None) {
+            feed(&member, mode, "成员配件");
+        }
+        if matches!(member_noun.as_str(), "CMFI" | "SNOD" | "SCOJ") {
+            for sub in member.members()? {
+                let sub_noun = sub.element_type()?;
+                if let Some(mode) = member_chain_mode(&member_noun, Some(&sub_noun)) {
+                    feed(&sub, mode, "成员链下嵌套关节");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `sub_10721600(mode 3)` 的成员链扫描表：`FITT` / `CMFI` 直接成 mode 3；嵌套第二层里
+/// `CMFI` 名下的 `SBFI` 是 mode 6、`SNOD` 名下的 `SJOI` 是 mode 1、`SCOJ` 本身是 mode 2、
+/// 其名下 `SUBJ` 是 mode 1。表外的成员 / 嵌套组合不参与这条扫描（返回 `None`）。
+fn member_chain_mode(member_noun: &str, sub_noun: Option<&str>) -> Option<u32> {
+    match (member_noun, sub_noun) {
+        ("FITT" | "CMFI", None) => Some(3),
+        ("CMFI", Some("SBFI")) => Some(6),
+        ("SNOD", Some("SJOI")) => Some(1),
+        ("SCOJ", None) => Some(2),
+        ("SCOJ", Some("SUBJ")) => Some(1),
+        _ => None,
+    }
+}
+
+/// SCTN 属主是 `TMPL` 时的模板负体（`DB_Sctn::DB_makeCSG`：`owner==TMPL →
+/// sub_10722D80(mode 7)`，`NAPP & 4` 门；`TMPL.owner==FIXING → sub_10721930` 的
+/// FIXING 扫描臂——后者把模板所属的 FIXING 当宿主刀源，沿用宿主扫描的
+/// SFIT?3:1 改写）。
+///
+/// aps250110 / aps7200 的 SCTN 大量挂在 `TMPL ← FITT ← STWALL` 组合件里（实测
+/// `2013286654/68 SCTN ← TMPL/25148 ← FITT/56`）：模板里的负体（端板让位、连接
+/// 件切口）按 mode 7 扣到截面件上。TMPL 的负体成员是设计负体，走
+/// [`design_napp_admits`]。
+fn collect_owner_template_negatives(
+    el: &DbElement,
+    negatives: &mut Vec<DbElement>,
+    catalogue_cuts: &mut Vec<Manifold>,
+    skipped: &mut Vec<SkippedNegative>,
+    notes: &mut Vec<String>,
+    cache: &mut CatalogueMeshCache,
+) -> Result<(), ModelError> {
+    let Some(owner) = el.owner()? else {
+        return Ok(());
+    };
+    if owner.element_type()? != "TMPL" {
+        return Ok(());
+    }
+    if let Some(grand) = owner.owner()?
+        && grand.element_type()?.as_str() == "FIXING"
+    {
+        match fixing_negatives(
+            &grand,
+            HOST_SCAN_MODE,
+            negatives,
+            catalogue_cuts,
+            notes,
+            cache,
+        ) {
+            Ok(rejected) => {
+                if rejected > 0 {
+                    notes.push(format!(
+                        "属主链 TMPL←FIXING {}：NAPP 门挡下 {rejected} 把刀",
+                        grand.refno()
+                    ));
+                }
+            }
+            Err(error) => skipped.push(SkippedNegative {
+                refno: grand.refno(),
+                noun: "FIXING".into(),
+                reason: format!("属主链 TMPL←FIXING 扫描读不出负体：{error}"),
+            }),
+        }
+        return Ok(());
+    }
+    let mut template_negatives = Vec::new();
+    collect_negatives(&owner, &mut template_negatives)?;
+    let before = template_negatives.len();
+    template_negatives.retain(|neg| design_napp_admits(7, negative_napp(neg)));
+    let rejected = before - template_negatives.len();
+    if rejected > 0 {
+        notes.push(format!(
+            "属主 TMPL {}：NAPP 门（mode 7，NAPP & 4）挡下 {rejected} 把刀，E3D 同样不切",
+            owner.refno()
+        ));
+    }
+    negatives.extend(template_negatives);
     Ok(())
 }
 
@@ -2313,8 +2518,9 @@ pub(crate) struct AttachmentAngles {
 /// `BLEN = APAR[1] / COS(ANYZ)`、`OPYZ = ADJA * TAN(ANYZ)`，刀与加腋板的尺寸都吃它。E3D TTY 在 aps250110
 /// 的四只檐口 FIXING 上 `Q AANGYZ` 都是 -14.481°、`Q AANGXZ` 是 0°（斜梁 1000 / 3872 的坡）。
 ///
-/// 只接了 GENSEC（轴向取 SPINE 在那一端的切向）。连着 SCTN 的关节语料里没有，不答（E3D 的 SCTN 走
-/// `POSS → POSE`）；`CREF` 空、不回指、截面没有 SPINE 也不答——表达式照旧按未解报。
+/// 接了 GENSEC（轴向取 SPINE 在那一端的切向）与 SCTN（直段，`unit(POSE − POSS)` 端切向，
+/// 起端正向 / 末端反向）。`CREF` 空、不回指、截面缺 SPINE 或 POSS/POSE 退化都不答——
+/// 表达式照旧按未解报。
 pub(crate) fn attachment_angles(
     fixing: &DbElement,
 ) -> Result<Option<AttachmentAngles>, ModelError> {
@@ -2324,23 +2530,44 @@ pub(crate) fn attachment_angles(
     let Some(section) = fixing.get_element("CREF")? else {
         return Ok(None);
     };
-    if section.element_type()? != "GENSEC" {
+    let section_noun = section.element_type()?;
+    if section_noun != "GENSEC" && section_noun != "SCTN" {
         return Ok(None);
     }
     let at_start = section.get_ref("JOIS")? == Some(fixing.refno());
     if !at_start && section.get_ref("JOIE")? != Some(fixing.refno()) {
         return Ok(None);
     }
-    let Some(path) = crate::section::spine_path(&section)? else {
-        return Ok(None);
-    };
-    let tangent = if at_start {
-        path.segments.first().map(|segment| segment.tangents().0)
+    let tangent = if section_noun == "GENSEC" {
+        let Some(path) = crate::section::spine_path(&section)? else {
+            return Ok(None);
+        };
+        let tangent = if at_start {
+            path.segments.first().map(|segment| segment.tangents().0)
+        } else {
+            path.segments.last().map(|segment| -segment.tangents().1)
+        };
+        let Some(tangent) = tangent else {
+            return Ok(None);
+        };
+        tangent
     } else {
-        path.segments.last().map(|segment| -segment.tangents().1)
-    };
-    let Some(tangent) = tangent else {
-        return Ok(None);
+        // SCTN 是直段：`POSS → POSE` 就是轴向；起端（JOIS）指向截面里面 = 轴正向，
+        // 末端（JOIE）= 轴反向，与 GENSEC 的端切向口径一致。
+        let poss = section
+            .get_position("POSS")?
+            .map(DVec3::from_array)
+            .unwrap_or(DVec3::ZERO);
+        let pose = section
+            .get_position("POSE")?
+            .map(DVec3::from_array)
+            .unwrap_or(poss);
+        let axis = pose - poss;
+        if axis.length() <= 0.001 || !axis.is_finite() {
+            return Ok(None);
+        }
+        let axis = axis.normalize();
+        if at_start { axis } else { -axis }
     };
     let into_section = DMat3::from_mat4(world_matrix(&section)?) * tangent;
     let local = DMat3::from_mat4(world_matrix(fixing)?).inverse() * into_section;
@@ -2896,6 +3123,123 @@ mod tests {
         // mode 7（TMPL 属主）看 `& 4`。
         assert!(design_napp_admits(7, Some(4)));
         assert!(!design_napp_admits(7, Some(3)));
+    }
+
+    /// SCTN 端关节负体经 `sub_10722D80` 的 mode-2 改写（`2 − (mode≠0)`），过 `NAPP & 2`
+    /// 门——与 GENSEC 关节的 mode 0（`& 1`、`-1` 放行）有意不同：SJOI 链上若出现
+    /// `NAPP = -1` 的刀，E3D 在 mode 2 下也不拿它切。
+    #[test]
+    fn the_sctn_joint_gate_is_mode_2_not_mode_0() {
+        assert_eq!(SCTN_JOINT_MODE, 2);
+        // -1 只放 mode 0/3/4/5/6/9：mode 2 挡下，mode 0 放行——两态对照钉死。
+        assert!(!design_napp_admits(SCTN_JOINT_MODE, Some(-1)));
+        assert!(design_napp_admits(JOINT_MODE, Some(-1)));
+        // 门位 `& 2`：NAPP 带 2 位（2 / 3 / 6 / 7）放行，1 / 4 / 8 挡下。
+        for napp in [2, 3, 6, 7] {
+            assert!(
+                design_napp_admits(SCTN_JOINT_MODE, Some(napp)),
+                "NAPP={napp}"
+            );
+        }
+        for napp in [1, 4, 8] {
+            assert!(
+                !design_napp_admits(SCTN_JOINT_MODE, Some(napp)),
+                "NAPP={napp}"
+            );
+        }
+        // 目录件一侧同一道门（与 mode 9 的那点差与这里无关）。
+        assert!(catalogue_napp_admits(SCTN_JOINT_MODE, Some(2)));
+        assert!(!catalogue_napp_admits(SCTN_JOINT_MODE, Some(1)));
+        assert!(!catalogue_napp_admits(SCTN_JOINT_MODE, Some(-1)));
+    }
+
+    /// `sub_10721600(mode 3)` 的成员链扫描表（recheck-2 §2.3）：`FITT`/`CMFI` 直接成
+    /// mode 3，`CMFI` 名下 `SBFI` 是 mode 6，`SNOD` 名下 `SJOI` 是 mode 1，`SCOJ` 本身
+    /// mode 2、其名下 `SUBJ` mode 1；表外组合不进这条扫描。
+    #[test]
+    fn the_sctn_member_chain_scan_table_is_sub_10721600() {
+        assert_eq!(member_chain_mode("FITT", None), Some(3));
+        assert_eq!(member_chain_mode("CMFI", None), Some(3));
+        assert_eq!(member_chain_mode("CMFI", Some("SBFI")), Some(6));
+        assert_eq!(member_chain_mode("SNOD", Some("SJOI")), Some(1));
+        assert_eq!(member_chain_mode("SCOJ", None), Some(2));
+        assert_eq!(member_chain_mode("SCOJ", Some("SUBJ")), Some(1));
+        // 表外：SNOD 自己不是刀源（只是节点载体），FITT 不往下扫，别的嵌套一律不算。
+        assert_eq!(member_chain_mode("SNOD", None), None);
+        assert_eq!(member_chain_mode("FITT", Some("SBFI")), None);
+        assert_eq!(member_chain_mode("TMPL", None), None);
+        assert_eq!(member_chain_mode("SNOD", Some("FITT")), None);
+        // 成员链 mode 集 {1,2,3,6}：`NAPP = -1` 只在 3 / 6 放行。
+        for mode in [1, 2] {
+            assert!(!design_napp_admits(mode, Some(-1)), "mode {mode}");
+        }
+        for mode in [3, 6] {
+            assert!(design_napp_admits(mode, Some(-1)), "mode {mode}");
+        }
+    }
+
+    /// aps250110 的 SCTN 端关节：`SCTN 2013286654/68 JOIE → SJOI 72`，SJOI 无 TMPL/SPRE
+    /// 几何源——它的端切语义（CUTP/CUTB）是另一条还没翻完的 builder 路，必须落
+    /// `negatives_skipped` 记账，不许静默。语料不在就跳过（同檐口测试那道门）。
+    #[test]
+    fn sctn_endpoint_joints_without_a_geometry_source_are_accounted() {
+        let plant = std::path::Path::new(r"D:\AVEVA\Projects\E3D3.1\AvevaPlantSample\aps000");
+        let acp = std::path::Path::new(r"D:\AVEVA\Projects\E3D3.1\AvevaCatalogue\acp000");
+        let template = std::path::Path::new(r"E:\reverse\e3d\shadow_e3d31_aps_all");
+        if !plant.join("aps250110_0001").exists()
+            || !acp.exists()
+            || !template.join("attlib.dat").exists()
+        {
+            return;
+        }
+        let resolver = crate::db_discovery::DirectoryDbResolver::scan(
+            &[plant.to_path_buf(), acp.to_path_buf()],
+            template,
+        )
+        .unwrap();
+        let set = std::sync::Arc::new(
+            e3d_io::db_element::DbSet::with_attlib_file_and_resolver(
+                &template.join("attlib.dat"),
+                Box::new(resolver),
+            )
+            .unwrap(),
+        );
+        set.add_db(e3d_io::db_element::DbFilePin {
+            file: plant.join("aps250110_0001"),
+            template: e3d_io::db_element::template_file_for(template, "DESI").unwrap(),
+            db_type: Some("DESI".into()),
+            sesno: None,
+        })
+        .unwrap();
+        let sctn = set.element(RefNo::new(2013286654, 68));
+        let modeled =
+            model_element(&sctn, crate::category::classify("SCTN")).expect("SCTN/68 建模不该报错");
+        let Modeled::Solid(generated) = modeled else {
+            panic!("SCTN/68 该出实体");
+        };
+        assert!(
+            generated
+                .negatives_skipped
+                .iter()
+                .any(|skip| skip.refno.to_string() == "2013286654/72" && skip.noun == "SJOI"),
+            "JOIE→SJOI/72 没有几何源，要在 skipped 账上点名：{:?}",
+            generated.negatives_skipped
+        );
+        // 成员链侧：邻居 SCTN/70 名下 SNOD/71 里的 SJOI/72 同样没源，也要入账。
+        let neighbor = set.element(RefNo::new(2013286654, 70));
+        let Modeled::Solid(neighbor_generated) =
+            model_element(&neighbor, crate::category::classify("SCTN")).expect("SCTN/70 建模")
+        else {
+            panic!("SCTN/70 该出实体");
+        };
+        assert!(
+            neighbor_generated
+                .negatives_skipped
+                .iter()
+                .any(|skip| skip.refno.to_string() == "2013286654/72"),
+            "SNOD/71 名下的 SJOI/72 同样没几何源，成员链扫描也要记：{:?}",
+            neighbor_generated.negatives_skipped
+        );
     }
 
     #[test]

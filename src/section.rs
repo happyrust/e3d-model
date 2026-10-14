@@ -899,6 +899,43 @@ fn fitting_mount_frame(
     DMat4::from_rotation_translation(glam::DQuat::from_mat3(&rotation), origin)
 }
 
+/// SCTN 的轴向标架（属主坐标系）：[`placement_between`] 同一推法，但不带目录中性轴
+/// 自旋——`SNOD` 的 `ZDIS` 这类沿轴度量在绕 Z 自旋下不变，用不到目录链，读不到目录
+/// 的截面也不该因此丢标架。
+///
+/// 原点 `POSS`、Z = `unit(POSE − POSS)`、绕 Z 旋 `BANG`。退化轴（`≤0.001`、非有限）报
+/// [`SectionError::Degenerate`]，与 [`section_fitting_placement`] 同口径。
+pub fn section_axis_frame(section: &DbElement) -> Result<DMat4, SectionError> {
+    let poss = section
+        .get_position("POSS")?
+        .map(DVec3::from_array)
+        .unwrap_or(DVec3::ZERO);
+    let pose = section
+        .get_position("POSE")?
+        .map(DVec3::from_array)
+        .unwrap_or(poss);
+    let axis = pose - poss;
+    let length = axis.length();
+    if !length.is_finite() || length <= 0.001 {
+        return Err(SectionError::Degenerate {
+            refno: section.refno().to_string(),
+            noun: "SCTN".into(),
+            detail: format!("轴 POSS→POSE 退化（长 {length} mm，GTDIRS 的 0.001 门）"),
+        });
+    }
+    let z = axis / length;
+    let reference = if z.x.hypot(z.y) > 5e-6 {
+        DVec3::Z
+    } else {
+        DVec3::Y
+    };
+    let x = reference.cross(z).normalize();
+    let y = z.cross(x);
+    let bang = section.get_double("BANG")?.unwrap_or(0.0).to_radians();
+    let rotation = DMat3::from_cols(x, y, z) * DMat3::from_rotation_z(bang);
+    Ok(DMat4::from_translation(poss) * DMat4::from_mat3(rotation))
+}
+
 /// GTDIRS 的标架构造，抽出来给 SCTN（`POSS→POSE`）与 GENSEC（SPINE 两点）共用。
 ///
 /// 两条路的差别只在**这两个端点从哪读**；Z 的取法、竖直杆的参考向量、BANG 与

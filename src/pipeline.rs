@@ -511,6 +511,13 @@ pub fn generate_subtree_with_cache(
             Category::Catalog if is_model_unit_of(&el)? => {
                 match model_element_with_cache(&el, category, catalogue_mesh_cache) {
                     Ok(Modeled::Solid(generated)) => {
+                        for skip in &generated.negatives_skipped {
+                            report.negatives_skipped.push(Incident {
+                                refno: skip.refno.to_string(),
+                                noun: skip.noun.clone(),
+                                detail: format!("属主 {refno}（{noun}）: {}", skip.reason),
+                            });
+                        }
                         for note in &generated.notes {
                             report.notes.push(Incident {
                                 refno: refno.clone(),
