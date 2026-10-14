@@ -323,9 +323,7 @@ pub fn evaluate_section_profile(
 ///
 /// 只对 `GTYP=ANG` 且偏移非零。`JUSL` 已经在目录原点（CPAR 那批 `NA`）时返回
 /// `None`，记录不动。`GENSEC` 不进这里。
-pub fn angle_facet_catalogue_shift(
-    design: &DbElement,
-) -> Result<Option<[f64; 2]>, SectionError> {
+pub fn angle_facet_catalogue_shift(design: &DbElement) -> Result<Option<[f64; 2]>, SectionError> {
     if design.element_type()? != "SCTN" {
         return Ok(None);
     }

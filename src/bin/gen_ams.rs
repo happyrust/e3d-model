@@ -1241,8 +1241,7 @@ fn main() -> anyhow::Result<()> {
                             && matches!(
                                 geometry.primitive,
                                 e3d_model::rvm_read::Primitive::FacetGroup(_)
-                            )
-                        {
+                            ) {
                             frame.map_or(geometry, |frame| {
                                 e3d_model::rvm_write::facet_group_in_frame(
                                     world, frame, &local, &tris,

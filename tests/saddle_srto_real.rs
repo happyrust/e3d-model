@@ -37,11 +37,9 @@ fn fixtures_present() -> bool {
 
 fn ams_set() -> Arc<DbSet> {
     let template = Path::new(TEMPLATE_DIR);
-    let resolver = DirectoryDbResolver::scan(
-        &[PathBuf::from(AMS_DIR), PathBuf::from(ZDJ_DIR)],
-        template,
-    )
-    .unwrap();
+    let resolver =
+        DirectoryDbResolver::scan(&[PathBuf::from(AMS_DIR), PathBuf::from(ZDJ_DIR)], template)
+            .unwrap();
     let set = Arc::new(
         DbSet::with_attlib_file_and_resolver(&template.join("attlib.dat"), Box::new(resolver))
             .unwrap(),

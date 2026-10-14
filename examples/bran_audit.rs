@@ -38,9 +38,9 @@ use e3d_model::category::{Category, classify, derives_implied_tubes};
 use e3d_model::db_discovery::DirectoryDbResolver;
 use e3d_model::pipeline::{GenerationOutcome, generate_subtree_with_cache};
 use e3d_model::route::{
-    ArriveCheck, RouteEnd, SlotAlignment, TubeOutcome, ZERO_LENGTH_TOL_MM, bore_mismatch,
-    TubeSection, build_tube, resolve_end, slot_alignment, slot_ordinals, tube_length, tube_outer_diameter,
-    walk_route,
+    ArriveCheck, RouteEnd, SlotAlignment, TubeOutcome, TubeSection, ZERO_LENGTH_TOL_MM,
+    bore_mismatch, build_tube, resolve_end, slot_alignment, slot_ordinals, tube_length,
+    tube_outer_diameter, walk_route,
 };
 
 struct Args {
@@ -473,7 +473,11 @@ fn audit_bran(
                         row.length_mm.unwrap_or(f64::NAN)
                     ));
                 } else {
-                    match build_tube(from, to, TubeSection::round(tube_outer_diameter(None, None, to.bore))) {
+                    match build_tube(
+                        from,
+                        to,
+                        TubeSection::round(tube_outer_diameter(None, None, to.bore)),
+                    ) {
                         TubeOutcome::Built(tube) => {
                             // 生产路径没建、这里却建得出：只可能是外径来源不同，照样算缺口。
                             row.outcome = "built_here_only".into();

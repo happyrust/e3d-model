@@ -1483,7 +1483,12 @@ fn wall_joint_frame_with_radii(
     let length = orientation_radius * sweep.abs();
     let travel = if sweep < 0.0 { -1.0 } else { 1.0 };
     let point = |angle: f64| {
-        center + DVec3::new(station_radius * angle.cos(), station_radius * angle.sin(), 0.0)
+        center
+            + DVec3::new(
+                station_radius * angle.cos(),
+                station_radius * angle.sin(),
+                0.0,
+            )
     };
     // 弧上 `angle` 处沿行进方向的单位切向。
     let tangent = |angle: f64| DVec3::new(-angle.sin(), angle.cos(), 0.0) * travel;
@@ -2310,7 +2315,9 @@ pub(crate) struct AttachmentAngles {
 ///
 /// 只接了 GENSEC（轴向取 SPINE 在那一端的切向）。连着 SCTN 的关节语料里没有，不答（E3D 的 SCTN 走
 /// `POSS → POSE`）；`CREF` 空、不回指、截面没有 SPINE 也不答——表达式照旧按未解报。
-pub(crate) fn attachment_angles(fixing: &DbElement) -> Result<Option<AttachmentAngles>, ModelError> {
+pub(crate) fn attachment_angles(
+    fixing: &DbElement,
+) -> Result<Option<AttachmentAngles>, ModelError> {
     if fixing.element_type()? != "FIXING" {
         return Ok(None);
     }
@@ -2401,11 +2408,12 @@ fn fixing_negatives(
     };
     let cuts = crate::catalogue::catalogue_host_cuts(fixing, &admit, cache)?;
     catalogue_cuts.extend(cuts.cutters);
-    notes.extend(
-        cuts.diagnostics
-            .into_iter()
-            .map(|line| format!("FIXING {} 的目录负体（mode {mode}）：{line}", fixing.refno())),
-    );
+    notes.extend(cuts.diagnostics.into_iter().map(|line| {
+        format!(
+            "FIXING {} 的目录负体（mode {mode}）：{line}",
+            fixing.refno()
+        )
+    }));
     Ok(rejected.get())
 }
 
@@ -2483,7 +2491,14 @@ fn collect_host_fixing_negatives(
     collect_datum_fixings(el, &mut fixings)?;
     let mut rejected = 0usize;
     for fixing in fixings {
-        match fixing_negatives(&fixing, HOST_SCAN_MODE, negatives, catalogue_cuts, notes, cache) {
+        match fixing_negatives(
+            &fixing,
+            HOST_SCAN_MODE,
+            negatives,
+            catalogue_cuts,
+            notes,
+            cache,
+        ) {
             Ok(count) => rejected += count,
             Err(error) => skipped.push(SkippedNegative {
                 refno: fixing.refno(),
@@ -2844,12 +2859,17 @@ mod tests {
             let fixing_world = world_matrix(&fixing).unwrap();
             let second = attachment_angles(&fixing).unwrap();
             eprintln!("{w1}: first {first:?} second {second:?} fixing world {fixing_world:?}");
-            let angles = attachment_angles(&fixing).unwrap().expect("檐口 FIXING 连着斜梁");
+            let angles = attachment_angles(&fixing)
+                .unwrap()
+                .expect("檐口 FIXING 连着斜梁");
             assert!((angles.yz - -14.481).abs() < 5e-4, "{w1}: {angles:?}");
             assert!(angles.xz.abs() < 5e-4, "{w1}: {angles:?}");
         }
         let beam_fixing = set.element(RefNo::new(2013286654, 283));
-        assert!(attachment_angles(&beam_fixing).unwrap().is_some(), "端板 FIXING 也连着梁");
+        assert!(
+            attachment_angles(&beam_fixing).unwrap().is_some(),
+            "端板 FIXING 也连着梁"
+        );
         assert_eq!(
             attachment_angles(&set.element(RefNo::new(2013286654, 208))).unwrap(),
             None,

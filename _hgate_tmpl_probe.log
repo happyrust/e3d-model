@@ -1,0 +1,73 @@
+warning: function `instantiate_cylinder` is never used
+   --> src\primitive_instance.rs:213:15
+    |
+213 | pub(crate) fn instantiate_cylinder(
+    |               ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `e3d-model` (lib) generated 1 warning
+   Compiling e3d-model v0.1.0 (D:\work\plant-code\old\vendor\e3d-model)
+    Finished `release` profile [optimized] target(s) in 0.91s
+     Running `D:\Rust\target\release\examples\element_probe.exe --attlib E:\reverse\e3d\shadow_e3d31_aps_all\attlib.dat --db D:\AVEVA\Projects\E3D3.1\AvevaPlantSample\aps000\aps250110_0001 --template E:\reverse\e3d\shadow_e3d31_aps_all --sesno 36 --refno 2013286654/25165`
+会话 Some(36)
+=== 2013286654/25165 TMPL None
+owner 链（根 → 自身）：
+  2013278462/0 WORL     /*                       POS=None ORI=None
+  2013286654/1 SITE     /SITE-STRUCTURAL-AREA02  POS=Some([0.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/2 ZONE     /BUILDING_B01            POS=Some([0.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/609 STRU     /BUILDING_01_LEVEL_03    POS=Some([0.0, 0.0, 109800.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/4713 FRMW     /B01_LEVEL_03_HANDRAILS  POS=None ORI=None
+  2013286654/3335 HANDRA   /BUILDING_01_LEVEL_03/HR_001 POS=Some([-298320.39, 318300.15, -1650.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/4714 HRFEAT                            POS=None ORI=None
+  2013286654/4715 HRGATE                            POS=None ORI=None
+  2013286654/25165 TMPL                              POS=Some([0.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0])
+世界矩阵（列）：
+  X = [1.0000, 0.0000, 0.0000]
+  Y = [0.0000, 1.0000, 0.0000]
+  Z = [0.0000, 0.0000, 1.0000]
+  T = [-312679.5800, 324856.6100, 108150.0000]
+  自身 CACHID=Word { raw: 0, text: None }  TYPEX=RawWords([1, 779672])  DESC=Text(" Key Clamp Gate Size 8")  PURP=Word { raw: 644470, text: Some("GATE") }  GTYP=Word { raw: 0, text: None }  NUMB=Word { raw: 0, text: None }  POS=RealArray([0.0, 0.0, 0.0])  ORI=RealArray([0.0, 0.0, 0.0])  TTYP=Word { raw: 0, text: None }  SPAMAP=IntArray([-2147483647])  ORRF=RefNo(RefNo(23432/26220, dbno=7048))  LCNFA=RefNoArray([RefNo(2013286654/4898, dbno=250110), RefNo(2013286654/4899, dbno=250110), RefNo(2013286654/4901, dbno=250110), RefNo(2013286654/4902, dbno=250110), RefNo(2013286654/4903, dbno=250110), RefNo(2013286654/4904, dbno=250110), RefNo(2013286654/4905, dbno=250110), RefNo(2013286654/4906, dbno=250110)])  LCNMA=RawWords([1349478766, 1949564928, 1349478766, 1949630464, 1347174740, 1179928651, 1213550672, 1464419412, 1481590342, 1212500295])  LCNLN=RawWords([2, 2, 1, 1, 1, 1, 1, 1])  RSEQA=RawWords([0, 0, 1, 1, 1, 1, 1, 1])
+  成员 2013286654/4717 EXTR None
+  成员 2013286654/4723 GENSEC None
+  成员 2013286654/4727 GENSEC None
+  成员 2013286654/4731 GENSEC None
+  成员 2013286654/4735 GENSEC None
+  成员 2013286654/4739 GENSEC None
+  成员 2013286654/4743 GENSEC None
+  成员 2013286654/4747 GENSEC None
+  成员 2013286654/4751 GENSEC None
+  成员 2013286654/4755 GENSEC None
+  成员 2013286654/4759 GENSEC None
+  成员 2013286654/4763 GENSEC None
+  成员 2013286654/4767 GENSEC None
+  成员 2013286654/4771 CYLI None
+  成员 2013286654/4772 CYLI None
+  成员 2013286654/4773 CYLI None
+  成员 2013286654/4774 CYLI None
+  成员 2013286654/4775 CYLI None
+  成员 2013286654/4776 CYLI None
+  成员 2013286654/4777 CYLI None
+  成员 2013286654/4778 CYLI None
+  成员 2013286654/4779 EXTR None
+  成员 2013286654/4789 EXTR None
+  成员 2013286654/4799 EXTR None
+  成员 2013286654/4809 EXTR None
+  成员 2013286654/4819 PANE None
+  成员 2013286654/4825 PANE None
+  成员 2013286654/4831 PANE None
+  成员 2013286654/4837 PANE None
+  成员 2013286654/4844 PANE None
+  成员 2013286654/4851 PANE None
+  成员 2013286654/4858 PANE None
+  成员 2013286654/4865 CYLI None
+  成员 2013286654/4866 CYLI None
+  成员 2013286654/4867 GENSEC None
+  成员 2013286654/4872 GENSEC None
+  成员 2013286654/4877 GENSEC None
+  成员 2013286654/4882 GENSEC None
+  成员 2013286654/4887 GENSEC None
+  成员 2013286654/4892 GENSEC None
+  成员 2013286654/4897 DPSE None
+  成员 2013286654/4900 DDSE None
+

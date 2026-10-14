@@ -480,15 +480,12 @@ fn rail_segment_solid(segment: &PathSegment) -> Result<Manifold, ModelError> {
             let d = (*end - *start).normalize();
             let sloped = (end.z - start.z).abs() > 1e-9;
             let horizontal = (d.x * d.x + d.y * d.y).sqrt();
-            let slope_extension = if sloped
-                && horizontal > 1e-9
-                && mitre_start.is_none()
-                && mitre_end.is_none()
-            {
-                RAIL_RADIUS * d.z.abs() / horizontal
-            } else {
-                0.0
-            };
+            let slope_extension =
+                if sloped && horizontal > 1e-9 && mitre_start.is_none() && mitre_end.is_none() {
+                    RAIL_RADIUS * d.z.abs() / horizontal
+                } else {
+                    0.0
+                };
             let extension = |normal: &Option<DVec3>| -> f64 {
                 // 斜接面把圆柱端头切成椭圆，椭圆沿轴向探出 r·tan(θ/2)；圆柱先按这个量
                 // 加长，再让切面把多出来的削掉。θ 由法向与轴向的夹角还原：
@@ -507,10 +504,7 @@ fn rail_segment_solid(segment: &PathSegment) -> Result<Manifold, ModelError> {
             let ext_start = extension(mitre_start);
             let ext_end = extension(mitre_end);
             let origin = *start - d * (ext_start + if d.z < 0.0 { slope_extension } else { 0.0 });
-            let length = (*end - *start).length()
-                + ext_start
-                + ext_end
-                + slope_extension;
+            let length = (*end - *start).length() + ext_start + ext_end + slope_extension;
             let body = Manifold::cylinder(
                 length,
                 RAIL_RADIUS,
@@ -591,7 +585,9 @@ fn kickplate_segment_solid(segment: &PathSegment) -> Result<Manifold, ModelError
         }));
     };
     let d = (*end - *start).normalize();
-    let horizontal = DVec3::new(d.x, d.y, 0.0).try_normalize().unwrap_or(DVec3::X);
+    let horizontal = DVec3::new(d.x, d.y, 0.0)
+        .try_normalize()
+        .unwrap_or(DVec3::X);
     let normal = DVec3::Z.cross(horizontal);
     let half = normal * 4.0;
     let points = [

@@ -1,0 +1,17 @@
+warning: function `instantiate_cylinder` is never used
+   --> src\primitive_instance.rs:213:15
+    |
+213 | pub(crate) fn instantiate_cylinder(
+    |               ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `e3d-model` (lib) generated 1 warning
+   Compiling e3d-model v0.1.0 (D:\work\plant-code\old\vendor\e3d-model)
+    Finished `release` profile [optimized] target(s) in 1.02s
+     Running `D:\Rust\target\release\examples\joint_probe.exe --attlib E:\reverse\e3d\shadow_e3d31_aps_all\attlib.dat --db D:\AVEVA\Projects\E3D3.1\AvevaPlantSample\aps000\aps250110_0001 --template E:\reverse\e3d\shadow_e3d31_aps_all --project-dir D:\AVEVA\Projects\E3D3.1\AvevaPlantSample\aps000 --project-dir D:\AVEVA\Projects\E3D3.1\AvevaCatalogue\acp000 --catalogue D:\AVEVA\Projects\E3D3.1\AvevaCatalogue\acp000\acp7320_0001 --refno 2013286654/3391`
+##### 2013286654/3391 CURVE None
+  自身 POS=RealArray([-7179.64, -1854.07, 0.0])  CPOS=RealArray([0.0, 0.0, 0.0])  ZDIR=RealArray([0.0, 0.0, 1.0])  RADI=Real(0.0)  RADS=Bool(true)  BULG=Real(0.0)  CURTYP=Word { raw: 958142, text: Some("THRU") }
+  世界 world_matrix T=[-305500.030, 316446.080, 108150.000] X=[1.0000, 0.0000, 0.0000] Z=[0.0000, 0.0000, 1.0000]  local T=[-7179.640, -1854.070, 0.000]
+  JOIS 读不到：元素 2013286654/3391（CURVE）的模板里没有属性 JOIS
+  JOIE 读不到：元素 2013286654/3391（CURVE）的模板里没有属性 JOIE

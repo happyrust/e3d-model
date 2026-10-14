@@ -11,7 +11,7 @@
 //! | `RouteMember` | 记账 |
 //! | `PrimitiveContainer` | 记账；负体成员认领进 [`Report::host_negatives`]，本期不扣 |
 //! | `Composite(CableTray)` | `CTSTRA/CTBEND/…` 现算放置（[`crate::cable_tray`]）；`CTRAY` 走目录链建体；其余（CWAY/CWBRAN）记账 |
-//! | `NonGraphic` | 记账（判「无三维表示」的放行要留名，见 [`Report::non_graphic`]） |
+//! | `NonGraphic` | 记账（判「无三维表示」的放行要留名，见 [`Report::proven_non_graphic`]；`SNOD` 的点标记在 RVM 里有线，另记 [`Report::centreline_only`]） |
 //! | `Neg*` / `ProfileData` | 属主消费掉了就不会走到这里；走到了就是孤儿，记账 |
 //!
 //! **下钻是无条件的**，只有一个例外：被本元素消费掉的成员（自己的剖面环与负体）
@@ -250,6 +250,10 @@ pub struct Report {
     /// 一根 `Line`、没有实体。**不并进 [`Report::skipped`]**：那本账的语义是「E3D 也什么
     /// 都不画」，而这些是 **E3D 画了一条线、我们一条都还不画**——混在一起，中心线这笔
     /// 欠款就再也看不见了。它也仍留在 [`Report::evidence_pending`] 里，正是这个原因。
+    ///
+    /// 第二路进账的不是型材：`SNOD` 判 [`Category::NonGraphic`]（那是对的，它不出实体），
+    /// 可 E3D 给的点标记导成 RVM 就是三条 `Line`，同样是「画了线、我们不画」。
+    /// 见 [`exports_mark_as_lines`]——判据相同的 `PNOD` 为什么不在里面，那里写着。
     pub centreline_only: BTreeMap<String, usize>,
     /// 目录链断的明细（[`crate::elmodl::SkipKind::CatalogueChainBroken`]）：引用悬空、
     /// 库没开、缺 `CATR`/`GSTR`。
@@ -336,6 +340,10 @@ pub struct Report {
     /// `NOZZ`/`ELCONN` 恰恰被 `GTGEOM` 硬编码送进复合几何路，判据方向是反的。
     ///
     /// 记了账才谈得上复核：先让每一次「无三维表示」的放行都在报告里留名。
+    ///
+    /// 复核出来的第一笔已经搬走了：`SNOD` 判 `NonGraphic` 没错，但 E3D 的点标记
+    /// 在 RVM 里是三条线，不属于这本账，改记 [`Report::centreline_only`]
+    /// （[`exports_mark_as_lines`]）。
     pub proven_non_graphic: BTreeMap<String, usize>,
     /// 已有明确建模路径、但 builder 或目标语料证据尚未闭环：noun → 数量。
     ///
@@ -451,6 +459,9 @@ pub fn generate_subtree_with_cache(
 
         match category {
             Category::List => {}
+            Category::NonGraphic if exports_mark_as_lines(&noun) => {
+                *report.centreline_only.entry(noun.clone()).or_insert(0) += 1;
+            }
             Category::NonGraphic => {
                 *report.proven_non_graphic.entry(noun.clone()).or_insert(0) += 1;
             }
@@ -767,6 +778,36 @@ fn catalogue_reads(
         .collect()
 }
 
+/// [`Category::NonGraphic`] 里 **E3D 导出时仍写下线**的那个 noun。
+///
+/// 分类判得对：`SNOD` 在 Core3D 里走 `sub_10402360@0x10402360`，三行，
+/// `return gm_CreateMark(point)`——不是实体，不下钻，不欠一份几何（依据写在
+/// [`crate::category::classify`] 那条分支上）。**但那个 mark 导成 RVM 是三条
+/// `Line`**：SLYK 80 根基准里 `SNODE 1 of SCTN 9`（21909/51522）与 `SNODE 1 of
+/// SCTN 2`（30101/13122）各写着 3 条，合计 2 件 6 条记录，我们一条都不产出。
+///
+/// 于是「E3D 也不画」这句对它不成立，而那正是 [`Report::proven_non_graphic`] 的
+/// 语义（[`crate::core3d_registry`]）。记在那本账上，对拍出来的 6 条记录差就没有
+/// 出处——两本账都说它不欠，差额却在。记进 [`Report::centreline_only`]，它与 SCTN
+/// 那 50 条中心线同属一笔「E3D 画了线、我们一条不画」的欠款，口径一致。
+///
+/// **`PNOD` 判据相同却不在这里，是语料说了算**：`21909/4756` 的 39 只 `PNODE` 在基准
+/// RVM 里是 39 个**空节点**——PRIM 一条没有，连同它们底下的 78 只 `PJOINT` 也是空的
+/// （该根全文 38 条 PRIM，`Line` 0 条）。同一个 `gm_CreateMark`，SNODE 导得出线、
+/// PNODE 导不出，原因还没查；在查清之前按语料办：`PNOD` 留在 `proven_non_graphic`，
+/// 那 39 件不是欠款。放进来会凭空记出 39 件我们其实不欠的债，比记漏更难发现。
+///
+/// `RNODE`/`CNODE` 无 SPRE 那一支是同型的线框标记（recheck-4 §W2），但语料里零件、
+/// 分类整体待改，不在这道门里。
+///
+/// **只改账，不改分类**：`Category::NonGraphic` 本身不动，遍历与剪枝、
+/// [`crate::core3d_registry::is_not_wired`]（`SNOD` 早就在 [`Report::not_wired`] 上）、
+/// [`crate::category::BuildDisposition::ProvenNonGraphic`] 全部照旧，换的只是它出现在
+/// 报告的哪一行。账上的数按本账口径是**件数**（`SNOD: 2`），不是那 6 条记录。
+fn exports_mark_as_lines(noun: &str) -> bool {
+    matches!(noun, "SNOD")
+}
+
 /// 把一条「有依据地没出几何」按 [`SkipKind`] 记进对应的那本账。
 ///
 /// 分类由 [`crate::elmodl::model_element_with_cache`] 随结论一起交出来，这里只做投递——
@@ -1054,6 +1095,40 @@ fn build_route_tubes(
                 }
             }
         }
+        // 同一条规矩在**构件离开侧**。原生 AMS 探针（2026-09-18 第十八段 S1：BRAN
+        // `24381/103536` 的 1253mm 直段中间新建一个 UNIO，只给 `SPREF`、不给管规格）：
+        // E3D 的 RVM 里那根离开管**一根都不画**，而这边照 `CGETOD` 的 arrive-bore 回落
+        // 画出一根半径 = 通径 / 2 的管——E3D 里看不见的一根管，模型里有，碰撞、净距、
+        // 工程量都会多算它一截，而且 `failures=[]`、0 条 WARN，一声不响。
+        //
+        // 判的同样是**存下来的引用是不是空**，与头槽位一个口径：目标解不出（目录库没开、
+        // stub 不在所钉会话）不算空，那一档仍旧走回落。只管管道：风管的断面解不出本来就落
+        // `unbuildable`，不从这里改它的说法。
+        let pipe_departure = match &slot.from {
+            RouteEnd::MemberLeave { member, .. } | RouteEnd::MemberArrive { member, .. }
+                if route.discipline == RouteDiscipline::Pipe =>
+            {
+                Some(member)
+            }
+            _ => None,
+        };
+        if let Some(member) = pipe_departure {
+            let leave_stub_null = match member.get_ref("LSTU") {
+                Ok(value) => value.is_none(),
+                Err(DbElementError::UnknownAttribute { .. }) => false,
+                Err(error) => return Err(error),
+            };
+            if leave_stub_null {
+                let alternate_null = match member.get_ref("LSRO") {
+                    Ok(value) => value.is_none(),
+                    Err(DbElementError::UnknownAttribute { .. }) => true,
+                    Err(error) => return Err(error),
+                };
+                if alternate_null {
+                    invalid_reason.get_or_insert("leave stub unset");
+                }
+            }
+        }
         // 断面按学科来（[`crate::category::RouteDiscipline`]）：
         // 管道——CGETOD 的 A 是槽位离开侧：容器头读 HSTU/HSRO，普通构件离开读
         // LSTU/LSRO。目录 PARA 是一基下标，PARA[2] 即 Rust values[1]。取不到回落到达侧通径。
@@ -1076,9 +1151,9 @@ fn build_route_tubes(
                 // 都必须走 GTTUBG 的 arrive-bore 回落，不能把整棵生成打断。
                 let catalogue_od = match catalogue_od_result {
                     Ok(value) => value,
-                    Err(DbElementError::DbNotRegistered { .. } | DbElementError::NotFound { .. }) => {
-                        None
-                    }
+                    Err(
+                        DbElementError::DbNotRegistered { .. } | DbElementError::NotFound { .. },
+                    ) => None,
                     Err(error) => return Err(error),
                 };
                 let source = if catalogue_od.is_some() {
@@ -1665,6 +1740,42 @@ mod tests {
         assert!(report.totals_line().contains("not_wired=5"));
     }
 
+    /// `SNOD` 记的是「E3D 画了线、我们不画」，不是「E3D 也不画」；`PNOD` 反过来。
+    ///
+    /// 三头都要钉。谓词认得 `SNOD` 只是一头：它还得确实落在 DFS 的 `NonGraphic`
+    /// 那条臂上、那道门还在 DFS 里，账才真的换了一行——分类哪天被挪走
+    /// （recheck-4 §W2 给路由节点留着这个口子），门就静默失效，报告上看不出任何区别。
+    ///
+    /// `PNOD` 是**反面钉**，不是顺手写的：它与 `SNOD` 共用同一条 `gm_CreateMark`
+    /// 反编译依据，照着判据推就会一起放进来，而 `21909/4756` 的 39 只 `PNODE` 在基准
+    /// RVM 里是 39 个空节点。放进来就是凭空记 39 件不存在的欠款。
+    #[test]
+    fn only_snod_is_booked_as_a_centreline_the_rest_of_non_graphic_stays_put() {
+        assert!(exports_mark_as_lines("SNOD"));
+        assert_eq!(
+            crate::category::classify("SNOD"),
+            Category::NonGraphic,
+            "SNOD 不在 NonGraphic 臂上，DFS 里那道门就永远不生效"
+        );
+        // 反面：同一条臂上真「E3D 也不画」的几个，一个都不许被这道门吞走。
+        for noun in ["PNOD", "PJOI", "SJOI", "TEXT", "MNUM", "RNODE"] {
+            assert!(!exports_mark_as_lines(noun), "{noun}");
+        }
+
+        let source = include_str!("pipeline.rs");
+        let body = source
+            .split_once("pub fn generate_subtree_with_cache(")
+            .expect("generate_subtree_with_cache 必须在")
+            .1
+            .split_once("\nfn catalogue_reads(")
+            .expect("catalogue_reads 紧跟 DFS 之后")
+            .0;
+        assert!(
+            body.contains("exports_mark_as_lines(&noun)"),
+            "DFS 的 NonGraphic 分支要先过这道门，否则 SNOD 又回到 proven_non_graphic"
+        );
+    }
+
     /// 总长只要有一边没量过，合并结果就必须是 `None`。
     ///
     /// 把 `None` 当 0 加进去会得到一个偏小的总长，而它长得跟真数一模一样——
@@ -1754,10 +1865,10 @@ mod tests {
                 .not_drawn
                 .push(not_drawn("24381/103536", ordinal, "bore mismatch"));
         }
-        first.implied_tubes.not_drawn_by_reason.insert(
-            "bore mismatch".into(),
-            TUBE_NOT_DRAWN_SAMPLE_CAP,
-        );
+        first
+            .implied_tubes
+            .not_drawn_by_reason
+            .insert("bore mismatch".into(), TUBE_NOT_DRAWN_SAMPLE_CAP);
 
         let mut second = Report::default();
         second
@@ -1781,7 +1892,10 @@ mod tests {
             "计数要全收"
         );
         let line = first.implied_tubes.not_drawn_line().expect("有未产管");
-        assert!(line.contains("reversed=7"), "分账要带上没点到名的那些：{line}");
+        assert!(
+            line.contains("reversed=7"),
+            "分账要带上没点到名的那些：{line}"
+        );
         assert!(line.contains("另 7 根同类未点名"), "{line}");
     }
 
@@ -1802,7 +1916,8 @@ mod tests {
             .0;
         assert!(
             body.contains("if let Some(reason) = invalid_reason {")
-                && body.contains("record_not_drawn(ledger, container, slot, route_ordinal, reason)"),
+                && body
+                    .contains("record_not_drawn(ledger, container, slot, route_ordinal, reason)"),
             "两道门判不画的那一根必须按判据点名"
         );
         // 每一处 `continue`（= 这根槽位就此不出管）往回数几行必须能看见点名那一发。
@@ -1829,7 +1944,9 @@ mod tests {
         }
         // 不出管的第四条路不走 continue（`build_tube` 建不出来），也要在账上。
         assert!(
-            body.contains(r#"record_not_drawn(ledger, container, slot, route_ordinal, "unbuildable")"#),
+            body.contains(
+                r#"record_not_drawn(ledger, container, slot, route_ordinal, "unbuildable")"#
+            ),
             "建不出来的那一档也要点名"
         );
         assert!(

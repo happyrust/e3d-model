@@ -30,7 +30,9 @@ use e3d_io::db_element::{DbFilePin, DbFileResolver, DbSet, template_file_for};
 use e3d_io::engine::{ReadOnlyEngine, ScanTier};
 use e3d_io::refno::RefNo;
 use e3d_io::session::DbView;
-use e3d_model::category::{RouteDiscipline, derives_implied_tubes, is_model_unit, route_discipline};
+use e3d_model::category::{
+    RouteDiscipline, derives_implied_tubes, is_model_unit, route_discipline,
+};
 use e3d_model::db_discovery::DirectoryDbResolver;
 use e3d_model::elmodl::{GeneratedElement, GeometryId};
 use e3d_model::increment::{collect_window, execute_plan, plan_update};
@@ -1039,9 +1041,18 @@ fn hvac_owned_branches_derive_duct_straights_and_pipe_branches_are_unchanged() {
         assert!((extents[0] - 1460.0).abs() < 1.0e-3, "{extents:?}");
         assert!((extents[2] - 1520.0).abs() < 1.0e-3, "{extents:?}");
         let centre_y = (min[1] + max[1]) * 0.5;
-        assert!(((min[0] + max[0]) * 0.5 - 47099.0).abs() < 1.0e-2, "{min:?} {max:?}");
-        assert!(((min[2] + max[2]) * 0.5 + 25524.0).abs() < 1.0e-2, "{min:?} {max:?}");
-        seen.push(((extents[1] * 10.0).round() / 10.0, (centre_y * 10.0).round() / 10.0));
+        assert!(
+            ((min[0] + max[0]) * 0.5 - 47099.0).abs() < 1.0e-2,
+            "{min:?} {max:?}"
+        );
+        assert!(
+            ((min[2] + max[2]) * 0.5 + 25524.0).abs() < 1.0e-2,
+            "{min:?} {max:?}"
+        );
+        seen.push((
+            (extents[1] * 10.0).round() / 10.0,
+            (centre_y * 10.0).round() / 10.0,
+        ));
     }
     seen.sort_by(|a, b| a.partial_cmp(b).unwrap());
     assert_eq!(

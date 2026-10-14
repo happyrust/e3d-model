@@ -211,11 +211,7 @@ fn main() -> anyhow::Result<()> {
             let Some(scom) = follow_to_scom(spec) else {
                 continue;
             };
-            let name = element
-                .stored_name()
-                .ok()
-                .flatten()
-                .unwrap_or_default();
+            let name = element.stored_name().ok().flatten().unwrap_or_default();
             let zone = zone_of(&element);
             design_by_scom
                 .entry(scom)
@@ -279,7 +275,10 @@ fn main() -> anyhow::Result<()> {
         report.push('\n');
         report.push_str(&format!(
             "  代表 {} {} {} {}\n  词 {}\n",
-            group.sample_db, group.sample_refno, group.sample_noun, group.sample_attr,
+            group.sample_db,
+            group.sample_refno,
+            group.sample_noun,
+            group.sample_attr,
             fmt_words(&group.sample_words)
         ));
         if group.nouns.contains_key("PTCA")
@@ -344,7 +343,8 @@ fn main() -> anyhow::Result<()> {
                 }
             }
             let hit = if baseline.is_empty() {
-                "基线命中：66457 / CUP(24381/100817) / 1RX07-LCT / C-OR / C-IY / RR001 都是 0".to_string()
+                "基线命中：66457 / CUP(24381/100817) / 1RX07-LCT / C-OR / C-IY / RR001 都是 0"
+                    .to_string()
             } else {
                 format!("基线命中 {baseline:?}（其余为 0）")
             };
@@ -364,7 +364,10 @@ fn main() -> anyhow::Result<()> {
                 report.push('\n');
             }
             for (db, noun, attr, refno, words) in &group.extra {
-                let line = format!("  全文 {db} {refno} {noun} {attr} {}", fmt_words_full(words));
+                let line = format!(
+                    "  全文 {db} {refno} {noun} {attr} {}",
+                    fmt_words_full(words)
+                );
                 println!("{line}");
                 report.push_str(&line);
                 report.push('\n');
@@ -438,9 +441,13 @@ fn tally(
         }
     }
     if group.extra.len() < 4 {
-        group
-            .extra
-            .push((db.to_string(), noun.to_string(), attr.to_string(), refno, words.to_vec()));
+        group.extra.push((
+            db.to_string(),
+            noun.to_string(),
+            attr.to_string(),
+            refno,
+            words.to_vec(),
+        ));
     }
 }
 
@@ -630,17 +637,40 @@ fn consume_number(words: &[i32]) -> Result<usize, String> {
         }
     };
     match words {
-        [OP_PUSH_NUMBER, NUMBER_SHAPE, first, second, third, 0, end, ..]
-            if *end == 0 || *end == NUMBER_SHAPE =>
-        {
-            decoded(*first, *second, *third, 7)
-        }
-        [OP_PUSH_NUMBER, NUMBER_WITH_UNIT_SHAPE, first, second, third, 0, 11, 1, 1, 0, ..] => {
-            decoded(*first, *second, *third, 10)
-        }
-        [OP_PUSH_NUMBER, NUMBER_TYPED_SHAPE, first, second, third, 0, 11, 1, ..] => {
-            decoded(*first, *second, *third, 8)
-        }
+        [
+            OP_PUSH_NUMBER,
+            NUMBER_SHAPE,
+            first,
+            second,
+            third,
+            0,
+            end,
+            ..,
+        ] if *end == 0 || *end == NUMBER_SHAPE => decoded(*first, *second, *third, 7),
+        [
+            OP_PUSH_NUMBER,
+            NUMBER_WITH_UNIT_SHAPE,
+            first,
+            second,
+            third,
+            0,
+            11,
+            1,
+            1,
+            0,
+            ..,
+        ] => decoded(*first, *second, *third, 10),
+        [
+            OP_PUSH_NUMBER,
+            NUMBER_TYPED_SHAPE,
+            first,
+            second,
+            third,
+            0,
+            11,
+            1,
+            ..,
+        ] => decoded(*first, *second, *third, 8),
         _ => Err(format!("101/shape {shape}")),
     }
 }
@@ -676,7 +706,10 @@ fn name_ok(hash: i32) -> bool {
 }
 
 fn attribute_word_ok(word: i32) -> bool {
-    name_ok(word) || u32::try_from(word).ok().is_some_and(|key| key > SYSTEM_HASH_MAX)
+    name_ok(word)
+        || u32::try_from(word)
+            .ok()
+            .is_some_and(|key| key > SYSTEM_HASH_MAX)
 }
 
 fn previous_element(words: &[i32]) -> Option<Result<usize, String>> {
@@ -705,8 +738,17 @@ fn previous_element(words: &[i32]) -> Option<Result<usize, String>> {
 }
 
 fn owner_chain(words: &[i32]) -> Option<Result<usize, String>> {
-    let [OP_ATTRIBUTE, ATTRIBUTE_SHAPE_OWNED, name, 1, _, 0, OP_OWNER_CHAIN, length, chain @ ..] =
-        words
+    let [
+        OP_ATTRIBUTE,
+        ATTRIBUTE_SHAPE_OWNED,
+        name,
+        1,
+        _,
+        0,
+        OP_OWNER_CHAIN,
+        length,
+        chain @ ..,
+    ] = words
     else {
         return None;
     };
@@ -739,13 +781,19 @@ fn owner_chain(words: &[i32]) -> Option<Result<usize, String>> {
 }
 
 fn plain_attribute(words: &[i32]) -> Result<usize, String> {
-    let [OP_ATTRIBUTE, ATTRIBUTE_SHAPE, name, first, second, third, end_first, end_second, ..] =
-        words
+    let [
+        OP_ATTRIBUTE,
+        ATTRIBUTE_SHAPE,
+        name,
+        first,
+        second,
+        third,
+        end_first,
+        end_second,
+        ..,
+    ] = words
     else {
-        return Err(format!(
-            "106/shape {}",
-            words.get(1).copied().unwrap_or(-1)
-        ));
+        return Err(format!("106/shape {}", words.get(1).copied().unwrap_or(-1)));
     };
     if [*end_first, *end_second] != [1601, 1701] {
         return Err("106/end".to_string());

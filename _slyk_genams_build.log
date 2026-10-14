@@ -1,0 +1,56 @@
+    Blocking waiting for file lock on build directory
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.47
+   Compiling memchr v2.8.3
+   Compiling find-msvc-tools v0.1.11
+   Compiling thiserror v2.0.20
+   Compiling autocfg v1.5.1
+   Compiling typenum v1.20.1
+   Compiling serde_core v1.0.229
+   Compiling serde_json v1.0.151
+   Compiling itoa v1.0.18
+   Compiling num-traits v0.2.19
+   Compiling cc v1.4.4
+   Compiling nom v8.0.0
+   Compiling cfg-if v1.0.4
+   Compiling serde v1.0.229
+   Compiling either v1.18.0
+   Compiling generic-array v0.14.7
+   Compiling itertools v0.11.0
+   Compiling syn v3.0.4
+   Compiling encoding_rs v0.8.35
+   Compiling cmake v0.1.58
+   Compiling crypto-common v0.1.7
+   Compiling block-buffer v0.10.4
+   Compiling digest v0.10.7
+   Compiling log v0.4.34
+   Compiling manifold-csg-sys v3.5.104 (https://github.com/zmerlynn/manifold-csg?rev=2233c5a1162eba981e3f43efcd39a6bc25581335#2233c5a1)
+   Compiling sha2 v0.10.9
+   Compiling aho-corasick v1.1.5
+   Compiling earcutr v0.4.3
+   Compiling foldhash v0.2.0
+   Compiling glam v0.29.3
+   Compiling hashbrown v0.16.1
+   Compiling smallvec v1.15.2
+   Compiling regex-automata v0.4.18
+   Compiling spade v2.15.1
+   Compiling memmap2 v0.9.11
+   Compiling thiserror-impl v2.0.20
+   Compiling serde_derive v1.0.229
+   Compiling e3d-attlib v0.1.0 (D:\work\plant-code\old\vendor\e3d-attlib)
+   Compiling regex v1.13.1
+   Compiling e3d-io v0.1.0 (D:\work\plant-code\old\vendor\e3d-io)
+   Compiling rvm-rs v0.1.0 (https://github.com/happyrust/rvm-rs?rev=0dcc1c47df8816045e155adaf408f9f1153d3158#0dcc1c47)
+   Compiling manifold-csg v0.4.0 (https://github.com/zmerlynn/manifold-csg?rev=2233c5a1162eba981e3f43efcd39a6bc25581335#2233c5a1)
+   Compiling e3d-model v0.1.0 (D:\work\plant-code\old\vendor\e3d-model)
+warning: function `instantiate_cylinder` is never used
+   --> src\primitive_instance.rs:181:15
+    |
+181 | pub(crate) fn instantiate_cylinder(
+    |               ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `e3d-model` (lib) generated 1 warning
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3m 45s

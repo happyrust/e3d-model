@@ -1,0 +1,50 @@
+warning: function `instantiate_cylinder` is never used
+   --> src\primitive_instance.rs:213:15
+    |
+213 | pub(crate) fn instantiate_cylinder(
+    |               ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `e3d-model` (lib) generated 1 warning
+    Finished `release` profile [optimized] target(s) in 0.07s
+     Running `D:\Rust\target\release\examples\element_probe.exe --attlib E:\reverse\e3d\shadow_e3d31_aps_all\attlib.dat --db D:\AVEVA\Projects\E3D3.1\AvevaPlantSample\aps000\aps250110_0001 --template E:\reverse\e3d\shadow_e3d31_aps_all --sesno 36 --refno 2013286654/25287`
+会话 Some(36)
+=== 2013286654/25287 TMPL None
+owner 链（根 → 自身）：
+  2013278462/0 WORL     /*                       POS=None ORI=None
+  2013286654/1 SITE     /SITE-STRUCTURAL-AREA02  POS=Some([0.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/619 ZONE     /BUILDING_B02            POS=Some([0.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/1588 STRU     /BUILDING_02_LEVEL_04    POS=Some([0.0, 0.0, 112700.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/9154 FRMW     /B02_LEVEL_04_HANDRAILS  POS=None ORI=None
+  2013286654/3397 HANDRA   /BUILDING_02_LEVEL_04/HR_001 POS=Some([-297729.63, 324769.75, 150.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/3466 RAILSE                            POS=None ORI=None
+  2013286654/13569 HRTERM                            POS=None ORI=None
+  2013286654/25287 TMPL                              POS=Some([0.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0])
+世界矩阵（列）：
+  X = [1.0000, 0.0000, 0.0000]
+  Y = [0.0000, 1.0000, 0.0000]
+  Z = [0.0000, 0.0000, 1.0000]
+  T = [-297729.6300, 324519.7500, 112850.0000]
+  自身 CACHID=Word { raw: 0, text: None }  TYPEX=RawWords([1, 779672])  DESC=Text(" Railing End Dee Section Size 8")  PURP=Word { raw: 939373, text: Some("POST") }  GTYP=Word { raw: 0, text: None }  NUMB=Word { raw: 0, text: None }  POS=RealArray([0.0, 0.0, 0.0])  ORI=RealArray([0.0, 0.0, 0.0])  TTYP=Word { raw: 0, text: None }  SPAMAP=IntArray([-2147483647])  ORRF=RefNo(RefNo(23432/26667, dbno=7048))  LCNFA=RefNoArray([RefNo(2013286654/13571, dbno=250110), RefNo(2013286654/13573, dbno=250110), RefNo(2013286654/13574, dbno=250110), RefNo(2013286654/13648, dbno=250110), RefNo(2013286654/13649, dbno=250110), RefNo(2013286654/13651, dbno=250110), RefNo(2013286654/13652, dbno=250110), RefNo(2013286654/13653, dbno=250110), RefNo(2013286654/13654, dbno=250110), RefNo(2013286654/13655, dbno=250110), RefNo(2013286654/13656, dbno=250110), RefNo(2013286654/13657, dbno=250110), RefNo(2013286654/13658, dbno=250110)])  LCNMA=RawWords([1349481332, 1599107695, 1718185061, 1349481332, 1599107695, 1718185061, 791740416, 1349481332, 1599107695, 1718185061, 791805952, 1349478766, 1949564928, 1349478766, 1949368320, 1246512462, 1247037515, 1247234372, 1213550672, 1481393486, 1212504148, 1481590342, 1515144774])  LCNLN=RawWords([3, 4, 4, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1])  RSEQA=RawWords([12, 13, 14, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2])
+  成员 2013286654/13571 GENSEC None
+  成员 2013286654/13575 GENSEC None
+  成员 2013286654/13579 GENSEC None
+  成员 2013286654/13583 GENSEC None
+  成员 2013286654/13587 GENSEC None
+  成员 2013286654/13591 GENSEC None
+  成员 2013286654/13595 GENSEC None
+  成员 2013286654/13599 GENSEC None
+  成员 2013286654/13603 GENSEC None
+  成员 2013286654/13607 GENSEC None
+  成员 2013286654/13612 GENSEC None
+  成员 2013286654/13617 CYLI None
+  成员 2013286654/13618 CYLI None
+  成员 2013286654/13619 CYLI None
+  成员 2013286654/13620 CYLI None
+  成员 2013286654/13621 EXTR None
+  成员 2013286654/13631 EXTR None
+  成员 2013286654/13641 PANE None
+  成员 2013286654/13647 DPSE None
+  成员 2013286654/13650 DDSE None
+

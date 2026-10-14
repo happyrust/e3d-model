@@ -49,7 +49,10 @@ fn fixtures_present() -> bool {
         return true;
     }
     if std::env::var_os("E3D_SKIP_REAL_GATES").is_some() {
-        eprintln!("跳过（E3D_SKIP_REAL_GATES 已设）：缺 {}", missing.join("、"));
+        eprintln!(
+            "跳过（E3D_SKIP_REAL_GATES 已设）：缺 {}",
+            missing.join("、")
+        );
         return false;
     }
     panic!(
@@ -73,10 +76,14 @@ fn open_design_set() -> Arc<DbSet> {
         dirs.push(PathBuf::from(ACP_DIR));
     }
     let resolver = Arc::new(
-        DirectoryDbResolver::scan(&dirs, Path::new(TEMPLATE_DIR)).expect("扫库目录建 dbno → 文件表"),
+        DirectoryDbResolver::scan(&dirs, Path::new(TEMPLATE_DIR))
+            .expect("扫库目录建 dbno → 文件表"),
     );
     let attlib = Arc::new(AttlibData::parse_file(ATTLIB).expect("attlib 解析得开"));
-    let set = Arc::new(DbSet::with_resolver(attlib, Box::new(SharedResolver(resolver))));
+    let set = Arc::new(DbSet::with_resolver(
+        attlib,
+        Box::new(SharedResolver(resolver)),
+    ));
     let design = Path::new(AMS_DIR).join(DESIGN_DB);
     set.add_db(DbFilePin {
         file: design.clone(),

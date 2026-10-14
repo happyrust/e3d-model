@@ -1,0 +1,18 @@
+warning: function `instantiate_cylinder` is never used
+   --> src\primitive_instance.rs:213:15
+    |
+213 | pub(crate) fn instantiate_cylinder(
+    |               ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `e3d-model` (lib) generated 1 warning
+   Compiling e3d-model v0.1.0 (D:\work\plant-code\old\vendor\e3d-model)
+    Finished `release` profile [optimized] target(s) in 1.02s
+     Running `D:\Rust\target\release\examples\joint_probe.exe --attlib E:\reverse\e3d\shadow_e3d31_aps_all\attlib.dat --db D:\AVEVA\Projects\E3D3.1\AvevaPlantSample\aps000\aps250110_0001 --template E:\reverse\e3d\shadow_e3d31_aps_all --project-dir D:\AVEVA\Projects\E3D3.1\AvevaPlantSample\aps000 --project-dir D:\AVEVA\Projects\E3D3.1\AvevaCatalogue\acp000 --catalogue D:\AVEVA\Projects\E3D3.1\AvevaCatalogue\acp000\acp7320_0001 --refno 2013286654/4715`
+##### 2013286654/4715 HRGATE None
+  自身 CACHID=Word { raw: 0, text: None }  TYPEX=RawWords([1, 82930076])  PURP=Word { raw: 0, text: None }  NUMB=Word { raw: 0, text: None }  SPRE=RefNo(RefNo(23431/36000, dbno=7047))  UNIPAR=RawWords([939199])  DESP=RealArray([0.0])  MATR=RefNo(RefNo(0/0, dbno=0))  OPNSIZ=RealArray([0.0, 0.0])  CLRSIZ=RealArray([0.0, 0.0])  WIDT=Real(680.0)  HEIG=Real(1100.0)  HGSIDE=Word { raw: 0, text: None }  SWING=Word { raw: 644470, text: Some("GATE") }  POSREF=RefNo(RefNo(2013286654/8273, dbno=250110))  ZDIS=Real(0.0)  PKDI=Real(0.5)  HRJUSL=Word { raw: 694269, text: Some("RIGH") }  SPAMAP=RawWords([1, 1301081500])  LABOFF=RealArray([0.0, 0.0, 0.0])
+  世界 world_matrix T=[-312679.580, 324856.610, 108150.000] X=[1.0000, 0.0000, 0.0000] Z=[0.0000, 0.0000, 1.0000]  local T=[0.000, 0.000, 0.000]
+  JOIS 读不到：元素 2013286654/4715（HRGATE）的模板里没有属性 JOIS
+  JOIE 读不到：元素 2013286654/4715（HRGATE）的模板里没有属性 JOIE
+  2013286654/25165 TMPL

@@ -78,7 +78,12 @@ fn main() -> anyhow::Result<()> {
 
     for refno in refnos {
         let el = set.element(refno);
-        println!("##### {} {} {:?}", el.refno(), el.element_type()?, el.stored_name()?);
+        println!(
+            "##### {} {} {:?}",
+            el.refno(),
+            el.element_type()?,
+            el.stored_name()?
+        );
         attrs("  自身", &el)?;
         print_world("  世界", &el)?;
         for name in ["JOIS", "JOIE"] {
@@ -112,8 +117,18 @@ fn print_world(prefix: &str, el: &DbElement) -> anyhow::Result<()> {
     let l = local_matrix(el)?;
     println!(
         "{prefix} world_matrix T=[{:.3}, {:.3}, {:.3}] X=[{:.4}, {:.4}, {:.4}] Z=[{:.4}, {:.4}, {:.4}]  local T=[{:.3}, {:.3}, {:.3}]",
-        w.w_axis.x, w.w_axis.y, w.w_axis.z, w.x_axis.x, w.x_axis.y, w.x_axis.z, w.z_axis.x,
-        w.z_axis.y, w.z_axis.z, l.w_axis.x, l.w_axis.y, l.w_axis.z
+        w.w_axis.x,
+        w.w_axis.y,
+        w.w_axis.z,
+        w.x_axis.x,
+        w.x_axis.y,
+        w.x_axis.z,
+        w.z_axis.x,
+        w.z_axis.y,
+        w.z_axis.z,
+        l.w_axis.x,
+        l.w_axis.y,
+        l.w_axis.z
     );
     Ok(())
 }
@@ -185,20 +200,36 @@ fn fixing_dump(prefix: &str, fixing: &DbElement) -> anyhow::Result<()> {
         println!("{prefix}无 SPRE、无 TMPL");
         return Ok(());
     };
-    println!("{prefix}SPRE {} {} {:?}", spec.refno(), spec.element_type()?, spec.stored_name()?);
+    println!(
+        "{prefix}SPRE {} {} {:?}",
+        spec.refno(),
+        spec.element_type()?,
+        spec.stored_name()?
+    );
     let join = match spec.get_element("CATR")? {
         Some(join) => join,
         None => spec.clone(),
     };
-    println!("{prefix}目录件 {} {} {:?}", join.refno(), join.element_type()?, join.stored_name()?);
+    println!(
+        "{prefix}目录件 {} {} {:?}",
+        join.refno(),
+        join.element_type()?,
+        join.stored_name()?
+    );
     attrs(&format!("{prefix}  "), &join)?;
     if let Some(dtse) = join.get_element("DTRE")? {
         println!("{prefix}  DTRE → {} {}", dtse.refno(), dtse.element_type()?);
         for row in dtse.members()? {
-            attrs(&format!("{prefix}    · {} {}", row.refno(), row.element_type()?), &row)?;
+            attrs(
+                &format!("{prefix}    · {} {}", row.refno(), row.element_type()?),
+                &row,
+            )?;
         }
     }
-    for (label, section) in [("CREF(附着)", fixing.get_element("CREF")?), ("属主型材", owning_section(fixing)?)] {
+    for (label, section) in [
+        ("CREF(附着)", fixing.get_element("CREF")?),
+        ("属主型材", owning_section(fixing)?),
+    ] {
         let Some(section) = section else {
             println!("{prefix}  {label} 空");
             continue;
@@ -223,15 +254,31 @@ fn fixing_dump(prefix: &str, fixing: &DbElement) -> anyhow::Result<()> {
             println!("{prefix}  {set_name} 空");
             continue;
         };
-        println!("{prefix}  {set_name} → {} {}", geometry.refno(), geometry.element_type()?);
+        println!(
+            "{prefix}  {set_name} → {} {}",
+            geometry.refno(),
+            geometry.element_type()?
+        );
         for primitive in geometry.members()? {
-            println!("{prefix}    - {} {}", primitive.refno(), primitive.element_type()?);
+            println!(
+                "{prefix}    - {} {}",
+                primitive.refno(),
+                primitive.element_type()?
+            );
             attrs(&format!("{prefix}        "), &primitive)?;
             for child in primitive.members()? {
-                println!("{prefix}        · {} {}", child.refno(), child.element_type()?);
+                println!(
+                    "{prefix}        · {} {}",
+                    child.refno(),
+                    child.element_type()?
+                );
                 attrs(&format!("{prefix}            "), &child)?;
                 for grandchild in child.members()? {
-                    println!("{prefix}            · {} {}", grandchild.refno(), grandchild.element_type()?);
+                    println!(
+                        "{prefix}            · {} {}",
+                        grandchild.refno(),
+                        grandchild.element_type()?
+                    );
                     attrs(&format!("{prefix}                "), &grandchild)?;
                 }
             }

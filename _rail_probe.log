@@ -1,0 +1,675 @@
+warning: function `instantiate_cylinder` is never used
+   --> src\primitive_instance.rs:213:15
+    |
+213 | pub(crate) fn instantiate_cylinder(
+    |               ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `e3d-model` (lib) generated 1 warning
+    Finished `release` profile [optimized] target(s) in 0.07s
+     Running `D:\Rust\target\release\examples\zz_tmp_rail_probe.exe --attlib E:\reverse\e3d\shadow_e3d31_aps_all\attlib.dat --db D:\AVEVA\Projects\E3D3.1\AvevaPlantSample\aps000\aps250110_0001 --template E:\reverse\e3d\shadow_e3d31_aps_all --project-dir D:\AVEVA\Projects\E3D3.1\AvevaPlantSample\aps000 --project-dir D:\AVEVA\Projects\E3D3.1\AvevaCatalogue\acp000 --catalogue D:\AVEVA\Projects\E3D3.1\AvevaCatalogue\acp000\acp7320_0001`
+
+=== HANDRA 2013286654/3335 Some("/BUILDING_01_LEVEL_03/HR_001") CLOSEF=Some(true) SHOWKP=Some(false) RAILHE=Some([1075.0, 525.0]) POS=Some([-298320.39, 318300.15, -1650.0]) ORI=Some([0.0, 0.0, 0.0]) 成员 ["HRFEAT", "RAILSE", "POSTSE", "RPATH"] 【详图式】
+  RPATH 2013286654/3389 YDIR=Some([0.0, 0.0, 1.0]) DRNS=Some([0.0, 0.0, 0.0]) DRNE=Some([0.0, 0.0, 0.0])
+    !! 路径成员 2013286654/3391 是 CURVE
+    [  0] 2013286654/3390    POS=[0.0, 0.0, 0.0] FRAD=0
+    [  1] 2013286654/3392    POS=[-14359.19, -0.05, 0.0] FRAD=0
+    [  2] 2013286654/8273    POS=[-14359.19, 6556.46, 0.0] FRAD=0
+    [  3] 2013286654/8274    POS=[-14359.19, 7236.46, 0.0] FRAD=0
+    [  4] 2013286654/3394    POS=[-14359.19, 8385.1, 0.0] FRAD=0
+    [  5] 2013286654/3395    POS=[0.01, 8385.1, 0.0] FRAD=0
+  RAILSE 2013286654/3386 POS=None ORI=None
+    RAIL 2013286654/3387 FUNC=HAND JUSL=NA XOFF=0 ZOFF=1075 BANG=0 LMIRR=false RADS=true BENDCO=true YDIR=[0.0, 0.0, 1.0] DRNS=[0.0, 0.0, 0.0] DRNE=[0.0, 0.0, 0.0] LEVE=None
+      STAREF=[3] 2013286654/8274  ENDREF=[2] 2013286654/8273  SPKDI=0 EPKDI=0 SZDI=0 EZDI=0
+      链：SPCO=Some("23431/34900") SPRF=23431/34833 Some("/PIPE48.3x3.6") GMSS=23431/34836
+      截面：2 成员 JUSL=NA found=true offset=[0.0, 0.0] spin=-0.0000 mirrored=false level=6
+        Sann 23431/34837 环=1 外环 (24.1,0.0 r0) (22.3,9.2 r0) (17.1,17.1 r0) (9.2,22.3 r0) (0.0,24.1 r0) (-9.2,22.3 r0) (-17.1,17.1 r0) (-22.3,9.2 r0) (-24.1,0.0 r0) (-20.5,0.0 r0) (-19.0,7.9 r0) (-14.5,14.5 r0) (-7.9,19.0 r0) (0.0,20.5 r0) (7.9,19.0 r0) (14.5,14.5 r0) (19.0,7.9 r0) (20.5,0.0 r0)
+        Sann 23431/34838 环=1 外环 (-24.1,-0.0 r0) (-22.3,-9.2 r0) (-17.1,-17.1 r0) (-9.2,-22.3 r0) (0.0,-24.1 r0) (9.2,-22.3 r0) (17.1,-17.1 r0) (22.3,-9.2 r0) (24.1,0.0 r0) (20.5,0.0 r0) (19.0,-7.9 r0) (14.5,-14.5 r0) (7.9,-19.0 r0) (0.0,-20.5 r0) (-7.9,-19.0 r0) (-14.5,-14.5 r0) (-19.0,-7.9 r0) (-20.5,-0.0 r0)
+    RAIL 2013286654/3388 FUNC=- JUSL=NA XOFF=0 ZOFF=525 BANG=0 LMIRR=false RADS=true BENDCO=true YDIR=[0.0, 0.0, 1.0] DRNS=[0.0, 0.0, 0.0] DRNE=[0.0, 0.0, 0.0] LEVE=None
+      STAREF=[3] 2013286654/8274  ENDREF=[2] 2013286654/8273  SPKDI=0 EPKDI=0 SZDI=0 EZDI=0
+      链：SPCO=Some("23431/34900") SPRF=23431/34833 Some("/PIPE48.3x3.6") GMSS=23431/34836
+      截面：2 成员 JUSL=NA found=true offset=[0.0, 0.0] spin=-0.0000 mirrored=false level=6
+        Sann 23431/34837 环=1 外环 (24.1,0.0 r0) (22.3,9.2 r0) (17.1,17.1 r0) (9.2,22.3 r0) (0.0,24.1 r0) (-9.2,22.3 r0) (-17.1,17.1 r0) (-22.3,9.2 r0) (-24.1,0.0 r0) (-20.5,0.0 r0) (-19.0,7.9 r0) (-14.5,14.5 r0) (-7.9,19.0 r0) (0.0,20.5 r0) (7.9,19.0 r0) (14.5,14.5 r0) (19.0,7.9 r0) (20.5,0.0 r0)
+        Sann 23431/34838 环=1 外环 (-24.1,-0.0 r0) (-22.3,-9.2 r0) (-17.1,-17.1 r0) (-9.2,-22.3 r0) (0.0,-24.1 r0) (9.2,-22.3 r0) (17.1,-17.1 r0) (22.3,-9.2 r0) (24.1,0.0 r0) (20.5,0.0 r0) (19.0,-7.9 r0) (14.5,-14.5 r0) (7.9,-19.0 r0) (0.0,-20.5 r0) (-7.9,-19.0 r0) (-14.5,-14.5 r0) (-19.0,-7.9 r0) (-20.5,-0.0 r0)
+  POSTSE 2013286654/13792 POS=None ORI=None
+    HRPOST 2013286654/13793 POSREF=[0] 2013286654/3390 LENG=1100 ZDIS=100 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/13793, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/13793, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/13862 POSREF=[0] 2013286654/3390 LENG=1100 ZDIS=994.65 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/13862, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/13862, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/13931 POSREF=[0] 2013286654/3390 LENG=1100 ZDIS=1994.65 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/13931, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/13931, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/14000 POSREF=[0] 2013286654/3390 LENG=1100 ZDIS=2994.65 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/14000, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/14000, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/14069 POSREF=[0] 2013286654/3390 LENG=1100 ZDIS=3994.65 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/14069, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/14069, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/14138 POSREF=[0] 2013286654/3390 LENG=1100 ZDIS=4994.65 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/14138, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/14138, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/14207 POSREF=[0] 2013286654/3390 LENG=1100 ZDIS=5994.65 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/14207, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/14207, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/14276 POSREF=[0] 2013286654/3390 LENG=1100 ZDIS=6994.65 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/14276, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/14276, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/14345 POSREF=[0] 2013286654/3390 LENG=1100 ZDIS=7994.65 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/14345, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/14345, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/14414 POSREF=[0] 2013286654/3390 LENG=1100 ZDIS=8994.65 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/14414, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/14414, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/14483 POSREF=[0] 2013286654/3390 LENG=1100 ZDIS=9994.65 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/14483, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/14483, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/14552 POSREF=[0] 2013286654/3390 LENG=1100 ZDIS=10994.65 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/14552, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/14552, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/14621 POSREF=[0] 2013286654/3390 LENG=1100 ZDIS=11994.65 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/14621, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/14621, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/14690 POSREF=[0] 2013286654/3390 LENG=1100 ZDIS=12994.65 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/14690, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/14690, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/14759 POSREF=[0] 2013286654/3390 LENG=1100 ZDIS=13994.65 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/14759, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/14759, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/14828 POSREF=[0] 2013286654/3390 LENG=1100 ZDIS=14889.29 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/14828, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/14828, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/14897 POSREF=[1] 2013286654/3392 LENG=1100 ZDIS=100 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/14897, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/14897, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/14966 POSREF=[1] 2013286654/3392 LENG=1100 ZDIS=778.26 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/14966, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/14966, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/15035 POSREF=[1] 2013286654/3392 LENG=1100 ZDIS=1778.26 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/15035, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/15035, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/15104 POSREF=[1] 2013286654/3392 LENG=1100 ZDIS=2778.26 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/15104, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/15104, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/15173 POSREF=[1] 2013286654/3392 LENG=1100 ZDIS=3778.26 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/15173, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/15173, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/15242 POSREF=[1] 2013286654/3392 LENG=1100 ZDIS=4778.26 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/15242, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/15242, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/15311 POSREF=[1] 2013286654/3392 LENG=1100 ZDIS=5778.26 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/15311, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/15311, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/15380 POSREF=[3] 2013286654/8274 LENG=1100 ZDIS=574.32 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/15380, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/15380, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/15449 POSREF=[3] 2013286654/8274 LENG=1075 ZDIS=1148.64 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=FORW DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/15449, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/15449, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36007：GPART 无 CATR
+    HRPOST 2013286654/15527 POSREF=[4] 2013286654/3394 LENG=1100 ZDIS=679.6 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/15527, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/15527, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/15596 POSREF=[4] 2013286654/3394 LENG=1100 ZDIS=1679.6 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/15596, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/15596, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/15665 POSREF=[4] 2013286654/3394 LENG=1100 ZDIS=2679.6 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/15665, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/15665, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/15734 POSREF=[4] 2013286654/3394 LENG=1100 ZDIS=3679.6 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/15734, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/15734, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/15803 POSREF=[4] 2013286654/3394 LENG=1100 ZDIS=4679.6 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/15803, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/15803, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/15872 POSREF=[4] 2013286654/3394 LENG=1100 ZDIS=5679.6 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/15872, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/15872, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/15941 POSREF=[4] 2013286654/3394 LENG=1100 ZDIS=6679.6 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/15941, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/15941, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/16010 POSREF=[4] 2013286654/3394 LENG=1100 ZDIS=7679.6 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/16010, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/16010, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/16079 POSREF=[4] 2013286654/3394 LENG=1100 ZDIS=8679.6 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/16079, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/16079, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/16148 POSREF=[4] 2013286654/3394 LENG=1100 ZDIS=9679.6 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/16148, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/16148, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/16217 POSREF=[4] 2013286654/3394 LENG=1100 ZDIS=10679.6 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/16217, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/16217, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/16286 POSREF=[4] 2013286654/3394 LENG=1100 ZDIS=11679.6 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/16286, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/16286, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/16355 POSREF=[4] 2013286654/3394 LENG=1100 ZDIS=12679.6 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/16355, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/16355, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/16424 POSREF=[4] 2013286654/3394 LENG=1100 ZDIS=13679.6 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/16424, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/16424, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/16493 POSREF=[4] 2013286654/3394 LENG=1075 ZDIS=14359.2 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=FORW DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/16493, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/16493, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36007：GPART 无 CATR
+    HRPOST 2013286654/16571 POSREF=[5] 2013286654/3395 LENG=1100 ZDIS=692.55 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/16571, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/16571, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/16640 POSREF=[5] 2013286654/3395 LENG=1100 ZDIS=1692.55 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/16640, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/16640, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/16709 POSREF=[5] 2013286654/3395 LENG=1100 ZDIS=2692.55 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/16709, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/16709, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/16778 POSREF=[5] 2013286654/3395 LENG=1100 ZDIS=3692.55 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/16778, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/16778, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/16847 POSREF=[5] 2013286654/3395 LENG=1100 ZDIS=4692.55 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/16847, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/16847, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/16916 POSREF=[5] 2013286654/3395 LENG=1100 ZDIS=5692.55 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/16916, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/16916, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/16985 POSREF=[5] 2013286654/3395 LENG=1100 ZDIS=6692.55 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/16985, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/16985, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/17054 POSREF=[5] 2013286654/3395 LENG=1100 ZDIS=7692.55 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/17054, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/17054, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/17123 POSREF=[5] 2013286654/3395 LENG=1100 ZDIS=8285.1 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/17123, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/17123, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+
+=== HANDRA 2013286654/3397 Some("/BUILDING_02_LEVEL_04/HR_001") CLOSEF=Some(false) SHOWKP=Some(false) RAILHE=Some([1075.0, 525.0]) POS=Some([-297729.63, 324769.75, 150.0]) ORI=Some([0.0, 0.0, 0.0]) 成员 ["POSTSE", "RAILSE", "RPATH"] 【详图式】
+  RPATH 2013286654/3471 YDIR=Some([0.0, 0.0, 1.0]) DRNS=Some([0.0, 0.0, 0.0]) DRNE=Some([0.0, 0.0, 0.0])
+    [  0] 2013286654/3473    POS=[0.0, -250.0, 0.0] FRAD=0
+    [  1] 2013286654/3474    POS=[0.0, -6505.0, 0.0] FRAD=0
+    [  2] 2013286654/3475    POS=[14459.19, -6505.0, 0.0] FRAD=0
+    [  3] 2013286654/3476    POS=[14459.19, 17965.5, 0.0] FRAD=0
+    [  4] 2013286654/3477    POS=[5000.0, 17965.5, 0.0] FRAD=0
+    [  5] 2013286654/13791   POS=[5000.01, 9990.5, 0.0] FRAD=0
+  POSTSE 2013286654/3398 POS=None ORI=None
+    HRPOST 2013286654/3409 POSREF=[0] 2013286654/3473 LENG=1100 ZDIS=752.5 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3409, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3409, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/3410 POSREF=[0] 2013286654/3473 LENG=1100 ZDIS=1752.5 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3410, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3410, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/3411 POSREF=[0] 2013286654/3473 LENG=1100 ZDIS=2752.5 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3411, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3411, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/3412 POSREF=[0] 2013286654/3473 LENG=1100 ZDIS=3752.5 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3412, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3412, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/3413 POSREF=[0] 2013286654/3473 LENG=1100 ZDIS=4752.5 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3413, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3413, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/3414 POSREF=[0] 2013286654/3473 LENG=1100 ZDIS=5752.5 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3414, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3414, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/3415 POSREF=[0] 2013286654/3473 LENG=1075 ZDIS=6505 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3415, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3415, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36007：GPART 无 CATR
+    HRPOST 2013286654/3434 POSREF=[1] 2013286654/3474 LENG=1100 ZDIS=729.59 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3434, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3434, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/3435 POSREF=[1] 2013286654/3474 LENG=1100 ZDIS=1729.59 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3435, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3435, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/3436 POSREF=[1] 2013286654/3474 LENG=1100 ZDIS=2729.59 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3436, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3436, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/3437 POSREF=[1] 2013286654/3474 LENG=1100 ZDIS=3729.59 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3437, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3437, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/3438 POSREF=[1] 2013286654/3474 LENG=1100 ZDIS=4729.59 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3438, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3438, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/3439 POSREF=[1] 2013286654/3474 LENG=1100 ZDIS=5729.59 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3439, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3439, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/3440 POSREF=[1] 2013286654/3474 LENG=1100 ZDIS=6729.59 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3440, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3440, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/3441 POSREF=[1] 2013286654/3474 LENG=1100 ZDIS=7729.59 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3441, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3441, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/3442 POSREF=[1] 2013286654/3474 LENG=1100 ZDIS=8729.59 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3442, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3442, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/3443 POSREF=[1] 2013286654/3474 LENG=1100 ZDIS=9729.59 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3443, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3443, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/3444 POSREF=[1] 2013286654/3474 LENG=1100 ZDIS=10729.59 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3444, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3444, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/3445 POSREF=[1] 2013286654/3474 LENG=1100 ZDIS=11729.59 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3445, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3445, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/3446 POSREF=[1] 2013286654/3474 LENG=1100 ZDIS=12729.59 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3446, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3446, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/3447 POSREF=[1] 2013286654/3474 LENG=1100 ZDIS=13729.59 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3447, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3447, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/3448 POSREF=[1] 2013286654/3474 LENG=1075 ZDIS=14459.19 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3448, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3448, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36007：GPART 无 CATR
+    HRPOST 2013286654/10669 POSREF=[2] 2013286654/3475 LENG=1100 ZDIS=735.25 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/10669, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/10669, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/10738 POSREF=[2] 2013286654/3475 LENG=1100 ZDIS=1735.25 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/10738, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/10738, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/10807 POSREF=[2] 2013286654/3475 LENG=1100 ZDIS=2735.25 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/10807, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/10807, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/10876 POSREF=[2] 2013286654/3475 LENG=1100 ZDIS=3735.25 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/10876, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/10876, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/10945 POSREF=[2] 2013286654/3475 LENG=1100 ZDIS=4735.25 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/10945, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/10945, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/11014 POSREF=[2] 2013286654/3475 LENG=1100 ZDIS=5735.25 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/11014, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/11014, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/11083 POSREF=[2] 2013286654/3475 LENG=1100 ZDIS=6735.25 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/11083, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/11083, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/11152 POSREF=[2] 2013286654/3475 LENG=1100 ZDIS=7735.25 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/11152, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/11152, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/11221 POSREF=[2] 2013286654/3475 LENG=1100 ZDIS=8735.25 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/11221, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/11221, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/11290 POSREF=[2] 2013286654/3475 LENG=1100 ZDIS=9735.25 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/11290, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/11290, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/11359 POSREF=[2] 2013286654/3475 LENG=1100 ZDIS=10735.25 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/11359, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/11359, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/11428 POSREF=[2] 2013286654/3475 LENG=1100 ZDIS=11735.25 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/11428, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/11428, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/11497 POSREF=[2] 2013286654/3475 LENG=1100 ZDIS=12735.25 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/11497, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/11497, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/3449 POSREF=[2] 2013286654/3475 LENG=1100 ZDIS=13735.25 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3449, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3449, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/3450 POSREF=[2] 2013286654/3475 LENG=1100 ZDIS=14735.25 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3450, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3450, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/3451 POSREF=[2] 2013286654/3475 LENG=1100 ZDIS=15735.25 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3451, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3451, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/3452 POSREF=[2] 2013286654/3475 LENG=1100 ZDIS=16735.25 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3452, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3452, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/3453 POSREF=[2] 2013286654/3475 LENG=1100 ZDIS=17735.25 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3453, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3453, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/3454 POSREF=[2] 2013286654/3475 LENG=1100 ZDIS=18735.25 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3454, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3454, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/3455 POSREF=[2] 2013286654/3475 LENG=1100 ZDIS=19735.25 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3455, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3455, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/3456 POSREF=[2] 2013286654/3475 LENG=1100 ZDIS=20735.25 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3456, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3456, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/3457 POSREF=[2] 2013286654/3475 LENG=1100 ZDIS=21735.25 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3457, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3457, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/3458 POSREF=[2] 2013286654/3475 LENG=1100 ZDIS=22735.25 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3458, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3458, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/12246 POSREF=[2] 2013286654/3475 LENG=1100 ZDIS=23735.25 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/12246, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/12246, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/12315 POSREF=[2] 2013286654/3475 LENG=1075 ZDIS=24470.5 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/12315, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/12315, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36007：GPART 无 CATR
+    HRPOST 2013286654/12393 POSREF=[3] 2013286654/3476 LENG=1100 ZDIS=729.59 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/12393, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/12393, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/3459 POSREF=[3] 2013286654/3476 LENG=1100 ZDIS=1729.59 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3459, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3459, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/3460 POSREF=[3] 2013286654/3476 LENG=1100 ZDIS=2729.59 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3460, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3460, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/3461 POSREF=[3] 2013286654/3476 LENG=1100 ZDIS=3729.59 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3461, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3461, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/3462 POSREF=[3] 2013286654/3476 LENG=1100 ZDIS=4729.59 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3462, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3462, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/3463 POSREF=[3] 2013286654/3476 LENG=1100 ZDIS=5729.59 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3463, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3463, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/3464 POSREF=[3] 2013286654/3476 LENG=1100 ZDIS=6729.59 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3464, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3464, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/12870 POSREF=[3] 2013286654/3476 LENG=1100 ZDIS=7729.59 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/12870, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/12870, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/12939 POSREF=[3] 2013286654/3476 LENG=1100 ZDIS=8729.59 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/12939, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/12939, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/13008 POSREF=[3] 2013286654/3476 LENG=1075 ZDIS=9459.19 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/13008, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/13008, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36007：GPART 无 CATR
+    HRPOST 2013286654/13086 POSREF=[4] 2013286654/3477 LENG=1100 ZDIS=987.5 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/13086, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/13086, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/13155 POSREF=[4] 2013286654/3477 LENG=1100 ZDIS=1987.5 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/13155, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/13155, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/13224 POSREF=[4] 2013286654/3477 LENG=1100 ZDIS=2987.5 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/13224, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/13224, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/13293 POSREF=[4] 2013286654/3477 LENG=1100 ZDIS=3987.5 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/13293, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/13293, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/13362 POSREF=[4] 2013286654/3477 LENG=1100 ZDIS=4987.5 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/13362, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/13362, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/13431 POSREF=[4] 2013286654/3477 LENG=1100 ZDIS=5987.5 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/13431, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/13431, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/13500 POSREF=[4] 2013286654/3477 LENG=1100 ZDIS=6987.5 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/13500, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/13500, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+  RAILSE 2013286654/3466 POS=None ORI=None
+    RAIL 2013286654/3467 FUNC=HAND JUSL=NA XOFF=0 ZOFF=1075 BANG=0 LMIRR=false RADS=true BENDCO=true YDIR=[0.0, 0.0, 1.0] DRNS=[0.0, 0.0, 0.0] DRNE=[0.0, 0.0, 0.0] LEVE=None
+      STAREF=[0] 2013286654/3473  ENDREF=[5] 2013286654/13791  SPKDI=0 EPKDI=0 SZDI=0 EZDI=0
+      链：SPCO=Some("23431/34900") SPRF=23431/34833 Some("/PIPE48.3x3.6") GMSS=23431/34836
+      截面：2 成员 JUSL=NA found=true offset=[0.0, 0.0] spin=-0.0000 mirrored=false level=6
+        Sann 23431/34837 环=1 外环 (24.1,0.0 r0) (22.3,9.2 r0) (17.1,17.1 r0) (9.2,22.3 r0) (0.0,24.1 r0) (-9.2,22.3 r0) (-17.1,17.1 r0) (-22.3,9.2 r0) (-24.1,0.0 r0) (-20.5,0.0 r0) (-19.0,7.9 r0) (-14.5,14.5 r0) (-7.9,19.0 r0) (0.0,20.5 r0) (7.9,19.0 r0) (14.5,14.5 r0) (19.0,7.9 r0) (20.5,0.0 r0)
+        Sann 23431/34838 环=1 外环 (-24.1,-0.0 r0) (-22.3,-9.2 r0) (-17.1,-17.1 r0) (-9.2,-22.3 r0) (0.0,-24.1 r0) (9.2,-22.3 r0) (17.1,-17.1 r0) (22.3,-9.2 r0) (24.1,0.0 r0) (20.5,0.0 r0) (19.0,-7.9 r0) (14.5,-14.5 r0) (7.9,-19.0 r0) (0.0,-20.5 r0) (-7.9,-19.0 r0) (-14.5,-14.5 r0) (-19.0,-7.9 r0) (-20.5,-0.0 r0)
+    RAIL 2013286654/3468 FUNC=- JUSL=NA XOFF=0 ZOFF=525 BANG=0 LMIRR=false RADS=true BENDCO=true YDIR=[0.0, 0.0, 1.0] DRNS=[0.0, 0.0, 0.0] DRNE=[0.0, 0.0, 0.0] LEVE=None
+      STAREF=[0] 2013286654/3473  ENDREF=[5] 2013286654/13791  SPKDI=0 EPKDI=0 SZDI=0 EZDI=0
+      链：SPCO=Some("23431/34900") SPRF=23431/34833 Some("/PIPE48.3x3.6") GMSS=23431/34836
+      截面：2 成员 JUSL=NA found=true offset=[0.0, 0.0] spin=-0.0000 mirrored=false level=6
+        Sann 23431/34837 环=1 外环 (24.1,0.0 r0) (22.3,9.2 r0) (17.1,17.1 r0) (9.2,22.3 r0) (0.0,24.1 r0) (-9.2,22.3 r0) (-17.1,17.1 r0) (-22.3,9.2 r0) (-24.1,0.0 r0) (-20.5,0.0 r0) (-19.0,7.9 r0) (-14.5,14.5 r0) (-7.9,19.0 r0) (0.0,20.5 r0) (7.9,19.0 r0) (14.5,14.5 r0) (19.0,7.9 r0) (20.5,0.0 r0)
+        Sann 23431/34838 环=1 外环 (-24.1,-0.0 r0) (-22.3,-9.2 r0) (-17.1,-17.1 r0) (-9.2,-22.3 r0) (0.0,-24.1 r0) (9.2,-22.3 r0) (17.1,-17.1 r0) (22.3,-9.2 r0) (24.1,0.0 r0) (20.5,0.0 r0) (19.0,-7.9 r0) (14.5,-14.5 r0) (7.9,-19.0 r0) (0.0,-20.5 r0) (-7.9,-19.0 r0) (-14.5,-14.5 r0) (-19.0,-7.9 r0) (-20.5,-0.0 r0)
+    HRTERM 2013286654/13569
+    HRTERM 2013286654/13660
+
+=== HANDRA 2013286654/3479 Some("/B01_LEVEL_01_HANDRAILS/HR_001") CLOSEF=Some(false) SHOWKP=Some(true) RAILHE=Some([1075.0, 525.0]) POS=Some([-313054.59, 325604.61, 0.0]) ORI=Some([0.0, 0.0, 0.0]) 成员 ["POSTSE", "RAILSE", "RPATH"] 【详图式】
+  RPATH 2013286654/3891 YDIR=Some([0.0, 0.0, 1.0]) DRNS=Some([0.0, 0.0, 0.0]) DRNE=Some([0.0, 0.0, 0.0])
+    [  0] 2013286654/3892    POS=[-100.0, 0.0, 0.0] FRAD=0
+    [  1] 2013286654/3893    POS=[-700.0, 0.0, 0.0] FRAD=0
+    [  2] 2013286654/3894    POS=[-700.0, 1100.0, 0.0] FRAD=0
+    [  3] 2013286654/3895    POS=[-100.0, 1100.0, 0.0] FRAD=0
+  POSTSE 2013286654/3480 POS=None ORI=None
+    HRPOST 2013286654/3481 POSREF=[0] 2013286654/3892 LENG=1075 ZDIS=700 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=FORW DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3481, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3481, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36007：GPART 无 CATR
+    HRPOST 2013286654/3559 POSREF=[1] 2013286654/3893 LENG=1100 ZDIS=550 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3559, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3559, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/3628 POSREF=[1] 2013286654/3893 LENG=1075 ZDIS=1100 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=FORW DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3628, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3628, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36007：GPART 无 CATR
+  RAILSE 2013286654/3706 POS=None ORI=None
+    RAIL 2013286654/3707 FUNC=HAND JUSL=NA XOFF=0 ZOFF=1075 BANG=0 LMIRR=false RADS=true BENDCO=true YDIR=[0.0, 0.0, 1.0] DRNS=[0.0, 0.0, 0.0] DRNE=[0.0, 0.0, 0.0] LEVE=None
+      STAREF=[0] 2013286654/3892  ENDREF=[3] 2013286654/3895  SPKDI=0 EPKDI=0 SZDI=0 EZDI=0
+      链：SPCO=Some("23431/34900") SPRF=23431/34833 Some("/PIPE48.3x3.6") GMSS=23431/34836
+      截面：2 成员 JUSL=NA found=true offset=[0.0, 0.0] spin=-0.0000 mirrored=false level=6
+        Sann 23431/34837 环=1 外环 (24.1,0.0 r0) (22.3,9.2 r0) (17.1,17.1 r0) (9.2,22.3 r0) (0.0,24.1 r0) (-9.2,22.3 r0) (-17.1,17.1 r0) (-22.3,9.2 r0) (-24.1,0.0 r0) (-20.5,0.0 r0) (-19.0,7.9 r0) (-14.5,14.5 r0) (-7.9,19.0 r0) (0.0,20.5 r0) (7.9,19.0 r0) (14.5,14.5 r0) (19.0,7.9 r0) (20.5,0.0 r0)
+        Sann 23431/34838 环=1 外环 (-24.1,-0.0 r0) (-22.3,-9.2 r0) (-17.1,-17.1 r0) (-9.2,-22.3 r0) (0.0,-24.1 r0) (9.2,-22.3 r0) (17.1,-17.1 r0) (22.3,-9.2 r0) (24.1,0.0 r0) (20.5,0.0 r0) (19.0,-7.9 r0) (14.5,-14.5 r0) (7.9,-19.0 r0) (0.0,-20.5 r0) (-7.9,-19.0 r0) (-14.5,-14.5 r0) (-19.0,-7.9 r0) (-20.5,-0.0 r0)
+    RAIL 2013286654/3708 FUNC=- JUSL=NA XOFF=0 ZOFF=525 BANG=0 LMIRR=false RADS=true BENDCO=true YDIR=[0.0, 0.0, 1.0] DRNS=[0.0, 0.0, 0.0] DRNE=[0.0, 0.0, 0.0] LEVE=None
+      STAREF=[0] 2013286654/3892  ENDREF=[3] 2013286654/3895  SPKDI=0 EPKDI=0 SZDI=0 EZDI=0
+      链：SPCO=Some("23431/34900") SPRF=23431/34833 Some("/PIPE48.3x3.6") GMSS=23431/34836
+      截面：2 成员 JUSL=NA found=true offset=[0.0, 0.0] spin=-0.0000 mirrored=false level=6
+        Sann 23431/34837 环=1 外环 (24.1,0.0 r0) (22.3,9.2 r0) (17.1,17.1 r0) (9.2,22.3 r0) (0.0,24.1 r0) (-9.2,22.3 r0) (-17.1,17.1 r0) (-22.3,9.2 r0) (-24.1,0.0 r0) (-20.5,0.0 r0) (-19.0,7.9 r0) (-14.5,14.5 r0) (-7.9,19.0 r0) (0.0,20.5 r0) (7.9,19.0 r0) (14.5,14.5 r0) (19.0,7.9 r0) (20.5,0.0 r0)
+        Sann 23431/34838 环=1 外环 (-24.1,-0.0 r0) (-22.3,-9.2 r0) (-17.1,-17.1 r0) (-9.2,-22.3 r0) (0.0,-24.1 r0) (9.2,-22.3 r0) (17.1,-17.1 r0) (22.3,-9.2 r0) (24.1,0.0 r0) (20.5,0.0 r0) (19.0,-7.9 r0) (14.5,-14.5 r0) (7.9,-19.0 r0) (0.0,-20.5 r0) (-7.9,-19.0 r0) (-14.5,-14.5 r0) (-19.0,-7.9 r0) (-20.5,-0.0 r0)
+    HRTERM 2013286654/3709
+    HRTERM 2013286654/3800
+
+=== HANDRA 2013286654/3896 Some("/B01_LEVEL_01_HANDRAILS/HR_002") CLOSEF=Some(false) SHOWKP=Some(true) RAILHE=Some([1075.0, 525.0]) POS=Some([-313154.59, 324788.61, 0.0]) ORI=Some([0.0, 0.0, 0.0]) 成员 ["POSTSE", "RAILSE", "RPATH"] 【详图式】
+  RPATH 2013286654/4653 YDIR=Some([0.0, 0.0, 1.0]) DRNS=Some([0.0, 0.0, 0.0]) DRNE=Some([0.0, 0.0, 0.0])
+    [  0] 2013286654/4654    POS=[0.0, 0.0, 0.0] FRAD=0
+    [  1] 2013286654/4655    POS=[-600.0, 0.0, 0.0] FRAD=0
+    [  2] 2013286654/4656    POS=[-600.0, -6500.0, 0.0] FRAD=0
+    [  3] 2013286654/4657    POS=[0.0, -6500.0, 0.0] FRAD=0
+  POSTSE 2013286654/3897 POS=None ORI=None
+    HRPOST 2013286654/3898 POSREF=[0] 2013286654/4654 LENG=1075 ZDIS=600 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3898, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3898, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36007：GPART 无 CATR
+    HRPOST 2013286654/3976 POSREF=[1] 2013286654/4655 LENG=1100 ZDIS=750 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/3976, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/3976, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/4045 POSREF=[1] 2013286654/4655 LENG=1100 ZDIS=1750 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/4045, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/4045, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/4114 POSREF=[1] 2013286654/4655 LENG=1100 ZDIS=2750 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/4114, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/4114, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/4183 POSREF=[1] 2013286654/4655 LENG=1100 ZDIS=3750 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/4183, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/4183, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/4252 POSREF=[1] 2013286654/4655 LENG=1100 ZDIS=4750 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/4252, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/4252, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/4321 POSREF=[1] 2013286654/4655 LENG=1100 ZDIS=5750 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=LEFT DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/4321, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/4321, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36006：GPART 无 CATR
+    HRPOST 2013286654/4390 POSREF=[1] 2013286654/4655 LENG=1075 ZDIS=6500 XOFF=0 ZOFF=0 HEIG=0 PKDI=0 VERTDI=true HRJUSL=RIGH DRNS=[0.0, 0.0, 1.0] DRNE=[0.0, 0.0, -1.0] POS=None ORI=None
+      成员 ["TMPL"]
+      POSS=Err(UnknownAttribute { refno: RefNo(2013286654/4390, dbno=250110), noun: "HRPOST", name: "POSS" }) POSE=Err(UnknownAttribute { refno: RefNo(2013286654/4390, dbno=250110), noun: "HRPOST", name: "POSE" })
+      链：断在第 0 跳 23431/36007：GPART 无 CATR
+  RAILSE 2013286654/4468 POS=None ORI=None
+    RAIL 2013286654/4469 FUNC=HAND JUSL=NA XOFF=0 ZOFF=1075 BANG=0 LMIRR=false RADS=true BENDCO=true YDIR=[0.0, 0.0, 1.0] DRNS=[0.0, 0.0, 0.0] DRNE=[0.0, 0.0, 0.0] LEVE=None
+      STAREF=[0] 2013286654/4654  ENDREF=[3] 2013286654/4657  SPKDI=0 EPKDI=0 SZDI=0 EZDI=0
+      链：SPCO=Some("23431/34900") SPRF=23431/34833 Some("/PIPE48.3x3.6") GMSS=23431/34836
+      截面：2 成员 JUSL=NA found=true offset=[0.0, 0.0] spin=-0.0000 mirrored=false level=6
+        Sann 23431/34837 环=1 外环 (24.1,0.0 r0) (22.3,9.2 r0) (17.1,17.1 r0) (9.2,22.3 r0) (0.0,24.1 r0) (-9.2,22.3 r0) (-17.1,17.1 r0) (-22.3,9.2 r0) (-24.1,0.0 r0) (-20.5,0.0 r0) (-19.0,7.9 r0) (-14.5,14.5 r0) (-7.9,19.0 r0) (0.0,20.5 r0) (7.9,19.0 r0) (14.5,14.5 r0) (19.0,7.9 r0) (20.5,0.0 r0)
+        Sann 23431/34838 环=1 外环 (-24.1,-0.0 r0) (-22.3,-9.2 r0) (-17.1,-17.1 r0) (-9.2,-22.3 r0) (0.0,-24.1 r0) (9.2,-22.3 r0) (17.1,-17.1 r0) (22.3,-9.2 r0) (24.1,0.0 r0) (20.5,0.0 r0) (19.0,-7.9 r0) (14.5,-14.5 r0) (7.9,-19.0 r0) (0.0,-20.5 r0) (-7.9,-19.0 r0) (-14.5,-14.5 r0) (-19.0,-7.9 r0) (-20.5,-0.0 r0)
+    RAIL 2013286654/4470 FUNC=- JUSL=NA XOFF=0 ZOFF=525 BANG=0 LMIRR=false RADS=true BENDCO=true YDIR=[0.0, 0.0, 1.0] DRNS=[0.0, 0.0, 0.0] DRNE=[0.0, 0.0, 0.0] LEVE=None
+      STAREF=[0] 2013286654/4654  ENDREF=[3] 2013286654/4657  SPKDI=0 EPKDI=0 SZDI=0 EZDI=0
+      链：SPCO=Some("23431/34900") SPRF=23431/34833 Some("/PIPE48.3x3.6") GMSS=23431/34836
+      截面：2 成员 JUSL=NA found=true offset=[0.0, 0.0] spin=-0.0000 mirrored=false level=6
+        Sann 23431/34837 环=1 外环 (24.1,0.0 r0) (22.3,9.2 r0) (17.1,17.1 r0) (9.2,22.3 r0) (0.0,24.1 r0) (-9.2,22.3 r0) (-17.1,17.1 r0) (-22.3,9.2 r0) (-24.1,0.0 r0) (-20.5,0.0 r0) (-19.0,7.9 r0) (-14.5,14.5 r0) (-7.9,19.0 r0) (0.0,20.5 r0) (7.9,19.0 r0) (14.5,14.5 r0) (19.0,7.9 r0) (20.5,0.0 r0)
+        Sann 23431/34838 环=1 外环 (-24.1,-0.0 r0) (-22.3,-9.2 r0) (-17.1,-17.1 r0) (-9.2,-22.3 r0) (0.0,-24.1 r0) (9.2,-22.3 r0) (17.1,-17.1 r0) (22.3,-9.2 r0) (24.1,0.0 r0) (20.5,0.0 r0) (19.0,-7.9 r0) (14.5,-14.5 r0) (7.9,-19.0 r0) (0.0,-20.5 r0) (-7.9,-19.0 r0) (-14.5,-14.5 r0) (-19.0,-7.9 r0) (-20.5,-0.0 r0)
+    HRTERM 2013286654/4471
+    HRTERM 2013286654/4562
+
+=== HANDRA 2013286654/8599 None CLOSEF=Some(false) SHOWKP=Some(true) RAILHE=Some([1100.0, 600.0]) POS=Some([-425.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0]) 成员 ["RPATH"] 【布局式】
+  RPATH 2013286654/8600 YDIR=Some([0.0, 0.0, 1.0]) DRNS=Some([0.0, 0.0, 0.0]) DRNE=Some([0.0, 0.0, 0.0])
+    [  0] 2013286654/8601    POS=[0.0, 0.0, 0.0] FRAD=100
+    [  1] 2013286654/8602    POS=[-12.5, 2691.25, 2068.0] FRAD=100
+
+=== HANDRA 2013286654/8603 None CLOSEF=Some(false) SHOWKP=Some(true) RAILHE=Some([1100.0, 600.0]) POS=Some([437.53, 2685.53, 2060.48]) ORI=Some([0.0, 0.0, 0.0]) 成员 ["RPATH"] 【布局式】
+  RPATH 2013286654/8604 YDIR=Some([0.0, 0.0, 1.0]) DRNS=Some([0.0, 0.0, 0.0]) DRNE=Some([0.0, 0.0, 0.0])
+    [  0] 2013286654/8605    POS=[0.0, 0.0, 0.0] FRAD=100
+    [  1] 2013286654/8606    POS=[-0.09, -2704.94, -2078.48] FRAD=100
+
+=== HANDRA 2013286654/8636 None CLOSEF=Some(false) SHOWKP=Some(false) RAILHE=Some([1100.0, 600.0]) POS=Some([425.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0]) 成员 ["RPATH"] 【布局式】
+  RPATH 2013286654/8637 YDIR=Some([0.0, 0.0, 1.0]) DRNS=Some([0.0, 0.0, 0.0]) DRNE=Some([0.0, 0.0, 0.0])
+    [  0] 2013286654/8638    POS=[0.0, 0.0, 0.0] FRAD=100
+    [  1] 2013286654/8639    POS=[0.0, 4093.78, 2632.0] FRAD=100
+
+=== HANDRA 2013286654/8640 None CLOSEF=Some(false) SHOWKP=Some(false) RAILHE=Some([1100.0, 600.0]) POS=Some([-425.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0]) 成员 ["RPATH"] 【布局式】
+  RPATH 2013286654/8641 YDIR=Some([0.0, 0.0, 1.0]) DRNS=Some([0.0, 0.0, 0.0]) DRNE=Some([0.0, 0.0, 0.0])
+    [  0] 2013286654/8642    POS=[0.0, 0.0, 0.0] FRAD=100
+    [  1] 2013286654/8643    POS=[0.0, 4093.78, 2632.0] FRAD=100
+
+=== HANDRA 2013286654/8645 Some("/B01_LEVEL_03_ACCESS/HR_001") CLOSEF=Some(false) SHOWKP=Some(true) RAILHE=Some([1200.0, 700.0]) POS=Some([-297804.63, 326209.75, 2900.0]) ORI=Some([0.0, 0.0, 0.0]) 成员 ["HRKPSE", "HRPNSE", "RPATH"] 【详图式】
+  RPATH 2013286654/8814 YDIR=Some([0.0, 0.0, 1.0]) DRNS=Some([0.0, 0.0, 0.0]) DRNE=Some([0.0, 0.0, 0.0])
+    [  0] 2013286654/8815    POS=[0.0, 0.0, 0.0] FRAD=0
+    [  1] 2013286654/8816    POS=[-1970.0, 0.0, 0.0] FRAD=0
+    [  2] 2013286654/8817    POS=[-1970.0, -1440.0, 0.0] FRAD=0
+  HRKPSE 2013286654/8646 POS=None ORI=None
+    KICKPL 2013286654/8647 FUNC=- JUSL=LBOS XOFF=7 ZOFF=-10 BANG=0 LMIRR=false RADS=- BENDCO=false YDIR=[0.0, 0.0, 1.0] DRNS=[0.0, 0.0, 0.0] DRNE=[0.0, 0.0, 0.0] LEVE=None
+      STAREF=[0] 2013286654/8815  ENDREF=[1] 2013286654/8816  SPKDI=0 EPKDI=0 SZDI=0 EZDI=0
+      链：SPCO=Some("23431/34898") SPRF=23431/34831 Some("/110.0x8x6.91") GMSS=15239/92
+      截面：1 成员 JUSL=LBOS found=true offset=[-4.0, -55.0] spin=-0.0000 mirrored=false level=6
+        Srec 15239/93 环=1 外环 (-4.0,-55.0 r0) (4.0,-55.0 r0) (4.0,55.0 r0) (-4.0,55.0 r0)
+    KICKPL 2013286654/8648 FUNC=- JUSL=LBOS XOFF=7 ZOFF=-10 BANG=0 LMIRR=false RADS=- BENDCO=false YDIR=[0.0, 0.0, 1.0] DRNS=[0.0, 0.0, 0.0] DRNE=[0.0, 0.0, 0.0] LEVE=None
+      STAREF=[1] 2013286654/8816  ENDREF=[2] 2013286654/8817  SPKDI=0 EPKDI=0 SZDI=0 EZDI=0
+      链：SPCO=Some("23431/34898") SPRF=23431/34831 Some("/110.0x8x6.91") GMSS=15239/92
+      截面：1 成员 JUSL=LBOS found=true offset=[-4.0, -55.0] spin=-0.0000 mirrored=false level=6
+        Srec 15239/93 环=1 外环 (-4.0,-55.0 r0) (4.0,-55.0 r0) (4.0,55.0 r0) (-4.0,55.0 r0)
+  HRPNSE 2013286654/8649 POS=None ORI=None
+    HRPANE 2013286654/8650
+    HRPANE 2013286654/8742
+
+=== HANDRA 2013286654/8818 Some("/B01_LEVEL_03_ACCESS/HR_002") CLOSEF=Some(false) SHOWKP=Some(true) RAILHE=Some([1100.0, 600.0]) POS=Some([-298844.7, 324769.75, 2900.0]) ORI=Some([0.0, 0.0, 0.0]) 成员 ["HRKPSE", "RPATH", "HRPNSE"] 【详图式】
+  RPATH 2013286654/8821 YDIR=Some([0.0, 0.0, 1.0]) DRNS=Some([0.0, 0.0, 0.0]) DRNE=Some([0.0, 0.0, 0.0])
+    [  0] 2013286654/8822    POS=[0.0, 0.0, 0.0] FRAD=100
+    [  1] 2013286654/8823    POS=[1040.07, 0.0, 0.0] FRAD=100
+  HRKPSE 2013286654/8819 POS=None ORI=None
+    KICKPL 2013286654/8820 FUNC=- JUSL=LBOS XOFF=7 ZOFF=-10 BANG=0 LMIRR=false RADS=- BENDCO=false YDIR=[0.0, 0.0, 1.0] DRNS=[0.0, 0.0, 0.0] DRNE=[0.0, 0.0, 0.0] LEVE=None
+      STAREF=[0] 2013286654/8822  ENDREF=[1] 2013286654/8823  SPKDI=0 EPKDI=0 SZDI=0 EZDI=0
+      链：SPCO=Some("23431/34898") SPRF=23431/34831 Some("/110.0x8x6.91") GMSS=15239/92
+      截面：1 成员 JUSL=LBOS found=true offset=[-4.0, -55.0] spin=-0.0000 mirrored=false level=6
+        Srec 15239/93 环=1 外环 (-4.0,-55.0 r0) (4.0,-55.0 r0) (4.0,55.0 r0) (-4.0,55.0 r0)
+  HRPNSE 2013286654/8824 POS=None ORI=None
+    HRPANE 2013286654/8825
+
+=== HANDRA 2013286654/8897 Some("/B01_LEVEL_03_ACCESS/HR_003") CLOSEF=Some(false) SHOWKP=Some(true) RAILHE=Some([1200.0, 600.0]) POS=Some([-298809.63, 320579.0, 268.0]) ORI=Some([0.0, 0.0, 0.0]) 成员 ["HRKPSE", "RPATH", "HRPNSE"] 【详图式】
+  RPATH 2013286654/8901 YDIR=Some([0.0, 0.0, 1.0]) DRNS=Some([0.0, 0.0, 0.0]) DRNE=Some([0.0, 0.0, 0.0])
+    [  0] 2013286654/8902    POS=[-1040.0, -1040.0, 0.0] FRAD=0
+    [  1] 2013286654/8903    POS=[0.0, -1040.0, 0.0] FRAD=0
+    [  2] 2013286654/8904    POS=[0.0, 0.0, 0.0] FRAD=0
+  HRKPSE 2013286654/8898 POS=None ORI=None
+    KICKPL 2013286654/8899 FUNC=- JUSL=RBOS XOFF=0 ZOFF=-10 BANG=0 LMIRR=false RADS=- BENDCO=false YDIR=[0.0, 0.0, 1.0] DRNS=[0.0, 0.0, 0.0] DRNE=[0.0, 0.0, 0.0] LEVE=None
+      STAREF=[0] 2013286654/8902  ENDREF=[1] 2013286654/8903  SPKDI=0 EPKDI=0 SZDI=0 EZDI=0
+      链：SPCO=Some("23431/34898") SPRF=23431/34831 Some("/110.0x8x6.91") GMSS=15239/92
+      截面：1 成员 JUSL=RBOS found=true offset=[4.0, -55.0] spin=-0.0000 mirrored=false level=6
+        Srec 15239/93 环=1 外环 (-4.0,-55.0 r0) (4.0,-55.0 r0) (4.0,55.0 r0) (-4.0,55.0 r0)
+    KICKPL 2013286654/8900 FUNC=- JUSL=RBOS XOFF=0 ZOFF=-10 BANG=0 LMIRR=false RADS=- BENDCO=false YDIR=[0.0, 0.0, 1.0] DRNS=[0.0, 0.0, 0.0] DRNE=[0.0, 0.0, 0.0] LEVE=None
+      STAREF=[1] 2013286654/8903  ENDREF=[2] 2013286654/8904  SPKDI=0 EPKDI=0 SZDI=0 EZDI=0
+      链：SPCO=Some("23431/34898") SPRF=23431/34831 Some("/110.0x8x6.91") GMSS=15239/92
+      截面：1 成员 JUSL=RBOS found=true offset=[4.0, -55.0] spin=-0.0000 mirrored=false level=6
+        Srec 15239/93 环=1 外环 (-4.0,-55.0 r0) (4.0,-55.0 r0) (4.0,55.0 r0) (-4.0,55.0 r0)
+  HRPNSE 2013286654/8905 POS=None ORI=None
+    HRPANE 2013286654/8906
+    HRPANE 2013286654/8978

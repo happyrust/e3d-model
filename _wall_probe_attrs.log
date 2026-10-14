@@ -1,0 +1,70 @@
+warning: function `instantiate_cylinder` is never used
+   --> src\primitive_instance.rs:213:15
+    |
+213 | pub(crate) fn instantiate_cylinder(
+    |               ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `e3d-model` (lib) generated 1 warning
+    Finished `release` profile [optimized] target(s) in 0.07s
+     Running `D:\Rust\target\release\examples\element_probe.exe --attlib E:\reverse\e3d\shadow_e3d31_aps_all\attlib.dat --db D:\AVEVA\Projects\E3D3.1\AvevaPlantSample\aps000\aps250110_0001 --template E:\reverse\e3d\shadow_e3d31_aps_all --sesno 36 --refno 2013286654/205 --refno 2013286654/397`
+会话 Some(36)
+=== 2013286654/205 WALL None
+owner 链（根 → 自身）：
+  2013278462/0 WORL     /*                       POS=None ORI=None
+  2013286654/1 SITE     /SITE-STRUCTURAL-AREA02  POS=Some([0.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/2 ZONE     /BUILDING_B01            POS=Some([0.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/3 STRU     /BUILDING_01_LEVEL_01    POS=Some([0.0, 0.0, 100000.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/17 FRMW     /B01_LEVEL_01_WALLS      POS=None ORI=None
+  2013286654/204 CWALL    /B01_LEV01_EXT_WALLS     POS=None ORI=None
+  2013286654/205 WALL                              POS=Some([-305500.004507, 331207.610022, 0.0]) ORI=Some([0.0, 0.0, -60.09149999515831])
+世界矩阵（列）：
+  X = [0.4986, -0.8668, 0.0000]
+  Y = [0.8668, 0.4986, 0.0000]
+  Z = [0.0000, 0.0000, 1.0000]
+  T = [-305500.0045, 331207.6100, 100000.0000]
+  自身 CACHID=Word { raw: 0, text: None }  TYPEX=RawWords([1, 776435])  FUNC=Text("RING")  STRUCL=Text("WALL")  GTYP=Word { raw: 776435, text: Some("WALL") }  NUMB=Word { raw: 0, text: None }  UNIPAR=RawWords([939199])  DESP=RealArray([4000.0])  BUIL=Bool(false)  SHOP=Bool(false)  BANG=Real(0.0)  LMIRR=Bool(false)  JOIS=RefNo(RefNo(0/0, dbno=0))  JOIE=RefNo(RefNo(0/0, dbno=0))  JLNS=Word { raw: 531482, text: Some("NA") }  JLNE=Word { raw: 531482, text: Some("NA") }  JUSL=Word { raw: 995154, text: Some("OBOW") }  CTYS=Word { raw: 0, text: None }  CTYE=Word { raw: 0, text: None }  SREL=Word { raw: 0, text: None }  EREL=Word { raw: 0, text: None }  GRAD=Real(0.0)  MATR=RefNo(RefNo(15200/39782, dbno=7008))  ISPE=RefNo(RefNo(0/0, dbno=0))  FIRE=Real(0.0)  INRE=RefNo(RefNo(0/0, dbno=0))  SPRE=RefNo(RefNo(15193/14879, dbno=7001))  SPAMAP=IntArray([1700954244])  MEML=Word { raw: 531482, text: Some("NA") }  POS=RealArray([-305500.004507, 331207.610022, 0.0])  ORI=RealArray([0.0, 0.0, -60.09149999515831])  PURP=Word { raw: 0, text: None }
+  成员 2013286654/206 JLDATU None
+  成员 2013286654/209 JLDATU None
+  成员 2013286654/212 JLDATU None
+  成员 2013286654/215 JLDATU None
+  成员 2013286654/217 JLDATU None
+  成员 2013286654/219 JLDATU None
+  成员 2013286654/221 JLDATU None
+  成员 2013286654/223 JLDATU None
+  成员 2013286654/225 JLDATU None
+  成员 2013286654/227 JLDATU None
+  成员 2013286654/229 JLDATU None
+  成员 2013286654/231 JLDATU None
+  成员 2013286654/233 SPINE None
+
+=== 2013286654/397 WALL None
+owner 链（根 → 自身）：
+  2013278462/0 WORL     /*                       POS=None ORI=None
+  2013286654/1 SITE     /SITE-STRUCTURAL-AREA02  POS=Some([0.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/2 ZONE     /BUILDING_B01            POS=Some([0.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/379 STRU     /BUILDING_01_LEVEL_02    POS=Some([0.0, 0.0, 104900.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/389 FRMW     /B01_LEVEL_02_WALLS      POS=None ORI=None
+  2013286654/390 CWALL    /B01_LEV02_EXT_WALLS     POS=None ORI=None
+  2013286654/397 WALL                              POS=Some([-305500.004507, 331207.610022, -900.0]) ORI=Some([0.0, 0.0, -60.09149999515831])
+世界矩阵（列）：
+  X = [0.4986, -0.8668, 0.0000]
+  Y = [0.8668, 0.4986, 0.0000]
+  Z = [0.0000, 0.0000, 1.0000]
+  T = [-305500.0045, 331207.6100, 104000.0000]
+  自身 CACHID=Word { raw: 0, text: None }  TYPEX=RawWords([1, 776435])  FUNC=Text("RING")  STRUCL=Text("WALL")  GTYP=Word { raw: 776435, text: Some("WALL") }  NUMB=Word { raw: 0, text: None }  UNIPAR=RawWords([939199])  DESP=RealArray([3800.0])  BUIL=Bool(false)  SHOP=Bool(false)  BANG=Real(0.0)  LMIRR=Bool(false)  JOIS=RefNo(RefNo(0/0, dbno=0))  JOIE=RefNo(RefNo(0/0, dbno=0))  JLNS=Word { raw: 531482, text: Some("NA") }  JLNE=Word { raw: 531482, text: Some("NA") }  JUSL=Word { raw: 995154, text: Some("OBOW") }  CTYS=Word { raw: 0, text: None }  CTYE=Word { raw: 0, text: None }  SREL=Word { raw: 0, text: None }  EREL=Word { raw: 0, text: None }  GRAD=Real(0.0)  MATR=RefNo(RefNo(15200/39782, dbno=7008))  ISPE=RefNo(RefNo(0/0, dbno=0))  FIRE=Real(0.0)  INRE=RefNo(RefNo(0/0, dbno=0))  SPRE=RefNo(RefNo(15193/14879, dbno=7001))  SPAMAP=IntArray([1700996531])  MEML=Word { raw: 531482, text: Some("NA") }  POS=RealArray([-305500.004507, 331207.610022, -900.0])  ORI=RealArray([0.0, 0.0, -60.09149999515831])  PURP=Word { raw: 0, text: None }
+  成员 2013286654/398 JLDATU None
+  成员 2013286654/401 JLDATU None
+  成员 2013286654/404 JLDATU None
+  成员 2013286654/407 JLDATU None
+  成员 2013286654/409 JLDATU None
+  成员 2013286654/411 JLDATU None
+  成员 2013286654/413 JLDATU None
+  成员 2013286654/415 JLDATU None
+  成员 2013286654/417 JLDATU None
+  成员 2013286654/419 JLDATU None
+  成员 2013286654/421 JLDATU None
+  成员 2013286654/423 JLDATU None
+  成员 2013286654/425 SPINE None
+

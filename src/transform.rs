@@ -131,9 +131,7 @@ fn implicit_frame(el: &DbElement) -> Result<Option<ImplicitFrame>, DbElementErro
             }
             _ => Ok(None),
         },
-        "HRPOST" | "HRGATE" | "HRTERM" => {
-            Ok(Some(ImplicitFrame::HandrailPost(el.clone())))
-        }
+        "HRPOST" | "HRGATE" | "HRTERM" => Ok(Some(ImplicitFrame::HandrailPost(el.clone()))),
         _ => Ok(None),
     }
 }
@@ -315,7 +313,9 @@ fn handrail_curve_station(
     if zdis > arc_length + 1e-6 {
         return Ok(None);
     }
-    Ok(Some(centre + crate::section::rotate_about(radius_vector, axis, zdis / radius)))
+    Ok(Some(
+        centre + crate::section::rotate_about(radius_vector, axis, zdis / radius),
+    ))
 }
 
 fn circumcentre(a: DVec3, b: DVec3, c: DVec3, normal: DVec3) -> DVec3 {
@@ -349,7 +349,9 @@ fn handrail_straight_run_distance(
         .members()?
         .filter(|member| member.element_type().is_ok_and(|noun| noun == "POINTR"))
         .collect();
-    let Some(index) = points.iter().position(|candidate| candidate.refno() == point.refno())
+    let Some(index) = points
+        .iter()
+        .position(|candidate| candidate.refno() == point.refno())
     else {
         return Ok(zdis);
     };
@@ -384,7 +386,9 @@ fn handrail_path_tangent(
         .members()?
         .filter(|member| member.element_type().is_ok_and(|noun| noun == "POINTR"))
         .collect();
-    let Some(index) = points.iter().position(|candidate| candidate.refno() == point.refno())
+    let Some(index) = points
+        .iter()
+        .position(|candidate| candidate.refno() == point.refno())
     else {
         return Ok(None);
     };
@@ -421,10 +425,10 @@ fn handrail_path_tangent(
                 // At an arc endpoint the forward probe is outside the arc.  A
                 // one-sided derivative keeps the terminal post on the arc
                 // tangent instead of falling back to the control-point chord.
-                (None, Some(previous)) => current
-                    .and_then(|current| (current - previous).try_normalize()),
-                (Some(next), None) => current
-                    .and_then(|current| (next - current).try_normalize()),
+                (None, Some(previous)) => {
+                    current.and_then(|current| (current - previous).try_normalize())
+                }
+                (Some(next), None) => current.and_then(|current| (next - current).try_normalize()),
                 (None, None) => None,
             };
             if tangent.is_some() {

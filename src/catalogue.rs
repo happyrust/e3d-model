@@ -2183,7 +2183,11 @@ fn profile_rings(
             ring.iter()
                 .all(|point| point_in_ring(*point, &rings[largest_index]))
         });
-    let outer_index = if largest_contains_all { largest_index } else { 0 };
+    let outer_index = if largest_contains_all {
+        largest_index
+    } else {
+        0
+    };
     let outer = rings[outer_index].clone();
     let mut selected = vec![outer.clone()];
     for (index, ring) in rings.into_iter().enumerate() {
@@ -2215,7 +2219,11 @@ fn ring_area(ring: &[[f64; 2]]) -> f64 {
 
 fn point_in_ring(point: [f64; 2], ring: &[[f64; 2]]) -> bool {
     let mut inside = false;
-    for (a, b) in ring.iter().zip(ring.iter().cycle().skip(1)).take(ring.len()) {
+    for (a, b) in ring
+        .iter()
+        .zip(ring.iter().cycle().skip(1))
+        .take(ring.len())
+    {
         let [x, y] = point;
         let [ax, ay] = *a;
         let [bx, by] = *b;
@@ -2272,8 +2280,8 @@ fn evaluate_sext(
         required_number(sext, "PZ", env, "catalogue SEXT position")?,
     );
     // QSSEXT（0x103B7FCC）：位置 = 标架 · (PX,PY,PZ)（TRAVEC 旋进标架）。
-    let transform = DMat4::from_translation(pa.origin + rotation * raw_position)
-        * DMat4::from_mat3(rotation);
+    let transform =
+        DMat4::from_translation(pa.origin + rotation * raw_position) * DMat4::from_mat3(rotation);
     let mesh_key = CatalogueMeshKey::Sext(sext_mesh_key(&rings, height)?);
     Ok(Some(EvaluatedSext {
         mesh_key,

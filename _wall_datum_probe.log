@@ -1,0 +1,87 @@
+   Compiling e3d-model v0.1.0 (D:\work\plant-code\old\vendor\e3d-model)
+warning: function `instantiate_cylinder` is never used
+   --> src\primitive_instance.rs:213:15
+    |
+213 | pub(crate) fn instantiate_cylinder(
+    |               ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `e3d-model` (lib) generated 1 warning
+    Finished `release` profile [optimized] target(s) in 6.32s
+     Running `D:\Rust\target\release\examples\element_probe.exe --attlib E:\reverse\e3d\shadow_e3d31_aps_all\attlib.dat --db D:\AVEVA\Projects\E3D3.1\AvevaPlantSample\aps000\aps250110_0001 --template E:\reverse\e3d\shadow_e3d31_aps_all --sesno 36 --refno 2013286654/212 --refno 2013286654/213 --refno 2013286654/398 --refno 2013286654/399`
+会话 Some(36)
+=== 2013286654/212 JLDATU None
+owner 链（根 → 自身）：
+  2013278462/0 WORL     /*                       POS=None ORI=None
+  2013286654/1 SITE     /SITE-STRUCTURAL-AREA02  POS=Some([0.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/2 ZONE     /BUILDING_B01            POS=Some([0.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/3 STRU     /BUILDING_01_LEVEL_01    POS=Some([0.0, 0.0, 100000.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/17 FRMW     /B01_LEVEL_01_WALLS      POS=None ORI=None
+  2013286654/204 CWALL    /B01_LEV01_EXT_WALLS     POS=None ORI=None
+  2013286654/205 WALL                              POS=Some([-305500.004507, 331207.610022, 0.0]) ORI=Some([0.0, 0.0, -60.09149999515831])
+  2013286654/212 JLDATU                            POS=None ORI=None
+世界矩阵（列）：
+  X = [0.4986, -0.8668, 0.0000]
+  Y = [0.8668, 0.4986, 0.0000]
+  Z = [0.0000, 0.0000, 1.0000]
+  T = [-305500.0045, 331207.6100, 100000.0000]
+  自身 NUMB=Word { raw: 0, text: None }  ZDIS=Real(7500.0)  PKDI=Real(0.0)  LEVE=RawWords([0, 10])  FIXT=Text("FREE")
+  成员 2013286654/213 PLDATU None
+
+=== 2013286654/213 PLDATU None
+owner 链（根 → 自身）：
+  2013278462/0 WORL     /*                       POS=None ORI=None
+  2013286654/1 SITE     /SITE-STRUCTURAL-AREA02  POS=Some([0.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/2 ZONE     /BUILDING_B01            POS=Some([0.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/3 STRU     /BUILDING_01_LEVEL_01    POS=Some([0.0, 0.0, 100000.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/17 FRMW     /B01_LEVEL_01_WALLS      POS=None ORI=None
+  2013286654/204 CWALL    /B01_LEV01_EXT_WALLS     POS=None ORI=None
+  2013286654/205 WALL                              POS=Some([-305500.004507, 331207.610022, 0.0]) ORI=Some([0.0, 0.0, -60.09149999515831])
+  2013286654/212 JLDATU                            POS=None ORI=None
+  2013286654/213 PLDATU                            POS=None ORI=None
+世界矩阵（列）：
+  X = [0.4986, -0.8668, 0.0000]
+  Y = [0.8668, 0.4986, 0.0000]
+  Z = [0.0000, 0.0000, 1.0000]
+  T = [-305500.0045, 331207.6100, 100000.0000]
+  自身 PLOCK=Bool(false)  NUMB=Word { raw: 0, text: None }  POSL=Word { raw: 995148, text: Some("IBOW") }  YDIR=RealArray([0.0, 0.0, 1.0])  LEVE=RawWords([0, 10])
+  成员 2013286654/214 FIXING None
+
+=== 2013286654/398 JLDATU None
+owner 链（根 → 自身）：
+  2013278462/0 WORL     /*                       POS=None ORI=None
+  2013286654/1 SITE     /SITE-STRUCTURAL-AREA02  POS=Some([0.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/2 ZONE     /BUILDING_B01            POS=Some([0.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/379 STRU     /BUILDING_01_LEVEL_02    POS=Some([0.0, 0.0, 104900.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/389 FRMW     /B01_LEVEL_02_WALLS      POS=None ORI=None
+  2013286654/390 CWALL    /B01_LEV02_EXT_WALLS     POS=None ORI=None
+  2013286654/397 WALL                              POS=Some([-305500.004507, 331207.610022, -900.0]) ORI=Some([0.0, 0.0, -60.09149999515831])
+  2013286654/398 JLDATU                            POS=None ORI=None
+世界矩阵（列）：
+  X = [0.4986, -0.8668, 0.0000]
+  Y = [0.8668, 0.4986, 0.0000]
+  Z = [0.0000, 0.0000, 1.0000]
+  T = [-305500.0045, 331207.6100, 104000.0000]
+  自身 NUMB=Word { raw: 0, text: None }  ZDIS=Real(11500.0)  PKDI=Real(0.0)  LEVE=RawWords([0, 10])  FIXT=Text("FREE")
+  成员 2013286654/399 PLDATU None
+
+=== 2013286654/399 PLDATU None
+owner 链（根 → 自身）：
+  2013278462/0 WORL     /*                       POS=None ORI=None
+  2013286654/1 SITE     /SITE-STRUCTURAL-AREA02  POS=Some([0.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/2 ZONE     /BUILDING_B01            POS=Some([0.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/379 STRU     /BUILDING_01_LEVEL_02    POS=Some([0.0, 0.0, 104900.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/389 FRMW     /B01_LEVEL_02_WALLS      POS=None ORI=None
+  2013286654/390 CWALL    /B01_LEV02_EXT_WALLS     POS=None ORI=None
+  2013286654/397 WALL                              POS=Some([-305500.004507, 331207.610022, -900.0]) ORI=Some([0.0, 0.0, -60.09149999515831])
+  2013286654/398 JLDATU                            POS=None ORI=None
+  2013286654/399 PLDATU                            POS=None ORI=None
+世界矩阵（列）：
+  X = [0.4986, -0.8668, 0.0000]
+  Y = [0.8668, 0.4986, 0.0000]
+  Z = [0.0000, 0.0000, 1.0000]
+  T = [-305500.0045, 331207.6100, 104000.0000]
+  自身 PLOCK=Bool(false)  NUMB=Word { raw: 0, text: None }  POSL=Word { raw: 995148, text: Some("IBOW") }  YDIR=RealArray([0.0, 0.0, 1.0])  LEVE=RawWords([0, 10])
+  成员 2013286654/400 FIXING None
+

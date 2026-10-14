@@ -1,0 +1,143 @@
+=== 2013286654/214 FIXING None
+  设计构件 TYPEX=RawWords([1, 108608856])  BANG=Real(0.0)  GTYP=Word { raw: 0, text: None }  NUMB=Word { raw: 0, text: None }  POS=RealArray([0.0, -50.8470595877734, -0.08691212377743796])  ORI=RealArray([-0.19618410907932715, 0.0, 180.0])  CUTB=Real(0.0)  CUTP=RealArray([0.0, 0.0, 1.0])  JLIN=Word { raw: 0, text: None }  UNIPAR=RawWords([939199, 640481])  DESP=RealArray([25.0, 45.0])  BUIL=Bool(false)  SHOP=Bool(false)  CREF=RefNo(RefNo(0/0, dbno=0))  ISPE=RefNo(RefNo(0/0, dbno=0))  FIRE=Real(0.0)  INRE=RefNo(RefNo(0/0, dbno=0))  SPRE=RefNo(RefNo(15193/26189, dbno=7001))  SPAMAP=IntArray([1003155755])  MATR=RefNo(RefNo(15200/39782, dbno=7008))
+  链 15193/26189 SPCO Some("/Doors-Spec/EE-DOO-NS/1710x2045")
+  链 15193/24963 SFIT Some("/EE-DOO-NS/1710x2045")
+  SCOM TYPEX=RawWords([1, 931843])  NAME=Text("/EE-DOO-NS/1710x2045")  GTYP=Word { raw: 897079, text: Some("DOOR") }  CTYA=Word { raw: 0, text: None }  PTRE=RefNo(RefNo(15193/24976, dbno=7001))  GMRE=RefNo(RefNo(15193/24995, dbno=7001))  NGMR=RefNo(RefNo(15193/25075, dbno=7001))  DTRE=RefNo(RefNo(15193/24964, dbno=7001))  PARA=RealArray([1700.0, 2045.0, 806.0, 1994.0, 40.0, 95.0])
+  DTRE → 15193/24964 DTSE Some("/EE-DOO-NS/DTSE")
+    设计属性行 NAME=Text("/EE-DOO-NS/DTSE-WIDT")  DKEY=Word { raw: 928283, text: Some("WIDT") }  PTYP=Word { raw: 939199, text: Some("DIST") }  PPRO=Text("( ATTRIB PARA[1 ] )")  DPRO=Text("( 900 )")  PURP=Word { raw: 564289, text: Some("PARA") }  NUMB=Word { raw: 1, text: None }  DTIT=Text("Frame width")  RUSE=Word { raw: 1, text: None }
+      求值 PPRO=Ok(Evaluated { value: 1700.0, form: Pml })  DPRO=Ok(Evaluated { value: 900.0, form: Pml })
+    设计属性行 NAME=Text("/EE-DOO-NS/DTSE-HEIG")  DKEY=Word { raw: 675926, text: Some("HEIG") }  PTYP=Word { raw: 939199, text: Some("DIST") }  PPRO=Text("( ATTRIB PARA[2 ] )")  DPRO=Text("( 2045 )")  PURP=Word { raw: 564289, text: Some("PARA") }  NUMB=Word { raw: 2, text: None }  DTIT=Text("Frame height")  RUSE=Word { raw: 1, text: None }
+      求值 PPRO=Ok(Evaluated { value: 2045.0, form: Pml })  DPRO=Ok(Evaluated { value: 2045.0, form: Pml })
+    设计属性行 NAME=Text("/EE-DOO-NS/DTSE-DWID")  DKEY=Word { raw: 617359, text: Some("DWID") }  PTYP=Word { raw: 0, text: None }  PPRO=Text("( ATTRIB PARA[3 ] )")  DPRO=Text("( 806 )")  PURP=Word { raw: 564289, text: Some("PARA") }  NUMB=Word { raw: 3, text: None }  DTIT=Text("Door width")  RUSE=Word { raw: 1, text: None }
+      求值 PPRO=Ok(Evaluated { value: 806.0, form: Pml })  DPRO=Ok(Evaluated { value: 806.0, form: Pml })
+    设计属性行 NAME=Text("/EE-DOO-NS/DTSE-DHEI")  DKEY=Word { raw: 712453, text: Some("DHEI") }  PTYP=Word { raw: 0, text: None }  PPRO=Text("( ATTRIB PARA[4 ] )")  DPRO=Text("( 1194 )")  PURP=Word { raw: 564289, text: Some("PARA") }  NUMB=Word { raw: 4, text: None }  DTIT=Text("Door height")  RUSE=Word { raw: 1, text: None }
+      求值 PPRO=Ok(Evaluated { value: 1994.0, form: Pml })  DPRO=Ok(Evaluated { value: 1194.0, form: Pml })
+    设计属性行 NAME=Text("/EE-DOO-NS/DTSE-THK")  DKEY=Word { raw: 539696, text: Some("THK") }  PTYP=Word { raw: 0, text: None }  PPRO=Text("( ATTRIB PARA[5 ] )")  DPRO=Text("( 40 )")  PURP=Word { raw: 564289, text: Some("PARA") }  NUMB=Word { raw: 5, text: None }  DTIT=Text("Door thickness")  RUSE=Word { raw: 1, text: None }
+      求值 PPRO=Ok(Evaluated { value: 40.0, form: Pml })  DPRO=Ok(Evaluated { value: 40.0, form: Pml })
+    设计属性行 NAME=Text("/EE-DOO-NS/DTSE-JTHK")  DKEY=Word { raw: 754336, text: Some("JTHK") }  PTYP=Word { raw: 0, text: None }  PPRO=Text("( ATTRIB PARA[6 ] )")  DPRO=Text("( 95 )")  PURP=Word { raw: 564289, text: Some("PARA") }  NUMB=Word { raw: 6, text: None }  DTIT=Text("Jamb thickness")  RUSE=Word { raw: 1, text: None }
+      求值 PPRO=Ok(Evaluated { value: 95.0, form: Pml })  DPRO=Ok(Evaluated { value: 95.0, form: Pml })
+    设计属性行 NAME=Text("/EE-DOO-NS/DTSE-WTHK")  DKEY=Word { raw: 754349, text: Some("WTHK") }  PTYP=Word { raw: 0, text: None }  PPRO=Text("( 400 )")  DPRO=Text("( 300 )")  PURP=Word { raw: 0, text: None }  NUMB=Word { raw: 0, text: None }  DTIT=Text("Wall Thickness")  RUSE=Word { raw: 1, text: None }
+      求值 PPRO=Ok(Evaluated { value: 400.0, form: Pml })  DPRO=Ok(Evaluated { value: 300.0, form: Pml })
+    设计属性行 NAME=Text("/EE-DOO-NS/DTSE-ISET")  DKEY=Word { raw: 929268, text: Some("ISET") }  PTYP=Word { raw: 939199, text: Some("DIST") }  PPRO=Text("( ATTRIB DESP[1 ] )")  DPRO=Text("( 25 )")  PURP=Word { raw: 860359, text: Some("DESP") }  NUMB=Word { raw: 1, text: None }  DTIT=Text("Inset from wall face")  RUSE=Word { raw: 1, text: None }
+      求值 PPRO=Ok(Evaluated { value: 25.0, form: Pml })  DPRO=Ok(Evaluated { value: 25.0, form: Pml })
+    设计属性行 NAME=Text("/EE-DOO-NS/DTSE-ANGL")  DKEY=Word { raw: 773119, text: Some("ANGL") }  PTYP=Word { raw: 768519, text: Some("REAL") }  PPRO=Text("( ATTRIB DESP[2 ] )")  DPRO=Text("( 0 )")  PURP=Word { raw: 860359, text: Some("DESP") }  NUMB=Word { raw: 2, text: None }  DTIT=Text("Open Angle")  RUSE=Word { raw: 1, text: None }
+      求值 PPRO=Ok(Evaluated { value: 45.0, form: Pml })  DPRO=Ok(Evaluated { value: 0.0, form: Pml })
+    设计属性行 NAME=Text("/EE-DOO-NS/DTSE-STYL")  DKEY=Word { raw: 786421, text: Some("STYL") }  PTYP=Word { raw: 0, text: None }  PPRO=RawWords([0, 0, 0, 0])  DPRO=RawWords([0, 0, 0, 0])  PURP=Word { raw: 898052, text: Some("EXPR") }  NUMB=Word { raw: 0, text: None }  DTIT=Text("Style")
+      求值 PPRO=Ok(Unresolved { form: Pml, text: None })  DPRO=Ok(NotNumeric)
+    设计属性行 NAME=Text("/EE-DOO-NS/DTSE-SIZE")  DKEY=Word { raw: 649072, text: Some("SIZE") }  PTYP=Word { raw: 0, text: None }  PPRO=RawWords([0, 0, 0, 0])  DPRO=RawWords([0, 0, 0, 0])  PURP=Word { raw: 898052, text: Some("EXPR") }  NUMB=Word { raw: 0, text: None }  DTIT=Text("Size")  RUSE=Word { raw: 1, text: None }
+      求值 PPRO=Ok(Unresolved { form: Pml, text: None })  DPRO=Ok(NotNumeric)
+  GMRE → 15193/24995 GMSE Some("/EE-DOO-NS/GMSE")
+    -- 15193/24996 SRTO
+       原始 OBST=Word { raw: 2, text: None }  LEVE=RawWords([0, 10])  CLFL=Bool(false)  TUFL=Bool(false)  PAAX=RawWords([3, 13])  PBAX=RawWords([3, 14])  PDIA=Text("( ATTRIB RPRO DWID )")  PHEI=Text("( ATTRIB RPRO DHEI )")  TVIS=Bool(true)  BVIS=Bool(true)  NAPP=Word { raw: 2, text: None }
+       求值 PDIA=Evaluated { value: 806.0, form: Pml }  PHEI=Evaluated { value: 1994.0, form: Pml }  PAAX=NotNumeric  PBAX=NotNumeric
+       PML词 PDIA=[10, 1, 106, 2, 840258, 1, 1, 617359, 1601, 1701]  PHEI=[10, 1, 106, 2, 840258, 1, 1, 712453, 1601, 1701]
+    -- 15193/24997 SRTO
+       原始 OBST=Word { raw: 2, text: None }  LEVE=RawWords([0, 10])  CLFL=Bool(false)  TUFL=Bool(false)  PAAX=RawWords([3, 23])  PBAX=RawWords([3, 24])  PDIA=Text("( ATTRIB RPRO DWID )")  PHEI=Text("( ATTRIB RPRO DHEI )")  TVIS=Bool(true)  BVIS=Bool(true)  NAPP=Word { raw: 2, text: None }
+       求值 PDIA=Evaluated { value: 806.0, form: Pml }  PHEI=Evaluated { value: 1994.0, form: Pml }  PAAX=NotNumeric  PBAX=NotNumeric
+       PML词 PDIA=[10, 1, 106, 2, 840258, 1, 1, 617359, 1601, 1701]  PHEI=[10, 1, 106, 2, 840258, 1, 1, 712453, 1601, 1701]
+    -- 15193/24998 SBOX
+       原始 OBST=Word { raw: 2, text: None }  LEVE=RawWords([0, 10])  CLFL=Bool(false)  TUFL=Bool(false)  PX=Text("( ATTRIB RPRO HEIG * -0.5 )")  PY=RawWords([0, 0, 0, 0])  PZ=Text("( ( ATTRIB RPRO WTHK + 20 ) * -0.5 )")  PXLE=Text("( ATTRIB RPRO HEIG )")  PYLE=Text("( ATTRIB RPRO WIDT )")  PZLE=Text("( ATTRIB RPRO WTHK + 20 )")  NAPP=Word { raw: 2, text: None }
+       求值 PXLE=Evaluated { value: 2045.0, form: Pml }  PYLE=Evaluated { value: 1700.0, form: Pml }  PZLE=Evaluated { value: 420.0, form: Pml }  PX=Evaluated { value: -1022.5, form: Pml }  PY=NotNumeric  PZ=Evaluated { value: -210.0, form: Pml }
+       PML词 PXLE=[10, 1, 106, 2, 840258, 1, 1, 675926, 1601, 1701]  PYLE=[10, 1, 106, 2, 840258, 1, 1, 928283, 1601, 1701]  PZLE=[18, 1, 106, 2, 840258, 1, 1, 754349, 1601, 1701, 101, 6, 20480, 0, 5, 0, 6, 802]  PX=[18, 1, 106, 2, 840258, 1, 1, 675926, 1601, 1701, 101, 6, -16384, 0, 0, 0, 6, 804]  PZ=[26, 1, 106, 2, 840258, 1, 1, 754349, 1601, 1701, 101, 6, 20480, 0, 5, 0, 6, 802, 101, 6, -16384, 0, 0, 0, 6, 804]
+    -- 15193/24999 SEXT
+       原始 OBST=Word { raw: 0, text: None }  LEVE=RawWords([0, 10])  CLFL=Bool(true)  TUFL=Bool(true)  PX=RawWords([0, 0, 0, 0])  PY=RawWords([0, 0, 0, 0])  PZ=RawWords([0, 0, 0, 0])  PAAX=RawWords([3, 12])  PBAX=RawWords([3, 10])  PHEI=Text("( ATTRIB RPRO THK )")  NAPP=Word { raw: 2, text: None }
+       求值 PX=NotNumeric  PY=NotNumeric  PZ=NotNumeric  PHEI=Evaluated { value: 40.0, form: Pml }  PAAX=NotNumeric  PBAX=NotNumeric
+       PML词 PHEI=[10, 1, 106, 2, 840258, 1, 1, 539696, 1601, 1701]
+    -- 15193/25005 SEXT
+       原始 OBST=Word { raw: 0, text: None }  LEVE=RawWords([0, 10])  CLFL=Bool(true)  TUFL=Bool(true)  PX=RawWords([0, 0, 0, 0])  PY=RawWords([0, 0, 0, 0])  PZ=Text("( ATTRIB RPRO THK * -1 )")  PAAX=RawWords([3, 22])  PBAX=RawWords([3, 20])  PHEI=Text("( ATTRIB RPRO THK )")  NAPP=Word { raw: 2, text: None }
+       求值 PX=NotNumeric  PY=NotNumeric  PZ=Evaluated { value: -40.0, form: Pml }  PHEI=Evaluated { value: 40.0, form: Pml }  PAAX=NotNumeric  PBAX=NotNumeric
+       PML词 PZ=[18, 1, 106, 2, 840258, 1, 1, 539696, 1601, 1701, 101, 6, -16384, 0, 1, 0, 6, 804]  PHEI=[10, 1, 106, 2, 840258, 1, 1, 539696, 1601, 1701]
+    -- 15193/25011 SEXT
+       原始 OBST=Word { raw: 0, text: None }  LEVE=RawWords([0, 10])  CLFL=Bool(true)  TUFL=Bool(true)  PX=Text("( ATTRIB RPRO ISET * -1 )")  PY=Text("( ATTRIB RPRO WIDT * -0.5 )")  PZ=Text("( 0 )")  PAAX=RawWords([1, 3])  PBAX=RawWords([1, 2])  PHEI=Text("( ATTRIB RPRO HEIG - 20 )")  NAPP=Word { raw: 2, text: None }
+       求值 PX=Evaluated { value: -25.0, form: Pml }  PY=Evaluated { value: -850.0, form: Pml }  PZ=Evaluated { value: 0.0, form: Pml }  PHEI=Evaluated { value: 2025.0, form: Pml }  PAAX=NotNumeric  PBAX=NotNumeric
+       PML词 PX=[18, 1, 106, 2, 840258, 1, 1, 929268, 1601, 1701, 101, 6, -16384, 0, 1, 0, 6, 804]  PY=[18, 1, 106, 2, 840258, 1, 1, 928283, 1601, 1701, 101, 6, -16384, 0, 0, 0, 6, 804]  PZ=[9, 1, 101, 6, 0, 0, 0, 0, 6]  PHEI=[18, 1, 106, 2, 840258, 1, 1, 675926, 1601, 1701, 101, 6, 20480, 0, 5, 0, 6, 803]
+    -- 15193/25023 SEXT
+       原始 OBST=Word { raw: 0, text: None }  LEVE=RawWords([0, 10])  CLFL=Bool(true)  TUFL=Bool(true)  PX=Text("( ATTRIB RPRO ISET * -1 )")  PY=Text("( ATTRIB RPRO WIDT * 0.5 )")  PZ=Text("( 0 )")  PAAX=RawWords([1, 3])  PBAX=RawWords([1, 2])  PHEI=Text("( ATTRIB RPRO HEIG - 20 )")  NAPP=Word { raw: 2, text: None }
+       求值 PX=Evaluated { value: -25.0, form: Pml }  PY=Evaluated { value: 850.0, form: Pml }  PZ=Evaluated { value: 0.0, form: Pml }  PHEI=Evaluated { value: 2025.0, form: Pml }  PAAX=NotNumeric  PBAX=NotNumeric
+       PML词 PX=[18, 1, 106, 2, 840258, 1, 1, 929268, 1601, 1701, 101, 6, -16384, 0, 1, 0, 6, 804]  PY=[18, 1, 106, 2, 840258, 1, 1, 928283, 1601, 1701, 101, 6, 16384, 0, 0, 0, 6, 804]  PZ=[9, 1, 101, 6, 0, 0, 0, 0, 6]  PHEI=[18, 1, 106, 2, 840258, 1, 1, 675926, 1601, 1701, 101, 6, 20480, 0, 5, 0, 6, 803]
+    -- 15193/25035 SEXT
+       原始 OBST=Word { raw: 0, text: None }  LEVE=RawWords([0, 10])  CLFL=Bool(true)  TUFL=Bool(true)  PX=Text("( ATTRIB RPRO ISET * -1 )")  PY=Text("( ATTRIB RPRO HEIG )")  PZ=Text("( ATTRIB RPRO WIDT * -0.5 )")  PAAX=RawWords([1, 3])  PBAX=RawWords([2, 1])  PHEI=Text("( ATTRIB RPRO WIDT )")  NAPP=Word { raw: 2, text: None }
+       求值 PX=Evaluated { value: -25.0, form: Pml }  PY=Evaluated { value: 2045.0, form: Pml }  PZ=Evaluated { value: -850.0, form: Pml }  PHEI=Evaluated { value: 1700.0, form: Pml }  PAAX=NotNumeric  PBAX=NotNumeric
+       PML词 PX=[18, 1, 106, 2, 840258, 1, 1, 929268, 1601, 1701, 101, 6, -16384, 0, 1, 0, 6, 804]  PY=[10, 1, 106, 2, 840258, 1, 1, 675926, 1601, 1701]  PZ=[18, 1, 106, 2, 840258, 1, 1, 928283, 1601, 1701, 101, 6, -16384, 0, 0, 0, 6, 804]  PHEI=[10, 1, 106, 2, 840258, 1, 1, 928283, 1601, 1701]
+    -- 15193/25053 SEXT
+       原始 OBST=Word { raw: 0, text: None }  LEVE=RawWords([0, 10])  CLFL=Bool(true)  TUFL=Bool(true)  PX=Text("( ATTRIB RPRO DHEI * -0.5 )")  PY=Text("( ATTRIB RPRO THK )")  PZ=Text("( 25 )")  PAAX=RawWords([3, 1012])  PBAX=RawWords([3, 1011])  PHEI=Text("( ATTRIB RPRO DWID - 50 )")  NAPP=Word { raw: 2, text: None }
+       求值 PX=Evaluated { value: -997.0, form: Pml }  PY=Evaluated { value: 40.0, form: Pml }  PZ=Evaluated { value: 25.0, form: Pml }  PHEI=Evaluated { value: 756.0, form: Pml }  PAAX=NotNumeric  PBAX=NotNumeric
+       PML词 PX=[18, 1, 106, 2, 840258, 1, 1, 712453, 1601, 1701, 101, 6, -16384, 0, 0, 0, 6, 804]  PY=[10, 1, 106, 2, 840258, 1, 1, 539696, 1601, 1701]  PZ=[9, 1, 101, 6, 25600, 0, 5, 0, 6]  PHEI=[18, 1, 106, 2, 840258, 1, 1, 617359, 1601, 1701, 101, 6, 25600, 0, 6, 0, 6, 803]
+    -- 15193/25064 SEXT
+       原始 OBST=Word { raw: 0, text: None }  LEVE=RawWords([0, 10])  CLFL=Bool(true)  TUFL=Bool(true)  PX=Text("( ATTRIB RPRO DHEI * -0.5 )")  PY=Text("( ATTRIB RPRO THK )")  PZ=Text("( ( ATTRIB RPRO DWID - 25 ) * -1 )")  PAAX=RawWords([3, 1022])  PBAX=RawWords([3, 1021])  PHEI=Text("( ATTRIB RPRO DWID - 50 )")  NAPP=Word { raw: 2, text: None }
+       求值 PX=Evaluated { value: -997.0, form: Pml }  PY=Evaluated { value: 40.0, form: Pml }  PZ=Evaluated { value: -781.0, form: Pml }  PHEI=Evaluated { value: 756.0, form: Pml }  PAAX=NotNumeric  PBAX=NotNumeric
+       PML词 PX=[18, 1, 106, 2, 840258, 1, 1, 712453, 1601, 1701, 101, 6, -16384, 0, 0, 0, 6, 804]  PY=[10, 1, 106, 2, 840258, 1, 1, 539696, 1601, 1701]  PZ=[26, 1, 106, 2, 840258, 1, 1, 617359, 1601, 1701, 101, 6, 25600, 0, 5, 0, 6, 803, 101, 6, -16384, 0, 1, 0, 6, 804]  PHEI=[18, 1, 106, 2, 840258, 1, 1, 617359, 1601, 1701, 101, 6, 25600, 0, 6, 0, 6, 803]
+  PTRE → 15193/24976 PTSE Some("/EE-DOO-NS/PTSE")
+    -- 15193/24977 PTCA
+       原始 NAME=Text("/EE-DOO-NS/PTSE-P1")  NUMB=Word { raw: 1, text: None }  PCON=RawWords([0, 0, 0, 0])  PDSHAP=RawWords([0, 0, 0, 0])  PBOR=RawWords([0, 0, 0, 0])  PX=RawWords([0, 1, 0, 0])  PY=Text("( ATTRIB RPRO WIDT * -0.5 )")  PZ=RawWords([0, 0, 0, 0])  DIR=RealArray([0.0, 1.0, 0.0])  PSKE=Word { raw: 0, text: None }  PURP=Word { raw: 0, text: None }  PVIF=Word { raw: 0, text: None }  PTCD=RawWords([6, 5, 2, 21, 14, 61])
+       求值 PX=Evaluated { value: 0.0, form: Tuple }  PY=Evaluated { value: -850.0, form: Pml }  PZ=NotNumeric  PBOR=NotNumeric
+       PML词 PY=[18, 1, 106, 2, 840258, 1, 1, 928283, 1601, 1701, 101, 6, -16384, 0, 0, 0, 6, 804]
+    -- 15193/24978 PTCA
+       原始 NAME=Text("/EE-DOO-NS/PTSE-P2")  NUMB=Word { raw: 2, text: None }  PCON=RawWords([0, 0, 0, 0])  PDSHAP=RawWords([0, 0, 0, 0])  PBOR=RawWords([0, 0, 0, 0])  PX=Text("( ATTRIB RPRO HEIG * -1 )")  PY=Text("( ATTRIB RPRO WIDT * -0.5 )")  PZ=RawWords([0, 0, 0, 0])  DIR=RealArray([0.0, 1.0, 0.0])  PSKE=Word { raw: 0, text: None }  PURP=Word { raw: 0, text: None }  PVIF=Word { raw: 0, text: None }  PTCD=RawWords([6, 5, 2, 21, 14, 61])
+       求值 PX=Evaluated { value: -2045.0, form: Pml }  PY=Evaluated { value: -850.0, form: Pml }  PZ=NotNumeric  PBOR=NotNumeric
+       PML词 PX=[18, 1, 106, 2, 840258, 1, 1, 675926, 1601, 1701, 101, 6, -16384, 0, 1, 0, 6, 804]  PY=[18, 1, 106, 2, 840258, 1, 1, 928283, 1601, 1701, 101, 6, -16384, 0, 0, 0, 6, 804]
+    -- 15193/24979 PTCA
+       原始 NAME=Text("/EE-DOO-NS/PTSE-P3")  NUMB=Word { raw: 3, text: None }  PCON=RawWords([0, 0, 0, 0])  PDSHAP=RawWords([0, 0, 0, 0])  PBOR=RawWords([0, 0, 0, 0])  PX=Text("( ATTRIB RPRO HEIG * -1 )")  PY=Text("( ATTRIB RPRO WIDT * 0.5 )")  PZ=RawWords([0, 0, 0, 0])  DIR=RealArray([0.0, 1.0, 0.0])  PSKE=Word { raw: 0, text: None }  PURP=Word { raw: 0, text: None }  PVIF=Word { raw: 0, text: None }  PTCD=RawWords([6, 5, 2, 21, 13, 61])
+       求值 PX=Evaluated { value: -2045.0, form: Pml }  PY=Evaluated { value: 850.0, form: Pml }  PZ=NotNumeric  PBOR=NotNumeric
+       PML词 PX=[18, 1, 106, 2, 840258, 1, 1, 675926, 1601, 1701, 101, 6, -16384, 0, 1, 0, 6, 804]  PY=[18, 1, 106, 2, 840258, 1, 1, 928283, 1601, 1701, 101, 6, 16384, 0, 0, 0, 6, 804]
+    -- 15193/24980 PTCA
+       原始 NAME=Text("/EE-DOO-NS/PTSE-P4")  NUMB=Word { raw: 4, text: None }  PCON=RawWords([0, 0, 0, 0])  PDSHAP=RawWords([0, 0, 0, 0])  PBOR=RawWords([0, 0, 0, 0])  PX=RawWords([0, 1, 0, 0])  PY=Text("( ATTRIB RPRO WIDT * 0.5 )")  PZ=RawWords([0, 0, 0, 0])  DIR=RealArray([0.0, 1.0, 0.0])  PSKE=Word { raw: 0, text: None }  PURP=Word { raw: 0, text: None }  PVIF=Word { raw: 0, text: None }  PTCD=RawWords([6, 5, 2, 21, 13, 61])
+       求值 PX=Evaluated { value: 0.0, form: Tuple }  PY=Evaluated { value: 850.0, form: Pml }  PZ=NotNumeric  PBOR=NotNumeric
+       PML词 PY=[18, 1, 106, 2, 840258, 1, 1, 928283, 1601, 1701, 101, 6, 16384, 0, 0, 0, 6, 804]
+    -- 15193/24981 PTCA
+       原始 NAME=Text("/EE-DOO-NS/PTSE-P5")  NUMB=Word { raw: 5, text: None }  PCON=RawWords([0, 0, 0, 0])  PDSHAP=RawWords([0, 0, 0, 0])  PBOR=RawWords([0, 0, 0, 0])  PX=Text("( ATTRIB RPRO HEIG * -1 )")  PY=RawWords([0, 1, 0, 0])  PZ=RawWords([0, 0, 0, 0])  DIR=RealArray([0.0, 1.0, 0.0])  PSKE=Word { raw: 0, text: None }  PURP=Word { raw: 0, text: None }  PVIF=Word { raw: 0, text: None }  PTCD=RawWords([6, 5, 2, 21, 15, 61])
+       求值 PX=Evaluated { value: -2045.0, form: Pml }  PY=Evaluated { value: 0.0, form: Tuple }  PZ=NotNumeric  PBOR=NotNumeric
+       PML词 PX=[18, 1, 106, 2, 840258, 1, 1, 675926, 1601, 1701, 101, 6, -16384, 0, 1, 0, 6, 804]
+    -- 15193/24982 PTCA
+       原始 NAME=Text("/EE-DOO-NS/PTSE-P6")  NUMB=Word { raw: 6, text: None }  PCON=RawWords([0, 0, 0, 0])  PDSHAP=RawWords([0, 0, 0, 0])  PBOR=RawWords([0, 0, 0, 0])  PX=Text("( ATTRIB RPRO HEIG * -1 )")  PY=RawWords([0, 1, 0, 0])  PZ=Text("( -1 * ATTRIB RPRO ISET )")  DIR=RealArray([0.0, 1.0, 0.0])  PSKE=Word { raw: 0, text: None }  PURP=Word { raw: 0, text: None }  PVIF=Word { raw: 0, text: None }  PTCD=RawWords([6, 5, 2, 21, 12, 61])
+       求值 PX=Evaluated { value: -2045.0, form: Pml }  PY=Evaluated { value: 0.0, form: Tuple }  PZ=Evaluated { value: -25.0, form: Pml }  PBOR=NotNumeric
+       PML词 PX=[18, 1, 106, 2, 840258, 1, 1, 675926, 1601, 1701, 101, 6, -16384, 0, 1, 0, 6, 804]  PZ=[18, 1, 101, 6, -16384, 0, 1, 0, 6, 106, 2, 840258, 1, 1, 929268, 1601, 1701, 804]
+    -- 15193/24983 PTCA
+       原始 NAME=Text("/EE-DOO-NS/PTSE-P7")  NUMB=Word { raw: 7, text: None }  PCON=RawWords([0, 0, 0, 0])  PDSHAP=RawWords([0, 0, 0, 0])  PBOR=RawWords([0, 0, 0, 0])  PX=RawWords([0, 1, 0, 0])  PY=RawWords([0, 1, 0, 0])  PZ=Text("( -1 * ATTRIB RPRO ISET - 70 )")  DIR=RealArray([0.0, 1.0, 0.0])  PSKE=Word { raw: 0, text: None }  PURP=Word { raw: 0, text: None }  PVIF=Word { raw: 0, text: None }  PTCD=RawWords([6, 5, 2, 21, 16, 61])
+       求值 PX=Evaluated { value: 0.0, form: Tuple }  PY=Evaluated { value: 0.0, form: Tuple }  PZ=Evaluated { value: -95.0, form: Pml }  PBOR=NotNumeric
+       PML词 PZ=[26, 1, 101, 6, -16384, 0, 1, 0, 6, 106, 2, 840258, 1, 1, 929268, 1601, 1701, 804, 101, 6, 17920, 0, 7, 0, 6, 803]
+    -- 15193/24984 PTCA
+       原始 NAME=Text("/EE-DOO-NS/PTSE-P8")  NUMB=Word { raw: 8, text: None }  PCON=RawWords([0, 0, 0, 0])  PDSHAP=RawWords([0, 0, 0, 0])  PBOR=RawWords([0, 0, 0, 0])  PX=RawWords([0, 1, 0, 0])  PY=RawWords([0, 1, 0, 0])  PZ=Text("( -1 * ATTRIB RPRO ISET + 80 )")  DIR=RealArray([0.0, 1.0, 0.0])  PSKE=Word { raw: 0, text: None }  PURP=Word { raw: 0, text: None }  PVIF=Word { raw: 0, text: None }  PTCD=RawWords([6, 5, 2, 21, 11, 61])
+       求值 PX=Evaluated { value: 0.0, form: Tuple }  PY=Evaluated { value: 0.0, form: Tuple }  PZ=Evaluated { value: 55.0, form: Pml }  PBOR=NotNumeric
+       PML词 PZ=[26, 1, 101, 6, -16384, 0, 1, 0, 6, 106, 2, 840258, 1, 1, 929268, 1601, 1701, 804, 101, 6, 20480, 0, 7, 0, 6, 802]
+    -- 15193/24985 PTCA
+       原始 NAME=Text("/EE-DOO-NS/PTSE-P10")  NUMB=Word { raw: 10, text: None }  PCON=RawWords([0, 0, 0, 0])  PDSHAP=RawWords([0, 0, 0, 0])  PBOR=RawWords([0, 0, 0, 0])  PX=RawWords([0, 1, 0, 0])  PY=RawWords([0, 0, 0, 0])  PZ=Text("( ATTRIB RPRO ISET * -1 )")  DIR=RealArray([0.0, 1.0, 0.0])  PSKE=Word { raw: 0, text: None }  PURP=Word { raw: 0, text: None }  PVIF=Word { raw: 3, text: None }  PTCD=RawWords([17, 5, 2, 22, 13, 10, 1, 106, 2, 840258, 1, 1, 773119, 1601, 1701, 15, 61])
+       求值 PX=Evaluated { value: 0.0, form: Tuple }  PY=Unresolved { form: Pml, text: None }  PZ=Evaluated { value: -25.0, form: Pml }  PBOR=NotNumeric
+       PML词 PY=[27, 1, 106, 2, 840258, 1, 1, 617359, 1601, 1701, 101, 6, -16384, 0, 1, 0, 6, 804, 101, 7, 16384, 0, 1, 0, 11, 1, 803]  PZ=[18, 1, 106, 2, 840258, 1, 1, 929268, 1601, 1701, 101, 6, -16384, 0, 1, 0, 6, 804]
+    -- 15193/24986 PTCA
+       原始 NAME=Text("/EE-DOO-NS/PTSE-P11")  NUMB=Word { raw: 11, text: None }  PCON=RawWords([0, 0, 0, 0])  PDSHAP=RawWords([0, 0, 0, 0])  PBOR=RawWords([0, 0, 0, 0])  PX=RawWords([0, 1, 0, 0])  PY=RawWords([0, 0, 0, 0])  PZ=Text("( ATTRIB RPRO ISET * -1 )")  DIR=RealArray([0.0, 1.0, 0.0])  PSKE=Word { raw: 0, text: None }  PURP=Word { raw: 0, text: None }  PVIF=Word { raw: 3, text: None }  PTCD=RawWords([17, 5, 2, 22, 15, 10, 1, 106, 2, 840258, 1, 1, 773119, 1601, 1701, 14, 61])
+       求值 PX=Evaluated { value: 0.0, form: Tuple }  PY=Unresolved { form: Pml, text: None }  PZ=Evaluated { value: -25.0, form: Pml }  PBOR=NotNumeric
+       PML词 PY=[27, 1, 106, 2, 840258, 1, 1, 617359, 1601, 1701, 101, 6, -16384, 0, 1, 0, 6, 804, 101, 7, 16384, 0, 1, 0, 11, 1, 803]  PZ=[18, 1, 106, 2, 840258, 1, 1, 929268, 1601, 1701, 101, 6, -16384, 0, 1, 0, 6, 804]
+    -- 15193/24987 PTCA
+       原始 NAME=Text("/EE-DOO-NS/PTSE-P12")  NUMB=Word { raw: 12, text: None }  PCON=RawWords([0, 0, 0, 0])  PDSHAP=RawWords([0, 0, 0, 0])  PBOR=RawWords([0, 0, 0, 0])  PX=RawWords([0, 1, 0, 0])  PY=RawWords([0, 0, 0, 0])  PZ=Text("( ATTRIB RPRO ISET * -1 )")  DIR=RealArray([0.0, 1.0, 0.0])  PSKE=Word { raw: 0, text: None }  PURP=Word { raw: 0, text: None }  PVIF=Word { raw: 3, text: None }  PTCD=RawWords([6, 5, 2, 21, 12, 61])
+       求值 PX=Evaluated { value: 0.0, form: Tuple }  PY=Unresolved { form: Pml, text: None }  PZ=Evaluated { value: -25.0, form: Pml }  PBOR=NotNumeric
+       PML词 PY=[27, 1, 106, 2, 840258, 1, 1, 617359, 1601, 1701, 101, 6, -16384, 0, 1, 0, 6, 804, 101, 7, 16384, 0, 1, 0, 11, 1, 803]  PZ=[18, 1, 106, 2, 840258, 1, 1, 929268, 1601, 1701, 101, 6, -16384, 0, 1, 0, 6, 804]
+    -- 15193/24988 PTCA
+       原始 NAME=Text("/EE-DOO-NS/PTSE-P13")  NUMB=Word { raw: 13, text: None }  PCON=RawWords([0, 0, 0, 0])  PDSHAP=RawWords([0, 0, 0, 0])  PBOR=RawWords([0, 0, 0, 0])  PX=Text("( ATTRIB RPRO DHEI * -0.5 )")  PY=RawWords([0, 0, 0, 0])  PZ=Text("( ATTRIB RPRO ISET * -1 )")  DIR=RealArray([0.0, 1.0, 0.0])  PSKE=Word { raw: 0, text: None }  PURP=Word { raw: 0, text: None }  PVIF=Word { raw: 3, text: None }  PTCD=RawWords([6, 5, 2, 21, 16, 61])
+       求值 PX=Evaluated { value: -997.0, form: Pml }  PY=Unresolved { form: Pml, text: None }  PZ=Evaluated { value: -25.0, form: Pml }  PBOR=NotNumeric
+       PML词 PX=[18, 1, 106, 2, 840258, 1, 1, 712453, 1601, 1701, 101, 6, -16384, 0, 0, 0, 6, 804]  PY=[27, 1, 106, 2, 840258, 1, 1, 617359, 1601, 1701, 101, 7, 16384, 0, 2, 0, 11, 1, 802, 101, 6, -16384, 0, 0, 0, 6, 804]  PZ=[18, 1, 106, 2, 840258, 1, 1, 929268, 1601, 1701, 101, 6, -16384, 0, 1, 0, 6, 804]
+    -- 15193/24989 PTCA
+       原始 NAME=Text("/EE-DOO-NS/PTSE-P14")  NUMB=Word { raw: 14, text: None }  PCON=RawWords([0, 0, 0, 0])  PDSHAP=RawWords([0, 0, 0, 0])  PBOR=RawWords([0, 0, 0, 0])  PX=Text("( ATTRIB RPRO DHEI * -0.5 )")  PY=RawWords([0, 0, 0, 0])  PZ=Text("( ATTRIB RPRO ISET * -1 + ATTRIB RPRO DWID * 0.5 )")  DIR=RealArray([0.0, 1.0, 0.0])  PSKE=Word { raw: 0, text: None }  PURP=Word { raw: 0, text: None }  PVIF=Word { raw: 3, text: None }  PTCD=RawWords([6, 5, 2, 21, 14, 61])
+       求值 PX=Evaluated { value: -997.0, form: Pml }  PY=Unresolved { form: Pml, text: None }  PZ=Evaluated { value: 378.0, form: Pml }  PBOR=NotNumeric
+       PML词 PX=[18, 1, 106, 2, 840258, 1, 1, 712453, 1601, 1701, 101, 6, -16384, 0, 0, 0, 6, 804]  PY=[27, 1, 106, 2, 840258, 1, 1, 617359, 1601, 1701, 101, 6, -16384, 0, 1, 0, 6, 804, 101, 7, 16384, 0, 1, 0, 11, 1, 803]  PZ=[35, 1, 106, 2, 840258, 1, 1, 929268, 1601, 1701, 101, 6, -16384, 0, 1, 0, 6, 804, 106, 2, 840258, 1, 1, 617359, 1601, 1701, 101, 6, 16384, 0, 0, 0, 6, 804, 802]
+    -- 15193/24990 PTCA
+       原始 NAME=Text("/EE-DOO-NS/PTSE-P20")  NUMB=Word { raw: 20, text: None }  PCON=RawWords([0, 0, 0, 0])  PDSHAP=RawWords([0, 0, 0, 0])  PBOR=RawWords([0, 0, 0, 0])  PX=RawWords([0, 1, 0, 0])  PY=RawWords([0, 0, 0, 0])  PZ=Text("( ATTRIB RPRO ISET * -1 )")  DIR=RealArray([0.0, 1.0, 0.0])  PSKE=Word { raw: 0, text: None }  PURP=Word { raw: 0, text: None }  PVIF=Word { raw: 3, text: None }  PTCD=RawWords([25, 5, 2, 22, 14, 18, 1, 106, 2, 840258, 1, 1, 773119, 1601, 1701, 101, 6, 16384, 0, 0, 0, 6, 804, 15, 61])
+       求值 PX=Evaluated { value: 0.0, form: Tuple }  PY=Unresolved { form: Pml, text: None }  PZ=Evaluated { value: -25.0, form: Pml }  PBOR=NotNumeric
+       PML词 PY=[19, 1, 106, 2, 840258, 1, 1, 617359, 1601, 1701, 101, 7, 16384, 0, 1, 0, 11, 1, 802]  PZ=[18, 1, 106, 2, 840258, 1, 1, 929268, 1601, 1701, 101, 6, -16384, 0, 1, 0, 6, 804]
+    -- 15193/24991 PTCA
+       原始 NAME=Text("/EE-DOO-NS/PTSE-P21")  NUMB=Word { raw: 21, text: None }  PCON=RawWords([0, 0, 0, 0])  PDSHAP=RawWords([0, 0, 0, 0])  PBOR=RawWords([0, 0, 0, 0])  PX=RawWords([0, 1, 0, 0])  PY=RawWords([0, 0, 0, 0])  PZ=Text("( ATTRIB RPRO ISET * -1 )")  DIR=RealArray([0.0, 1.0, 0.0])  PSKE=Word { raw: 0, text: None }  PURP=Word { raw: 0, text: None }  PVIF=Word { raw: 3, text: None }  PTCD=RawWords([25, 5, 2, 22, 15, 18, 1, 106, 2, 840258, 1, 1, 773119, 1601, 1701, 101, 6, 16384, 0, 0, 0, 6, 804, 13, 61])
+       求值 PX=Evaluated { value: 0.0, form: Tuple }  PY=Unresolved { form: Pml, text: None }  PZ=Evaluated { value: -25.0, form: Pml }  PBOR=NotNumeric
+       PML词 PY=[19, 1, 106, 2, 840258, 1, 1, 617359, 1601, 1701, 101, 7, 16384, 0, 1, 0, 11, 1, 802]  PZ=[18, 1, 106, 2, 840258, 1, 1, 929268, 1601, 1701, 101, 6, -16384, 0, 1, 0, 6, 804]
+    -- 15193/24992 PTCA
+       原始 NAME=Text("/EE-DOO-NS/PTSE-P22")  NUMB=Word { raw: 22, text: None }  PCON=RawWords([0, 0, 0, 0])  PDSHAP=RawWords([0, 0, 0, 0])  PBOR=RawWords([0, 0, 0, 0])  PX=RawWords([0, 1, 0, 0])  PY=RawWords([0, 0, 0, 0])  PZ=Text("( ATTRIB RPRO ISET * -1 )")  DIR=RealArray([0.0, 1.0, 0.0])  PSKE=Word { raw: 0, text: None }  PURP=Word { raw: 0, text: None }  PVIF=Word { raw: 3, text: None }  PTCD=RawWords([6, 5, 2, 21, 12, 61])
+       求值 PX=Evaluated { value: 0.0, form: Tuple }  PY=Unresolved { form: Pml, text: None }  PZ=Evaluated { value: -25.0, form: Pml }  PBOR=NotNumeric
+       PML词 PY=[19, 1, 106, 2, 840258, 1, 1, 617359, 1601, 1701, 101, 7, 16384, 0, 1, 0, 11, 1, 802]  PZ=[18, 1, 106, 2, 840258, 1, 1, 929268, 1601, 1701, 101, 6, -16384, 0, 1, 0, 6, 804]
+    -- 15193/24993 PTCA
+       原始 NAME=Text("/EE-DOO-NS/PTSE-P23")  NUMB=Word { raw: 23, text: None }  PCON=RawWords([0, 0, 0, 0])  PDSHAP=RawWords([0, 0, 0, 0])  PBOR=RawWords([0, 0, 0, 0])  PX=Text("( ATTRIB RPRO DHEI * -0.5 )")  PY=RawWords([0, 0, 0, 0])  PZ=Text("( ATTRIB RPRO ISET * -1 )")  DIR=RealArray([0.0, 1.0, 0.0])  PSKE=Word { raw: 0, text: None }  PURP=Word { raw: 0, text: None }  PVIF=Word { raw: 3, text: None }  PTCD=RawWords([6, 5, 2, 21, 16, 61])
+       求值 PX=Evaluated { value: -997.0, form: Pml }  PY=Unresolved { form: Pml, text: None }  PZ=Evaluated { value: -25.0, form: Pml }  PBOR=NotNumeric
+       PML词 PX=[18, 1, 106, 2, 840258, 1, 1, 712453, 1601, 1701, 101, 6, -16384, 0, 0, 0, 6, 804]  PY=[27, 1, 106, 2, 840258, 1, 1, 617359, 1601, 1701, 101, 7, 16384, 0, 2, 0, 11, 1, 802, 101, 6, 16384, 0, 0, 0, 6, 804]  PZ=[18, 1, 106, 2, 840258, 1, 1, 929268, 1601, 1701, 101, 6, -16384, 0, 1, 0, 6, 804]
+    -- 15193/24994 PTCA
+       原始 NAME=Text("/EE-DOO-NS/PTSE-P24")  NUMB=Word { raw: 24, text: None }  PCON=RawWords([0, 0, 0, 0])  PDSHAP=RawWords([0, 0, 0, 0])  PBOR=RawWords([0, 0, 0, 0])  PX=Text("( ATTRIB RPRO DHEI * -0.5 )")  PY=RawWords([0, 0, 0, 0])  PZ=Text("( ATTRIB RPRO ISET * -1 + ATTRIB RPRO DWID * 0.5 )")  DIR=RealArray([0.0, 1.0, 0.0])  PSKE=Word { raw: 0, text: None }  PURP=Word { raw: 0, text: None }  PVIF=Word { raw: 3, text: None }  PTCD=RawWords([6, 5, 2, 21, 13, 61])
+       求值 PX=Evaluated { value: -997.0, form: Pml }  PY=Unresolved { form: Pml, text: None }  PZ=Evaluated { value: 378.0, form: Pml }  PBOR=NotNumeric
+       PML词 PX=[18, 1, 106, 2, 840258, 1, 1, 712453, 1601, 1701, 101, 6, -16384, 0, 0, 0, 6, 804]  PY=[19, 1, 106, 2, 840258, 1, 1, 617359, 1601, 1701, 101, 7, 16384, 0, 1, 0, 11, 1, 802]  PZ=[35, 1, 106, 2, 840258, 1, 1, 929268, 1601, 1701, 101, 6, -16384, 0, 1, 0, 6, 804, 106, 2, 840258, 1, 1, 617359, 1601, 1701, 101, 6, 16384, 0, 0, 0, 6, 804, 802]
+

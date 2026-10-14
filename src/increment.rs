@@ -299,7 +299,7 @@ pub struct IncrementReport {
     /// 这一轮**真建成**的管身根数（[`route_tubes_of`] 返回多少就记多少；退休 / 类型已变的容器记 0，
     /// 读挂的不记——它已在 `derived_failed` 里响）。
     ///
-    /// 与 `upserts` 分开记账，是给下游**局部**发布的管段完整性门用的（gen-model ADR-078 D6）：
+    /// 与 `upserts` 分开记账，是给下游**局部**发布的管段完整性门用的（gen-model ADR-080 D6）：
     /// 那边一条 BRAN 的管身是整段重写，`upserts` 里少带一段就是静默丢管；门拿这本账对
     /// 真带上的段数，从 `upserts` 里数回来就是自证，抓不到烘焙 / 过滤 / 装配路上掉的那一段。
     /// 横切计数，各值之和 == `tube_upserts`。
@@ -2224,7 +2224,7 @@ pub fn execute_plan(target: &Arc<DbSet>, plan: UpdatePlan) -> IncrementOutcome {
                 Ok(true) => match route_tubes_of(&el) {
                     Ok(tubes) => {
                         report.derived_regenerated += 1;
-                        // 逐容器管段账（gen-model ADR-078 D6 的门拿它对 upserts）：与下面的
+                        // 逐容器管段账（gen-model ADR-080 D6 的门拿它对 upserts）：与下面的
                         // `upserts.push` 分开记，装配路上掉了一段这里才对不上。
                         report.tube_segments.insert(refno.to_string(), tubes.len());
                         for tube in tubes {

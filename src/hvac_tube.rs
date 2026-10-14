@@ -53,8 +53,7 @@ use e3d_io::record::catalogue_pml::PREVIOUS_ELEMENT_NAME;
 
 use crate::catalogue::{display_filtered, repre_level_of};
 use crate::catalogue_point::{
-    catalogue_component, catalogue_point_local, number_of, point_numbered,
-    tube_component_of_stub,
+    catalogue_component, catalogue_point_local, number_of, point_numbered, tube_component_of_stub,
 };
 use crate::elmodl::ModelError;
 use crate::route::{RouteEnd, TubeSection, ppoint_number};
@@ -497,9 +496,8 @@ mod tests {
         }
 
         let attlib = Arc::new(AttlibData::parse_file(&attlib_file).expect("attlib 解析得开"));
-        let catalog = Arc::new(
-            UdaCatalog::read(&dictionary, &dicvir, &attlib).expect("字典库读得开"),
-        );
+        let catalog =
+            Arc::new(UdaCatalog::read(&dictionary, &dicvir, &attlib).expect("字典库读得开"));
         let definition = catalog
             .by_key(HXYSIZE_AMS_KEY)
             .expect("ams5100 里有这个 UKEY");

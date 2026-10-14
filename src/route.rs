@@ -59,7 +59,9 @@ use e3d_io::refno::RefNo;
 
 use crate::catalogue_point::catalogue_component;
 use crate::category::{Category, RouteDiscipline, classify, route_discipline};
-use crate::primitive_instance::{PrimitiveInstance, instantiate_box, instantiate_centered_cylinder};
+use crate::primitive_instance::{
+    PrimitiveInstance, instantiate_box, instantiate_centered_cylinder,
+};
 use crate::solid::SolidError;
 use crate::transform::world_matrix;
 
@@ -897,9 +899,10 @@ pub fn build_tube(from: &RoutePoint, to: &RoutePoint, section: Option<TubeSectio
         return TubeOutcome::NoDirection;
     };
     let (placement, local) = match section {
-        TubeSection::Round { outer_diameter } => {
-            (placement, instantiate_centered_cylinder(outer_diameter, length))
-        }
+        TubeSection::Round { outer_diameter } => (
+            placement,
+            instantiate_centered_cylinder(outer_diameter, length),
+        ),
         TubeSection::Rectangular {
             x_length,
             z_length,
@@ -1273,7 +1276,9 @@ mod tests {
                 "{gtyp:?}"
             );
         }
-        for noun in ["STRT", "BEND", "TAPE", "DAMP", "MESH", "BRCO", "TRNS", "OFST", "GRIL"] {
+        for noun in [
+            "STRT", "BEND", "TAPE", "DAMP", "MESH", "BRCO", "TRNS", "OFST", "GRIL",
+        ] {
             assert_eq!(
                 station_verdict(hvac, noun, None),
                 StationVerdict::Station,
@@ -1322,9 +1327,18 @@ mod tests {
         let bounds = tube.solid.bounding_box().expect("有体就有盒");
         let (min, max) = (bounds.min(), bounds.max());
         let extents = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
-        assert!((extents[0] - 1460.0).abs() < 1.0e-6, "PXLE 沿世界 X：{extents:?}");
-        assert!((extents[1] - 300.0).abs() < 1.0e-6, "轴向沿世界 Y：{extents:?}");
-        assert!((extents[2] - 1520.0).abs() < 1.0e-6, "PZLE 沿 z_axis = 世界 Z：{extents:?}");
+        assert!(
+            (extents[0] - 1460.0).abs() < 1.0e-6,
+            "PXLE 沿世界 X：{extents:?}"
+        );
+        assert!(
+            (extents[1] - 300.0).abs() < 1.0e-6,
+            "轴向沿世界 Y：{extents:?}"
+        );
+        assert!(
+            (extents[2] - 1520.0).abs() < 1.0e-6,
+            "PZLE 沿 z_axis = 世界 Z：{extents:?}"
+        );
         let centre = [
             (min[0] + max[0]) * 0.5,
             (min[1] + max[1]) * 0.5,
@@ -1335,14 +1349,23 @@ mod tests {
         assert!((centre[2] + 25524.0).abs() < 1.0e-6, "{centre:?}");
         // 实例身份：BoxV1 + 纯缩放，世界变换折进 placement——与圆管走同一条发布路。
         let instance = tube.primitive_instance.expect("矩形直段也发实例");
-        assert_eq!(instance.key, crate::primitive_instance::PrimitiveMeshKey::BoxV1);
+        assert_eq!(
+            instance.key,
+            crate::primitive_instance::PrimitiveMeshKey::BoxV1
+        );
         assert_eq!(
             instance.local_transform,
             DMat4::from_scale(DVec3::new(1460.0, 1520.0, 300.0))
         );
         let rotation = DMat3::from_mat4(tube.placement);
-        assert!((rotation.determinant() - 1.0).abs() < 1.0e-9, "右手系，{rotation:?}");
-        assert!((rotation.y_axis - DVec3::Z).length() < 1.0e-9, "局部 Y 沿 z_axis");
+        assert!(
+            (rotation.determinant() - 1.0).abs() < 1.0e-9,
+            "右手系，{rotation:?}"
+        );
+        assert!(
+            (rotation.y_axis - DVec3::Z).length() < 1.0e-9,
+            "局部 Y 沿 z_axis"
+        );
 
         // 把 z_axis 换成 +X：1520 那条边跟着转到世界 X，1460 转到世界 Z。这一格就是滚转本身。
         let rolled = TubeSection::Rectangular {
@@ -1372,7 +1395,10 @@ mod tests {
             z_length: 1520.0,
             z_axis: DVec3::Z,
         };
-        assert!(matches!(build_tube(&from, &to, Some(flat)), TubeOutcome::NoRadius));
+        assert!(matches!(
+            build_tube(&from, &to, Some(flat)),
+            TubeOutcome::NoRadius
+        ));
         assert!(matches!(
             build_tube(&from, &from, Some(section)),
             TubeOutcome::ZeroLength { .. }
@@ -1608,7 +1634,8 @@ mod tests {
     fn a_tube_is_built_at_its_real_length() {
         let from = point([0.0, 0.0, 1000.0], [0.0, 0.0, -1.0], Some(50.0));
         let to = point([0.0, 0.0, 200.0], [0.0, 0.0, 1.0], Some(50.0));
-        let TubeOutcome::Built(tube) = build_tube(&from, &to, TubeSection::round(Some(100.0))) else {
+        let TubeOutcome::Built(tube) = build_tube(&from, &to, TubeSection::round(Some(100.0)))
+        else {
             panic!("这根管该建得出来");
         };
         assert!((tube.length_mm - 800.0).abs() < 1e-9);
@@ -1654,7 +1681,11 @@ mod tests {
         let from = point([0.0, 0.0, 0.0], [0.0, 0.0, 1.0], None);
         let to = point([0.0, 0.0, 500.0], [0.0, 0.0, -1.0], None);
         assert!(matches!(
-            build_tube(&from, &to, TubeSection::round(tube_outer_diameter(None, None, to.bore))),
+            build_tube(
+                &from,
+                &to,
+                TubeSection::round(tube_outer_diameter(None, None, to.bore))
+            ),
             TubeOutcome::NoRadius
         ));
     }

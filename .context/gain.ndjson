@@ -1,0 +1,6 @@
+{"ts":"2026-09-27T23:02:36.263Z","v":"8.49.2","op":"generate","session":"2026-09-27","baselineTokens":629041,"actualTokens":10313,"savedTokens":618728,"savedPct":98.4,"durationMs":5583,"model":null,"ok":true}
+{"ts":"2026-09-27T23:02:43.676Z","v":"8.49.2","op":"ask","session":"2026-09-27","baselineTokens":14638,"actualTokens":990,"savedTokens":13648,"savedPct":93.2,"durationMs":115,"model":"gpt-4o","ok":true}
+{"ts":"2026-09-27T23:27:00.689Z","v":"8.49.2","op":"ask","session":"2026-09-27","baselineTokens":104679,"actualTokens":1600,"savedTokens":103079,"savedPct":98.5,"durationMs":143,"model":"gpt-4o","ok":true}
+{"ts":"2026-09-27T23:27:00.690Z","v":"8.49.2","op":"ask","session":"2026-09-27","baselineTokens":72034,"actualTokens":3157,"savedTokens":68877,"savedPct":95.6,"durationMs":144,"model":"gpt-4o","ok":true}
+{"ts":"2026-09-27T23:57:57.404Z","v":"8.49.2","op":"ask","session":"2026-09-27","baselineTokens":113492,"actualTokens":1043,"savedTokens":112449,"savedPct":99.1,"durationMs":117,"model":"gpt-4o","ok":true}
+{"ts":"2026-09-28T01:38:46.130Z","v":"8.49.2","op":"ask","session":"2026-09-28","baselineTokens":44420,"actualTokens":1335,"savedTokens":43085,"savedPct":97,"durationMs":116,"model":"gpt-4o","ok":true}

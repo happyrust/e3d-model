@@ -247,8 +247,7 @@ pub fn facet_group_in_frame(
         let cols = world.to_cols_array();
         return facet_group_from_world_triangles(
             [
-                cols[0], cols[1], cols[2], cols[4], cols[5], cols[6], cols[8], cols[9],
-                cols[10],
+                cols[0], cols[1], cols[2], cols[4], cols[5], cols[6], cols[8], cols[9], cols[10],
             ],
             [cols[12], cols[13], cols[14]],
             local_vertices_mm,
@@ -1283,10 +1282,7 @@ pub fn circular_torus_geometry_in_frame(
     let side = axis.cross(start);
     let far = (start * torus.angle.cos() + side * torus.angle.sin()).normalize_or_zero();
     let expected = if z.dot(axis) > 0.0 { start } else { far };
-    if !axes_collinear(z, axis)
-        || x.length_squared() < 1e-8
-        || expected.length_squared() < 0.5
-    {
+    if !axes_collinear(z, axis) || x.length_squared() < 1e-8 || expected.length_squared() < 0.5 {
         return circular_torus_geometry(world, torus);
     }
     x = x.normalize();
@@ -2494,8 +2490,8 @@ pub fn sphere_geometry_in_frame(
     }
     x = x.normalize();
     let rotation = glam::DMat3::from_cols(x, z.cross(x), z);
-    let placed = *world
-        * (glam::DMat4::from_translation(sphere.centre) * glam::DMat4::from_mat3(rotation));
+    let placed =
+        *world * (glam::DMat4::from_translation(sphere.centre) * glam::DMat4::from_mat3(rotation));
     let cols = placed.to_cols_array();
     let matrix3 = [
         cols[0], cols[1], cols[2], cols[4], cols[5], cols[6], cols[8], cols[9], cols[10],
@@ -3200,27 +3196,13 @@ mod tests {
         let origin = [15350.0, 34705.92, -11520.0];
         let local = [[0.0, 0.0, 0.0], [80.0, 0.0, 0.0], [0.0, 43.0, 950.0]];
         let triangles = [[0u32, 1, 2]];
-        let geometry = facet_group_at_catalogue_origin(
-            rotation,
-            origin,
-            &local,
-            &triangles,
-            [-40.0, 0.0],
-        );
+        let geometry =
+            facet_group_at_catalogue_origin(rotation, origin, &local, &triangles, [-40.0, 0.0]);
         let world_of = |vertex: [f64; 3], at: [f64; 3]| {
             [
-                at[0]
-                    + rotation[0] * vertex[0]
-                    + rotation[3] * vertex[1]
-                    + rotation[6] * vertex[2],
-                at[1]
-                    + rotation[1] * vertex[0]
-                    + rotation[4] * vertex[1]
-                    + rotation[7] * vertex[2],
-                at[2]
-                    + rotation[2] * vertex[0]
-                    + rotation[5] * vertex[1]
-                    + rotation[8] * vertex[2],
+                at[0] + rotation[0] * vertex[0] + rotation[3] * vertex[1] + rotation[6] * vertex[2],
+                at[1] + rotation[1] * vertex[0] + rotation[4] * vertex[1] + rotation[7] * vertex[2],
+                at[2] + rotation[2] * vertex[0] + rotation[5] * vertex[1] + rotation[8] * vertex[2],
             ]
         };
         assert!((geometry.translation_mm[0] - 15350.0).abs() < 1e-6);
@@ -4160,21 +4142,22 @@ mod tests {
         let mesh = crate::mesh::TriMesh::from_manifold(&solid);
         let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
         assert!(elliptical_dish_from_local_mesh(&mesh.vertices, &triangles).is_none());
-        let dish = elliptical_dish_from_local_mesh_including_hemispheres(
-            &mesh.vertices,
-            &triangles,
-        )
-        .expect("折边半球");
-        assert!((dish.base_radius - radius).abs() < 1e-4, "{}", dish.base_radius);
+        let dish =
+            elliptical_dish_from_local_mesh_including_hemispheres(&mesh.vertices, &triangles)
+                .expect("折边半球");
+        assert!(
+            (dish.base_radius - radius).abs() < 1e-4,
+            "{}",
+            dish.base_radius
+        );
         assert!((dish.height - height).abs() < 1e-4, "{}", dish.height);
         let cap = crate::solid::spherical_dish_solid(25.0, 10.0).unwrap();
         let cap_mesh = crate::mesh::TriMesh::from_manifold(&cap);
         let cap_tris: Vec<[u32; 3]> = cap_mesh.indices.as_chunks::<3>().0.to_vec();
-        assert!(elliptical_dish_from_local_mesh_including_hemispheres(
-            &cap_mesh.vertices,
-            &cap_tris
-        )
-        .is_none());
+        assert!(
+            elliptical_dish_from_local_mesh_including_hemispheres(&cap_mesh.vertices, &cap_tris)
+                .is_none()
+        );
     }
 
     /// `/1WCC188VN` 的零高法兰：没有网格，记录仍是 `Snout[84.15, 84.15, 0]`。
@@ -4222,7 +4205,10 @@ mod tests {
         let got = pyramid_geometry_in_frame(&glam::DMat4::IDENTITY, &pyramid, &frame);
         match got.geometry.primitive {
             Primitive::Pyramid(params) => {
-                for (got, want) in params.iter().zip([245.0, 206.0, 245.0, 206.0, 0.0, 0.0, 120.0]) {
+                for (got, want) in params
+                    .iter()
+                    .zip([245.0, 206.0, 245.0, 206.0, 0.0, 0.0, 120.0])
+                {
                     assert!((got - want).abs() < 1e-6, "{params:?} vs {want}");
                 }
             }
@@ -4233,7 +4219,10 @@ mod tests {
             got.geometry.matrix3[7] * M_TO_MM,
             got.geometry.matrix3[8] * M_TO_MM,
         ];
-        assert!((z[0] - 1.0).abs() < 1e-9 && z[1].abs() < 1e-9 && z[2].abs() < 1e-9, "{z:?}");
+        assert!(
+            (z[0] - 1.0).abs() < 1e-9 && z[1].abs() < 1e-9 && z[2].abs() < 1e-9,
+            "{z:?}"
+        );
     }
 
     /// 目录轴和三条边都不共线时不改参数，仍按网格轴写。
@@ -4271,12 +4260,8 @@ mod tests {
         let z = glam::DVec3::new(-0.961, -0.276, 0.0).normalize();
         let x = glam::DVec3::Z.cross(z).normalize();
         let y = z.cross(x);
-        let frame = glam::DMat4::from_cols(
-            x.extend(0.0),
-            y.extend(0.0),
-            z.extend(0.0),
-            glam::DVec4::W,
-        );
+        let frame =
+            glam::DMat4::from_cols(x.extend(0.0), y.extend(0.0), z.extend(0.0), glam::DVec4::W);
         let got = sphere_geometry_in_frame(&glam::DMat4::IDENTITY, &sphere, &frame);
         match got.geometry.primitive {
             Primitive::Sphere([r]) => assert!((r - 12.5).abs() < 1e-9),
@@ -4323,7 +4308,10 @@ mod tests {
             got.geometry.matrix3[8],
         ) * M_TO_MM;
         assert!((x - glam::DVec3::X).length() < 1e-9, "{x:?}");
-        assert!((z - glam::DVec3::new(0.0, 0.0, -1.0)).length() < 1e-9, "{z:?}");
+        assert!(
+            (z - glam::DVec3::new(0.0, 0.0, -1.0)).length() < 1e-9,
+            "{z:?}"
+        );
         match got.geometry.primitive {
             Primitive::EllipticalDish([r, h]) => {
                 assert!((r - 40.0).abs() < 1e-9 && (h - 20.0).abs() < 1e-9);
@@ -4356,8 +4344,8 @@ mod tests {
         let placed = (world * frame).to_cols_array();
         let rotation = got.rotation();
         for (got_axis, expect) in rotation.iter().zip([
-            placed[0], placed[1], placed[2], placed[4], placed[5], placed[6], placed[8],
-            placed[9], placed[10],
+            placed[0], placed[1], placed[2], placed[4], placed[5], placed[6], placed[8], placed[9],
+            placed[10],
         ]) {
             assert!((got_axis - expect).abs() < 1e-9, "{rotation:?}");
         }

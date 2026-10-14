@@ -1,0 +1,31 @@
+warning: function `instantiate_cylinder` is never used
+   --> src\primitive_instance.rs:213:15
+    |
+213 | pub(crate) fn instantiate_cylinder(
+    |               ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `e3d-model` (lib) generated 1 warning
+   Compiling e3d-model v0.1.0 (D:\work\plant-code\old\vendor\e3d-model)
+    Finished `release` profile [optimized] target(s) in 0.92s
+     Running `D:\Rust\target\release\examples\element_probe.exe --attlib E:\reverse\e3d\shadow_e3d31_aps_all\attlib.dat --db D:\AVEVA\Projects\E3D3.1\AvevaPlantSample\aps000\aps250110_0001 --template E:\reverse\e3d\shadow_e3d31_aps_all --sesno 36 --refno 2013286654/13660`
+会话 Some(36)
+=== 2013286654/13660 HRTERM None
+owner 链（根 → 自身）：
+  2013278462/0 WORL     /*                       POS=None ORI=None
+  2013286654/1 SITE     /SITE-STRUCTURAL-AREA02  POS=Some([0.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/619 ZONE     /BUILDING_B02            POS=Some([0.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/1588 STRU     /BUILDING_02_LEVEL_04    POS=Some([0.0, 0.0, 112700.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/9154 FRMW     /B02_LEVEL_04_HANDRAILS  POS=None ORI=None
+  2013286654/3397 HANDRA   /BUILDING_02_LEVEL_04/HR_001 POS=Some([-297729.63, 324769.75, 150.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/3466 RAILSE                            POS=None ORI=None
+  2013286654/13660 HRTERM                            POS=None ORI=None
+世界矩阵（列）：
+  X = [1.0000, 0.0000, 0.0000]
+  Y = [0.0000, 1.0000, 0.0000]
+  Z = [0.0000, 0.0000, 1.0000]
+  T = [-292729.6200, 334760.2500, 112850.0000]
+  自身 CACHID=Word { raw: 0, text: None }  TYPEX=RawWords([1, 196746659])  PURP=Word { raw: 0, text: None }  NUMB=Word { raw: 0, text: None }  SPRE=RefNo(RefNo(23431/36004, dbno=7047))  MATR=RefNo(RefNo(0/0, dbno=0))  ZOFF=Real(0.0)  HEIG=Real(0.0)  POSREF=RefNo(RefNo(2013286654/13791, dbno=250110))  PKDI=Real(0.0)  ZDIS=Real(0.0)  XOFF=Real(0.0)  VERTDI=Bool(true)  HRJUSL=Word { raw: 929622, text: Some("LEFT") }  LENG=Real(0.0)  ANGL=Real(0.0)  SPAMAP=RawWords([1, 1301128500])  RAILTR=RealArray([0.0, 0.0])
+  成员 2013286654/25288 TMPL None
+

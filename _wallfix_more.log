@@ -1,0 +1,89 @@
+   Compiling e3d-model v0.1.0 (D:\work\plant-code\old\vendor\e3d-model)
+warning: function `instantiate_cylinder` is never used
+   --> src\primitive_instance.rs:213:15
+    |
+213 | pub(crate) fn instantiate_cylinder(
+    |               ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `e3d-model` (lib) generated 1 warning
+    Finished `release` profile [optimized] target(s) in 6.42s
+     Running `D:\Rust\target\release\examples\element_probe.exe --attlib E:\reverse\e3d\shadow_e3d31_aps_all\attlib.dat --db D:\AVEVA\Projects\E3D3.1\AvevaPlantSample\aps000\aps250110_0001 --template E:\reverse\e3d\shadow_e3d31_aps_all --sesno 36 --refno 2013286654/208 --refno 2013286654/211 --refno 2013286654/403 --refno 2013286654/406`
+会话 Some(36)
+=== 2013286654/208 FIXING None
+owner 链（根 → 自身）：
+  2013278462/0 WORL     /*                       POS=None ORI=None
+  2013286654/1 SITE     /SITE-STRUCTURAL-AREA02  POS=Some([0.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/2 ZONE     /BUILDING_B01            POS=Some([0.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/3 STRU     /BUILDING_01_LEVEL_01    POS=Some([0.0, 0.0, 100000.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/17 FRMW     /B01_LEVEL_01_WALLS      POS=None ORI=None
+  2013286654/204 CWALL    /B01_LEV01_EXT_WALLS     POS=None ORI=None
+  2013286654/205 WALL                              POS=Some([-305500.004507, 331207.610022, 0.0]) ORI=Some([0.0, 0.0, -60.09149999515831])
+  2013286654/206 JLDATU                            POS=None ORI=None
+  2013286654/207 PLDATU                            POS=None ORI=None
+  2013286654/208 FIXING                            POS=Some([1100.0, -77.96517033484997, -0.20490598725154996]) ORI=Some([-0.3008176213775107, 0.0, 180.0])
+世界矩阵（列）：
+  X = [-0.4986, 0.8668, 0.0000]
+  Y = [-0.8668, -0.4986, -0.0053]
+  Z = [-0.0046, -0.0026, 1.0000]
+  T = [-305019.1085, 330215.2302, 99999.7951]
+  自身 TYPEX=RawWords([1, 108608856])  BANG=Real(0.0)  GTYP=Word { raw: 0, text: None }  NUMB=Word { raw: 0, text: None }  POS=RealArray([1100.0, -77.96517033484997, -0.20490598725154996])  ORI=RealArray([-0.3008176213775107, 0.0, 180.0])  CUTB=Real(0.0)  CUTP=RealArray([0.0, 0.0, 1.0])  JLIN=Word { raw: 0, text: None }  UNIPAR=RawWords([939199])  DESP=RealArray([25.0])  BUIL=Bool(false)  SHOP=Bool(false)  CREF=RefNo(RefNo(0/0, dbno=0))  ISPE=RefNo(RefNo(0/0, dbno=0))  FIRE=Real(0.0)  INRE=RefNo(RefNo(0/0, dbno=0))  SPRE=RefNo(RefNo(15193/26203, dbno=7001))  SPAMAP=IntArray([1003167288])  MATR=RefNo(RefNo(15200/39782, dbno=7008))
+
+=== 2013286654/211 FIXING None
+owner 链（根 → 自身）：
+  2013278462/0 WORL     /*                       POS=None ORI=None
+  2013286654/1 SITE     /SITE-STRUCTURAL-AREA02  POS=Some([0.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/2 ZONE     /BUILDING_B01            POS=Some([0.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/3 STRU     /BUILDING_01_LEVEL_01    POS=Some([0.0, 0.0, 100000.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/17 FRMW     /B01_LEVEL_01_WALLS      POS=None ORI=None
+  2013286654/204 CWALL    /B01_LEV01_EXT_WALLS     POS=None ORI=None
+  2013286654/205 WALL                              POS=Some([-305500.004507, 331207.610022, 0.0]) ORI=Some([0.0, 0.0, -60.09149999515831])
+  2013286654/209 JLDATU                            POS=None ORI=None
+  2013286654/210 PLDATU                            POS=None ORI=None
+  2013286654/211 FIXING                            POS=Some([1100.0, -20.339096256473567, -0.024661583709530532]) ORI=Some([-0.07851078274386247, 0.0, 180.0])
+世界矩阵（列）：
+  X = [-0.4986, 0.8668, 0.0000]
+  Y = [-0.8668, -0.4986, -0.0014]
+  Z = [-0.0012, -0.0007, 1.0000]
+  T = [-304969.1569, 330243.9636, 99999.9753]
+  自身 TYPEX=RawWords([1, 108608856])  BANG=Real(0.0)  GTYP=Word { raw: 0, text: None }  NUMB=Word { raw: 0, text: None }  POS=RealArray([1100.0, -20.339096256473567, -0.024661583709530532])  ORI=RealArray([-0.07851078274386247, 0.0, 180.0])  CUTB=Real(0.0)  CUTP=RealArray([0.0, 0.0, 1.0])  JLIN=Word { raw: 0, text: None }  UNIPAR=RawWords([939199])  DESP=RealArray([25.0])  BUIL=Bool(false)  SHOP=Bool(false)  CREF=RefNo(RefNo(0/0, dbno=0))  ISPE=RefNo(RefNo(0/0, dbno=0))  FIRE=Real(0.0)  INRE=RefNo(RefNo(0/0, dbno=0))  SPRE=RefNo(RefNo(15193/26203, dbno=7001))  SPAMAP=IntArray([1003168605])  MATR=RefNo(RefNo(15200/39782, dbno=7008))
+
+=== 2013286654/403 FIXING None
+owner 链（根 → 自身）：
+  2013278462/0 WORL     /*                       POS=None ORI=None
+  2013286654/1 SITE     /SITE-STRUCTURAL-AREA02  POS=Some([0.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/2 ZONE     /BUILDING_B01            POS=Some([0.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/379 STRU     /BUILDING_01_LEVEL_02    POS=Some([0.0, 0.0, 104900.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/389 FRMW     /B01_LEVEL_02_WALLS      POS=None ORI=None
+  2013286654/390 CWALL    /B01_LEV02_EXT_WALLS     POS=None ORI=None
+  2013286654/397 WALL                              POS=Some([-305500.004507, 331207.610022, -900.0]) ORI=Some([0.0, 0.0, -60.09149999515831])
+  2013286654/401 JLDATU                            POS=None ORI=None
+  2013286654/402 PLDATU                            POS=None ORI=None
+  2013286654/403 FIXING                            POS=Some([1100.0, -50.846895974944346, -0.16691195650491863]) ORI=Some([-0.19618410907932288, 0.0, 180.0])
+世界矩阵（列）：
+  X = [-0.4986, 0.8668, 0.0000]
+  Y = [-0.8668, -0.4986, -0.0034]
+  Z = [-0.0030, -0.0017, 1.0000]
+  T = [-304995.6018, 330228.7519, 103999.8331]
+  自身 TYPEX=RawWords([1, 108608856])  BANG=Real(0.0)  GTYP=Word { raw: 0, text: None }  NUMB=Word { raw: 0, text: None }  POS=RealArray([1100.0, -50.846895974944346, -0.16691195650491863])  ORI=RealArray([-0.19618410907932288, 0.0, 180.0])  CUTB=Real(0.0)  CUTP=RealArray([0.0, 0.0, 1.0])  JLIN=Word { raw: 0, text: None }  UNIPAR=RawWords([939199])  DESP=RealArray([25.0])  BUIL=Bool(false)  SHOP=Bool(false)  CREF=RefNo(RefNo(0/0, dbno=0))  ISPE=RefNo(RefNo(0/0, dbno=0))  FIRE=Real(0.0)  INRE=RefNo(RefNo(0/0, dbno=0))  SPRE=RefNo(RefNo(15193/26203, dbno=7001))  SPAMAP=IntArray([903163569])  MATR=RefNo(RefNo(15200/39782, dbno=7008))
+
+=== 2013286654/406 FIXING None
+owner 链（根 → 自身）：
+  2013278462/0 WORL     /*                       POS=None ORI=None
+  2013286654/1 SITE     /SITE-STRUCTURAL-AREA02  POS=Some([0.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/2 ZONE     /BUILDING_B01            POS=Some([0.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/379 STRU     /BUILDING_01_LEVEL_02    POS=Some([0.0, 0.0, 104900.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/389 FRMW     /B01_LEVEL_02_WALLS      POS=None ORI=None
+  2013286654/390 CWALL    /B01_LEV02_EXT_WALLS     POS=None ORI=None
+  2013286654/397 WALL                              POS=Some([-305500.004507, 331207.610022, -900.0]) ORI=Some([0.0, 0.0, -60.09149999515831])
+  2013286654/404 JLDATU                            POS=None ORI=None
+  2013286654/405 PLDATU                            POS=None ORI=None
+  2013286654/406 FIXING                            POS=Some([1100.0, -20.33886218664702, -0.05407153465785086]) ORI=Some([-0.0785107827438625, 0.0, 180.0])
+世界矩阵（列）：
+  X = [-0.4986, 0.8668, 0.0000]
+  Y = [-0.8668, -0.4986, -0.0014]
+  Z = [-0.0012, -0.0007, 1.0000]
+  T = [-304969.1567, 330243.9637, 103999.9459]
+  自身 TYPEX=RawWords([1, 108608856])  BANG=Real(0.0)  GTYP=Word { raw: 0, text: None }  NUMB=Word { raw: 0, text: None }  POS=RealArray([1100.0, -20.33886218664702, -0.05407153465785086])  ORI=RealArray([-0.0785107827438625, 0.0, 180.0])  CUTB=Real(0.0)  CUTP=RealArray([0.0, 0.0, 1.0])  JLIN=Word { raw: 0, text: None }  UNIPAR=RawWords([939199])  DESP=RealArray([25.0])  BUIL=Bool(false)  SHOP=Bool(false)  CREF=RefNo(RefNo(0/0, dbno=0))  ISPE=RefNo(RefNo(0/0, dbno=0))  FIRE=Real(0.0)  INRE=RefNo(RefNo(0/0, dbno=0))  SPRE=RefNo(RefNo(15193/26203, dbno=7001))  SPAMAP=IntArray([1003168606])  MATR=RefNo(RefNo(15200/39782, dbno=7008))
+

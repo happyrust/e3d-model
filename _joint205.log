@@ -1,0 +1,599 @@
+warning: function `instantiate_cylinder` is never used
+   --> src\primitive_instance.rs:213:15
+    |
+213 | pub(crate) fn instantiate_cylinder(
+    |               ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `e3d-model` (lib) generated 1 warning
+    Finished `release` profile [optimized] target(s) in 0.07s
+     Running `D:\Rust\target\release\examples\joint_probe.exe --attlib E:\reverse\e3d\shadow_e3d31_aps_all\attlib.dat --db D:\AVEVA\Projects\E3D3.1\AvevaPlantSample\aps000\aps250110_0001 --template E:\reverse\e3d\shadow_e3d31_aps_all --project-dir D:\AVEVA\Projects\E3D3.1\AvevaPlantSample\aps000 --project-dir D:\AVEVA\Projects\E3D3.1\AvevaCatalogue\acp000 --refno 2013286654/205`
+##### 2013286654/205 WALL None
+  自身 CACHID=Word { raw: 0, text: None }  TYPEX=RawWords([1, 776435])  FUNC=Text("RING")  STRUCL=Text("WALL")  GTYP=Word { raw: 776435, text: Some("WALL") }  NUMB=Word { raw: 0, text: None }  UNIPAR=RawWords([939199])  DESP=RealArray([4000.0])  BUIL=Bool(false)  SHOP=Bool(false)  BANG=Real(0.0)  LMIRR=Bool(false)  JOIS=RefNo(RefNo(0/0, dbno=0))  JOIE=RefNo(RefNo(0/0, dbno=0))  JLNS=Word { raw: 531482, text: Some("NA") }  JLNE=Word { raw: 531482, text: Some("NA") }  JUSL=Word { raw: 995154, text: Some("OBOW") }  CTYS=Word { raw: 0, text: None }  CTYE=Word { raw: 0, text: None }  SREL=Word { raw: 0, text: None }  EREL=Word { raw: 0, text: None }  GRAD=Real(0.0)  MATR=RefNo(RefNo(15200/39782, dbno=7008))  ISPE=RefNo(RefNo(0/0, dbno=0))  FIRE=Real(0.0)  INRE=RefNo(RefNo(0/0, dbno=0))  SPRE=RefNo(RefNo(15193/14879, dbno=7001))  SPAMAP=IntArray([1700954244])  MEML=Word { raw: 531482, text: Some("NA") }  POS=RealArray([-305500.004507, 331207.610022, 0.0])  ORI=RealArray([0.0, 0.0, -60.09149999515831])  PURP=Word { raw: 0, text: None }
+  世界 world_matrix T=[-305500.005, 331207.610, 100000.000] X=[0.4986, -0.8668, 0.0000] Z=[0.0000, 0.0000, 1.0000]  local T=[-305500.005, 331207.610, 0.000]
+  JOIS 空
+  JOIE 空
+  2013286654/206 JLDATU
+     NUMB=Word { raw: 0, text: None }  ZDIS=Real(11500.0)  PKDI=Real(0.0)  LEVE=RawWords([0, 10])  FIXT=Text("FREE")
+    2013286654/207 PLDATU
+       PLOCK=Bool(false)  NUMB=Word { raw: 0, text: None }  POSL=Word { raw: 995148, text: Some("IBOW") }  YDIR=RealArray([0.0, 0.0, 1.0])  LEVE=RawWords([0, 10])
+      2013286654/208 FIXING
+        属性 TYPEX=RawWords([1, 108608856])  BANG=Real(0.0)  GTYP=Word { raw: 0, text: None }  NUMB=Word { raw: 0, text: None }  POS=RealArray([1100.0, -77.96517033484997, -0.20490598725154996])  ORI=RealArray([-0.3008176213775107, 0.0, 180.0])  CUTB=Real(0.0)  CUTP=RealArray([0.0, 0.0, 1.0])  JLIN=Word { raw: 0, text: None }  UNIPAR=RawWords([939199])  DESP=RealArray([25.0])  BUIL=Bool(false)  SHOP=Bool(false)  CREF=RefNo(RefNo(0/0, dbno=0))  ISPE=RefNo(RefNo(0/0, dbno=0))  FIRE=Real(0.0)  INRE=RefNo(RefNo(0/0, dbno=0))  SPRE=RefNo(RefNo(15193/26203, dbno=7001))  SPAMAP=IntArray([1003167288])  MATR=RefNo(RefNo(15200/39782, dbno=7008))
+         world_matrix T=[-305019.109, 330215.230, 99999.795] X=[-0.4986, 0.8668, 0.0000] Z=[-0.0046, -0.0026, 1.0000]  local T=[1100.000, -77.965, -0.205]
+        属主链 PLDATU 2013286654/207 ← JLDATU 2013286654/206 ← WALL 2013286654/205 ← CWALL 2013286654/204 ← FRMW 2013286654/17 ← STRU 2013286654/3
+        SPRE 15193/26203 SPCO Some("/Window-Spec/DG-S/1200x1200")
+        目录件 15193/22809 SFIT Some("/DG-S/1200x1200")
+           TYPEX=RawWords([1, 931843])  NAME=Text("/DG-S/1200x1200")  GTYP=Word { raw: 620645, text: Some("WIND") }  CTYA=Word { raw: 0, text: None }  PTRE=RefNo(RefNo(15193/22818, dbno=7001))  GMRE=RefNo(RefNo(15193/22827, dbno=7001))  NGMR=RefNo(RefNo(15193/22886, dbno=7001))  DTRE=RefNo(RefNo(15193/22811, dbno=7001))  PARA=RealArray([1200.0, 1200.0])
+          DTRE → 15193/22811 DTSE
+            · 15193/22812 DATA NAME=Text("/DG-S/DTSE-WIDT")  DKEY=Word { raw: 928283, text: Some("WIDT") }  PTYP=Word { raw: 939199, text: Some("DIST") }  PPRO=Text("( ATTRIB PARA[1 ] )")  DPRO=Text("( 1000 )")  PURP=Word { raw: 564289, text: Some("PARA") }  NUMB=Word { raw: 1, text: None }  DTIT=Text("Width")  RUSE=Word { raw: 1, text: None }
+            · 15193/22813 DATA NAME=Text("/DG-S/DTSE-HEIG")  DKEY=Word { raw: 675926, text: Some("HEIG") }  PTYP=Word { raw: 939199, text: Some("DIST") }  PPRO=Text("( ATTRIB PARA[2 ] )")  DPRO=Text("( 1200 )")  PURP=Word { raw: 564289, text: Some("PARA") }  NUMB=Word { raw: 2, text: None }  DTIT=Text("Height")  RUSE=Word { raw: 1, text: None }
+            · 15193/22814 DATA NAME=Text("/DG-S/DTSE-WTHK")  DKEY=Word { raw: 754349, text: Some("WTHK") }  PTYP=Word { raw: 0, text: None }  PPRO=Text("( 400 )")  DPRO=Text("( 300 )")  PURP=Word { raw: 0, text: None }  NUMB=Word { raw: 0, text: None }  DTIT=Text("Wall Thickness")  RUSE=Word { raw: 1, text: None }
+            · 15193/22815 DATA NAME=Text("/DG-S/DTSE-ISET")  DKEY=Word { raw: 929268, text: Some("ISET") }  PTYP=Word { raw: 939199, text: Some("DIST") }  PPRO=Text("( ATTRIB DESP[1 ] )")  DPRO=Text("( 25 )")  PURP=Word { raw: 860359, text: Some("DESP") }  NUMB=Word { raw: 1, text: None }  DTIT=Text("Inset from wall face")  RUSE=Word { raw: 1, text: None }
+            · 15193/22816 DATA NAME=Text("/DG-S/DTSE-STYL")  DKEY=Word { raw: 786421, text: Some("STYL") }  PTYP=Word { raw: 0, text: None }  PPRO=RawWords([0, 0, 0, 0])  DPRO=RawWords([0, 0, 0, 0])  PURP=Word { raw: 898052, text: Some("EXPR") }  NUMB=Word { raw: 0, text: None }  DTIT=Text("Style")
+            · 15193/22817 DATA NAME=Text("/DG-S/DTSE-SIZE")  DKEY=Word { raw: 649072, text: Some("SIZE") }  PTYP=Word { raw: 0, text: None }  PPRO=RawWords([0, 0, 0, 0])  DPRO=RawWords([0, 0, 0, 0])  PURP=Word { raw: 898052, text: Some("EXPR") }  NUMB=Word { raw: 0, text: None }  DTIT=Text("Size")  RUSE=Word { raw: 1, text: None }
+          CREF(附着) 空
+          属主型材 2013286654/205 WALL → SPRF 15193/14605 Some("/100_thk_wall") PARA=Some(RealArray([100.0]))
+          NGMR → 15193/22886 NGMS
+            - 15193/64131 NSEX
+                 PURP=Word { raw: 635406, text: Some("OPGE") }  OBST=Word { raw: 2, text: None }  LEVE=RawWords([0, 10])  CLFL=Bool(false)  TUFL=Bool(false)  PX=RawWords([0, 0, 0, 0])  PY=RawWords([0, 0, 0, 0])  PZ=RawWords([0, 0, 0, 0])  PAAX=RawWords([2, 1])  PBAX=RawWords([1, 2])  PHEI=Text("( ATTRIB RPRO WTHK )")  NAPP=Word { raw: 4294967295, text: None }
+                · 15193/64132 SLOO
+                     PURP=Word { raw: 635406, text: Some("OPGE") }
+                    · 15193/64133 SVER
+                         PX=RawWords([0, 1, 0, 0])  PY=Text("( -0.5 * ATTRIB RPRO WIDT )")  PRAD=RawWords([0, 1, 0, 0])
+                    · 15193/64134 SVER
+                         PX=Text("( ATTRIB RPRO HEIG )")  PY=Text("( -0.5 * ATTRIB RPRO WIDT )")  PRAD=RawWords([0, 0, 0, 0])
+                    · 15193/64135 SVER
+                         PX=Text("( ATTRIB RPRO HEIG )")  PY=Text("( 0.5 * ATTRIB RPRO WIDT )")  PRAD=RawWords([0, 0, 0, 0])
+                    · 15193/64136 SVER
+                         PX=RawWords([0, 1, 0, 0])  PY=Text("( 0.5 * ATTRIB RPRO WIDT )")  PRAD=RawWords([0, 0, 0, 0])
+            - 15193/64137 NSEX
+                 PURP=Word { raw: 635399, text: Some("HPGE") }  OBST=Word { raw: 2, text: None }  LEVE=RawWords([0, 10])  CLFL=Bool(false)  TUFL=Bool(false)  PX=RawWords([0, 0, 0, 0])  PY=RawWords([0, 0, 0, 0])  PZ=RawWords([0, 0, 0, 0])  PAAX=RawWords([2, 1])  PBAX=RawWords([1, 2])  PHEI=Text("( ATTRIB RPRO WTHK )")  NAPP=Word { raw: 4294967295, text: None }
+                · 15193/64138 SLOO
+                     PURP=Word { raw: 635399, text: Some("HPGE") }
+                    · 15193/64139 SVER
+                         PX=RawWords([0, 1, 0, 0])  PY=Text("( -0.5 * ATTRIB RPRO WIDT )")  PRAD=RawWords([0, 1, 0, 0])
+                    · 15193/64140 SVER
+                         PX=Text("( ATTRIB RPRO HEIG )")  PY=Text("( -0.5 * ATTRIB RPRO WIDT )")  PRAD=RawWords([0, 0, 0, 0])
+                    · 15193/64141 SVER
+                         PX=Text("( ATTRIB RPRO HEIG )")  PY=Text("( 0.5 * ATTRIB RPRO WIDT )")  PRAD=RawWords([0, 0, 0, 0])
+                    · 15193/64142 SVER
+                         PX=RawWords([0, 1, 0, 0])  PY=Text("( 0.5 * ATTRIB RPRO WIDT )")  PRAD=RawWords([0, 0, 0, 0])
+            - 15193/22887 NSBO
+                 OBST=Word { raw: 1, text: None }  LEVE=RawWords([0, 10])  CLFL=Bool(true)  TUFL=Bool(true)  PX=Text("( ATTRIB RPRO HEIG * -0.5 )")  PY=RawWords([0, 0, 0, 0])  PZ=Text("( ATTRIB RPRO WTHK * -0.5 )")  PXLE=Text("( ATTRIB RPRO HEIG )")  PYLE=Text("( ATTRIB RPRO WIDT )")  PZLE=Text("( ATTRIB RPRO WTHK + 20 )")  NAPP=Word { raw: 4294967295, text: None }
+          GMRE → 15193/22827 GMSE
+            - 15193/22828 SBOX
+                 OBST=Word { raw: 2, text: None }  LEVE=RawWords([0, 10])  CLFL=Bool(false)  TUFL=Bool(false)  PX=Text("( ATTRIB RPRO HEIG * -0.5 )")  PY=RawWords([0, 0, 0, 0])  PZ=Text("( ( ATTRIB RPRO WTHK + 20 ) * -0.5 )")  PXLE=Text("( ATTRIB RPRO HEIG )")  PYLE=Text("( ATTRIB RPRO WIDT )")  PZLE=Text("( ATTRIB RPRO WTHK + 20 )")  NAPP=Word { raw: 2, text: None }
+            - 15193/22829 SEXT
+                 OBST=Word { raw: 0, text: None }  LEVE=RawWords([0, 10])  CLFL=Bool(true)  TUFL=Bool(true)  PX=Text("( ATTRIB RPRO ISET * -1 )")  PY=Text("( ATTRIB RPRO WIDT * -0.5 )")  PZ=Text("( 10 )")  PAAX=RawWords([1, 3])  PBAX=RawWords([1, 2])  PHEI=Text("( ATTRIB RPRO HEIG - 20 )")  NAPP=Word { raw: 2, text: None }
+                · 15193/22830 SLOO
+                     
+                    · 15193/22831 SVER
+                         PX=Text("( 0 )")  PY=Text("( 0 )")  PRAD=Text("( 0 )")
+                    · 15193/22832 SVER
+                         PX=Text("( -25 )")  PY=Text("( 0 )")  PRAD=Text("( 0 )")
+                    · 15193/22833 SVER
+                         PX=Text("( -25 )")  PY=Text("( 10 )")  PRAD=Text("( 0 )")
+                    · 15193/22834 SVER
+                         PX=Text("( -45 )")  PY=Text("( 10 )")  PRAD=Text("( 0 )")
+                    · 15193/22835 SVER
+                         PX=Text("( -45 )")  PY=Text("( 0 )")  PRAD=Text("( 0 )")
+                    · 15193/22836 SVER
+                         PX=Text("( -70 )")  PY=Text("( 0 )")  PRAD=Text("( 0 )")
+                    · 15193/22837 SVER
+                         PX=Text("( -70 )")  PY=Text("( 41 )")  PRAD=Text("( 0 )")
+                    · 15193/22838 SVER
+                         PX=Text("( -25 )")  PY=Text("( 45 )")  PRAD=Text("( 0 )")
+                    · 15193/22839 SVER
+                         PX=Text("( -25 )")  PY=Text("( 32.5 )")  PRAD=Text("( 0 )")
+                    · 15193/22840 SVER
+                         PX=Text("( 0 )")  PY=Text("( 32.5 )")  PRAD=Text("( 0 )")
+            - 15193/22841 SEXT
+                 OBST=Word { raw: 0, text: None }  LEVE=RawWords([0, 10])  CLFL=Bool(true)  TUFL=Bool(true)  PX=Text("( ATTRIB RPRO ISET * -1 )")  PY=RawWords([0, 1, 0, 0])  PZ=Text("( ATTRIB RPRO WIDT * -0.5 )")  PAAX=RawWords([1, 3])  PBAX=RawWords([2, 1])  PHEI=Text("( ATTRIB RPRO WIDT )")  NAPP=Word { raw: 2, text: None }
+                · 15193/22842 SLOO
+                     
+                    · 15193/22843 SVER
+                         PX=Text("( -25 )")  PY=Text("( 0 )")  PRAD=Text("( 0 )")
+                    · 15193/22844 SVER
+                         PX=Text("( -25 )")  PY=Text("( 10 )")  PRAD=Text("( 0 )")
+                    · 15193/22845 SVER
+                         PX=Text("( -45 )")  PY=Text("( 10 )")  PRAD=Text("( 0 )")
+                    · 15193/22846 SVER
+                         PX=Text("( -45 )")  PY=Text("( 0 )")  PRAD=Text("( 0 )")
+                    · 15193/22847 SVER
+                         PX=Text("( -70 )")  PY=Text("( 0 )")  PRAD=Text("( 0 )")
+                    · 15193/22848 SVER
+                         PX=Text("( -70 )")  PY=Text("( 58.5 )")  PRAD=Text("( 0 )")
+                    · 15193/22849 SVER
+                         PX=Text("( -25 )")  PY=Text("( 62.5 )")  PRAD=Text("( 0 )")
+                    · 15193/22850 SVER
+                         PX=Text("( -25 )")  PY=Text("( 50 )")  PRAD=Text("( 0 )")
+                    · 15193/22851 SVER
+                         PX=Text("( 0 )")  PY=Text("( 50 )")  PRAD=Text("( 0 )")
+                    · 15193/22852 SVER
+                         PX=Text("( 0 )")  PY=Text("( 37.5 )")  PRAD=Text("( 0 )")
+                    · 15193/22853 SVER
+                         PX=Text("( 80 )")  PY=Text("( 23.393801 )")  PRAD=Text("( 5 )")
+                    · 15193/22854 SVER
+                         PX=Text("( 80 )")  PY=Text("( 0 )")  PRAD=Text("( 0 )")
+                    · 15193/22855 SVER
+                         PX=Text("( 70 )")  PY=Text("( 0 )")  PRAD=Text("( -5 )")
+            - 15193/22856 SEXT
+                 OBST=Word { raw: 0, text: None }  LEVE=RawWords([0, 10])  CLFL=Bool(true)  TUFL=Bool(true)  PX=Text("( ATTRIB RPRO ISET * -1 )")  PY=Text("( ATTRIB RPRO WIDT * 0.5 )")  PZ=Text("( 10 )")  PAAX=RawWords([1, 3])  PBAX=RawWords([1, 2])  PHEI=Text("( ATTRIB RPRO HEIG - 20 )")  NAPP=Word { raw: 2, text: None }
+                · 15193/22857 SLOO
+                     
+                    · 15193/22858 SVER
+                         PX=Text("( 0 )")  PY=Text("( 0 )")  PRAD=Text("( 0 )")
+                    · 15193/22859 SVER
+                         PX=Text("( -25 )")  PY=Text("( 0 )")  PRAD=Text("( 0 )")
+                    · 15193/22860 SVER
+                         PX=Text("( -25 )")  PY=Text("( -10 )")  PRAD=Text("( 0 )")
+                    · 15193/22861 SVER
+                         PX=Text("( -45 )")  PY=Text("( -10 )")  PRAD=Text("( 0 )")
+                    · 15193/22862 SVER
+                         PX=Text("( -45 )")  PY=Text("( 0 )")  PRAD=Text("( 0 )")
+                    · 15193/22863 SVER
+                         PX=Text("( -70 )")  PY=Text("( 0 )")  PRAD=Text("( 0 )")
+                    · 15193/22864 SVER
+                         PX=Text("( -70 )")  PY=Text("( -41 )")  PRAD=Text("( 0 )")
+                    · 15193/22865 SVER
+                         PX=Text("( -25 )")  PY=Text("( -45 )")  PRAD=Text("( 0 )")
+                    · 15193/22866 SVER
+                         PX=Text("( -25 )")  PY=Text("( -32.5 )")  PRAD=Text("( 0 )")
+                    · 15193/22867 SVER
+                         PX=Text("( 0 )")  PY=Text("( -32.5 )")  PRAD=Text("( 0 )")
+            - 15193/22868 SEXT
+                 OBST=Word { raw: 0, text: None }  LEVE=RawWords([0, 10])  CLFL=Bool(true)  TUFL=Bool(true)  PX=Text("( ATTRIB RPRO ISET * -1 )")  PY=Text("( ATTRIB RPRO HEIG )")  PZ=Text("( ATTRIB RPRO WIDT * -0.5 )")  PAAX=RawWords([1, 3])  PBAX=RawWords([2, 1])  PHEI=Text("( ATTRIB RPRO WIDT )")  NAPP=Word { raw: 2, text: None }
+                · 15193/22869 SLOO
+                     
+                    · 15193/22870 SVER
+                         PX=Text("( 0 )")  PY=Text("( 0 )")  PRAD=Text("( 0 )")
+                    · 15193/22871 SVER
+                         PX=Text("( -25 )")  PY=Text("( 0 )")  PRAD=Text("( 0 )")
+                    · 15193/22872 SVER
+                         PX=Text("( -25 )")  PY=Text("( -10 )")  PRAD=Text("( 0 )")
+                    · 15193/22873 SVER
+                         PX=Text("( -45 )")  PY=Text("( -10 )")  PRAD=Text("( 0 )")
+                    · 15193/22874 SVER
+                         PX=Text("( -45 )")  PY=Text("( 0 )")  PRAD=Text("( 0 )")
+                    · 15193/22875 SVER
+                         PX=Text("( -70 )")  PY=Text("( 0 )")  PRAD=Text("( 0 )")
+                    · 15193/22876 SVER
+                         PX=Text("( -70 )")  PY=Text("( -41 )")  PRAD=Text("( 0 )")
+                    · 15193/22877 SVER
+                         PX=Text("( -25 )")  PY=Text("( -45 )")  PRAD=Text("( 0 )")
+                    · 15193/22878 SVER
+                         PX=Text("( -25 )")  PY=Text("( -32.5 )")  PRAD=Text("( 0 )")
+                    · 15193/22879 SVER
+                         PX=Text("( 0 )")  PY=Text("( -32.5 )")  PRAD=Text("( 0 )")
+                    · 15193/22880 SVER
+                         PX=Text("( 0 )")  PY=Text("( -12.5 )")  PRAD=Text("( 0 )")
+                    · 15193/22881 SVER
+                         PX=Text("( 5 )")  PY=Text("( -12.5 )")  PRAD=Text("( 0 )")
+                    · 15193/22882 SVER
+                         PX=Text("( 8 )")  PY=Text("( -15 )")  PRAD=Text("( 0 )")
+                    · 15193/22883 SVER
+                         PX=Text("( 10 )")  PY=Text("( -15 )")  PRAD=Text("( 0 )")
+                    · 15193/22884 SVER
+                         PX=Text("( 7.5 )")  PY=Text("( -7.5 )")  PRAD=Text("( 0 )")
+                    · 15193/22885 SVER
+                         PX=Text("( 0 )")  PY=Text("( -2 )")  PRAD=Text("( 0 )")
+  2013286654/209 JLDATU
+     NUMB=Word { raw: 0, text: None }  ZDIS=Real(3000.0)  PKDI=Real(0.0)  LEVE=RawWords([0, 10])  FIXT=Text("FREE")
+    2013286654/210 PLDATU
+       PLOCK=Bool(false)  NUMB=Word { raw: 0, text: None }  POSL=Word { raw: 995148, text: Some("IBOW") }  YDIR=RealArray([0.0, 0.0, 1.0])  LEVE=RawWords([0, 10])
+      2013286654/211 FIXING
+        属性 TYPEX=RawWords([1, 108608856])  BANG=Real(0.0)  GTYP=Word { raw: 0, text: None }  NUMB=Word { raw: 0, text: None }  POS=RealArray([1100.0, -20.339096256473567, -0.024661583709530532])  ORI=RealArray([-0.07851078274386247, 0.0, 180.0])  CUTB=Real(0.0)  CUTP=RealArray([0.0, 0.0, 1.0])  JLIN=Word { raw: 0, text: None }  UNIPAR=RawWords([939199])  DESP=RealArray([25.0])  BUIL=Bool(false)  SHOP=Bool(false)  CREF=RefNo(RefNo(0/0, dbno=0))  ISPE=RefNo(RefNo(0/0, dbno=0))  FIRE=Real(0.0)  INRE=RefNo(RefNo(0/0, dbno=0))  SPRE=RefNo(RefNo(15193/26203, dbno=7001))  SPAMAP=IntArray([1003168605])  MATR=RefNo(RefNo(15200/39782, dbno=7008))
+         world_matrix T=[-304969.157, 330243.964, 99999.975] X=[-0.4986, 0.8668, 0.0000] Z=[-0.0012, -0.0007, 1.0000]  local T=[1100.000, -20.339, -0.025]
+        属主链 PLDATU 2013286654/210 ← JLDATU 2013286654/209 ← WALL 2013286654/205 ← CWALL 2013286654/204 ← FRMW 2013286654/17 ← STRU 2013286654/3
+        SPRE 15193/26203 SPCO Some("/Window-Spec/DG-S/1200x1200")
+        目录件 15193/22809 SFIT Some("/DG-S/1200x1200")
+           TYPEX=RawWords([1, 931843])  NAME=Text("/DG-S/1200x1200")  GTYP=Word { raw: 620645, text: Some("WIND") }  CTYA=Word { raw: 0, text: None }  PTRE=RefNo(RefNo(15193/22818, dbno=7001))  GMRE=RefNo(RefNo(15193/22827, dbno=7001))  NGMR=RefNo(RefNo(15193/22886, dbno=7001))  DTRE=RefNo(RefNo(15193/22811, dbno=7001))  PARA=RealArray([1200.0, 1200.0])
+          DTRE → 15193/22811 DTSE
+            · 15193/22812 DATA NAME=Text("/DG-S/DTSE-WIDT")  DKEY=Word { raw: 928283, text: Some("WIDT") }  PTYP=Word { raw: 939199, text: Some("DIST") }  PPRO=Text("( ATTRIB PARA[1 ] )")  DPRO=Text("( 1000 )")  PURP=Word { raw: 564289, text: Some("PARA") }  NUMB=Word { raw: 1, text: None }  DTIT=Text("Width")  RUSE=Word { raw: 1, text: None }
+            · 15193/22813 DATA NAME=Text("/DG-S/DTSE-HEIG")  DKEY=Word { raw: 675926, text: Some("HEIG") }  PTYP=Word { raw: 939199, text: Some("DIST") }  PPRO=Text("( ATTRIB PARA[2 ] )")  DPRO=Text("( 1200 )")  PURP=Word { raw: 564289, text: Some("PARA") }  NUMB=Word { raw: 2, text: None }  DTIT=Text("Height")  RUSE=Word { raw: 1, text: None }
+            · 15193/22814 DATA NAME=Text("/DG-S/DTSE-WTHK")  DKEY=Word { raw: 754349, text: Some("WTHK") }  PTYP=Word { raw: 0, text: None }  PPRO=Text("( 400 )")  DPRO=Text("( 300 )")  PURP=Word { raw: 0, text: None }  NUMB=Word { raw: 0, text: None }  DTIT=Text("Wall Thickness")  RUSE=Word { raw: 1, text: None }
+            · 15193/22815 DATA NAME=Text("/DG-S/DTSE-ISET")  DKEY=Word { raw: 929268, text: Some("ISET") }  PTYP=Word { raw: 939199, text: Some("DIST") }  PPRO=Text("( ATTRIB DESP[1 ] )")  DPRO=Text("( 25 )")  PURP=Word { raw: 860359, text: Some("DESP") }  NUMB=Word { raw: 1, text: None }  DTIT=Text("Inset from wall face")  RUSE=Word { raw: 1, text: None }
+            · 15193/22816 DATA NAME=Text("/DG-S/DTSE-STYL")  DKEY=Word { raw: 786421, text: Some("STYL") }  PTYP=Word { raw: 0, text: None }  PPRO=RawWords([0, 0, 0, 0])  DPRO=RawWords([0, 0, 0, 0])  PURP=Word { raw: 898052, text: Some("EXPR") }  NUMB=Word { raw: 0, text: None }  DTIT=Text("Style")
+            · 15193/22817 DATA NAME=Text("/DG-S/DTSE-SIZE")  DKEY=Word { raw: 649072, text: Some("SIZE") }  PTYP=Word { raw: 0, text: None }  PPRO=RawWords([0, 0, 0, 0])  DPRO=RawWords([0, 0, 0, 0])  PURP=Word { raw: 898052, text: Some("EXPR") }  NUMB=Word { raw: 0, text: None }  DTIT=Text("Size")  RUSE=Word { raw: 1, text: None }
+          CREF(附着) 空
+          属主型材 2013286654/205 WALL → SPRF 15193/14605 Some("/100_thk_wall") PARA=Some(RealArray([100.0]))
+          NGMR → 15193/22886 NGMS
+            - 15193/64131 NSEX
+                 PURP=Word { raw: 635406, text: Some("OPGE") }  OBST=Word { raw: 2, text: None }  LEVE=RawWords([0, 10])  CLFL=Bool(false)  TUFL=Bool(false)  PX=RawWords([0, 0, 0, 0])  PY=RawWords([0, 0, 0, 0])  PZ=RawWords([0, 0, 0, 0])  PAAX=RawWords([2, 1])  PBAX=RawWords([1, 2])  PHEI=Text("( ATTRIB RPRO WTHK )")  NAPP=Word { raw: 4294967295, text: None }
+                · 15193/64132 SLOO
+                     PURP=Word { raw: 635406, text: Some("OPGE") }
+                    · 15193/64133 SVER
+                         PX=RawWords([0, 1, 0, 0])  PY=Text("( -0.5 * ATTRIB RPRO WIDT )")  PRAD=RawWords([0, 1, 0, 0])
+                    · 15193/64134 SVER
+                         PX=Text("( ATTRIB RPRO HEIG )")  PY=Text("( -0.5 * ATTRIB RPRO WIDT )")  PRAD=RawWords([0, 0, 0, 0])
+                    · 15193/64135 SVER
+                         PX=Text("( ATTRIB RPRO HEIG )")  PY=Text("( 0.5 * ATTRIB RPRO WIDT )")  PRAD=RawWords([0, 0, 0, 0])
+                    · 15193/64136 SVER
+                         PX=RawWords([0, 1, 0, 0])  PY=Text("( 0.5 * ATTRIB RPRO WIDT )")  PRAD=RawWords([0, 0, 0, 0])
+            - 15193/64137 NSEX
+                 PURP=Word { raw: 635399, text: Some("HPGE") }  OBST=Word { raw: 2, text: None }  LEVE=RawWords([0, 10])  CLFL=Bool(false)  TUFL=Bool(false)  PX=RawWords([0, 0, 0, 0])  PY=RawWords([0, 0, 0, 0])  PZ=RawWords([0, 0, 0, 0])  PAAX=RawWords([2, 1])  PBAX=RawWords([1, 2])  PHEI=Text("( ATTRIB RPRO WTHK )")  NAPP=Word { raw: 4294967295, text: None }
+                · 15193/64138 SLOO
+                     PURP=Word { raw: 635399, text: Some("HPGE") }
+                    · 15193/64139 SVER
+                         PX=RawWords([0, 1, 0, 0])  PY=Text("( -0.5 * ATTRIB RPRO WIDT )")  PRAD=RawWords([0, 1, 0, 0])
+                    · 15193/64140 SVER
+                         PX=Text("( ATTRIB RPRO HEIG )")  PY=Text("( -0.5 * ATTRIB RPRO WIDT )")  PRAD=RawWords([0, 0, 0, 0])
+                    · 15193/64141 SVER
+                         PX=Text("( ATTRIB RPRO HEIG )")  PY=Text("( 0.5 * ATTRIB RPRO WIDT )")  PRAD=RawWords([0, 0, 0, 0])
+                    · 15193/64142 SVER
+                         PX=RawWords([0, 1, 0, 0])  PY=Text("( 0.5 * ATTRIB RPRO WIDT )")  PRAD=RawWords([0, 0, 0, 0])
+            - 15193/22887 NSBO
+                 OBST=Word { raw: 1, text: None }  LEVE=RawWords([0, 10])  CLFL=Bool(true)  TUFL=Bool(true)  PX=Text("( ATTRIB RPRO HEIG * -0.5 )")  PY=RawWords([0, 0, 0, 0])  PZ=Text("( ATTRIB RPRO WTHK * -0.5 )")  PXLE=Text("( ATTRIB RPRO HEIG )")  PYLE=Text("( ATTRIB RPRO WIDT )")  PZLE=Text("( ATTRIB RPRO WTHK + 20 )")  NAPP=Word { raw: 4294967295, text: None }
+          GMRE → 15193/22827 GMSE
+            - 15193/22828 SBOX
+                 OBST=Word { raw: 2, text: None }  LEVE=RawWords([0, 10])  CLFL=Bool(false)  TUFL=Bool(false)  PX=Text("( ATTRIB RPRO HEIG * -0.5 )")  PY=RawWords([0, 0, 0, 0])  PZ=Text("( ( ATTRIB RPRO WTHK + 20 ) * -0.5 )")  PXLE=Text("( ATTRIB RPRO HEIG )")  PYLE=Text("( ATTRIB RPRO WIDT )")  PZLE=Text("( ATTRIB RPRO WTHK + 20 )")  NAPP=Word { raw: 2, text: None }
+            - 15193/22829 SEXT
+                 OBST=Word { raw: 0, text: None }  LEVE=RawWords([0, 10])  CLFL=Bool(true)  TUFL=Bool(true)  PX=Text("( ATTRIB RPRO ISET * -1 )")  PY=Text("( ATTRIB RPRO WIDT * -0.5 )")  PZ=Text("( 10 )")  PAAX=RawWords([1, 3])  PBAX=RawWords([1, 2])  PHEI=Text("( ATTRIB RPRO HEIG - 20 )")  NAPP=Word { raw: 2, text: None }
+                · 15193/22830 SLOO
+                     
+                    · 15193/22831 SVER
+                         PX=Text("( 0 )")  PY=Text("( 0 )")  PRAD=Text("( 0 )")
+                    · 15193/22832 SVER
+                         PX=Text("( -25 )")  PY=Text("( 0 )")  PRAD=Text("( 0 )")
+                    · 15193/22833 SVER
+                         PX=Text("( -25 )")  PY=Text("( 10 )")  PRAD=Text("( 0 )")
+                    · 15193/22834 SVER
+                         PX=Text("( -45 )")  PY=Text("( 10 )")  PRAD=Text("( 0 )")
+                    · 15193/22835 SVER
+                         PX=Text("( -45 )")  PY=Text("( 0 )")  PRAD=Text("( 0 )")
+                    · 15193/22836 SVER
+                         PX=Text("( -70 )")  PY=Text("( 0 )")  PRAD=Text("( 0 )")
+                    · 15193/22837 SVER
+                         PX=Text("( -70 )")  PY=Text("( 41 )")  PRAD=Text("( 0 )")
+                    · 15193/22838 SVER
+                         PX=Text("( -25 )")  PY=Text("( 45 )")  PRAD=Text("( 0 )")
+                    · 15193/22839 SVER
+                         PX=Text("( -25 )")  PY=Text("( 32.5 )")  PRAD=Text("( 0 )")
+                    · 15193/22840 SVER
+                         PX=Text("( 0 )")  PY=Text("( 32.5 )")  PRAD=Text("( 0 )")
+            - 15193/22841 SEXT
+                 OBST=Word { raw: 0, text: None }  LEVE=RawWords([0, 10])  CLFL=Bool(true)  TUFL=Bool(true)  PX=Text("( ATTRIB RPRO ISET * -1 )")  PY=RawWords([0, 1, 0, 0])  PZ=Text("( ATTRIB RPRO WIDT * -0.5 )")  PAAX=RawWords([1, 3])  PBAX=RawWords([2, 1])  PHEI=Text("( ATTRIB RPRO WIDT )")  NAPP=Word { raw: 2, text: None }
+                · 15193/22842 SLOO
+                     
+                    · 15193/22843 SVER
+                         PX=Text("( -25 )")  PY=Text("( 0 )")  PRAD=Text("( 0 )")
+                    · 15193/22844 SVER
+                         PX=Text("( -25 )")  PY=Text("( 10 )")  PRAD=Text("( 0 )")
+                    · 15193/22845 SVER
+                         PX=Text("( -45 )")  PY=Text("( 10 )")  PRAD=Text("( 0 )")
+                    · 15193/22846 SVER
+                         PX=Text("( -45 )")  PY=Text("( 0 )")  PRAD=Text("( 0 )")
+                    · 15193/22847 SVER
+                         PX=Text("( -70 )")  PY=Text("( 0 )")  PRAD=Text("( 0 )")
+                    · 15193/22848 SVER
+                         PX=Text("( -70 )")  PY=Text("( 58.5 )")  PRAD=Text("( 0 )")
+                    · 15193/22849 SVER
+                         PX=Text("( -25 )")  PY=Text("( 62.5 )")  PRAD=Text("( 0 )")
+                    · 15193/22850 SVER
+                         PX=Text("( -25 )")  PY=Text("( 50 )")  PRAD=Text("( 0 )")
+                    · 15193/22851 SVER
+                         PX=Text("( 0 )")  PY=Text("( 50 )")  PRAD=Text("( 0 )")
+                    · 15193/22852 SVER
+                         PX=Text("( 0 )")  PY=Text("( 37.5 )")  PRAD=Text("( 0 )")
+                    · 15193/22853 SVER
+                         PX=Text("( 80 )")  PY=Text("( 23.393801 )")  PRAD=Text("( 5 )")
+                    · 15193/22854 SVER
+                         PX=Text("( 80 )")  PY=Text("( 0 )")  PRAD=Text("( 0 )")
+                    · 15193/22855 SVER
+                         PX=Text("( 70 )")  PY=Text("( 0 )")  PRAD=Text("( -5 )")
+            - 15193/22856 SEXT
+                 OBST=Word { raw: 0, text: None }  LEVE=RawWords([0, 10])  CLFL=Bool(true)  TUFL=Bool(true)  PX=Text("( ATTRIB RPRO ISET * -1 )")  PY=Text("( ATTRIB RPRO WIDT * 0.5 )")  PZ=Text("( 10 )")  PAAX=RawWords([1, 3])  PBAX=RawWords([1, 2])  PHEI=Text("( ATTRIB RPRO HEIG - 20 )")  NAPP=Word { raw: 2, text: None }
+                · 15193/22857 SLOO
+                     
+                    · 15193/22858 SVER
+                         PX=Text("( 0 )")  PY=Text("( 0 )")  PRAD=Text("( 0 )")
+                    · 15193/22859 SVER
+                         PX=Text("( -25 )")  PY=Text("( 0 )")  PRAD=Text("( 0 )")
+                    · 15193/22860 SVER
+                         PX=Text("( -25 )")  PY=Text("( -10 )")  PRAD=Text("( 0 )")
+                    · 15193/22861 SVER
+                         PX=Text("( -45 )")  PY=Text("( -10 )")  PRAD=Text("( 0 )")
+                    · 15193/22862 SVER
+                         PX=Text("( -45 )")  PY=Text("( 0 )")  PRAD=Text("( 0 )")
+                    · 15193/22863 SVER
+                         PX=Text("( -70 )")  PY=Text("( 0 )")  PRAD=Text("( 0 )")
+                    · 15193/22864 SVER
+                         PX=Text("( -70 )")  PY=Text("( -41 )")  PRAD=Text("( 0 )")
+                    · 15193/22865 SVER
+                         PX=Text("( -25 )")  PY=Text("( -45 )")  PRAD=Text("( 0 )")
+                    · 15193/22866 SVER
+                         PX=Text("( -25 )")  PY=Text("( -32.5 )")  PRAD=Text("( 0 )")
+                    · 15193/22867 SVER
+                         PX=Text("( 0 )")  PY=Text("( -32.5 )")  PRAD=Text("( 0 )")
+            - 15193/22868 SEXT
+                 OBST=Word { raw: 0, text: None }  LEVE=RawWords([0, 10])  CLFL=Bool(true)  TUFL=Bool(true)  PX=Text("( ATTRIB RPRO ISET * -1 )")  PY=Text("( ATTRIB RPRO HEIG )")  PZ=Text("( ATTRIB RPRO WIDT * -0.5 )")  PAAX=RawWords([1, 3])  PBAX=RawWords([2, 1])  PHEI=Text("( ATTRIB RPRO WIDT )")  NAPP=Word { raw: 2, text: None }
+                · 15193/22869 SLOO
+                     
+                    · 15193/22870 SVER
+                         PX=Text("( 0 )")  PY=Text("( 0 )")  PRAD=Text("( 0 )")
+                    · 15193/22871 SVER
+                         PX=Text("( -25 )")  PY=Text("( 0 )")  PRAD=Text("( 0 )")
+                    · 15193/22872 SVER
+                         PX=Text("( -25 )")  PY=Text("( -10 )")  PRAD=Text("( 0 )")
+                    · 15193/22873 SVER
+                         PX=Text("( -45 )")  PY=Text("( -10 )")  PRAD=Text("( 0 )")
+                    · 15193/22874 SVER
+                         PX=Text("( -45 )")  PY=Text("( 0 )")  PRAD=Text("( 0 )")
+                    · 15193/22875 SVER
+                         PX=Text("( -70 )")  PY=Text("( 0 )")  PRAD=Text("( 0 )")
+                    · 15193/22876 SVER
+                         PX=Text("( -70 )")  PY=Text("( -41 )")  PRAD=Text("( 0 )")
+                    · 15193/22877 SVER
+                         PX=Text("( -25 )")  PY=Text("( -45 )")  PRAD=Text("( 0 )")
+                    · 15193/22878 SVER
+                         PX=Text("( -25 )")  PY=Text("( -32.5 )")  PRAD=Text("( 0 )")
+                    · 15193/22879 SVER
+                         PX=Text("( 0 )")  PY=Text("( -32.5 )")  PRAD=Text("( 0 )")
+                    · 15193/22880 SVER
+                         PX=Text("( 0 )")  PY=Text("( -12.5 )")  PRAD=Text("( 0 )")
+                    · 15193/22881 SVER
+                         PX=Text("( 5 )")  PY=Text("( -12.5 )")  PRAD=Text("( 0 )")
+                    · 15193/22882 SVER
+                         PX=Text("( 8 )")  PY=Text("( -15 )")  PRAD=Text("( 0 )")
+                    · 15193/22883 SVER
+                         PX=Text("( 10 )")  PY=Text("( -15 )")  PRAD=Text("( 0 )")
+                    · 15193/22884 SVER
+                         PX=Text("( 7.5 )")  PY=Text("( -7.5 )")  PRAD=Text("( 0 )")
+                    · 15193/22885 SVER
+                         PX=Text("( 0 )")  PY=Text("( -2 )")  PRAD=Text("( 0 )")
+  2013286654/212 JLDATU
+     NUMB=Word { raw: 0, text: None }  ZDIS=Real(7500.0)  PKDI=Real(0.0)  LEVE=RawWords([0, 10])  FIXT=Text("FREE")
+    2013286654/213 PLDATU
+       PLOCK=Bool(false)  NUMB=Word { raw: 0, text: None }  POSL=Word { raw: 995148, text: Some("IBOW") }  YDIR=RealArray([0.0, 0.0, 1.0])  LEVE=RawWords([0, 10])
+      2013286654/214 FIXING
+        属性 TYPEX=RawWords([1, 108608856])  BANG=Real(0.0)  GTYP=Word { raw: 0, text: None }  NUMB=Word { raw: 0, text: None }  POS=RealArray([0.0, -50.8470595877734, -0.08691212377743796])  ORI=RealArray([-0.19618410907932715, 0.0, 180.0])  CUTB=Real(0.0)  CUTP=RealArray([0.0, 0.0, 1.0])  JLIN=Word { raw: 0, text: None }  UNIPAR=RawWords([939199, 640481])  DESP=RealArray([25.0, 45.0])  BUIL=Bool(false)  SHOP=Bool(false)  CREF=RefNo(RefNo(0/0, dbno=0))  ISPE=RefNo(RefNo(0/0, dbno=0))  FIRE=Real(0.0)  INRE=RefNo(RefNo(0/0, dbno=0))  SPRE=RefNo(RefNo(15193/26189, dbno=7001))  SPAMAP=IntArray([1003155755])  MATR=RefNo(RefNo(15200/39782, dbno=7008))
+         world_matrix T=[-305544.080, 331182.257, 99999.913] X=[-0.4986, 0.8668, 0.0000] Z=[-0.0030, -0.0017, 1.0000]  local T=[0.000, -50.847, -0.087]
+        属主链 PLDATU 2013286654/213 ← JLDATU 2013286654/212 ← WALL 2013286654/205 ← CWALL 2013286654/204 ← FRMW 2013286654/17 ← STRU 2013286654/3
+        SPRE 15193/26189 SPCO Some("/Doors-Spec/EE-DOO-NS/1710x2045")
+        目录件 15193/24963 SFIT Some("/EE-DOO-NS/1710x2045")
+           TYPEX=RawWords([1, 931843])  NAME=Text("/EE-DOO-NS/1710x2045")  GTYP=Word { raw: 897079, text: Some("DOOR") }  CTYA=Word { raw: 0, text: None }  PTRE=RefNo(RefNo(15193/24976, dbno=7001))  GMRE=RefNo(RefNo(15193/24995, dbno=7001))  NGMR=RefNo(RefNo(15193/25075, dbno=7001))  DTRE=RefNo(RefNo(15193/24964, dbno=7001))  PARA=RealArray([1700.0, 2045.0, 806.0, 1994.0, 40.0, 95.0])
+          DTRE → 15193/24964 DTSE
+            · 15193/24965 DATA NAME=Text("/EE-DOO-NS/DTSE-WIDT")  DKEY=Word { raw: 928283, text: Some("WIDT") }  PTYP=Word { raw: 939199, text: Some("DIST") }  PPRO=Text("( ATTRIB PARA[1 ] )")  DPRO=Text("( 900 )")  PURP=Word { raw: 564289, text: Some("PARA") }  NUMB=Word { raw: 1, text: None }  DTIT=Text("Frame width")  RUSE=Word { raw: 1, text: None }
+            · 15193/24966 DATA NAME=Text("/EE-DOO-NS/DTSE-HEIG")  DKEY=Word { raw: 675926, text: Some("HEIG") }  PTYP=Word { raw: 939199, text: Some("DIST") }  PPRO=Text("( ATTRIB PARA[2 ] )")  DPRO=Text("( 2045 )")  PURP=Word { raw: 564289, text: Some("PARA") }  NUMB=Word { raw: 2, text: None }  DTIT=Text("Frame height")  RUSE=Word { raw: 1, text: None }
+            · 15193/24967 DATA NAME=Text("/EE-DOO-NS/DTSE-DWID")  DKEY=Word { raw: 617359, text: Some("DWID") }  PTYP=Word { raw: 0, text: None }  PPRO=Text("( ATTRIB PARA[3 ] )")  DPRO=Text("( 806 )")  PURP=Word { raw: 564289, text: Some("PARA") }  NUMB=Word { raw: 3, text: None }  DTIT=Text("Door width")  RUSE=Word { raw: 1, text: None }
+            · 15193/24968 DATA NAME=Text("/EE-DOO-NS/DTSE-DHEI")  DKEY=Word { raw: 712453, text: Some("DHEI") }  PTYP=Word { raw: 0, text: None }  PPRO=Text("( ATTRIB PARA[4 ] )")  DPRO=Text("( 1194 )")  PURP=Word { raw: 564289, text: Some("PARA") }  NUMB=Word { raw: 4, text: None }  DTIT=Text("Door height")  RUSE=Word { raw: 1, text: None }
+            · 15193/24969 DATA NAME=Text("/EE-DOO-NS/DTSE-THK")  DKEY=Word { raw: 539696, text: Some("THK") }  PTYP=Word { raw: 0, text: None }  PPRO=Text("( ATTRIB PARA[5 ] )")  DPRO=Text("( 40 )")  PURP=Word { raw: 564289, text: Some("PARA") }  NUMB=Word { raw: 5, text: None }  DTIT=Text("Door thickness")  RUSE=Word { raw: 1, text: None }
+            · 15193/24970 DATA NAME=Text("/EE-DOO-NS/DTSE-JTHK")  DKEY=Word { raw: 754336, text: Some("JTHK") }  PTYP=Word { raw: 0, text: None }  PPRO=Text("( ATTRIB PARA[6 ] )")  DPRO=Text("( 95 )")  PURP=Word { raw: 564289, text: Some("PARA") }  NUMB=Word { raw: 6, text: None }  DTIT=Text("Jamb thickness")  RUSE=Word { raw: 1, text: None }
+            · 15193/24971 DATA NAME=Text("/EE-DOO-NS/DTSE-WTHK")  DKEY=Word { raw: 754349, text: Some("WTHK") }  PTYP=Word { raw: 0, text: None }  PPRO=Text("( 400 )")  DPRO=Text("( 300 )")  PURP=Word { raw: 0, text: None }  NUMB=Word { raw: 0, text: None }  DTIT=Text("Wall Thickness")  RUSE=Word { raw: 1, text: None }
+            · 15193/24972 DATA NAME=Text("/EE-DOO-NS/DTSE-ISET")  DKEY=Word { raw: 929268, text: Some("ISET") }  PTYP=Word { raw: 939199, text: Some("DIST") }  PPRO=Text("( ATTRIB DESP[1 ] )")  DPRO=Text("( 25 )")  PURP=Word { raw: 860359, text: Some("DESP") }  NUMB=Word { raw: 1, text: None }  DTIT=Text("Inset from wall face")  RUSE=Word { raw: 1, text: None }
+            · 15193/24973 DATA NAME=Text("/EE-DOO-NS/DTSE-ANGL")  DKEY=Word { raw: 773119, text: Some("ANGL") }  PTYP=Word { raw: 768519, text: Some("REAL") }  PPRO=Text("( ATTRIB DESP[2 ] )")  DPRO=Text("( 0 )")  PURP=Word { raw: 860359, text: Some("DESP") }  NUMB=Word { raw: 2, text: None }  DTIT=Text("Open Angle")  RUSE=Word { raw: 1, text: None }
+            · 15193/24974 DATA NAME=Text("/EE-DOO-NS/DTSE-STYL")  DKEY=Word { raw: 786421, text: Some("STYL") }  PTYP=Word { raw: 0, text: None }  PPRO=RawWords([0, 0, 0, 0])  DPRO=RawWords([0, 0, 0, 0])  PURP=Word { raw: 898052, text: Some("EXPR") }  NUMB=Word { raw: 0, text: None }  DTIT=Text("Style")
+            · 15193/24975 DATA NAME=Text("/EE-DOO-NS/DTSE-SIZE")  DKEY=Word { raw: 649072, text: Some("SIZE") }  PTYP=Word { raw: 0, text: None }  PPRO=RawWords([0, 0, 0, 0])  DPRO=RawWords([0, 0, 0, 0])  PURP=Word { raw: 898052, text: Some("EXPR") }  NUMB=Word { raw: 0, text: None }  DTIT=Text("Size")  RUSE=Word { raw: 1, text: None }
+          CREF(附着) 空
+          属主型材 2013286654/205 WALL → SPRF 15193/14605 Some("/100_thk_wall") PARA=Some(RealArray([100.0]))
+          NGMR → 15193/25075 NGMS
+            - 15193/25076 NSBO
+                 OBST=Word { raw: 1, text: None }  LEVE=RawWords([0, 10])  CLFL=Bool(true)  TUFL=Bool(true)  PX=Text("( ATTRIB RPRO HEIG * -0.5 )")  PY=RawWords([0, 0, 0, 0])  PZ=Text("( ATTRIB RPRO WTHK * -0.5 )")  PXLE=Text("( ATTRIB RPRO HEIG )")  PYLE=Text("( ATTRIB RPRO WIDT )")  PZLE=Text("( ATTRIB RPRO WTHK + 20 )")  NAPP=Word { raw: 4294967295, text: None }
+            - 15193/64341 NSEX
+                 PURP=Word { raw: 635406, text: Some("OPGE") }  OBST=Word { raw: 2, text: None }  LEVE=RawWords([0, 10])  CLFL=Bool(false)  TUFL=Bool(false)  PX=RawWords([0, 0, 0, 0])  PY=RawWords([0, 0, 0, 0])  PZ=RawWords([0, 0, 0, 0])  PAAX=RawWords([2, 1])  PBAX=RawWords([1, 2])  PHEI=Text("( ATTRIB PARA[6 ] + ATTRIB PARA[5 ] )")  NAPP=Word { raw: 4294967295, text: None }
+                · 15193/64342 SLOO
+                     PURP=Word { raw: 635406, text: Some("OPGE") }
+                    · 15193/64343 SVER
+                         PX=RawWords([0, 1, 0, 0])  PY=Text("( -0.5 * ATTRIB RPRO WIDT )")  PRAD=RawWords([0, 1, 0, 0])
+                    · 15193/64344 SVER
+                         PX=Text("( ATTRIB RPRO HEIG )")  PY=Text("( -0.5 * ATTRIB RPRO WIDT )")  PRAD=RawWords([0, 0, 0, 0])
+                    · 15193/64345 SVER
+                         PX=Text("( ATTRIB RPRO HEIG )")  PY=Text("( 0.5 * ATTRIB RPRO WIDT )")  PRAD=RawWords([0, 0, 0, 0])
+                    · 15193/64346 SVER
+                         PX=RawWords([0, 1, 0, 0])  PY=Text("( 0.5 * ATTRIB RPRO WIDT )")  PRAD=RawWords([0, 0, 0, 0])
+            - 15193/64347 NSEX
+                 PURP=Word { raw: 635399, text: Some("HPGE") }  OBST=Word { raw: 2, text: None }  LEVE=RawWords([0, 10])  CLFL=Bool(false)  TUFL=Bool(false)  PX=RawWords([0, 0, 0, 0])  PY=RawWords([0, 0, 0, 0])  PZ=RawWords([0, 0, 0, 0])  PAAX=RawWords([2, 1])  PBAX=RawWords([1, 2])  PHEI=Text("( ATTRIB PARA[6 ] + ATTRIB PARA[5 ] )")  NAPP=Word { raw: 4294967295, text: None }
+                · 15193/64348 SLOO
+                     PURP=Word { raw: 635399, text: Some("HPGE") }
+                    · 15193/64349 SVER
+                         PX=RawWords([0, 1, 0, 0])  PY=Text("( -0.5 * ATTRIB RPRO WIDT )")  PRAD=RawWords([0, 1, 0, 0])
+                    · 15193/64350 SVER
+                         PX=Text("( ATTRIB RPRO HEIG )")  PY=Text("( -0.5 * ATTRIB RPRO WIDT )")  PRAD=RawWords([0, 0, 0, 0])
+                    · 15193/64351 SVER
+                         PX=Text("( ATTRIB RPRO HEIG )")  PY=Text("( 0.5 * ATTRIB RPRO WIDT )")  PRAD=RawWords([0, 0, 0, 0])
+                    · 15193/64352 SVER
+                         PX=RawWords([0, 1, 0, 0])  PY=Text("( 0.5 * ATTRIB RPRO WIDT )")  PRAD=RawWords([0, 0, 0, 0])
+          GMRE → 15193/24995 GMSE
+            - 15193/24996 SRTO
+                 OBST=Word { raw: 2, text: None }  LEVE=RawWords([0, 10])  CLFL=Bool(false)  TUFL=Bool(false)  PAAX=RawWords([3, 13])  PBAX=RawWords([3, 14])  PDIA=Text("( ATTRIB RPRO DWID )")  PHEI=Text("( ATTRIB RPRO DHEI )")  TVIS=Bool(true)  BVIS=Bool(true)  NAPP=Word { raw: 2, text: None }
+            - 15193/24997 SRTO
+                 OBST=Word { raw: 2, text: None }  LEVE=RawWords([0, 10])  CLFL=Bool(false)  TUFL=Bool(false)  PAAX=RawWords([3, 23])  PBAX=RawWords([3, 24])  PDIA=Text("( ATTRIB RPRO DWID )")  PHEI=Text("( ATTRIB RPRO DHEI )")  TVIS=Bool(true)  BVIS=Bool(true)  NAPP=Word { raw: 2, text: None }
+            - 15193/24998 SBOX
+                 OBST=Word { raw: 2, text: None }  LEVE=RawWords([0, 10])  CLFL=Bool(false)  TUFL=Bool(false)  PX=Text("( ATTRIB RPRO HEIG * -0.5 )")  PY=RawWords([0, 0, 0, 0])  PZ=Text("( ( ATTRIB RPRO WTHK + 20 ) * -0.5 )")  PXLE=Text("( ATTRIB RPRO HEIG )")  PYLE=Text("( ATTRIB RPRO WIDT )")  PZLE=Text("( ATTRIB RPRO WTHK + 20 )")  NAPP=Word { raw: 2, text: None }
+            - 15193/24999 SEXT
+                 OBST=Word { raw: 0, text: None }  LEVE=RawWords([0, 10])  CLFL=Bool(true)  TUFL=Bool(true)  PX=RawWords([0, 0, 0, 0])  PY=RawWords([0, 0, 0, 0])  PZ=RawWords([0, 0, 0, 0])  PAAX=RawWords([3, 12])  PBAX=RawWords([3, 10])  PHEI=Text("( ATTRIB RPRO THK )")  NAPP=Word { raw: 2, text: None }
+                · 15193/25000 SLOO
+                     
+                    · 15193/25001 SVER
+                         PX=RawWords([0, 0, 0, 0])  PY=RawWords([0, 0, 0, 0])  PRAD=RawWords([0, 0, 0, 0])
+                    · 15193/25002 SVER
+                         PX=Text("( ATTRIB RPRO DHEI )")  PY=RawWords([0, 0, 0, 0])  PRAD=RawWords([0, 0, 0, 0])
+                    · 15193/25003 SVER
+                         PX=Text("( ATTRIB RPRO DHEI )")  PY=Text("( ATTRIB RPRO DWID )")  PRAD=RawWords([0, 0, 0, 0])
+                    · 15193/25004 SVER
+                         PX=RawWords([0, 0, 0, 0])  PY=Text("( ATTRIB RPRO DWID )")  PRAD=RawWords([0, 0, 0, 0])
+            - 15193/25005 SEXT
+                 OBST=Word { raw: 0, text: None }  LEVE=RawWords([0, 10])  CLFL=Bool(true)  TUFL=Bool(true)  PX=RawWords([0, 0, 0, 0])  PY=RawWords([0, 0, 0, 0])  PZ=Text("( ATTRIB RPRO THK * -1 )")  PAAX=RawWords([3, 22])  PBAX=RawWords([3, 20])  PHEI=Text("( ATTRIB RPRO THK )")  NAPP=Word { raw: 2, text: None }
+                · 15193/25006 SLOO
+                     
+                    · 15193/25007 SVER
+                         PX=RawWords([0, 0, 0, 0])  PY=RawWords([0, 0, 0, 0])  PRAD=RawWords([0, 0, 0, 0])
+                    · 15193/25008 SVER
+                         PX=Text("( ATTRIB RPRO DHEI )")  PY=RawWords([0, 0, 0, 0])  PRAD=RawWords([0, 0, 0, 0])
+                    · 15193/25009 SVER
+                         PX=Text("( ATTRIB RPRO DHEI )")  PY=Text("( ATTRIB RPRO DWID )")  PRAD=RawWords([0, 0, 0, 0])
+                    · 15193/25010 SVER
+                         PX=RawWords([0, 0, 0, 0])  PY=Text("( ATTRIB RPRO DWID )")  PRAD=RawWords([0, 0, 0, 0])
+            - 15193/25011 SEXT
+                 OBST=Word { raw: 0, text: None }  LEVE=RawWords([0, 10])  CLFL=Bool(true)  TUFL=Bool(true)  PX=Text("( ATTRIB RPRO ISET * -1 )")  PY=Text("( ATTRIB RPRO WIDT * -0.5 )")  PZ=Text("( 0 )")  PAAX=RawWords([1, 3])  PBAX=RawWords([1, 2])  PHEI=Text("( ATTRIB RPRO HEIG - 20 )")  NAPP=Word { raw: 2, text: None }
+                · 15193/25012 SLOO
+                     
+                    · 15193/25013 SVER
+                         PX=Text("( 0 )")  PY=Text("( 0 )")  PRAD=Text("( 0 )")
+                    · 15193/25014 SVER
+                         PX=Text("( -30 )")  PY=Text("( 0 )")  PRAD=Text("( 0 )")
+                    · 15193/25015 SVER
+                         PX=Text("( -30 )")  PY=Text("( 10 )")  PRAD=Text("( 0 )")
+                    · 15193/25016 SVER
+                         PX=Text("( -65 )")  PY=Text("( 10 )")  PRAD=Text("( 0 )")
+                    · 15193/25017 SVER
+                         PX=Text("( -65 )")  PY=Text("( 0 )")  PRAD=Text("( 0 )")
+                    · 15193/25018 SVER
+                         PX=Text("( ATTRIB RPRO JTHK * -1 )")  PY=RawWords([0, 1, 0, 0])  PRAD=Text("( 0 )")
+                    · 15193/25019 SVER
+                         PX=Text("( ATTRIB RPRO JTHK * -1 )")  PY=RawWords([0, 0, 0, 0])  PRAD=RawWords([0, 0, 0, 0])
+                    · 15193/25020 SVER
+                         PX=RawWords([0, 0, 0, 0])  PY=RawWords([0, 0, 0, 0])  PRAD=Text("( 0 )")
+                    · 15193/25021 SVER
+                         PX=RawWords([0, 0, 0, 0])  PY=RawWords([0, 0, 0, 0])  PRAD=Text("( 0 )")
+                    · 15193/25022 SVER
+                         PX=RawWords([0, 1, 0, 0])  PY=RawWords([0, 0, 0, 0])  PRAD=Text("( 0 )")
+            - 15193/25023 SEXT
+                 OBST=Word { raw: 0, text: None }  LEVE=RawWords([0, 10])  CLFL=Bool(true)  TUFL=Bool(true)  PX=Text("( ATTRIB RPRO ISET * -1 )")  PY=Text("( ATTRIB RPRO WIDT * 0.5 )")  PZ=Text("( 0 )")  PAAX=RawWords([1, 3])  PBAX=RawWords([1, 2])  PHEI=Text("( ATTRIB RPRO HEIG - 20 )")  NAPP=Word { raw: 2, text: None }
+                · 15193/25024 SLOO
+                     
+                    · 15193/25025 SVER
+                         PX=Text("( 0 )")  PY=Text("( 0 )")  PRAD=Text("( 0 )")
+                    · 15193/25026 SVER
+                         PX=Text("( -30 )")  PY=Text("( 0 )")  PRAD=Text("( 0 )")
+                    · 15193/25027 SVER
+                         PX=Text("( -30 )")  PY=Text("( -10 )")  PRAD=Text("( 0 )")
+                    · 15193/25028 SVER
+                         PX=Text("( -65 )")  PY=Text("( -10 )")  PRAD=Text("( 0 )")
+                    · 15193/25029 SVER
+                         PX=Text("( -65 )")  PY=Text("( 0 )")  PRAD=Text("( 0 )")
+                    · 15193/25030 SVER
+                         PX=Text("( ATTRIB RPRO JTHK * -1 )")  PY=RawWords([0, 1, 0, 0])  PRAD=Text("( 0 )")
+                    · 15193/25031 SVER
+                         PX=Text("( ATTRIB RPRO JTHK * -1 )")  PY=RawWords([0, 0, 0, 0])  PRAD=RawWords([0, 0, 0, 0])
+                    · 15193/25032 SVER
+                         PX=RawWords([0, 0, 0, 0])  PY=RawWords([0, 0, 0, 0])  PRAD=Text("( 0 )")
+                    · 15193/25033 SVER
+                         PX=RawWords([0, 0, 0, 0])  PY=RawWords([0, 0, 0, 0])  PRAD=Text("( 0 )")
+                    · 15193/25034 SVER
+                         PX=RawWords([0, 1, 0, 0])  PY=RawWords([0, 0, 0, 0])  PRAD=Text("( 0 )")
+            - 15193/25035 SEXT
+                 OBST=Word { raw: 0, text: None }  LEVE=RawWords([0, 10])  CLFL=Bool(true)  TUFL=Bool(true)  PX=Text("( ATTRIB RPRO ISET * -1 )")  PY=Text("( ATTRIB RPRO HEIG )")  PZ=Text("( ATTRIB RPRO WIDT * -0.5 )")  PAAX=RawWords([1, 3])  PBAX=RawWords([2, 1])  PHEI=Text("( ATTRIB RPRO WIDT )")  NAPP=Word { raw: 2, text: None }
+                · 15193/25036 SLOO
+                     
+                    · 15193/25037 SVER
+                         PX=Text("( 0 )")  PY=Text("( 0 )")  PRAD=Text("( 0 )")
+                    · 15193/25038 SVER
+                         PX=Text("( -30 )")  PY=Text("( 0 )")  PRAD=Text("( 0 )")
+                    · 15193/25039 SVER
+                         PX=Text("( -30 )")  PY=Text("( -10 )")  PRAD=Text("( 0 )")
+                    · 15193/25040 SVER
+                         PX=Text("( -65 )")  PY=Text("( -10 )")  PRAD=Text("( 0 )")
+                    · 15193/25041 SVER
+                         PX=Text("( -65 )")  PY=Text("( 0 )")  PRAD=Text("( 0 )")
+                    · 15193/25042 SVER
+                         PX=Text("( ATTRIB RPRO JTHK * -1 )")  PY=Text("( 0 )")  PRAD=Text("( 0 )")
+                    · 15193/25043 SVER
+                         PX=Text("( ATTRIB RPRO JTHK * -1 )")  PY=RawWords([0, 0, 0, 0])  PRAD=RawWords([0, 0, 0, 0])
+                    · 15193/25044 SVER
+                         PX=RawWords([0, 0, 0, 0])  PY=RawWords([0, 0, 0, 0])  PRAD=Text("( 0 )")
+                    · 15193/25045 SVER
+                         PX=RawWords([0, 0, 0, 0])  PY=RawWords([0, 0, 0, 0])  PRAD=Text("( 0 )")
+                    · 15193/25046 SVER
+                         PX=Text("( 0 )")  PY=RawWords([0, 0, 0, 0])  PRAD=Text("( 0 )")
+                    · 15193/25047 SVER
+                         PX=Text("( 0 )")  PY=RawWords([0, 0, 0, 0])  PRAD=Text("( 0 )")
+                    · 15193/25048 SVER
+                         PX=Text("( 5 )")  PY=RawWords([0, 0, 0, 0])  PRAD=Text("( 0 )")
+                    · 15193/25049 SVER
+                         PX=Text("( 8 )")  PY=RawWords([0, 0, 0, 0])  PRAD=Text("( 0 )")
+                    · 15193/25050 SVER
+                         PX=Text("( 10 )")  PY=RawWords([0, 0, 0, 0])  PRAD=Text("( 0 )")
+                    · 15193/25051 SVER
+                         PX=Text("( 7.5 )")  PY=RawWords([0, 0, 0, 0])  PRAD=Text("( 0 )")
+                    · 15193/25052 SVER
+                         PX=Text("( 0 )")  PY=RawWords([0, 0, 0, 0])  PRAD=Text("( 0 )")
+            - 15193/25053 SEXT
+                 OBST=Word { raw: 0, text: None }  LEVE=RawWords([0, 10])  CLFL=Bool(true)  TUFL=Bool(true)  PX=Text("( ATTRIB RPRO DHEI * -0.5 )")  PY=Text("( ATTRIB RPRO THK )")  PZ=Text("( 25 )")  PAAX=RawWords([3, 1012])  PBAX=RawWords([3, 1011])  PHEI=Text("( ATTRIB RPRO DWID - 50 )")  NAPP=Word { raw: 2, text: None }
+                · 15193/25054 SLOO
+                     
+                    · 15193/25055 SVER
+                         PX=Text("( -40 )")  PY=RawWords([0, 0, 0, 0])  PRAD=RawWords([0, 0, 0, 0])
+                    · 15193/25056 SVER
+                         PX=Text("( -40 )")  PY=Text("( 30 )")  PRAD=RawWords([0, 0, 0, 0])
+                    · 15193/25057 SVER
+                         PX=Text("( -20 )")  PY=Text("( 30 )")  PRAD=RawWords([0, 0, 0, 0])
+                    · 15193/25058 SVER
+                         PX=Text("( 50 )")  PY=Text("( 100 )")  PRAD=RawWords([40, 1, 4294967196, 0])
+                    · 15193/25059 SVER
+                         PX=Text("( 65 )")  PY=Text("( 85 )")  PRAD=RawWords([40, 1, 4294967196, 0])
+                    · 15193/25060 SVER
+                         PX=Text("( 35 )")  PY=Text("( 55 )")  PRAD=RawWords([0, 1, 0, 0])
+                    · 15193/25061 SVER
+                         PX=Text("( 25 )")  PY=Text("( 30 )")  PRAD=RawWords([0, 0, 0, 0])
+                    · 15193/25062 SVER
+                         PX=Text("( 40 )")  PY=Text("( 30 )")  PRAD=RawWords([0, 0, 0, 0])
+                    · 15193/25063 SVER
+                         PX=Text("( 40 )")  PY=RawWords([0, 0, 0, 0])  PRAD=RawWords([0, 0, 0, 0])
+            - 15193/25064 SEXT
+                 OBST=Word { raw: 0, text: None }  LEVE=RawWords([0, 10])  CLFL=Bool(true)  TUFL=Bool(true)  PX=Text("( ATTRIB RPRO DHEI * -0.5 )")  PY=Text("( ATTRIB RPRO THK )")  PZ=Text("( ( ATTRIB RPRO DWID - 25 ) * -1 )")  PAAX=RawWords([3, 1022])  PBAX=RawWords([3, 1021])  PHEI=Text("( ATTRIB RPRO DWID - 50 )")  NAPP=Word { raw: 2, text: None }
+                · 15193/25065 SLOO
+                     
+                    · 15193/25066 SVER
+                         PX=Text("( -40 )")  PY=RawWords([0, 0, 0, 0])  PRAD=RawWords([0, 0, 0, 0])
+                    · 15193/25067 SVER
+                         PX=Text("( -40 )")  PY=Text("( 30 )")  PRAD=RawWords([0, 0, 0, 0])
+                    · 15193/25068 SVER
+                         PX=Text("( -20 )")  PY=Text("( 30 )")  PRAD=RawWords([0, 0, 0, 0])
+                    · 15193/25069 SVER
+                         PX=Text("( 50 )")  PY=Text("( 100 )")  PRAD=RawWords([40, 1, 4294967196, 0])
+                    · 15193/25070 SVER
+                         PX=Text("( 65 )")  PY=Text("( 85 )")  PRAD=RawWords([40, 1, 4294967196, 0])
+                    · 15193/25071 SVER
+                         PX=Text("( 35 )")  PY=Text("( 55 )")  PRAD=RawWords([0, 1, 0, 0])
+                    · 15193/25072 SVER
+                         PX=Text("( 25 )")  PY=Text("( 30 )")  PRAD=RawWords([0, 0, 0, 0])
+                    · 15193/25073 SVER
+                         PX=Text("( 40 )")  PY=Text("( 30 )")  PRAD=RawWords([0, 0, 0, 0])
+                    · 15193/25074 SVER
+                         PX=Text("( 40 )")  PY=RawWords([0, 0, 0, 0])  PRAD=RawWords([0, 0, 0, 0])
+  2013286654/215 JLDATU
+     NUMB=Word { raw: 0, text: None }  ZDIS=Real(12000.0)  PKDI=Real(0.0)  LEVE=RawWords([0, 10])  FIXT=Text("FREE")
+    2013286654/216 PLDATU
+       PLOCK=Bool(false)  NUMB=Word { raw: 0, text: None }  POSL=Word { raw: 995148, text: Some("IBOW") }  YDIR=RealArray([0.0, 0.0, 1.0])  LEVE=RawWords([0, 10])
+  2013286654/217 JLDATU
+     NUMB=Word { raw: 0, text: None }  ZDIS=Real(3000.0)  PKDI=Real(0.0)  LEVE=RawWords([0, 10])  FIXT=Text("FREE")
+    2013286654/218 PLDATU
+       PLOCK=Bool(false)  NUMB=Word { raw: 0, text: None }  POSL=Word { raw: 995148, text: Some("IBOW") }  YDIR=RealArray([0.0, 0.0, 1.0])  LEVE=RawWords([0, 10])
+  2013286654/219 JLDATU
+     NUMB=Word { raw: 0, text: None }  ZDIS=Real(7500.0)  PKDI=Real(0.0)  LEVE=RawWords([0, 10])  FIXT=Text("FREE")
+    2013286654/220 PLDATU
+       PLOCK=Bool(false)  NUMB=Word { raw: 0, text: None }  POSL=Word { raw: 995148, text: Some("IBOW") }  YDIR=RealArray([0.0, 0.0, 1.0])  LEVE=RawWords([0, 10])
+  2013286654/221 JLDATU
+     NUMB=Word { raw: 0, text: None }  ZDIS=Real(7469.83)  PKDI=Real(0.0)  LEVE=RawWords([0, 10])  FIXT=Text("FREE")
+    2013286654/222 PLDATU
+       PLOCK=Bool(false)  NUMB=Word { raw: 0, text: None }  POSL=Word { raw: 995148, text: Some("IBOW") }  YDIR=RealArray([0.0, 0.0, 1.0])  LEVE=RawWords([0, 10])
+  2013286654/223 JLDATU
+     NUMB=Word { raw: 0, text: None }  ZDIS=Real(13000.0)  PKDI=Real(0.0)  LEVE=RawWords([0, 10])  FIXT=Text("FREE")
+    2013286654/224 PLDATU
+       PLOCK=Bool(false)  NUMB=Word { raw: 0, text: None }  POSL=Word { raw: 995148, text: Some("IBOW") }  YDIR=RealArray([0.0, 0.0, 1.0])  LEVE=RawWords([0, 10])
+  2013286654/225 JLDATU
+     NUMB=Word { raw: 0, text: None }  ZDIS=Real(3000.0)  PKDI=Real(0.0)  LEVE=RawWords([0, 10])  FIXT=Text("FREE")
+    2013286654/226 PLDATU
+       PLOCK=Bool(false)  NUMB=Word { raw: 0, text: None }  POSL=Word { raw: 995148, text: Some("IBOW") }  YDIR=RealArray([0.0, 0.0, 1.0])  LEVE=RawWords([0, 10])
+  2013286654/227 JLDATU
+     NUMB=Word { raw: 0, text: None }  ZDIS=Real(2000.0)  PKDI=Real(0.0)  LEVE=RawWords([0, 10])  FIXT=Text("FREE")
+    2013286654/228 PLDATU
+       PLOCK=Bool(false)  NUMB=Word { raw: 0, text: None }  POSL=Word { raw: 995148, text: Some("IBOW") }  YDIR=RealArray([0.0, 0.0, 1.0])  LEVE=RawWords([0, 10])
+  2013286654/229 JLDATU
+     NUMB=Word { raw: 0, text: None }  ZDIS=Real(7525.0)  PKDI=Real(0.0)  LEVE=RawWords([0, 10])  FIXT=Text("FREE")
+    2013286654/230 PLDATU
+       PLOCK=Bool(false)  NUMB=Word { raw: 0, text: None }  POSL=Word { raw: 995154, text: Some("OBOW") }  YDIR=RealArray([0.0, 0.0, 1.0])  LEVE=RawWords([0, 10])
+  2013286654/231 JLDATU
+     NUMB=Word { raw: 0, text: None }  ZDIS=Real(7525.0)  PKDI=Real(0.0)  LEVE=RawWords([0, 10])  FIXT=Text("FREE")
+    2013286654/232 PLDATU
+       PLOCK=Bool(false)  NUMB=Word { raw: 0, text: None }  POSL=Word { raw: 995154, text: Some("OBOW") }  YDIR=RealArray([0.0, 0.0, 1.0])  LEVE=RawWords([0, 10])
+  2013286654/233 SPINE
+     DRNS=RealArray([-0.49861634101381186, -0.8668227872373904, 0.0])  DRNE=RealArray([0.49861634101381186, 0.8668227872373904, 0.0])  YDIR=RealArray([0.0, 0.0, 1.0])
+    2013286654/234 POINSP
+       POS=RealArray([14748.211604660028, -229.68338712869445, 0.0])
+    2013286654/235 CURVE
+       POS=RealArray([12785.635619617184, -7354.591885507834, 0.0])  CPOS=RealArray([0.0, 0.0, 0.0])  ZDIR=RealArray([0.0, 0.0, 1.0])  RADI=Real(14750.0)  RADS=Bool(true)  BULG=Real(0.0)  CURTYP=Word { raw: 958142, text: Some("THRU") }
+    2013286654/236 POINSP
+       POS=RealArray([7613.404467152839, -12633.232857168769, 0.0])

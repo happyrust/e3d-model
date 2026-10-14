@@ -1,0 +1,89 @@
+warning: function `instantiate_cylinder` is never used
+   --> src\primitive_instance.rs:213:15
+    |
+213 | pub(crate) fn instantiate_cylinder(
+    |               ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `e3d-model` (lib) generated 1 warning
+    Finished `release` profile [optimized] target(s) in 0.07s
+     Running `D:\Rust\target\release\examples\element_probe.exe --attlib E:\reverse\e3d\shadow_e3d31_aps_all\attlib.dat --db D:\AVEVA\Projects\E3D3.1\AvevaPlantSample\aps000\aps250110_0001 --template E:\reverse\e3d\shadow_e3d31_aps_all --sesno 36 --refno 2013286654/4771 --refno 2013286654/4772 --refno 2013286654/4776 --refno 2013286654/4723`
+会话 Some(36)
+=== 2013286654/4771 CYLI None
+owner 链（根 → 自身）：
+  2013278462/0 WORL     /*                       POS=None ORI=None
+  2013286654/1 SITE     /SITE-STRUCTURAL-AREA02  POS=Some([0.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/2 ZONE     /BUILDING_B01            POS=Some([0.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/609 STRU     /BUILDING_01_LEVEL_03    POS=Some([0.0, 0.0, 109800.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/4713 FRMW     /B01_LEVEL_03_HANDRAILS  POS=None ORI=None
+  2013286654/3335 HANDRA   /BUILDING_01_LEVEL_03/HR_001 POS=Some([-298320.39, 318300.15, -1650.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/4714 HRFEAT                            POS=None ORI=None
+  2013286654/4715 HRGATE                            POS=None ORI=None
+  2013286654/25165 TMPL                              POS=Some([0.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/4771 CYLI                              POS=Some([360.0, 0.0, 10.5]) ORI=Some([0.0, 0.0, 0.0])
+世界矩阵（列）：
+  X = [1.0000, 0.0000, 0.0000]
+  Y = [0.0000, 1.0000, 0.0000]
+  Z = [0.0000, 0.0000, 1.0000]
+  T = [-312319.5800, 324856.6100, 108160.5000]
+  自身 POS=RealArray([360.0, 0.0, 10.5])  ORI=RealArray([0.0, 0.0, 0.0])  LEVE=RawWords([0, 10])  OBST=Word { raw: 2, text: None }  DIAM=Real(16.0)  HEIG=Real(1.0)  SPAMAP=IntArray([1301081600])  ORRF=RefNo(RefNo(23432/26275, dbno=7048))
+
+=== 2013286654/4772 CYLI None
+owner 链（根 → 自身）：
+  2013278462/0 WORL     /*                       POS=None ORI=None
+  2013286654/1 SITE     /SITE-STRUCTURAL-AREA02  POS=Some([0.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/2 ZONE     /BUILDING_B01            POS=Some([0.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/609 STRU     /BUILDING_01_LEVEL_03    POS=Some([0.0, 0.0, 109800.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/4713 FRMW     /B01_LEVEL_03_HANDRAILS  POS=None ORI=None
+  2013286654/3335 HANDRA   /BUILDING_01_LEVEL_03/HR_001 POS=Some([-298320.39, 318300.15, -1650.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/4714 HRFEAT                            POS=None ORI=None
+  2013286654/4715 HRGATE                            POS=None ORI=None
+  2013286654/25165 TMPL                              POS=Some([0.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/4772 CYLI                              POS=Some([-360.0, 0.0, 10.5]) ORI=Some([0.0, 0.0, 0.0])
+世界矩阵（列）：
+  X = [1.0000, 0.0000, 0.0000]
+  Y = [0.0000, 1.0000, 0.0000]
+  Z = [0.0000, 0.0000, 1.0000]
+  T = [-313039.5800, 324856.6100, 108160.5000]
+  自身 POS=RealArray([-360.0, 0.0, 10.5])  ORI=RealArray([0.0, 0.0, 0.0])  LEVE=RawWords([0, 10])  OBST=Word { raw: 2, text: None }  DIAM=Real(16.0)  HEIG=Real(1.0)  SPAMAP=IntArray([1301081600])  ORRF=RefNo(RefNo(23432/26276, dbno=7048))
+
+=== 2013286654/4776 CYLI None
+owner 链（根 → 自身）：
+  2013278462/0 WORL     /*                       POS=None ORI=None
+  2013286654/1 SITE     /SITE-STRUCTURAL-AREA02  POS=Some([0.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/2 ZONE     /BUILDING_B01            POS=Some([0.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/609 STRU     /BUILDING_01_LEVEL_03    POS=Some([0.0, 0.0, 109800.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/4713 FRMW     /B01_LEVEL_03_HANDRAILS  POS=None ORI=None
+  2013286654/3335 HANDRA   /BUILDING_01_LEVEL_03/HR_001 POS=Some([-298320.39, 318300.15, -1650.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/4714 HRFEAT                            POS=None ORI=None
+  2013286654/4715 HRGATE                            POS=None ORI=None
+  2013286654/25165 TMPL                              POS=Some([0.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/4776 CYLI                              POS=Some([-240.0, 0.0, 16.0]) ORI=Some([0.0, 0.0, 0.0])
+世界矩阵（列）：
+  X = [1.0000, 0.0000, 0.0000]
+  Y = [0.0000, 1.0000, 0.0000]
+  Z = [0.0000, 0.0000, 1.0000]
+  T = [-312919.5800, 324856.6100, 108166.0000]
+  自身 POS=RealArray([-240.0, 0.0, 16.0])  ORI=RealArray([0.0, 0.0, 0.0])  LEVE=RawWords([0, 10])  OBST=Word { raw: 2, text: None }  DIAM=Real(10.0)  HEIG=Real(2.0)  SPAMAP=IntArray([1301081650])  ORRF=RefNo(RefNo(23432/26280, dbno=7048))
+
+=== 2013286654/4723 GENSEC None
+owner 链（根 → 自身）：
+  2013278462/0 WORL     /*                       POS=None ORI=None
+  2013286654/1 SITE     /SITE-STRUCTURAL-AREA02  POS=Some([0.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/2 ZONE     /BUILDING_B01            POS=Some([0.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/609 STRU     /BUILDING_01_LEVEL_03    POS=Some([0.0, 0.0, 109800.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/4713 FRMW     /B01_LEVEL_03_HANDRAILS  POS=None ORI=None
+  2013286654/3335 HANDRA   /BUILDING_01_LEVEL_03/HR_001 POS=Some([-298320.39, 318300.15, -1650.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/4714 HRFEAT                            POS=None ORI=None
+  2013286654/4715 HRGATE                            POS=None ORI=None
+  2013286654/25165 TMPL                              POS=Some([0.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0])
+  2013286654/4723 GENSEC                            POS=Some([0.0, 0.0, 0.0]) ORI=Some([0.0, 0.0, 0.0])
+世界矩阵（列）：
+  X = [1.0000, 0.0000, 0.0000]
+  Y = [0.0000, 1.0000, 0.0000]
+  Z = [0.0000, 0.0000, 1.0000]
+  T = [-312679.5800, 324856.6100, 108150.0000]
+  自身 CACHID=Word { raw: 0, text: None }  TYPEX=RawWords([1, 46619692])  GTYP=Word { raw: 0, text: None }  NUMB=Word { raw: 0, text: None }  BUIL=Bool(false)  SHOP=Bool(false)  BANG=Real(0.0)  LMIRR=Bool(false)  JOIS=RefNo(RefNo(0/0, dbno=0))  JOIE=RefNo(RefNo(0/0, dbno=0))  JLNS=Word { raw: 0, text: None }  JLNE=Word { raw: 0, text: None }  JUSL=Word { raw: 531482, text: Some("NA") }  CTYS=Word { raw: 0, text: None }  CTYE=Word { raw: 0, text: None }  SREL=Word { raw: 0, text: None }  EREL=Word { raw: 0, text: None }  GRAD=Real(0.0)  MATR=RefNo(RefNo(0/0, dbno=0))  ISPE=RefNo(RefNo(0/0, dbno=0))  FIRE=Real(0.0)  INRE=RefNo(RefNo(0/0, dbno=0))  SPRE=RefNo(RefNo(15193/6741, dbno=7001))  SPAMAP=IntArray([703248725])  ORRF=RefNo(RefNo(23432/26227, dbno=7048))  POS=RealArray([0.0, 0.0, 0.0])  ORI=RealArray([0.0, 0.0, 0.0])  PURP=Word { raw: 0, text: None }
+  成员 2013286654/4724 SPINE None
+
