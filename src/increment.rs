@@ -998,7 +998,10 @@ const CABLE_TRAY_BRANCH_NOUN: &str = "CWBRAN";
 ///   （POSS/POSE/BANG/JUSL/SPRE），以及 FITT 自己（POSL/ZDIS/BANG/DELP）；
 /// - 带详图式立柱的 HANDRA（`transform::handrail_post_world`，名下有 POSTSE / HRFEAT，或 RAILSE 里
 ///   有 HRTERM）：它的 RPATH 路径（POINTR / CURVE 的 POS、CURVE 的 CURTYP），以及立柱 HRPOST / HRTERM /
-///   HRGATE 自己（POSREF / ZDIS / HRJUSL / SPRE / WIDT）。
+///   HRGATE 自己（POSREF / ZDIS / HRJUSL / SPRE / WIDT）；
+/// - 名下有 `JLDATU` 的 WALL（`elmodl::fixing_host_frame`，gen-model issue #37）：宿主自己（`DESP[0]` 墙高、
+///   经 SPRE 取型材 `PARA[0]` 墙厚），它的 SPINE 路径（POINSP / CURVE 的 POS），以及 datum 自己（JLDATU 的
+///   ZDIS、PLDATU）。墙 datum 下的 FIXING 自成单元，实例标架与开孔刀都由它现算，这些输入全在 FIXING 单元之上。
 ///
 /// 从候选上溯只许穿过上面这些 noun；起点在这一端不存在也是 `None`。
 ///
@@ -1047,11 +1050,12 @@ fn implicit_frame_host_of(set: &Arc<DbSet>, refno: RefNo) -> Result<Option<RefNo
         }
         Ok(None)
     };
-    // POINSP → SPINE → GENSEC 与 PLDATU → JLDATU → GENSEC 都是两跳；POINTR → RPATH → HANDRA、
+    // POINSP → SPINE → GENSEC 与 PLDATU → JLDATU → GENSEC 都是两跳（WALL 同）；POINTR → RPATH → HANDRA、
     // HRPOST → POSTSE → HANDRA、HRTERM → RAILSE → HANDRA、HRGATE → HRFEAT → HANDRA 也是。
     for _ in 0..3 {
         match current.element_type()?.as_str() {
-            "GENSEC" => return owns(&current, "JLDATU"),
+            // WALL 与 GENSEC 同型：datum（JLDATU → PLDATU）挂在宿主名下，FIXING 的标架沿宿主 spine 现算。
+            "GENSEC" | "WALL" => return owns(&current, "JLDATU"),
             "SCTN" | "STWALL" => return owns(&current, "FITT"),
             "HANDRA" => return detailed_handrail(&current),
             "SPINE" | "POINSP" | "CURVE" | "JLDATU" | "PLDATU" | "FITT" => {}
@@ -1823,7 +1827,7 @@ pub fn plan_update_with(
                     }
                 }
 
-                // 现算标架级联：候选是宿主（GENSEC / SCTN / STWALL）、GENSEC 的 SPINE 路径、
+                // 现算标架级联：候选是宿主（GENSEC / WALL / SCTN / STWALL）、GENSEC / WALL 的 SPINE 路径、
                 // JLDATU / PLDATU 或 FITT，挂在下面的件标架都可能变了（见 `implicit_frame_host_of`）。
                 if resolved {
                     match cascade_implicit_frames(
@@ -2312,6 +2316,65 @@ mod tests {
         let wall = Some(RefNo::new(2013286654, 39));
         assert_eq!(host_of(39), wall, "名下有 FITT 的 STWALL 自己");
         assert_eq!(host_of(40), wall, "FITT → STWALL");
+    }
+
+    /// `implicit_frame_host_of` 的 WALL 支在 ams1112 真库上的形状（库或模板不在就跳过；gen-model issue #37）：
+    /// 墙上带 `DESP` 的 FIXING `17496/124135` 挂在 PLDATU → JLDATU → WALL 之下，它的实例标架与开孔刀都由
+    /// `elmodl::fixing_host_frame` 沿墙现算。墙自己、JLDATU、PLDATU、墙的 SPINE 与 SPINE 上的点都上溯到墙；
+    /// FIXING 自己不在这条腿上（它改了，owner 链上卷到它自己就够）。
+    #[test]
+    fn wall_datum_inputs_climb_to_their_wall() {
+        let db = Path::new(r"D:\AVEVA\Projects\E3D3.1\AvevaMarineSample\ams000\ams1112_0001");
+        let template = Path::new(r"E:\reverse\e3d\shadow_e3d31_aps_all");
+        if !db.exists() || !template.join("attlib.dat").exists() {
+            return;
+        }
+        let set = Arc::new(DbSet::with_attlib_file(&template.join("attlib.dat")).unwrap());
+        set.add_db(e3d_io::db_element::DbFilePin {
+            file: db.to_path_buf(),
+            template: e3d_io::db_element::template_file_for(template, "DESI").unwrap(),
+            db_type: Some("DESI".into()),
+            sesno: None,
+        })
+        .unwrap();
+        let fixing = set.element(RefNo::new(17496, 124135));
+        assert_eq!(fixing.element_type().unwrap(), "FIXING");
+        let pldatu = fixing.owner().unwrap().expect("FIXING 的属主");
+        let jldatu = pldatu.owner().unwrap().expect("PLDATU 的属主");
+        let wall = jldatu.owner().unwrap().expect("JLDATU 的属主");
+        assert_eq!(pldatu.element_type().unwrap(), "PLDATU");
+        assert_eq!(jldatu.element_type().unwrap(), "JLDATU");
+        assert_eq!(wall.element_type().unwrap(), "WALL");
+        let host = Some(wall.refno());
+        let host_of = |refno| implicit_frame_host_of(&set, refno).unwrap();
+        assert_eq!(host_of(wall.refno()), host, "名下有 JLDATU 的 WALL 自己");
+        assert_eq!(host_of(jldatu.refno()), host, "JLDATU → WALL");
+        assert_eq!(host_of(pldatu.refno()), host, "PLDATU → JLDATU → WALL");
+        assert_eq!(
+            host_of(fixing.refno()),
+            None,
+            "datum 下的 FIXING 走 owner 链级联，不在这条腿上"
+        );
+        let mut spine = None;
+        for member in wall.members().unwrap() {
+            if member.element_type().unwrap() == "SPINE" {
+                spine = Some(member);
+                break;
+            }
+        }
+        let spine = spine.expect("WALL 名下的 SPINE");
+        assert_eq!(host_of(spine.refno()), host, "SPINE → WALL");
+        let mut points = 0usize;
+        for point in spine.members().unwrap() {
+            assert_eq!(
+                host_of(point.refno()),
+                host,
+                "{} → SPINE → WALL",
+                point.element_type().unwrap()
+            );
+            points += 1;
+        }
+        assert!(points > 0, "墙 spine 上至少有一个点");
     }
 
     /// `implicit_frame_host_of` 的 HANDRA 支在 aps250110 真库上的形状（库或模板不在就跳过）：

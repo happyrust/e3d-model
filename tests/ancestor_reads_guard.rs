@@ -121,8 +121,10 @@ const OWNER_WALK_SITES: &[Site] = &[
               wall_profile_thickness 读墙型材的 PARA[0]（墙厚 → datum 半径，见 ANCESTOR_CONSUMERS）——都在 FIXING 单元之上；\
               FIXING 自己的 DESP（门洞高宽）是同一个字面量，在单元内。整棵子树重算的根口径下 \
               （JLDATU 改了 → 祖先闭包命中 WALL 所在的 STRU / FRMW / SBFR 根 → 整棵重算）FIXING 跟着重生成；\
-              ADR-080 单元级发布只重建 plan_update 点名的单元，FIXING 不在 JLDATU 的子树里 → 不点名 → 实例停在旧站位。\
-              开 model_unit_level_publish 之前要把这条边补进单元规划（gen-model issue #39 / #37）",
+              ADR-080 单元级发布只重建 plan_update 点名的单元，FIXING 不在 JLDATU 的子树里，靠 \
+              increment::implicit_frame_host_of 的 WALL 支覆盖——墙自己（DESP / SPRE）、它的 SPINE 点、JLDATU / PLDATU \
+              任一改了，就把整棵 WALL 子树级联进计划，与 point_on_host 那条同型（gen-model issue #39 / #37），单元规划已经补上。\
+              墙型材换版（目录那一侧）走目录版本核对的级联",
     },
     Site {
         file: "cable_tray.rs",
@@ -168,8 +170,8 @@ const OWNER_WALK_SITES: &[Site] = &[
         func: "implicit_frame_host_of",
         climb: Climb::NounOnly,
         reads: &[],
-        why: "现算标架的输入上溯到宿主（GENSEC / SCTN / STWALL / 详图式 HANDRA）：只看 noun，再看宿主名下有没有 JLDATU / FITT / \
-              POSTSE·HRFEAT·带 HRTERM 的 RAILSE",
+        why: "现算标架的输入上溯到宿主（GENSEC / WALL / SCTN / STWALL / 详图式 HANDRA）：只看 noun，再看宿主名下有没有 JLDATU / \
+              FITT / POSTSE·HRFEAT·带 HRTERM 的 RAILSE",
     },
     Site {
         file: "increment.rs",
