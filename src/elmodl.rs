@@ -2304,7 +2304,13 @@ fn collect_negatives_deep(el: &DbElement, out: &mut Vec<DbElement>) -> Result<()
 /// SCTN 的 JOIS/JOIE 指向的是 `SJOI`（aps250110 实测 `SCTN.JOIE → SJOI`，SJOI 的 `CREF`
 /// 回指被切的 SCTN；aps7200 一窗 94 只 SJOI）。SJOI 多数没有 TMPL 成员、`SPRE` 也空——按
 /// `sub_10722680` 的几何源口径（TMPL 成员 / SPRE→CATR）它产不出负体，这类元素记一条
-/// `skipped` 便于 RVM 归因：若 E3D 对这类关节还出刀（CUTP/CUTB 端切），缺口就显在这一行。
+/// `skipped` 便于 RVM 归因。**只有真没有几何源才记**：有源的关节无论刀被 NAPP 门挡下、
+/// 全部放行还是源里本就没有负体，都不算 skipped（见 [`JointCutOutcome`]）。
+///
+/// 关节的 `CUTP` 并不经这里生效：Core3D `RECON0 → STRCNT → JTCONN → PUTEND` 把关节端切写回
+/// SCTN 自己的 `POSS/POSE/DRNS/DRNE`，正体由 [`crate::section::section_cut_planes`] 照这四项裁两端；
+/// `CUTB` 在 `JTCONN` 里读到但未见参与写回。这一行 skipped 只说明「这把刀源不存在」，
+/// 不等于「缺一刀」——是否另有原生额外端切，待同根 RECONNECT/SAVEWORK 前后对拍（#34 D1–D3）。
 ///
 /// `SUBJ` 关节（`DB_makeCSG` 连它的属主一起扫）与 FIXING 套 FIXING（`DB_Gensec::makeCSG` 沿关节
 /// 目标的属主链往上、只要还是 FIXING 就接着扫）语料里都没有，没接。
@@ -2347,22 +2353,33 @@ fn collect_joint_negatives(
             continue;
         }
         match fixing_negatives(&joint, joint_mode, negatives, catalogue_cuts, notes, cache) {
-            Ok(0) => {
-                if noun == "SCTN" {
-                    skipped.push(SkippedNegative {
-                        refno: joint.refno(),
-                        noun: joint_noun.clone(),
-                        reason: format!(
-                            "{attr} 关节没有几何源（TMPL 成员与 SPRE→CATR 都没有）；若 E3D 对它出\
-                             CUTP/CUTB 端切刀，缺口在这一行（DB_Sjoi 的负体 builder 语义待接）"
-                        ),
-                    });
-                }
+            Ok(tally) if tally.rejected > 0 => {
+                notes.push(format!(
+                    "{attr} 关节 {}：NAPP 门在关节路径（mode {joint_mode}）挡下 {} 把刀，E3D 同样不拿它们切构件",
+                    joint.refno(),
+                    tally.rejected
+                ));
             }
-            Ok(rejected) => notes.push(format!(
-                "{attr} 关节 {}：NAPP 门在关节路径（mode {joint_mode}）挡下 {rejected} 把刀，E3D 同样不拿它们切构件",
-                joint.refno()
-            )),
+            Ok(tally) => match JointCutOutcome::of(tally) {
+                JointCutOutcome::NoSource => {
+                    if noun == "SCTN" {
+                        skipped.push(SkippedNegative {
+                            refno: joint.refno(),
+                            noun: joint_noun.clone(),
+                            reason: format!(
+                                "{attr} 关节没有几何源（TMPL 成员与 SPRE→CATR 都没有），不出负体；\
+                                 CUTP 端切若经 RECONNECT 写回 SCTN 的 DRNS/DRNE 则已由端面覆盖，\
+                                 是否另有原生额外刀待同根前后对拍（#34 D1–D3）"
+                            ),
+                        });
+                    }
+                }
+                JointCutOutcome::SourceWithoutCuts => notes.push(format!(
+                    "{attr} 关节 {}：有几何源但其中没有负体，不出刀",
+                    joint.refno()
+                )),
+                JointCutOutcome::Cut => {}
+            },
             Err(error) => skipped.push(SkippedNegative {
                 refno: joint.refno(),
                 noun: joint_noun,
@@ -2406,18 +2423,26 @@ fn collect_member_joint_negatives(
         notes,
         cache,
     ) {
-        Ok(0) => skipped.push(SkippedNegative {
-            refno: source.refno(),
-            noun: source.element_type().unwrap_or_else(|_| "?".into()),
-            reason: format!(
-                "{via} 没有几何源（TMPL 成员与 SPRE→CATR 都没有）；若 E3D 对它出刀，\
-                     缺口在这一行"
-            ),
-        }),
-        Ok(rejected) => notes.push(format!(
-            "{via} {}：NAPP 门（mode {mode}）挡下 {rejected} 把刀，E3D 同样不切",
-            source.refno()
+        Ok(tally) if tally.rejected > 0 => notes.push(format!(
+            "{via} {}：NAPP 门（mode {mode}）挡下 {} 把刀，E3D 同样不切",
+            source.refno(),
+            tally.rejected
         )),
+        Ok(tally) => match JointCutOutcome::of(tally) {
+            JointCutOutcome::NoSource => skipped.push(SkippedNegative {
+                refno: source.refno(),
+                noun: source.element_type().unwrap_or_else(|_| "?".into()),
+                reason: format!(
+                    "{via} 没有几何源（TMPL 成员与 SPRE→CATR 都没有），不出负体；\
+                         是否另有原生额外刀待同根前后对拍"
+                ),
+            }),
+            JointCutOutcome::SourceWithoutCuts => notes.push(format!(
+                "{via} {}：有几何源但其中没有负体，不出刀",
+                source.refno()
+            )),
+            JointCutOutcome::Cut => {}
+        },
         Err(error) => skipped.push(SkippedNegative {
             refno: source.refno(),
             noun: source.element_type().unwrap_or_else(|_| "?".into()),
@@ -2489,11 +2514,12 @@ fn collect_owner_template_negatives(
             notes,
             cache,
         ) {
-            Ok(rejected) => {
-                if rejected > 0 {
+            Ok(tally) => {
+                if tally.rejected > 0 {
                     notes.push(format!(
-                        "属主链 TMPL←FIXING {}：NAPP 门挡下 {rejected} 把刀",
-                        grand.refno()
+                        "属主链 TMPL←FIXING {}：NAPP 门挡下 {} 把刀",
+                        grand.refno(),
+                        tally.rejected
                     ));
                 }
             }
@@ -2607,7 +2633,10 @@ const HOST_SCAN_MODE: u32 = 9;
 /// TMPL 的设计负体（与 [`collect_negatives`] 同一圈定：直属负体 + CMPF 深层）过
 /// [`design_napp_admits`] 交回 `negatives`，照直属负体走表现级门与世界放置；目录件 `NGMR` 的负体
 /// 过 [`catalogue_napp_admits`] 后求值，已在世界系，进 `catalogue_cuts`（单把求不出的进 `notes`）。
-/// 返回 NAPP 门挡下的把数。
+/// 返回 [`FixingCutTally`]：有没有几何源、交出几把、NAPP 门挡下几把。
+///
+/// 只返回「挡下的把数」时，「没有几何源」与「有源且刀全部放行」都是 0，调用方会把后者
+/// 误记成没源的 skipped——这正是改成三项账的原因。
 fn fixing_negatives(
     fixing: &DbElement,
     mode: u32,
@@ -2615,7 +2644,7 @@ fn fixing_negatives(
     catalogue_cuts: &mut Vec<Manifold>,
     notes: &mut Vec<String>,
     cache: &mut CatalogueMeshCache,
-) -> Result<usize, ModelError> {
+) -> Result<FixingCutTally, ModelError> {
     let template = fixing
         .members()?
         .into_iter()
@@ -2630,12 +2659,16 @@ fn fixing_negatives(
         collect_negatives(&template, &mut found)?;
         let before = found.len();
         found.retain(|neg| design_napp_admits(mode, negative_napp(neg)));
-        let rejected = before - found.len();
+        let tally = FixingCutTally {
+            has_source: true,
+            admitted: found.len(),
+            rejected: before - found.len(),
+        };
         negatives.extend(found);
-        return Ok(rejected);
+        return Ok(tally);
     }
     let Some(component) = crate::catalogue_point::catalogue_component(fixing)? else {
-        return Ok(0);
+        return Ok(FixingCutTally::default());
     };
     let mode = match mode {
         HOST_SCAN_MODE if component.element_type()? == "SFIT" => HOST_FITTING_MODE,
@@ -2651,6 +2684,7 @@ fn fixing_negatives(
         admitted
     };
     let cuts = crate::catalogue::catalogue_host_cuts(fixing, &admit, cache)?;
+    let admitted = cuts.cutters.len();
     catalogue_cuts.extend(cuts.cutters);
     notes.extend(cuts.diagnostics.into_iter().map(|line| {
         format!(
@@ -2658,7 +2692,45 @@ fn fixing_negatives(
             fixing.refno()
         )
     }));
-    Ok(rejected.get())
+    Ok(FixingCutTally {
+        has_source: true,
+        admitted,
+        rejected: rejected.get(),
+    })
+}
+
+/// [`fixing_negatives`] 的账。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct FixingCutTally {
+    /// 找到了几何源：首个 `TMPL` 成员，或 `SPRE → CATR` 的目录件。
+    has_source: bool,
+    /// 过了 NAPP 门、交给调用方的刀数（设计负体 + 求得的目录刀）。
+    admitted: usize,
+    /// NAPP 门挡下的把数。
+    rejected: usize,
+}
+
+/// 关节 / 成员链刀源在 NAPP 门之外的归类（NAPP 挡下的把数另记 note）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JointCutOutcome {
+    /// 没有几何源——唯一记 `negatives_skipped` 的情形。
+    NoSource,
+    /// 有源，但源里一把刀也没有（挡下的也没有）：E3D 同样不出刀，记 note。
+    SourceWithoutCuts,
+    /// 有源且有刀（交出或被挡下）：不记 skipped。
+    Cut,
+}
+
+impl JointCutOutcome {
+    fn of(tally: FixingCutTally) -> Self {
+        if !tally.has_source {
+            Self::NoSource
+        } else if tally.admitted == 0 && tally.rejected == 0 {
+            Self::SourceWithoutCuts
+        } else {
+            Self::Cut
+        }
+    }
 }
 
 /// 负体的 `NAPP`。文件里是一个字，`-1` 存成 `0xFFFF_FFFF`，按有符号读；未设、模板里
@@ -2743,7 +2815,7 @@ fn collect_host_fixing_negatives(
             notes,
             cache,
         ) {
-            Ok(count) => rejected += count,
+            Ok(tally) => rejected += tally.rejected,
             Err(error) => skipped.push(SkippedNegative {
                 refno: fixing.refno(),
                 noun: "FIXING".into(),
@@ -3191,9 +3263,32 @@ mod tests {
         }
     }
 
+    /// 「有源且刀全部放行」曾因只返回挡下把数（= 0）被误记成没源的 skipped；
+    /// 现在只有 `has_source == false` 才归 `NoSource`。
+    #[test]
+    fn only_a_missing_geometry_source_is_accounted_as_skipped() {
+        let tally = |has_source, admitted, rejected| FixingCutTally {
+            has_source,
+            admitted,
+            rejected,
+        };
+        assert_eq!(
+            JointCutOutcome::of(FixingCutTally::default()),
+            JointCutOutcome::NoSource
+        );
+        // 回归点：有源、刀全部放行、一把没挡——旧口径在这里返回 0 并记 skipped。
+        assert_eq!(JointCutOutcome::of(tally(true, 3, 0)), JointCutOutcome::Cut);
+        assert_eq!(JointCutOutcome::of(tally(true, 2, 1)), JointCutOutcome::Cut);
+        assert_eq!(JointCutOutcome::of(tally(true, 0, 2)), JointCutOutcome::Cut);
+        assert_eq!(
+            JointCutOutcome::of(tally(true, 0, 0)),
+            JointCutOutcome::SourceWithoutCuts
+        );
+    }
+
     /// aps250110 的 SCTN 端关节：`SCTN 2013286654/68 JOIE → SJOI 72`，SJOI 无 TMPL/SPRE
-    /// 几何源——它的端切语义（CUTP/CUTB）是另一条还没翻完的 builder 路，必须落
-    /// `negatives_skipped` 记账，不许静默。语料不在就跳过（同檐口测试那道门）。
+    /// 几何源——不出负体，必须落 `negatives_skipped` 记账，不许静默（其 CUTP 端切若经
+    /// RECONNECT 写回 DRNS/DRNE 则由端面覆盖，是否另有原生额外刀待同根对拍）。语料不在就跳过（同檐口测试那道门）。
     #[test]
     fn sctn_endpoint_joints_without_a_geometry_source_are_accounted() {
         let plant = std::path::Path::new(r"D:\AVEVA\Projects\E3D3.1\AvevaPlantSample\aps000");
