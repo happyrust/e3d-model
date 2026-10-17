@@ -135,7 +135,15 @@ pub fn placement(el: &DbElement) -> Result<CableTrayPlacement, DbElementError> {
 
     let (position, rotation) = match anchor {
         Resolved::Segment { a, b, pkdi, zdis } => {
-            let point = straight_point(&path, a, b, pkdi, zdis, zoff, jusl);
+            // Core 对非 STRA/COUP/REDU 且 ZDIS/PKDI 非零的件以 A.PPOS[2]（FRAD 出口
+            // 切点）为基线在缩减段上量距；直件与零偏移件仍按原始角点。
+            let point = if !matches!(noun.as_str(), "CTSTRA" | "CTCOUP" | "CTREDU")
+                && (pkdi.abs() > crate::rpath::ATTR_TOL || zdis.abs() > crate::rpath::ATTR_TOL)
+            {
+                crate::rpath::filleted_point(&path, a, b, pkdi, zdis, zoff, jusl)
+            } else {
+                straight_point(&path, a, b, pkdi, zdis, zoff, jusl)
+            };
             let mut position = point.position;
             if point.inside {
                 position +=

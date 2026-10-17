@@ -680,7 +680,7 @@ pub fn generate_subtree_with_cache(
             // `model_element`；这里与 CTRAY 一样只做投递。跳过的两种结局（详图式 / 没东西
             // 可画）都是「E3D 在 HANDRA 这一层同样不画」——留在 evidence_pending 里等于说
             // 这只 HANDRA 还欠一份几何，而它欠的（若有）是 RAIL/KICKPL/HRPOST 成员各自的账。
-            Category::Composite(CompositeFamily::Structural) if is_model_unit(&noun) => {
+            Category::Composite(_) if is_model_unit(&noun) => {
                 match model_element_with_cache(&el, category, catalogue_mesh_cache) {
                     Ok(Modeled::Solid(generated)) => {
                         for note in &generated.notes {

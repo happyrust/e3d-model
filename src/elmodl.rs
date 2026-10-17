@@ -432,7 +432,7 @@ pub fn model_element_with_cache(
     // 判据在 `category::is_model_unit`（CTRAY 是单元、桥架件不是），这里只是它的执行臂
     // ——少了它，增量上卷到 CTRAY 之后就掉进下面的设计侧正体路，对着一个没有
     // XLEN/DIAM 的复合件读尺寸，报出来的是「属性缺失」而不是「托盘变了」。
-    if matches!(category, Category::Composite(CompositeFamily::CableTray)) {
+    if matches!(category, Category::Composite(CompositeFamily::CableTray)) && noun != "CABLE" {
         if !noun.eq_ignore_ascii_case("CTRAY") {
             return Ok(Modeled::Skipped {
                 kind: SkipKind::NoShape,
@@ -679,6 +679,23 @@ pub fn model_element_with_cache(
                 });
             }
         },
+        Category::Composite(_) if noun == "CABLE" => {
+            if !crate::cable::geometry_enabled() {
+                return Ok(Modeled::Skipped {
+                    kind: SkipKind::NoShape,
+                    reason: "实验性电缆几何未启用；原生 RVM 对拍仍未全过".into(),
+                });
+            }
+            match crate::cable::cable_local_solid(el, &mut notes)? {
+                Some(solid) => (solid, None),
+                None => {
+                    return Ok(Modeled::Skipped {
+                        kind: SkipKind::NoShape,
+                        reason: "电缆 OUTD 为零、没有路由或路由全部退化".into(),
+                    });
+                }
+            }
+        }
         other => {
             return Ok(Modeled::Skipped {
                 kind: SkipKind::NoShape,

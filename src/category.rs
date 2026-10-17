@@ -554,6 +554,7 @@ pub fn is_model_unit(noun: &str) -> bool {
         // 管线那一侧，增量对 CTRAY 的增 / 删 / 改一律 `no_model`。
         Category::Composite(CompositeFamily::CableTray) => {
             noun.trim().eq_ignore_ascii_case("CTRAY")
+                || (noun.trim().eq_ignore_ascii_case("CABLE") && crate::cable::geometry_enabled())
         }
 
         // 扶手：布局式 HANDRA 的栏杆与立柱是一件挂在 HANDRA 自己 refno 上的实体

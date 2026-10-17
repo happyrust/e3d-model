@@ -1058,19 +1058,21 @@ fn main() -> anyhow::Result<()> {
                     generated.negatives_applied,
                     &generated.part_catalogue_nouns,
                 );
-                let component_meshes: Vec<TriMesh> =
-                    if generated.negatives_applied > 0 && !split_uncut {
-                        vec![mesh.clone()]
-                    } else {
-                        generated
-                            .components()
-                            .iter()
-                            .map(TriMesh::from_manifold)
-                            .collect()
-                    }
-                    .into_iter()
-                    .filter(|m| !m.indices.is_empty())
-                    .collect();
+                let component_meshes: Vec<TriMesh> = if (generated.negatives_applied > 0
+                    && !split_uncut)
+                    || generated.noun == "CABLE"
+                {
+                    vec![mesh.clone()]
+                } else {
+                    generated
+                        .components()
+                        .iter()
+                        .map(TriMesh::from_manifold)
+                        .collect()
+                }
+                .into_iter()
+                .filter(|m| !m.indices.is_empty())
+                .collect();
                 let part_min_edges: Vec<f64> = if split_uncut {
                     component_meshes
                         .iter()

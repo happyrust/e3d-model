@@ -23,9 +23,13 @@
 //!
 //! # 移植范围
 //!
-//! 只有 **A、B 都是 `POINTR`、`FRAD = 0`** 的直线段。`CURVE`/`RSECT`/`EXTGEO` 段与倒圆拐点
-//! （`PPOS[5]`/`FSTART` 语义未钉死）碰到就报 [`DbElementError::PseudoAttribute`]，不猜。
-//! 扶手那边有真弧段（`aps250110` 的 49 根柱子里 16 根坐在弧上），接它要先扩这里。
+//! 成员只收 `POINTR`；`CURVE`/`RSECT`/`EXTGEO` 段碰到就报
+//! [`DbElementError::PseudoAttribute`]，不猜。`FRAD ≠ 0` 的倒圆拐点已落地：
+//! 非直类件带非零 `ZDIS`/`PKDI` 时在缩减段（出口切点→入口切点）上量距，
+//! 见 [`filleted_point`]/[`RoutePath::fillet_tangent`]；零偏移与 STRA/COUP/REDU
+//! 仍按原始角点 `POS` 基线。锚点落在弧内（ZDIS 越过缩减段端点）等更细的
+//! `PPOS[5]`/`FSTART` 语义未钉死。扶手那边有真弧段（`aps250110` 的 49 根柱子里
+//! 16 根坐在弧上），接它要先扩这里。
 
 use std::fmt;
 
@@ -342,11 +346,27 @@ pub(crate) struct StraightPoint {
     pub up: DVec3,
 }
 
+/// 段 A→B 的缩减端点：A 带 `FRAD` 时起点换成 A 的出口切点（`PPOS[2]` 口径），
+/// B 带 `FRAD` 时终点换成 B 的入口切点（`PPOS[1]` 口径）。
+pub(crate) fn reduced_segment(path: &RoutePath, a: usize, b: usize) -> (DVec3, DVec3) {
+    let along = path.points[b].pos - path.points[a].pos;
+    let dir = unit_or_zero(along);
+    let point_a = match path.fillet_tangent(a) {
+        Some(t) => path.points[a].pos + dir * t,
+        None => path.points[a].pos,
+    };
+    let point_b = match path.fillet_tangent(b) {
+        Some(t) => path.points[b].pos - dir * t,
+        None => path.points[b].pos,
+    };
+    (point_a, point_b)
+}
+
 /// `calculatePOS`（`sub_109E4DC0`）A、B 皆为 POINTR 的直线支。
 ///
-/// Core 对非 STRA/COUP/REDU 且 `ZDIS`/`PKDI` 非零的件读 `A.PPOS[2]`、其余读 `A.POS`；
-/// `FRAD = 0` 时 `PPOS[0..4]` 都是 `POS`（`MDR_DB_PseudoPPOSonPOINTR::getAtt` 0..4 同一支），
-/// 这里统一用 `POS`（[`RoutePath::load`] 已把 `FRAD ≠ 0` 拒掉）。
+/// Core 对非 STRA/COUP/REDU 且 `ZDIS`/`PKDI` 非零的件读 `A.PPOS[2]`（FRAD 出口切点）、
+/// 其余读 `A.POS`；`FRAD = 0` 时 `PPOS[0..4]` 都是 `POS`
+/// （`MDR_DB_PseudoPPOSonPOINTR::getAtt` 0..4 同一支）。PPOS[2] 基线走 [`filleted_point`]。
 pub(crate) fn straight_point(
     path: &RoutePath,
     a: usize,
@@ -358,6 +378,35 @@ pub(crate) fn straight_point(
 ) -> StraightPoint {
     let point_a = path.points[a].pos;
     let point_b = path.points[b].pos;
+    straight_between(path, a, point_a, point_b, pkdi, zdis, zoff, jusl)
+}
+
+/// [`straight_point`] 的倒圆路径变体：在缩减段（出口切点 → 入口切点）上量
+/// `ZDIS`/`PKDI`——RNODE `ZDIS=3701` 与 RATTA `PKDI=0.4344` 两个实测锚点均证实
+/// 度量基线是切点而不是原始角点（见 cable.rs 探针记录）。
+pub(crate) fn filleted_point(
+    path: &RoutePath,
+    a: usize,
+    b: usize,
+    pkdi: f64,
+    zdis: f64,
+    zoff: f64,
+    jusl: f64,
+) -> StraightPoint {
+    let (point_a, point_b) = reduced_segment(path, a, b);
+    straight_between(path, a, point_a, point_b, pkdi, zdis, zoff, jusl)
+}
+
+fn straight_between(
+    path: &RoutePath,
+    a: usize,
+    point_a: DVec3,
+    point_b: DVec3,
+    pkdi: f64,
+    zdis: f64,
+    zoff: f64,
+    jusl: f64,
+) -> StraightPoint {
     let along = point_b - point_a;
     let length = along.length();
     let up = path.leave_up(a).unwrap_or(DVec3::Z);
@@ -442,6 +491,9 @@ pub(crate) struct RoutePath {
 pub(crate) struct PathPoint {
     pub(crate) refno: RefNo,
     pub(crate) pos: DVec3,
+    /// `FRAD`：拐点倒圆半径；0 表示尖角。倒圆后路径在拐点两侧各回缩
+    /// `r·tan(θ/2)` 换成圆弧——`PPOS[1]`/`PPOS[2]` 就是那两个切点。
+    pub(crate) frad: f64,
 }
 
 impl RoutePath {
@@ -464,20 +516,10 @@ impl RoutePath {
                     ),
                 ));
             }
-            let frad = number_or_zero(&member, "FRAD")?;
-            if frad.abs() > ATTR_TOL {
-                return Err(failed(
-                    el,
-                    "POS",
-                    format!(
-                        "路径点 {} FRAD={frad}：倒圆拐点的 PPOS/PDIR 语义未钉死，不猜",
-                        member.refno()
-                    ),
-                ));
-            }
             points.push(PathPoint {
                 refno: member.refno(),
                 pos: vector(&member, "POS")?.unwrap_or(DVec3::ZERO),
+                frad: number_or_zero(&member, "FRAD")?,
             });
         }
         Ok(Self {
@@ -549,6 +591,25 @@ impl RoutePath {
     pub(crate) fn leave_up(&self, index: usize) -> Option<DVec3> {
         let up = self.arrive_up(index)?;
         Some(if index == 0 { up } else { self.turn(index, up) })
+    }
+
+    /// `FRAD` 拐点的切线回缩量 `t = r·tan(θ/2)`：`PPOS[1] = POS − d_in·t`（入口切点）、
+    /// `PPOS[2] = POS + d_out·t`（出口切点）。端点、`FRAD = 0`、邻段退化或共线时
+    /// 没有弧可画，给 `None`。
+    pub(crate) fn fillet_tangent(&self, index: usize) -> Option<f64> {
+        let point = self.points.get(index)?;
+        if point.frad.abs() <= ATTR_TOL || index == 0 || index + 1 >= self.points.len() {
+            return None;
+        }
+        let dir_in = unit(self.points[index].pos - self.points[index - 1].pos)?;
+        let dir_out = unit(self.points[index + 1].pos - self.points[index].pos)?;
+        let cosine = dir_in.dot(dir_out).clamp(-1.0, 1.0);
+        let half = (1.0 - cosine) / 2.0;
+        if half < 1e-9 {
+            return None;
+        }
+        let t = point.frad.abs() * half.sqrt() / (1.0 - half).sqrt();
+        (t.is_finite() && t > ATTR_TOL).then_some(t)
     }
 
     /// 过一个拐点：绕 `arrive × leave` 转 `angle(arrive, leave)`，即把到达方向带到离开方向的那次旋转。
@@ -655,6 +716,7 @@ mod tests {
                 .map(|(i, p)| PathPoint {
                     refno: refno(i as u32 + 1),
                     pos: DVec3::from_array(*p),
+                    frad: 0.0,
                 })
                 .collect(),
         }
