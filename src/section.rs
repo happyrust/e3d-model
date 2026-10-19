@@ -134,9 +134,10 @@ pub struct SectionProfile {
     pub members: Vec<SectionMember>,
     /// `JUSL` p-line 在同一平面里的位置。放置时把整个截面平移 `-justification`。
     pub justification: [f64; 2],
-    /// 实际用到的对齐线名（`JUSL`，缺省 `NA`）。
+    /// 实际用到的对齐线名：`JUSL` 命中是它本身；`JUSL` 的线不在 `PSTR` 时
+    /// 回退到中性轴（`pllib/GTJLID → GTNAID`）；两边都没有是空串。
     pub justification_line: String,
-    /// 对齐线是否真在 `PSTR` 里找到；没找到按 (0, 0) 对齐并记 note。
+    /// 对齐线是否真在 `PSTR` 里找到（含 GTNAID 回退到中性轴）；没找到按 (0, 0) 对齐并记 note。
     pub justification_found: bool,
     /// `pllib/ROTNAX@0x103A3398` 给截面标架的那一转（弧度）：`90° − 中性轴线的 PLAX 角`。
     ///
@@ -304,7 +305,7 @@ pub fn evaluate_section_profile(
     Ok(SectionProfile {
         members,
         justification: jusl.offset,
-        justification_line,
+        justification_line: jusl.line,
         justification_found: jusl.found,
         neutral_axis_spin: neutral_axis_spin(&catalogue.sprf, &env)?,
         level,
@@ -623,6 +624,9 @@ pub fn annulus_rings(
 struct Justification {
     offset: [f64; 2],
     found: bool,
+    /// 实际采用的对齐线名：`JUSL` 命中是它本身，GTNAID 回退后是中性轴，
+    /// 连中性轴都没有时是空串。
+    line: String,
 }
 
 /// `pllib/GTNAID@0x103AC154` 认的中性轴线键。`NA` 之外那两个别名的编码是 726125 / 726137，
@@ -658,6 +662,13 @@ fn neutral_axis_spin(sprf: &DbElement, env: &DbElementParamEnv) -> Result<f64, S
 }
 
 /// `SPRF.PSTR`（PTSS）里 `PKEY == jusl` 的 `PLIN` 的 `(PX, PY)`；找不到按原点并记 note。
+///
+/// 对齐线解析照 `pllib/GTJLID@0x103AC744`：`GATIN1` 把 `JUSL` 转成 p-key 编码后由
+/// `pllib/GTPLID@0x103A89BC` 在 `PSTR` 成员里 `DFINDI`；找不到时它**不回原点**，而是调
+/// `pllib/GTNAID@0x103AC154`——先取 `PSTR` 自带的中性轴引用，不行就逐成员找
+/// `PKEY` 编码 ∈ {`NA`=531482, 726125, 726137} 的线。所以 `JUSL` 指了条不存在的线时，
+/// Core3D 落在**中性轴线的 `(PX, PY)`** 上，不是原点；连中性轴都没有（`PSTR` 为空、或
+/// 集里无 `NA` 线）才轮到 `GPLDET` 的零初值，等价原点。
 fn justification_offset(
     sprf: &DbElement,
     jusl: &str,
@@ -667,6 +678,7 @@ fn justification_offset(
     let absent = Justification {
         offset: [0.0, 0.0],
         found: false,
+        line: String::new(),
     };
     let Some(ptss) = sprf.get_element("PSTR")? else {
         notes.push(format!(
@@ -675,18 +687,20 @@ fn justification_offset(
         ));
         return Ok(absent);
     };
-    for pline in ptss.members()? {
-        if !pline.element_type()?.eq_ignore_ascii_case("PLIN") {
-            continue;
-        }
-        let key = pline
+    let pkey_of = |pline: &DbElement| -> String {
+        pline
             .get_string("PKEY")
             .ok()
             .flatten()
             .unwrap_or_default()
             .trim()
-            .to_ascii_uppercase();
-        if key != jusl {
+            .to_ascii_uppercase()
+    };
+    for pline in ptss.members()? {
+        if !pline.element_type()?.eq_ignore_ascii_case("PLIN") {
+            continue;
+        }
+        if pkey_of(&pline) != jusl {
             continue;
         }
         // 这条线只出位置。它的 PLAX 不进标架——转多少由中性轴线说了算，
@@ -694,6 +708,26 @@ fn justification_offset(
         return Ok(Justification {
             offset: member_frame(&pline, env)?.offset,
             found: true,
+            line: jusl.to_string(),
+        });
+    }
+    // GTNAID 回退：`JUSL` 的线不在 PSTR 时改取中性轴那条（GTJLID 里 GTPLID 落空
+    // 就调 GTNAID，不是直接对齐原点）。
+    for pline in ptss.members()? {
+        if !pline.element_type()?.eq_ignore_ascii_case("PLIN") {
+            continue;
+        }
+        if pkey_of(&pline) != NEUTRAL_AXIS_LINE {
+            continue;
+        }
+        notes.push(format!(
+            "PSTR {} 里没有 PKEY={jusl} 的 PLIN，回退到中性轴 {NEUTRAL_AXIS_LINE} 的 (PX, PY)",
+            ptss.refno()
+        ));
+        return Ok(Justification {
+            offset: member_frame(&pline, env)?.offset,
+            found: true,
+            line: NEUTRAL_AXIS_LINE.to_string(),
         });
     }
     notes.push(format!(

@@ -25,8 +25,9 @@ fn main() -> anyhow::Result<()> {
     for scanned in engine.scan_elements(ScanTier::Header)? {
         let scanned = scanned?;
         let element = set.element(scanned.refno);
-        if args.get(4).is_some() {
-            // 第 5 个参数任意值：列出全部 DB 元素里 DBNO >= 100000 的。
+        if args.get(4).is_some_and(|m| m == "dbs") {
+            // 第 5 参数为 "dbs"：列出全部 DB 元素里 DBNO >= 阈值的（第 4 参数给阈值，默认 100000）。
+            let threshold: i64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(100000);
             if element.element_type()? == "DB" {
                 let dbno = format!("{:?}", element.attribute("DBNO")?);
                 let n: i64 = dbno
@@ -36,7 +37,7 @@ fn main() -> anyhow::Result<()> {
                     .collect::<String>()
                     .parse()
                     .unwrap_or(-1);
-                if n >= 100000 {
+                if n >= threshold {
                     println!(
                         "DB {} dbno={n} name={} STYP={:?} PROJ={:?}",
                         element.refno(),
@@ -52,6 +53,15 @@ fn main() -> anyhow::Result<()> {
             continue;
         }
         let name = element.stored_name()?.unwrap_or_default();
+        if args.get(4).is_some_and(|m| m == "mdbdump") && args.get(3).is_none_or(|f| name == *f) {
+            // 第 5 参数为 "mdbdump"：dump MDB 元素的 refno、属性名与 CURD 原始值。
+            println!("MDB {name} refno={}", element.refno());
+            for attr in element.attribute_names()? {
+                let v = element.attribute(&attr)?;
+                println!("    {attr} = {v:?}");
+            }
+            continue;
+        }
         let curd = element.get_element_array("CURD")?;
         let mut rows = Vec::new();
         let mut hit = false;

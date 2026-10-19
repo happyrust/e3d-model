@@ -255,6 +255,12 @@ pub struct Report {
     /// 可 E3D 给的点标记导成 RVM 就是三条 `Line`，同样是「画了线、我们不画」。
     /// 见 [`exports_mark_as_lines`]——判据相同的 `PNOD` 为什么不在里面，那里写着。
     pub centreline_only: BTreeMap<String, usize>,
+    /// [`Report::centreline_only`] 里走 [`SkipKind::CentrelineOnly`] 进账的逐件明细
+    /// （`SNOD` 点标记不在这里，它没有建模理由可写）。
+    ///
+    /// 计数账答不了「这 20 根为什么只画线」：无 SPRE、截面全被显示筛掉、切后为空，
+    /// 三种原因的处理方向完全不同（gen-model #34 D 线 P6）。只**新增**这本，计数账口径不变。
+    pub centreline_only_detail: Vec<Incident>,
     /// 目录链断的明细（[`crate::elmodl::SkipKind::CatalogueChainBroken`]）：引用悬空、
     /// 库没开、缺 `CATR`/`GSTR`。
     ///
@@ -377,6 +383,13 @@ pub struct Report {
     pub orphans: BTreeMap<String, usize>,
     /// 负几何被跳过的明细（正体照出，体积会偏大，对拍时按这本账归因）。
     pub negatives_skipped: Vec<Incident>,
+    /// 已解释的关节刀：**没有几何源**、但其拓扑类已有原生证据判定「端面已覆盖、
+    /// 不新增刀」的条目（[`crate::elmodl::JointCutOutcome`] 里判 J-A 的那一支）。
+    ///
+    /// 与 `negatives_skipped` **并列、不互相冲抵**：没几何源这个事实没改，改的是
+    /// 这条事实的证据状态。只放行已批准的拓扑类（当前仅 J-A，detail 里冠
+    /// `[J-A]` 标签与证据标签）；其余类别照旧记 `negatives_skipped` 并冠类别标签。
+    pub joint_cuts_explained: Vec<Incident>,
     /// 非致命观察（倒圆越界、SJUS 未生效、孔环退化等）。
     pub notes: Vec<Incident>,
 }
@@ -478,6 +491,13 @@ pub fn generate_subtree_with_cache(
                                 detail: format!("属主 {refno}（{noun}）: {}", skip.reason),
                             });
                         }
+                        for explained in &generated.joint_cuts_explained {
+                            report.joint_cuts_explained.push(Incident {
+                                refno: explained.refno.to_string(),
+                                noun: explained.noun.clone(),
+                                detail: format!("属主 {refno}（{noun}）: {}", explained.reason),
+                            });
+                        }
                         for note in &generated.notes {
                             report.notes.push(Incident {
                                 refno: refno.clone(),
@@ -516,6 +536,13 @@ pub fn generate_subtree_with_cache(
                                 refno: skip.refno.to_string(),
                                 noun: skip.noun.clone(),
                                 detail: format!("属主 {refno}（{noun}）: {}", skip.reason),
+                            });
+                        }
+                        for explained in &generated.joint_cuts_explained {
+                            report.joint_cuts_explained.push(Incident {
+                                refno: explained.refno.to_string(),
+                                noun: explained.noun.clone(),
+                                detail: format!("属主 {refno}（{noun}）: {}", explained.reason),
                             });
                         }
                         for note in &generated.notes {
@@ -826,9 +853,15 @@ fn record_skip(report: &mut Report, kind: SkipKind, refno: String, noun: String,
             noun,
             detail: reason,
         }),
-        // 500 只 MSUP 杆件的理由是同一句话，逐条留名只会把 notes 淹掉；件数按 noun 记。
+        // 500 只 MSUP 杆件的理由是同一句话，逐条留名只会把 notes 淹掉；件数按 noun 记，
+        // 逐件原因另放一本明细，不进 notes。
         SkipKind::CentrelineOnly => {
-            *report.centreline_only.entry(noun).or_insert(0) += 1;
+            *report.centreline_only.entry(noun.clone()).or_insert(0) += 1;
+            report.centreline_only_detail.push(Incident {
+                refno,
+                noun,
+                detail: reason,
+            });
         }
         SkipKind::CatalogueChainBroken => report.catalogue_chain_broken.push(Incident {
             refno,
@@ -1225,7 +1258,9 @@ fn build_route_tubes(
                     primitive_instance: tube.primitive_instance,
                     analytic_primitive: None,
                     negatives_applied: 0,
+                    own_ngms_cuts: 0,
                     negatives_skipped: Vec::new(),
+                    joint_cuts_explained: Vec::new(),
                     notes: vec![match tube.section {
                         TubeSection::Round { outer_diameter } => format!(
                             "implied tube length={}mm radius={}mm source={section_source}",
@@ -1319,6 +1354,7 @@ impl Report {
             failed,
             catalog_pending,
             centreline_only,
+            centreline_only_detail,
             catalogue_chain_broken,
             route_containers,
             route_members,
@@ -1339,14 +1375,17 @@ impl Report {
             consumed,
             orphans,
             negatives_skipped,
+            joint_cuts_explained,
             notes,
         } = other;
         self.visited += visited;
         self.generated += generated;
         self.skipped.extend(skipped);
         self.failed.extend(failed);
+        self.centreline_only_detail.extend(centreline_only_detail);
         self.catalogue_chain_broken.extend(catalogue_chain_broken);
         self.negatives_skipped.extend(negatives_skipped);
+        self.joint_cuts_explained.extend(joint_cuts_explained);
         self.notes.extend(notes);
         self.catalogue_mesh_cache.accumulate(catalogue_mesh_cache);
         self.extrusion_mesh_cache.accumulate(extrusion_mesh_cache);
@@ -1471,7 +1510,8 @@ impl Report {
              route_containers={} route_members={} implied_tubes={} tubes_measured={} \
              tubes_built={} tubes_catalogue_od={} tubes_bore_fallback={} tubes_no_ppoint={} \
              tubes_misaligned={} tubes_reversed={} \
-             unsupported={} unknown={} not_wired={} orphans={} neg_skipped={}",
+             unsupported={} unknown={} not_wired={} orphans={} neg_skipped={} \
+             joint_explained={}",
             self.visited,
             self.consumed_total(),
             self.generated,
@@ -1493,6 +1533,7 @@ impl Report {
             self.not_wired_total(),
             self.orphans.values().sum::<usize>(),
             self.negatives_skipped.len(),
+            self.joint_cuts_explained.len(),
         )
     }
 }
@@ -1781,6 +1822,37 @@ mod tests {
             body.contains("exports_mark_as_lines(&noun)"),
             "DFS 的 NonGraphic 分支要先过这道门，否则 SNOD 又回到 proven_non_graphic"
         );
+    }
+
+    /// 中心线计数账与逐件明细一起进、一起并：只有计数时，7200 那 20 根 SCTN 的原因
+    /// 在报告上无从分型（P6）。
+    #[test]
+    fn centreline_only_skip_is_counted_and_named_and_survives_merge() {
+        let mut left = Report::default();
+        record_skip(
+            &mut left,
+            SkipKind::CentrelineOnly,
+            "1/2".into(),
+            "SCTN".into(),
+            "无 SPRE：E3D 只画中心线，不出实体; ".into(),
+        );
+        let mut right = Report::default();
+        record_skip(
+            &mut right,
+            SkipKind::CentrelineOnly,
+            "1/3".into(),
+            "SCTN".into(),
+            "截面折线化 / 挤出 / 端切之后没有实体; ".into(),
+        );
+        left.merge(right);
+        assert_eq!(left.centreline_only.get("SCTN"), Some(&2));
+        let named: Vec<_> = left
+            .centreline_only_detail
+            .iter()
+            .map(|incident| incident.refno.as_str())
+            .collect();
+        assert_eq!(named, ["1/2", "1/3"]);
+        assert!(left.skipped.is_empty() && left.notes.is_empty());
     }
 
     /// 总长只要有一边没量过，合并结果就必须是 `None`。

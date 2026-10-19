@@ -304,7 +304,16 @@ pub struct GeneratedElement {
     /// 形状时才有——目前就是 SLCY。RVM 写出端拿它直出记录，仍要过自校闸。
     pub analytic_primitive: Option<AnalyticPrimitive>,
     pub negatives_applied: usize,
+    /// `negatives_applied` 里来自目录件自己 `NGMR`（→ NGMS）的那几把：扣的是自己的正体，
+    /// 不是记录级 owned 负体。RVM 写出端靠它区分两类记录写法——桥架/托盘的记录级负体
+    /// E3D 照写未扣减的 SBOX/SEXT/SREV（`write_uncut_catalogue_parts`），而 NGMS 自扣
+    /// 的正体 E3D 写**扣过的**整只面片（aps7200 `/STAIR-STEEL-PRE-12/BASE` 的 Ø20 栓孔板）。
+    pub own_ngms_cuts: usize,
     pub negatives_skipped: Vec<SkippedNegative>,
+    /// 已解释的关节刀：没有几何源、但其拓扑类已被原生证据判定「端面已覆盖、不新增刀」
+    /// 的条目（`JointCutOutcome::CoveredByEndFaces`，[`JointClass`]）。与
+    /// `negatives_skipped` 并列、不互相冲抵；reason 前冠类别标签与证据标签。
+    pub joint_cuts_explained: Vec<SkippedNegative>,
     /// 倒圆越界、SJUS 未生效等非致命观察。
     pub notes: Vec<String>,
 }
@@ -483,6 +492,7 @@ pub fn model_element_with_cache(
     // `REPRESENTATION LEVEL n`，NOZZ 走 `LEVEL NOZZ`），与目录成员的显示过滤同一张表。
     let level = repre_level_of(el)?;
     let mut skipped = Vec::new();
+    let mut joint_cuts_explained = Vec::new();
     let mut fixing_catalogue_cuts = Vec::new();
     if noun == "GENSEC" || noun == "SCTN" {
         collect_joint_negatives(
@@ -491,6 +501,7 @@ pub fn model_element_with_cache(
             &mut negatives,
             &mut fixing_catalogue_cuts,
             &mut skipped,
+            &mut joint_cuts_explained,
             &mut notes,
             cache,
         )?;
@@ -508,6 +519,7 @@ pub fn model_element_with_cache(
                 &mut negatives,
                 &mut fixing_catalogue_cuts,
                 &mut skipped,
+                &mut joint_cuts_explained,
                 &mut notes,
                 cache,
             )?;
@@ -617,6 +629,25 @@ pub fn model_element_with_cache(
             Ok(solid) => (solid, None),
             Err(error) => {
                 if let Some(reason) = sbfitting_no_shape_reason(&error) {
+                    // 嵌套在 `CMFI` 下的 `SBFI` 没有 DESP 时并非无件可出：原生 RVM
+                    // 里的 `SBFITTING` 组就是 `SPRE→SFIT` 的目录求值结果（aps7200
+                    // `23584/8625`/`8629`，与 `FITT` 同一块带孔平板、平放标架）。
+                    // 沿 `builds_from_catalogue_component` 那条臂求值，标架走
+                    // `transform::ImplicitFrame::SubFitting`。
+                    if el.get_element("SPRE")?.is_some() {
+                        let build = model_catalogue_member_with_cache(el, cache)?;
+                        return Ok(match build.generated {
+                            Some(generated) => Modeled::Solid(Box::new(generated)),
+                            None => Modeled::Skipped {
+                                kind: SkipKind::NoShape,
+                                reason: format!(
+                                    "{reason}；目录侧也无可见几何：{}（局部失败 {} 条）",
+                                    build.no_shape.unwrap_or_else(|| "原因未记".to_string()),
+                                    build.diagnostics.len()
+                                ),
+                            },
+                        });
+                    }
                     return Ok(Modeled::Skipped {
                         kind: SkipKind::NoShape,
                         reason: format!("{reason}（DESP 没带套管尺寸，E3D 同样不出几何）"),
@@ -861,7 +892,9 @@ pub fn model_element_with_cache(
             .then_some(analytic_primitive)
             .flatten(),
         negatives_applied,
+        own_ngms_cuts: 0,
         negatives_skipped: skipped,
+        joint_cuts_explained,
         notes,
     })))
 }
@@ -1020,10 +1053,13 @@ fn section_source_noun(source: SectionSource) -> &'static str {
 /// 四段对标 `DB_Sctn::DB_makeCSG@0x10738C30` 的前两个阶段（调试串 `profile` → `xsec1`）：
 /// 截面子树逐 GMSS 成员建体并集，再由 `DB_Scan_to_GML` 槽 28 拿两张切面切。
 ///
-/// **第 4 阶段（负体）只接了一条**：GENSEC 的 JOIS/JOIE 指向 FIXING 时，它 TMPL 里的负体
-/// 在 [`model_element_with_cache`] 的负体段扣（[`collect_joint_negatives`]）。目录侧的关节
-/// 负体（`NGMR → NGMS`）与成员链上的 FITT / CMFI(+SBFI) / SNOD→SJOI / SCOJ→SUBJ 都要先有
-/// G1-1c 的目录路，SCTN 的关节也还没接——这些梁端在 RVM 对拍时仍会偏胖。
+/// **第 4 阶段（负体）**：GENSEC 的 JOIS/JOIE 指向 FIXING 时，它 TMPL 里的负体
+/// 在 [`model_element_with_cache`] 的负体段扣（[`collect_joint_negatives`]）；SCTN 的
+/// JOIS/JOIE（SJOI/PJOI 族）与成员链（FITT/CMFI(+SBFI)/SNOD→SJOI/SCOJ→SUBJ）同函数
+/// 按各自 mode 扫。没有几何源（TMPL 成员与 SPRE→CATR 都没有）的刀源记进
+/// `negatives_skipped` 并冠拓扑类别标签（[`JointClass`]）；其中 J-A 类（JOIS/JOIE →
+/// 另一根 SCTN 的 SNOD 上 `CREF` 回指宿主的 SJOI）有原生证据证明端面已覆盖，
+/// 另记 `joint_cuts_explained`。有源但刀被 NAPP 门全挡下或源里本就没负体的记 note。
 fn section_body(el: &DbElement, notes: &mut Vec<String>) -> Result<SectionBody, ModelError> {
     let catalogue = match section_catalogue(el)? {
         SectionChain::NoSpre => {
@@ -2303,9 +2339,10 @@ fn collect_negatives_deep(el: &DbElement, out: &mut Vec<DbElement>) -> Result<()
 ///
 /// SCTN 的 JOIS/JOIE 指向的是 `SJOI`（aps250110 实测 `SCTN.JOIE → SJOI`，SJOI 的 `CREF`
 /// 回指被切的 SCTN；aps7200 一窗 94 只 SJOI）。SJOI 多数没有 TMPL 成员、`SPRE` 也空——按
-/// `sub_10722680` 的几何源口径（TMPL 成员 / SPRE→CATR）它产不出负体，这类元素记一条
-/// `skipped` 便于 RVM 归因。**只有真没有几何源才记**：有源的关节无论刀被 NAPP 门挡下、
-/// 全部放行还是源里本就没有负体，都不算 skipped（见 [`JointCutOutcome`]）。
+/// `sub_10722680` 的几何源口径（TMPL 成员 / SPRE→CATR）它产不出负体。**只有真没有几何源
+/// 才记 skipped**：有源的关节无论刀被 NAPP 门挡下、全部放行还是源里本就没有负体，都不算
+/// skipped（见 [`JointCutOutcome`]）。无源条目按 [`JointClass`] 分型：J-A（跨截面 SNOD-SJOI）
+/// 已有原生证据（§12①）移进 `explained` 账，其余类别留 skipped 待证。
 ///
 /// 关节的 `CUTP` 并不经这里生效：Core3D `RECON0 → STRCNT → JTCONN → PUTEND` 把关节端切写回
 /// SCTN 自己的 `POSS/POSE/DRNS/DRNE`，正体由 [`crate::section::section_cut_planes`] 照这四项裁两端；
@@ -2322,6 +2359,7 @@ fn collect_joint_negatives(
     negatives: &mut Vec<DbElement>,
     catalogue_cuts: &mut Vec<Manifold>,
     skipped: &mut Vec<SkippedNegative>,
+    explained: &mut Vec<SkippedNegative>,
     notes: &mut Vec<String>,
     cache: &mut CatalogueMeshCache,
 ) -> Result<(), ModelError> {
@@ -2363,15 +2401,30 @@ fn collect_joint_negatives(
             Ok(tally) => match JointCutOutcome::of(tally) {
                 JointCutOutcome::NoSource => {
                     if noun == "SCTN" {
-                        skipped.push(SkippedNegative {
-                            refno: joint.refno(),
-                            noun: joint_noun.clone(),
-                            reason: format!(
-                                "{attr} 关节没有几何源（TMPL 成员与 SPRE→CATR 都没有），不出负体；\
-                                 CUTP 端切若经 RECONNECT 写回 SCTN 的 DRNS/DRNE 则已由端面覆盖，\
-                                 是否另有原生额外刀待同根前后对拍（#34 D1–D3）"
-                            ),
-                        });
+                        match joint_class(el, &joint) {
+                            class @ JointClass::AcrossSnod => explained.push(SkippedNegative {
+                                refno: joint.refno(),
+                                noun: joint_noun.clone(),
+                                reason: format!(
+                                    "[{}] {attr} 关节没有几何源（TMPL 成员与 SPRE→CATR 都没有），不出负体：\
+                                     关节的 CUTP 端切已由 SCTN 正体的 DRNS/DRNE 端面覆盖——同拓扑原生样本\
+                                     250110 /68 与生成体双向最大差 0.007071 mm、/70 原生 RECONNECT END 幂等\
+                                     （gen-model #34 §12①）；caveat：/68 自身 RECONNECT 被 core.dll 崩溃挡住，\
+                                     扰动后是否回写未测，登记于「已解释」而非消除",
+                                    class.label()
+                                ),
+                            }),
+                            class => skipped.push(SkippedNegative {
+                                refno: joint.refno(),
+                                noun: joint_noun.clone(),
+                                reason: format!(
+                                    "[{}] {attr} 关节没有几何源（TMPL 成员与 SPRE→CATR 都没有），不出负体；\
+                                     CUTP 端切若经 RECONNECT 写回 SCTN 的 DRNS/DRNE 则已由端面覆盖，\
+                                     是否另有原生额外刀待同根前后对拍（#34 D1–D3）",
+                                    class.label()
+                                ),
+                            }),
+                        }
                     }
                 }
                 JointCutOutcome::SourceWithoutCuts => notes.push(format!(
@@ -2412,6 +2465,7 @@ fn collect_member_joint_negatives(
     negatives: &mut Vec<DbElement>,
     catalogue_cuts: &mut Vec<Manifold>,
     skipped: &mut Vec<SkippedNegative>,
+    explained: &mut Vec<SkippedNegative>,
     notes: &mut Vec<String>,
     cache: &mut CatalogueMeshCache,
 ) -> Result<(), ModelError> {
@@ -2429,14 +2483,34 @@ fn collect_member_joint_negatives(
             tally.rejected
         )),
         Ok(tally) => match JointCutOutcome::of(tally) {
-            JointCutOutcome::NoSource => skipped.push(SkippedNegative {
-                refno: source.refno(),
-                noun: source.element_type().unwrap_or_else(|_| "?".into()),
-                reason: format!(
-                    "{via} 没有几何源（TMPL 成员与 SPRE→CATR 都没有），不出负体；\
-                         是否另有原生额外刀待同根前后对拍"
-                ),
-            }),
+            JointCutOutcome::NoSource => {
+                let class =
+                    member_chain_class(&source.element_type().unwrap_or_else(|_| "?".into()));
+                let record = |reason: String| SkippedNegative {
+                    refno: source.refno(),
+                    noun: source.element_type().unwrap_or_else(|_| "?".into()),
+                    reason,
+                };
+                match class {
+                    // J-B：宿主自己 SNOD 下的无源 SJOI。原生证据：同一 SCTN 的
+                    // `export` 子树里 SJOINT 记录零图元（SNODE 只出 3 条 Line），
+                    // 宿主正体与生成体双向采样最大差 0.0063 mm、体积相对差 2.3e-6
+                    // （250110 /78、/84 两样本，sctn_250110_jb-20261018）——嵌套关节
+                    // 既不产出也不吃掉几何。
+                    JointClass::OwnSnod => explained.push(record(format!(
+                        "[{}] {via} 没有几何源（TMPL 成员与 SPRE→CATR 都没有），不出负体：\
+                         同拓扑原生样本 250110 /78、/84 的 SJOINT 记录零图元、宿主正体双向\
+                         最大差 0.0063 mm、体积差 2.3e-6（gen-model #34 sctn_250110_jb-20261018）；\
+                         caveat：样本只在 250110 墙框一族，其它族嵌套关节先按同类记账",
+                        class.label()
+                    ))),
+                    _ => skipped.push(record(format!(
+                        "[{}] {via} 没有几何源（TMPL 成员与 SPRE→CATR 都没有），不出负体；\
+                         是否另有原生额外刀待同根前后对拍",
+                        class.label()
+                    ))),
+                }
+            }
             JointCutOutcome::SourceWithoutCuts => notes.push(format!(
                 "{via} {}：有几何源但其中没有负体，不出刀",
                 source.refno()
@@ -2713,7 +2787,7 @@ struct FixingCutTally {
 /// 关节 / 成员链刀源在 NAPP 门之外的归类（NAPP 挡下的把数另记 note）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum JointCutOutcome {
-    /// 没有几何源——唯一记 `negatives_skipped` 的情形。
+    /// 没有几何源——记 `negatives_skipped`，或按 [`JointClass`] 落进「已解释」账。
     NoSource,
     /// 有源，但源里一把刀也没有（挡下的也没有）：E3D 同样不出刀，记 note。
     SourceWithoutCuts,
@@ -2730,6 +2804,87 @@ impl JointCutOutcome {
         } else {
             Self::Cut
         }
+    }
+}
+
+/// 没有几何源的关节 / 成员刀源按拓扑分型（gen-model #34 D 线 P1–P4，plan §2）。
+///
+/// 分型照拓扑硬编码，不照字符串：[`JointClass::AcrossSnod`]（J-A）与
+/// [`JointClass::OwnSnod`]（J-B）都有同根原生证据允许移出 skipped 记「已解释」
+/// ——J-A：§12①（250110 /68 双向 0.007 mm、/70 RECONNECT END 幂等）；J-B：250110
+/// /78、/84 两样本（宿主正体双向 0.0063 mm、体积差 2.3e-6、SJOINT 记录零图元）。
+/// 其余类别照旧记 `negatives_skipped`，reason 前冠标签，等各自的同根原生对拍
+/// （R3：结论不外推）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JointClass {
+    /// J-A：`JOIS`/`JOIE` 指向的 `SJOI` 挂在**另一根** SCTN 的 `SNOD` 下、
+    /// 且 `CREF` 回指宿主（250110 /68 → /72 ← SNOD/71 ← SCTN/70，CREF=/68）。
+    AcrossSnod,
+    /// J-B：`SJOI` 挂在宿主自己名下的 `SNOD` 下（成员链 mode 1 同型）。
+    /// 已解释证据：`sctn_250110_jb-20261018`（/78、/84）。
+    OwnSnod,
+    /// J-C：`JOIS`/`JOIE` 指向 `PJOI` 且没有几何源（J-D 是有源，不进这条路）。
+    ProfileJoint,
+    /// M：成员链上无源的 `FITT` / `CMFI` / `SBFI`（FITT 自己另出几何，
+    /// 成员链只看它的负体）。
+    MemberFitting,
+    /// 其余拓扑（`SCOJ`/`PCOJ`/`SUBJ`/`FIXING` 直连、属主链读不出来、`CREF` 不回指等）。
+    Unclassified,
+}
+
+impl JointClass {
+    fn label(self) -> &'static str {
+        match self {
+            Self::AcrossSnod => "J-A",
+            Self::OwnSnod => "J-B",
+            Self::ProfileJoint => "J-C",
+            Self::MemberFitting => "M",
+            Self::Unclassified => "未分型",
+        }
+    }
+}
+
+/// `JOIS`/`JOIE` 指向的关节按拓扑分型（成员链不走这里，见 [`member_chain_class`]）。
+///
+/// 判不出来的按 [`JointClass::Unclassified`]——宁可留在 skipped 也别把没证据的
+/// 拓扑错记进「已解释」。`SJOI` 的跨截面判据与 §11 的 `/72` 逐条对齐：`owner` 是
+/// `SNOD`、`SNOD` 的属主是**另一根** `SCTN`、关节 `CREF` 回指宿主。
+fn joint_class(host: &DbElement, joint: &DbElement) -> JointClass {
+    match joint.element_type().as_deref() {
+        Ok("PJOI") => JointClass::ProfileJoint,
+        Ok("SJOI") => {
+            let Some(snod) = joint.owner().ok().flatten() else {
+                return JointClass::Unclassified;
+            };
+            if snod.element_type().ok().as_deref() != Some("SNOD") {
+                return JointClass::Unclassified;
+            }
+            // CREF 不回指宿主的 SJOI 不是 /72 那个拓扑，不外推。
+            if joint.get_ref("CREF").ok().flatten() != Some(host.refno()) {
+                return JointClass::Unclassified;
+            }
+            let Some(section) = snod.owner().ok().flatten() else {
+                return JointClass::Unclassified;
+            };
+            if section.element_type().ok().as_deref() != Some("SCTN") {
+                return JointClass::Unclassified;
+            }
+            if section.refno() == host.refno() {
+                JointClass::OwnSnod
+            } else {
+                JointClass::AcrossSnod
+            }
+        }
+        _ => JointClass::Unclassified,
+    }
+}
+
+/// 成员链刀源的类别（`member_chain_mode` 那张表的对偶）。
+fn member_chain_class(source_noun: &str) -> JointClass {
+    match source_noun {
+        "FITT" | "CMFI" | "SBFI" => JointClass::MemberFitting,
+        "SJOI" => JointClass::OwnSnod,
+        _ => JointClass::Unclassified,
     }
 }
 
@@ -2762,6 +2917,9 @@ fn design_napp_admits(mode: u32, napp: Option<i32>) -> bool {
 
 /// `sub_1072A790`（目录图元）的 NAPP 门：与设计那道只差 `-1` 在 mode 9 不放行。
 pub(crate) fn catalogue_napp_admits(mode: u32, napp: Option<i32>) -> bool {
+    if std::env::var_os("E3D_MODEL_NAPP_OPEN").is_some() {
+        return true;
+    }
     match napp {
         None => true,
         Some(-1) => matches!(mode, 0 | 3 | 4 | 5 | 6),
@@ -3287,8 +3445,9 @@ mod tests {
     }
 
     /// aps250110 的 SCTN 端关节：`SCTN 2013286654/68 JOIE → SJOI 72`，SJOI 无 TMPL/SPRE
-    /// 几何源——不出负体，必须落 `negatives_skipped` 记账，不许静默（其 CUTP 端切若经
-    /// RECONNECT 写回 DRNS/DRNE 则由端面覆盖，是否另有原生额外刀待同根对拍）。语料不在就跳过（同檐口测试那道门）。
+    /// 几何源——这正是 §12① 有原生证据的 J-A 拓扑（SNOD/71←SCTN/70、CREF=/68），从
+    /// `negatives_skipped` 移进 `joint_cuts_explained` 单独记账；同一只 SJOI/72 作为
+    /// `/70` 的 SNOD 成员属 J-B，留在 skipped。语料不在就跳过（同檐口测试那道门）。
     #[test]
     fn sctn_endpoint_joints_without_a_geometry_source_are_accounted() {
         let plant = std::path::Path::new(r"D:\AVEVA\Projects\E3D3.1\AvevaPlantSample\aps000");
@@ -3327,13 +3486,24 @@ mod tests {
         };
         assert!(
             generated
+                .joint_cuts_explained
+                .iter()
+                .any(|skip| skip.refno.to_string() == "2013286654/72"
+                    && skip.noun == "SJOI"
+                    && skip.reason.starts_with("[J-A]")),
+            "JOIE→SJOI/72 是 J-A 拓扑（§12① 已证端面覆盖），要记「已解释」账：{:?}",
+            generated.joint_cuts_explained
+        );
+        assert!(
+            !generated
                 .negatives_skipped
                 .iter()
-                .any(|skip| skip.refno.to_string() == "2013286654/72" && skip.noun == "SJOI"),
-            "JOIE→SJOI/72 没有几何源，要在 skipped 账上点名：{:?}",
+                .any(|skip| skip.refno.to_string() == "2013286654/72"),
+            "J-A 不许同时挂 skipped：{:?}",
             generated.negatives_skipped
         );
-        // 成员链侧：邻居 SCTN/70 名下 SNOD/71 里的 SJOI/72 同样没源，也要入账。
+        // 成员链侧：邻居 SCTN/70 名下 SNOD/71 里的 SJOI/72 同样没源，属 J-B——/78、/84
+        // 同根原生对拍后移进「已解释」账（sctn_250110_jb-20261018），不再挂 skipped。
         let neighbor = set.element(RefNo::new(2013286654, 70));
         let Modeled::Solid(neighbor_generated) =
             model_element(&neighbor, crate::category::classify("SCTN")).expect("SCTN/70 建模")
@@ -3342,12 +3512,270 @@ mod tests {
         };
         assert!(
             neighbor_generated
+                .joint_cuts_explained
+                .iter()
+                .any(|skip| skip.refno.to_string() == "2013286654/72"
+                    && skip.reason.starts_with("[J-B]")),
+            "SNOD/71 名下的 SJOI/72（J-B）要记「已解释」账：{:?}",
+            neighbor_generated.joint_cuts_explained
+        );
+        assert!(
+            !neighbor_generated
                 .negatives_skipped
                 .iter()
                 .any(|skip| skip.refno.to_string() == "2013286654/72"),
-            "SNOD/71 名下的 SJOI/72 同样没几何源，成员链扫描也要记：{:?}",
+            "J-B 不许同时挂 skipped：{:?}",
             neighbor_generated.negatives_skipped
         );
+    }
+
+    /// P7 守卫：SCTN 名下 `SNOD` 成员的 `SJOI` 目前全语料交不出一把刀
+    /// （几何源多半有——7200 有几十只 SPRE 解得开——但 mode 1 下产出为零，
+    /// 报告里记「有几何源但其中没有负体」）。一旦语料里出现真能交出负体的
+    /// SNOD→SJOI，`ImplicitFrame::SectionNode` 的暂定标架（GJTORI/GJTORG 未翻）
+    /// 就被真数据考验——先在这里红出来点名，去处理 P7 再放行那把刀。
+    /// 语料不在就跳过（同檐口测试那道门）。
+    #[test]
+    fn no_snod_sjoi_in_the_corpus_carries_a_geometry_source() {
+        let plant = std::path::Path::new(r"D:\AVEVA\Projects\E3D3.1\AvevaPlantSample\aps000");
+        let acp = std::path::Path::new(r"D:\AVEVA\Projects\E3D3.1\AvevaCatalogue\acp000");
+        let template = std::path::Path::new(r"E:\reverse\e3d\shadow_e3d31_aps_all");
+        let dbs = ["aps7200_0001", "aps250110_0001"];
+        if !dbs.iter().all(|db| plant.join(db).exists())
+            || !acp.exists()
+            || !template.join("attlib.dat").exists()
+        {
+            return;
+        }
+        let resolver = crate::db_discovery::DirectoryDbResolver::scan(
+            &[plant.to_path_buf(), acp.to_path_buf()],
+            template,
+        )
+        .unwrap();
+        let set = std::sync::Arc::new(
+            e3d_io::db_element::DbSet::with_attlib_file_and_resolver(
+                &template.join("attlib.dat"),
+                Box::new(resolver),
+            )
+            .unwrap(),
+        );
+        let mut checked = 0usize;
+        let mut sourced: Vec<String> = Vec::new();
+        let mut cache = CatalogueMeshCache::default();
+        for db in dbs {
+            let file = plant.join(db);
+            let dbno = set
+                .add_db(e3d_io::db_element::DbFilePin {
+                    file: file.clone(),
+                    template: e3d_io::db_element::template_file_for(template, "DESI").unwrap(),
+                    db_type: Some("DESI".into()),
+                    sesno: None,
+                })
+                .unwrap();
+            let mut engine = e3d_io::engine::ReadOnlyEngine::open(&file).unwrap();
+            let refnos: Vec<RefNo> = engine
+                .scan_elements(e3d_io::engine::ScanTier::Header)
+                .unwrap()
+                .map(|scanned| scanned.unwrap().refno)
+                .filter(|refno| refno.dbno() == dbno)
+                .collect();
+            for refno in refnos {
+                let joint = set.element(refno);
+                if joint.element_type().ok().as_deref() != Some("SJOI") {
+                    continue;
+                }
+                let Ok(Some(snod)) = joint.owner() else {
+                    continue;
+                };
+                if snod.element_type().ok().as_deref() != Some("SNOD") {
+                    continue;
+                }
+                let Ok(Some(section)) = snod.owner() else {
+                    continue;
+                };
+                if section.element_type().ok().as_deref() != Some("SCTN") {
+                    continue;
+                }
+                checked += 1;
+                // 真正会造出刀的才会用 `ImplicitFrame::SectionNode` 那把暂定标架：
+                // 几何源在、NAPP 门（mode 1）放行至少一把——与生成路径同一个
+                // fixing_negatives 判定。
+                let mut negatives = Vec::new();
+                let mut cuts = Vec::new();
+                let mut feed_notes = Vec::new();
+                match fixing_negatives(
+                    &joint,
+                    1,
+                    &mut negatives,
+                    &mut cuts,
+                    &mut feed_notes,
+                    &mut cache,
+                ) {
+                    Ok(tally) if tally.admitted > 0 => sourced.push(format!(
+                        "{refno}（SNOD {} ← SCTN {}）交出 {} 把刀",
+                        snod.refno(),
+                        section.refno(),
+                        tally.admitted
+                    )),
+                    _ => {}
+                }
+            }
+        }
+        assert!(checked > 0, "一个 SNOD→SJOI 都没找到，门没有判别力");
+        assert!(
+            sourced.is_empty(),
+            "{} 只 SNOD→SJOI 能交出负体，P7（关节标架未翻）必须先处理再放行：{sourced:?}",
+            sourced.len()
+        );
+    }
+
+    /// S1 只读普查（gen-model #34 plan §S1）：全 APS 的 DESI 库过一遍，给每只 SCTN 的
+    /// JOIS/JOIE 关节打 [`JointClass`] 并记有没有几何源（J-D = PJOI 有源，普查它就是
+    /// 为了证明这一类到底存不存在）；另外把 JUSL 在 PSTR 里找不到的 SCTN 连同该 PSTR
+    /// 实际有哪些 PKEY 一起列出来（P5 的前置事实：FOC/LBOA 是「目录里真没有这条线」
+    /// 还是「换个名字在」）。
+    ///
+    /// 输出按行打印（`--nocapture`），交由 shell 重定向到 `classes.json` / `jusl-missing.txt`
+    /// 落账；不进默认测试集——全语料扫一遍要读十几个库，故 `#[ignore]`。
+    #[test]
+    #[ignore]
+    fn census_sctn_joint_classes_and_missing_jusl() {
+        let plant = std::path::Path::new(r"D:\AVEVA\Projects\E3D3.1\AvevaPlantSample\aps000");
+        let acp = std::path::Path::new(r"D:\AVEVA\Projects\E3D3.1\AvevaCatalogue\acp000");
+        let template = std::path::Path::new(r"E:\reverse\e3d\shadow_e3d31_aps_all");
+        if !plant.exists() || !acp.exists() || !template.join("attlib.dat").exists() {
+            return;
+        }
+        let resolver = crate::db_discovery::DirectoryDbResolver::scan(
+            &[plant.to_path_buf(), acp.to_path_buf()],
+            template,
+        )
+        .unwrap();
+        let set = std::sync::Arc::new(
+            e3d_io::db_element::DbSet::with_attlib_file_and_resolver(
+                &template.join("attlib.dat"),
+                Box::new(resolver),
+            )
+            .unwrap(),
+        );
+        let mut cache = CatalogueMeshCache::default();
+        let mut sctn_seen = 0usize;
+        let mut files = std::fs::read_dir(plant)
+            .unwrap()
+            .filter_map(|entry| entry.ok().map(|e| e.path()))
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("aps") && name.ends_with("_0001"))
+            })
+            .collect::<Vec<_>>();
+        files.sort();
+        for file in files {
+            let mut engine = match e3d_io::engine::ReadOnlyEngine::open(&file) {
+                Ok(engine) => engine,
+                Err(_) => continue,
+            };
+            if engine.descriptor().db_type_name().as_deref() != Some("DESI") {
+                continue;
+            }
+            let db_name = file.file_name().unwrap().to_string_lossy().to_string();
+            let refnos: Vec<RefNo> = engine
+                .scan_elements(e3d_io::engine::ScanTier::Header)
+                .unwrap()
+                .filter_map(|scanned| scanned.ok().map(|s| s.refno))
+                .collect();
+            for refno in refnos {
+                let sctn = set.element(refno);
+                if sctn.element_type().ok().as_deref() != Some("SCTN") {
+                    continue;
+                }
+                sctn_seen += 1;
+                for attr in ["JOIS", "JOIE"] {
+                    let Ok(Some(joint)) = sctn.get_element(attr) else {
+                        continue;
+                    };
+                    let Ok(joint_noun) = joint.element_type() else {
+                        continue;
+                    };
+                    if joint_noun != "PJOI" {
+                        continue;
+                    }
+                    let mut negatives = Vec::new();
+                    let mut cuts = Vec::new();
+                    let mut feed_notes = Vec::new();
+                    let source = match fixing_negatives(
+                        &joint,
+                        SCTN_JOINT_MODE,
+                        &mut negatives,
+                        &mut cuts,
+                        &mut feed_notes,
+                        &mut cache,
+                    ) {
+                        Ok(tally) if tally.has_source => {
+                            format!(
+                                "有源 admitted={} rejected={}",
+                                tally.admitted, tally.rejected
+                            )
+                        }
+                        Ok(_) => "无源".to_string(),
+                        Err(error) => format!("读不出：{error}"),
+                    };
+                    println!(
+                        "JOINT {db_name} {refno} {attr}→PJOI {} {source}",
+                        joint.refno()
+                    );
+                }
+                let jusl = sctn
+                    .get_string("JUSL")
+                    .ok()
+                    .flatten()
+                    .map(|text| text.trim().to_ascii_uppercase())
+                    .filter(|text| !text.is_empty())
+                    .unwrap_or_else(|| "NA".to_string());
+                let Ok(SectionChain::Resolved(catalogue)) = section_catalogue(&sctn) else {
+                    continue;
+                };
+                let Ok(profile) = evaluate_section_profile(&sctn, &catalogue) else {
+                    continue;
+                };
+                // 请求的线与实际解析到的线一致才算正常：JUSL 缺失回退中性轴、
+                // 或连中性轴都没有按原点，都要打出来。
+                if profile.justification_found && profile.justification_line == jusl {
+                    continue;
+                }
+                let keys = catalogue
+                    .sprf
+                    .get_element("PSTR")
+                    .ok()
+                    .flatten()
+                    .map(|ptss| {
+                        ptss.members()
+                            .map(|members| {
+                                members
+                                    .into_iter()
+                                    .filter(|m| {
+                                        m.element_type()
+                                            .ok()
+                                            .as_deref()
+                                            .is_some_and(|n| n.eq_ignore_ascii_case("PLIN"))
+                                    })
+                                    .filter_map(|m| m.get_string("PKEY").ok().flatten())
+                                    .map(|key| key.trim().to_ascii_uppercase())
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default()
+                    })
+                    .unwrap_or_default();
+                println!(
+                    "JUSL {db_name} {refno} JUSL={jusl} resolved={} SPRF={} PKEYs=[{}]",
+                    profile.justification_line,
+                    catalogue.sprf.refno(),
+                    keys.join(",")
+                );
+            }
+        }
+        println!("CENSUS-TOTAL sctn={sctn_seen}");
+        assert!(sctn_seen > 0, "一根 SCTN 都没扫到，普查没有判别力");
     }
 
     #[test]

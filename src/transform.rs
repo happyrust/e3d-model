@@ -113,6 +113,11 @@ enum ImplicitFrame {
     /// 126 只逐件对上）。CMFI 与 FITT 共用 `GFIORI` / `GFIORG`（recheck-3 §2.3 路由表），
     /// 属性面（POSL / ZDIS / DELP / BANG）相同。
     SectionFitting(DbElement),
+    /// `CMFI` 名下的 `SBFI`：嵌套背板配件。原生 RVM 里 `SBFITTING` 记录与母件的
+    /// `FITTING` 记录同原点、但旋转不跟安装线坡度走——y 取安装线的水平投影、z 取
+    /// 世界竖直（aps7200 `23584/8625`、`23584/8629` 两只逐列对上）。成员自己的
+    /// POS/ORI 一样不读。
+    SubFitting(DbElement),
     /// SCTN 名下的 `SNOD`：结构节点，`ZDIS` 是沿梁轴（POSS→POSE）的距离。
     /// `world(属主 SCTN) * section_axis_frame(属主) * T(0,0,ZDIS)`——SCTN 自己没有 POS/ORI，
     /// 轴架现算（`section_axis_frame`，不含中性轴自旋：绕 Z 转不动沿 Z 的度量）。
@@ -138,6 +143,15 @@ fn implicit_frame(el: &DbElement) -> Result<Option<ImplicitFrame>, DbElementErro
             Some(host) if matches!(host.element_type()?.as_str(), "SCTN" | "STWALL") => {
                 Ok(Some(ImplicitFrame::SectionFitting(host)))
             }
+            _ => Ok(None),
+        },
+        "SBFI" => match el.owner()? {
+            Some(cmfi) if cmfi.element_type()?.as_str() == "CMFI" => match cmfi.owner()? {
+                Some(host) if matches!(host.element_type()?.as_str(), "SCTN" | "STWALL") => {
+                    Ok(Some(ImplicitFrame::SubFitting(cmfi)))
+                }
+                _ => Ok(None),
+            },
             _ => Ok(None),
         },
         "SNOD" => match el.owner()? {
@@ -169,6 +183,21 @@ fn implicit_world(el: &DbElement) -> Result<Option<DMat4>, DbElementError> {
                     pseudo_attribute(el, &noun, crate::elmodl::ModelError::from(error))
                 })?;
             Ok(Some(world_matrix(&host)? * placement))
+        }
+        ImplicitFrame::SubFitting(cmfi) => {
+            let parent = world_matrix(&cmfi)?;
+            let origin = parent.transform_point3(DVec3::ZERO);
+            let line = parent.transform_vector3(DVec3::Y).normalize_or_zero();
+            let flat = (line - DVec3::Z * line.z).normalize_or_zero();
+            if flat.length_squared() <= f64::EPSILON {
+                // 安装线竖直时投不出水平向，沿母件标架。
+                return Ok(Some(parent));
+            }
+            let rotation = DMat3::from_cols(flat.cross(DVec3::Z), flat, DVec3::Z);
+            Ok(Some(DMat4::from_rotation_translation(
+                glam::DQuat::from_mat3(&rotation),
+                origin,
+            )))
         }
         ImplicitFrame::SectionNode(host) => {
             let frame = crate::section::section_axis_frame(&host).map_err(|error| {

@@ -210,8 +210,8 @@ fn allow_box_recogniser(catalogue_noun: Option<&str>) -> bool {
 /// BOARD 那只网格被负体切成 28 个三角、体积只剩 4.5e5 mm³，包围盒仍是 1500×103×50。
 /// 槽弯的 FacetGroup 也没有孔轮廓。NOZZ 相反：两个 SCYL 扣膛之后 E3D 仍写**一条**面片。
 /// 所以只在可见块全是 `SBOX` / `SEXT` / `SREV` 时按 `parts` 拆开写，其余带负体的仍整只一条。
-fn write_uncut_catalogue_parts(negatives_applied: usize, nouns: &[String]) -> bool {
-    negatives_applied > 0
+fn write_uncut_catalogue_parts(record_level_cuts: usize, nouns: &[String]) -> bool {
+    record_level_cuts > 0
         && !nouns.is_empty()
         && nouns
             .iter()
@@ -1054,8 +1054,14 @@ fn main() -> anyhow::Result<()> {
                 // SCYL 扣完膛，E3D 写成一条面片。桥架 / 托盘的 SBOX / SEXT / SREV
                 // 相反：负体不进记录，每只可见图元各写一条未扣减的（C-IY 三条 Box
                 // 尺寸就是 SBOX 自己的 1500×100×50 / 1500×103×50 / 1500×103×100）。
+                // NGMS 自扣不算记录级负体：E3D 对这类件写的是**扣过的**整只面片
+                // （aps7200 `/STAIR-STEEL-PRE-12/BASE`：SBOX 被自己的两把 NSCY 开出
+                // Ø20 栓孔，RVM 是一条带孔轮廓的 FacetGroup，不是未扣减的 Box）。
+                // 桥架 / 托盘的记录级负体照旧走 `write_uncut_catalogue_parts`。
                 let split_uncut = write_uncut_catalogue_parts(
-                    generated.negatives_applied,
+                    generated
+                        .negatives_applied
+                        .saturating_sub(generated.own_ngms_cuts),
                     &generated.part_catalogue_nouns,
                 );
                 let component_meshes: Vec<TriMesh> = if (generated.negatives_applied > 0
@@ -1201,7 +1207,13 @@ fn main() -> anyhow::Result<()> {
                         // `SEXT` 的矩形挤出长得像盒子，E3D 仍写 FacetGroup。`SBOX` 不受影响。
                         let catalogue_noun = component_nouns.get(index).map(String::as_str);
                         let allow_box = allow_box_recogniser(catalogue_noun);
-                        let geometry = if provenance_only && preferred.is_none() {
+                        // 本件 `NGMR`（→ NGMS）自扣过的组件：E3D 写的是**扣过的**面片，
+                        // 不是未扣减的图元（aps7200 `/STAIR-STEEL-PRE-12/BASE` 的栓孔板
+                        // 就是一条带孔轮廓的 FacetGroup）。记录级负体照旧能按出身写
+                        // 未扣减图元（桥架/托盘那族）。
+                        let geometry = if (provenance_only && preferred.is_none())
+                            || generated.own_ngms_cuts > 0
+                        {
                             rvm_extrusion_facets += 1;
                             if let Some(shift) = angle_shift {
                                 e3d_model::rvm_write::facet_group_at_catalogue_origin(

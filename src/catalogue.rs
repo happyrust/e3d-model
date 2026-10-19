@@ -880,6 +880,9 @@ pub fn model_catalogue_member_with_cache(
     let mut degenerate_parts: Vec<DegenerateCataloguePart> = Vec::new();
     let mut member_duplicates = 0usize;
     let mut catalogue_negatives = 0usize;
+    // `catalogue_negatives` 里来自本件 `NGMR`（→ NGMS）自扣的那几把——写出端按它区分
+    // 「记录级负体仍写未扣减图元」与「NGMS 自扣要写扣过的面片」两条记录规矩。
+    let mut own_ngms_cuts = 0usize;
     // 过滤记录与 diagnostics 分开收：`failed` 的账目 = diagnostics.len()，
     // 被表现级筛掉不是失败，不能混进去。
     let mut display_filter_notes = Vec::new();
@@ -1489,6 +1492,70 @@ pub fn model_catalogue_member_with_cache(
         });
     }
 
+    // 目录件自己的 `NGMR`（→ NGMS）里 mode-7 NAPP 门放行的那批刀，扣它自己的正体——
+    // 与给宿主扣刀那道门（[`catalogue_host_cuts`]：mode 3/1）并存，两套 NAPP 位各管各的。
+    // aps250110 的门 `/IS-SRO-NS/900x2045`：NGMS 三把（NSEX×2 + NSBO）全 NAPP −1，mode 7
+    // 不放行 → 正体不切——2026-09-28 `6ff5dac`「107 只全按未扣对上」的原生证据仍然成立。
+    // aps7200 梯段底板 `/STAIR-STEEL-PRE-12/BASE`：NGMS 里两把 NSCY（NAPP 4，
+    // PDIA=PARA[4]=20、PHEI=PARA[5]=30）在 mode 7 放行 → 板上两个 Ø20 栓孔，原生 RVM
+    // （sctn_7200_evi-20261019 的 FITTING 面片）就是这么画的；同集那把 NSBO（NAPP −1）
+    // 仍被挡 → 板面无方孔。被整只扣空的 part 按 Core 的差集语义这块不画，其余照扣。
+    if let Some(negative_set) = component_negative_set(&component)? {
+        let (own_cutters, mut own_diagnostics) = collect_owned_negatives_where(
+            member,
+            &component,
+            &negative_set,
+            &env,
+            cache,
+            DMat4::IDENTITY,
+            &|child| crate::elmodl::catalogue_napp_admits(7, crate::elmodl::negative_napp(child)),
+        )?;
+        diagnostics.append(&mut own_diagnostics);
+        if !own_cutters.is_empty() {
+            catalogue_negatives += own_cutters.len();
+            own_ngms_cuts += own_cutters.len();
+            let mut kept = Vec::with_capacity(solids.len());
+            for part in solids {
+                let CataloguePart {
+                    solid,
+                    noun,
+                    frame,
+                    repeats,
+                    knuckled_dish,
+                } = part;
+                match subtract_owned_negatives(solid, &own_cutters, "catalogue own negatives") {
+                    Ok(solid) => kept.push(CataloguePart {
+                        solid,
+                        noun,
+                        frame,
+                        repeats,
+                        knuckled_dish,
+                    }),
+                    Err(ModelError::Solid(SolidError::EmptyManifold { .. })) => {
+                        diagnostics.push(format!(
+                            "目录件 {} 的 {noun} 正体被自己的 NGMS 刀整只扣空，这块不画",
+                            component.refno()
+                        ));
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            solids = kept;
+            if solids.is_empty() {
+                diagnostics.extend(display_filter_notes);
+                return Ok(CatalogueMemberBuild {
+                    generated: None,
+                    diagnostics,
+                    no_shape: Some(format!(
+                        "目录件 {} 的 GMRE {} 共 {primitives} 个图元的正体全被自己的 NGMS 刀扣空",
+                        component.refno(),
+                        geometry.refno(),
+                    )),
+                });
+            }
+        }
+    }
+
     let compose_timing = crate::perf::cat_compose_scope();
     // 「本件有没有成体」查缓存里记下的面数，不问 `local`：问一句就把局部系那一遍
     // 物化出来了，而这批顶点马上还要在世界系再算一遍。`placed_parts` 与 `solids`
@@ -1596,7 +1663,9 @@ pub fn model_catalogue_member_with_cache(
             primitive_instance: None,
             analytic_primitive: None,
             negatives_applied: catalogue_negatives,
+            own_ngms_cuts,
             negatives_skipped: Vec::new(),
+            joint_cuts_explained: Vec::new(),
             notes,
         }),
         diagnostics,
@@ -1756,7 +1825,9 @@ fn model_hvac_rectangular_basic(
             primitive_instance: built.instance,
             analytic_primitive: None,
             negatives_applied: 0,
+            own_ngms_cuts: 0,
             negatives_skipped: Vec::new(),
+            joint_cuts_explained: Vec::new(),
             notes: vec![format!(
                 "HVAC rectangular basic instance: spec={spec_name} dimensions={}/{}/{}",
                 dimensions.x, dimensions.y, dimensions.z
@@ -3752,7 +3823,14 @@ fn catalogue_cut_keys(
 fn cutter_solid(cutter: &EvaluatedCatalogueCut) -> Result<(Manifold, DMat4), ModelError> {
     Ok(match cutter {
         EvaluatedCatalogueCut::Cylinder(cutter) => (
-            csg_cylinder_solid(cutter.diameter, cutter.height)?,
+            // 负体刀按 E3D FacetGroup 轮廓口径离散（[`negative_cylinder_segments`]），
+            // 不是正体 0.5mm 曲面口径：aps7200 `/STAIR-STEEL-PRE-12/BASE` 的 Ø20 栓孔
+            // 原生 RVM 是 **8 段八边形**，0.5mm 口径会产 12 段、孔面积偏大 ~6%。
+            crate::solid::csg_cylinder_solid_with_segments(
+                cutter.diameter,
+                cutter.height,
+                crate::solid::negative_cylinder_segments(cutter.diameter / 2.0),
+            )?,
             cutter.transform,
         ),
         EvaluatedCatalogueCut::Box {
