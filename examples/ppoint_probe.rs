@@ -283,6 +283,7 @@ fn shape_of(value: &DescriptorValue) -> String {
             true => "Text(PML 表达式)".into(),
             false => "Text".into(),
         },
+        DescriptorValue::TextList(items) => format!("TextList[{}]", items.len()),
         DescriptorValue::RefNo(_) => "RefNo".into(),
         DescriptorValue::Word { .. } => "Word".into(),
         DescriptorValue::IntArray(items) => format!("IntArray[{}]", items.len()),

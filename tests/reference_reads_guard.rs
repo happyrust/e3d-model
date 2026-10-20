@@ -110,6 +110,9 @@ const INDIRECT_READ_SITES: &[(&str, &str, &[&str])] = &[
     // rpath.rs 自己沿 POSREF 链前进，cable_tray.rs 也经它读 POSREF。
     ("rpath.rs", "name", &["reference(current, \"POSREF\")"]),
     ("cable_tray.rs", "", &["reference(el, \"POSREF\")"]),
+    // 语料普查测试 `census_sctn_joint_classes_and_missing_jusl`：循环变量 `attr` 取
+    // `JOIS`/`JOIE`——SCTN 两端的关节引用，最终读到的就是这两个名字。
+    ("elmodl.rs", "attr", &["\"JOIS\"", "\"JOIE\""]),
 ];
 
 /// 经间接读点最终读到的名字（与上表配套，参与三档归属校验）。

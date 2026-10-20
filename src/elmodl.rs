@@ -1431,6 +1431,10 @@ fn collect_host_fixings(el: &DbElement, out: &mut Vec<DbElement>) -> Result<(), 
 /// 两边各算一遍的那一版里，实例走的是 `world_matrix(fixing)`，1112 的 255 个 FIXING
 /// 因此全挤在 x∈[-2520,-1920] 的一条窄带上，对着 E3D TTY 的 RVM 基准逐个偏 13~25 m
 /// （`docs/evidence/2026-09-15-cata-dependency-cache.md`）。
+///
+/// 负扫掠墙（ams7997 `=24381/1776`，sweep≈−180°）的 pline 基两列随行进方向翻转
+/// （见下面 `pldatum` 的构造）；翻转已经把 E3D 的镜像语义吸收进标架，FIXING 自己的
+/// `ORI` 在 [`fixing_local_matrix`] 里原样读即可。
 pub(crate) fn fixing_host_frame(wall: &DbElement, fixing: &DbElement) -> Result<DMat4, ModelError> {
     let pldatu = fixing
         .owner()?
@@ -1451,22 +1455,20 @@ pub(crate) fn fixing_host_frame(wall: &DbElement, fixing: &DbElement) -> Result<
     let zdis = require_double(&jldatu, "JLDATU", "ZDIS", "WALL joint datum")?;
     let (p0, pm, p1) = wall_spine_points(wall)?;
     let (curve_center, radius, a0, sweep) = circular_spine_geometry(&[p0, pm, p1])?;
-    let thickness = wall_profile_thickness(wall).unwrap_or(0.0);
-    let datum_radius = radius + thickness;
-    // E3D measures the PLDATUM direction on the opposite wall face while its
-    // origin is on OBOW.  Keep the origin on the datum radius, but use the
-    // outer-face radius for the arc-length angle; collapsing both into one
-    // radius introduces a small, lever-amplified yaw error on curved walls.
-    let joint = wall_joint_frame_with_radii(
-        curve_center,
-        datum_radius,
-        datum_radius + thickness,
-        a0,
-        sweep,
-        zdis,
-    );
+    // 站位半径取 spine 半径本身：ams7997 `=24381/1776` 的原生 RVM 里全部 PLDATUM
+    // 原点都落在 R=16500 的 spine 圆上（6/6 逐件 0.00 mm）。曾按 `radius +
+    // wall_profile_thickness` 加壁厚——那条链路读的是 SPRF 的 `PARA[0]`，对
+    // `Single_leaf_wall` 拿回来的是名义参数 10000，站位被推出 10 m；ams1112
+    // 当年能对上只是因为它的 `Variable_thk_wall` 没有 `PARA`、厚度回落成 0。
+    let travel = if sweep < 0.0 { -1.0 } else { 1.0 };
+    let joint = wall_joint_frame(curve_center, radius, a0, sweep, zdis);
     // PLDATU POSL=OBOW is E3D's implicit wall pline: PLAX=-X. With
     // YDIR=+Z, cal_ori_by_ydir gives columns (-Y,+Z,-X).
+    //
+    // 负扫掠墙（travel=-1）上同一根 p-line 的 y/z 两列随行进方向翻转：
+    // (-Y, -Z, +X)。ams7997 `=24381/1776` 的 6 只 FIXING 按此对原生 RVM
+    // FacetGroup 变换逐件 0.00–0.03 mm；正扫掠（ams1112，sweep=+354.8°）
+    // 时与旧版逐位一致，原有 38 件验证不受影响。
     //
     // OBOW（ams1112 WF03 `/1RS-WF03-W-C-RR001` 的 38 只穿墙套管 FIXING，WALL FUNC=RING）：
     // E3D TTY RVM 里 PLDATUM 的原点就是 JLDATUM 的站位（高差 0），FIXING 的 POS 三分量
@@ -1510,26 +1512,11 @@ pub(crate) fn fixing_host_frame(wall: &DbElement, fixing: &DbElement) -> Result<
     let pldatum = DMat4::from_translation(DVec3::new(0.0, ibow_z, 0.0))
         * DMat4::from_cols(
             DVec3::NEG_Y.extend(0.0),
-            DVec3::Z.extend(0.0),
-            DVec3::NEG_X.extend(0.0),
+            (DVec3::Z * travel).extend(0.0),
+            (DVec3::NEG_X * travel).extend(0.0),
             DVec3::ZERO.extend(1.0),
         );
     Ok(world_matrix(wall)? * joint * pldatum)
-}
-
-fn wall_profile_thickness(wall: &DbElement) -> Option<f64> {
-    let crate::section::SectionChain::Resolved(catalogue) =
-        crate::section::section_catalogue(wall).ok()?
-    else {
-        return None;
-    };
-    catalogue
-        .sprf
-        .get_double_array("PARA")
-        .ok()
-        .flatten()
-        .and_then(|values| values.first().copied())
-        .filter(|value| value.is_finite() && *value > 0.0)
 }
 
 /// JLDATU 在圆弧墙 spine 上的站位标架（WALL 局部系）：列 = (朝圆心, 上, 沿墙)，原点在站位。
@@ -1636,6 +1623,10 @@ fn pldatu_posl(fixing: &DbElement) -> Result<Option<String>, ModelError> {
 ///
 /// 以上只对 `POSL=IBOW` 那一族成立。`POSL=OBOW` 的穿墙套管（ams1112）E3D 把 POS 三分量
 /// 全部用上（取证见 [`fixing_host_frame`]），这里原样返回 `local_matrix`。
+///
+/// `ORI` 在两条 p-line 族上都按原样 `Rz(γ)·Ry(β)·Rx(α)` 读——负扫掠墙的镜像差异
+/// 已经由 [`fixing_host_frame`] 的 pline 基翻转吸收（ams7997 `=24381/1776` 6 只
+/// FIXING 用原样 ORI 对原生 RVM FacetGroup 逐件 ~1e-6），局部矩阵这里不再补偿。
 pub(crate) fn fixing_local_matrix(fixing: &DbElement) -> Result<DMat4, ModelError> {
     let local = crate::transform::local_matrix(fixing)?;
     if pldatu_posl(fixing)?.as_deref() == Some("OBOW") {

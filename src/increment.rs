@@ -999,8 +999,8 @@ const CABLE_TRAY_BRANCH_NOUN: &str = "CWBRAN";
 /// - 带详图式立柱的 HANDRA（`transform::handrail_post_world`，名下有 POSTSE / HRFEAT，或 RAILSE 里
 ///   有 HRTERM）：它的 RPATH 路径（POINTR / CURVE 的 POS、CURVE 的 CURTYP），以及立柱 HRPOST / HRTERM /
 ///   HRGATE 自己（POSREF / ZDIS / HRJUSL / SPRE / WIDT）；
-/// - 名下有 `JLDATU` 的 WALL（`elmodl::fixing_host_frame`，gen-model issue #37）：宿主自己（`DESP[0]` 墙高、
-///   经 SPRE 取型材 `PARA[0]` 墙厚），它的 SPINE 路径（POINSP / CURVE 的 POS），以及 datum 自己（JLDATU 的
+/// - 名下有 `JLDATU` 的 WALL（`elmodl::fixing_host_frame`，gen-model issue #37）：宿主自己（`DESP[0]` 墙高
+///   → IBOW 站位），它的 SPINE 路径（POINSP / CURVE 的 POS），以及 datum 自己（JLDATU 的
 ///   ZDIS、PLDATU）。墙 datum 下的 FIXING 自成单元，实例标架与开孔刀都由它现算，这些输入全在 FIXING 单元之上。
 ///
 /// 从候选上溯只许穿过上面这些 noun；起点在这一端不存在也是 `None`。

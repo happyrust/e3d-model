@@ -117,14 +117,23 @@ const OWNER_WALK_SITES: &[Site] = &[
         climb: Climb::AboveUnit,
         reads: &["DESP", "OWNER", "ZDIS"],
         why: "FIXING 自成模型单元（category::is_model_unit），它的实例标架却读 owner²=JLDATU 的 ZDIS（OWNER 是报错文案里的名字），再经 \
-              wall_spine_points / world_matrix 读宿主 WALL，09-28 起还读宿主 WALL 的 DESP[0]（墙高 → IBOW 站位）与经 \
-              wall_profile_thickness 读墙型材的 PARA[0]（墙厚 → datum 半径，见 ANCESTOR_CONSUMERS）——都在 FIXING 单元之上；\
+              wall_spine_points / world_matrix 读宿主 WALL，09-28 起还读宿主 WALL 的 DESP[0]（墙高 → IBOW 站位）——都在 FIXING 单元之上；\
               FIXING 自己的 DESP（门洞高宽）是同一个字面量，在单元内。整棵子树重算的根口径下 \
               （JLDATU 改了 → 祖先闭包命中 WALL 所在的 STRU / FRMW / SBFR 根 → 整棵重算）FIXING 跟着重生成；\
               ADR-080 单元级发布只重建 plan_update 点名的单元，FIXING 不在 JLDATU 的子树里，靠 \
               increment::implicit_frame_host_of 的 WALL 支覆盖——墙自己（DESP / SPRE）、它的 SPINE 点、JLDATU / PLDATU \
               任一改了，就把整棵 WALL 子树级联进计划，与 point_on_host 那条同型（gen-model issue #39 / #37），单元规划已经补上。\
               墙型材换版（目录那一侧）走目录版本核对的级联",
+    },
+    Site {
+        file: "elmodl.rs",
+        func: "joint_class",
+        climb: Climb::AboveUnit,
+        reads: &["CREF"],
+        why: "SCTN 负体分型账里的 SJOI 拓扑判定：从 host 的 JOIS/JOIE 拿到的关节上溯 SNOD→SCTN 只核 noun，CREF 读在关节自己\
+              （JOIS/JOIE 引用链上的元素，可能在另一棵 SCTN 子树——AcrossSnod 正是跨单元那档）。CREF 变了影响的是宿主 SCTN 的\
+              skipped/explained 归类：根口径下祖先闭包整棵重算覆盖；ADR-080 单元级发布不覆盖 JOIS/JOIE 引用边对面的属性改动，\
+              与 fixing_host_frame 同一缺口（gen-model issue #39）",
     },
     Site {
         file: "cable_tray.rs",
@@ -222,6 +231,26 @@ const OWNER_WALK_SITES: &[Site] = &[
               的 HANDRA 支覆盖——候选落在带立柱的 HANDRA 子树里（RPATH / POINTR / CURVE、POSTSE / RAILSE / HRFEAT、立柱本身）就把\
               整棵 HANDRA 子树级联进计划，与 point_on_host 那条同型（gen-model issue #39），单元规划已经补上",
     },
+    Site {
+        file: "cable.rs",
+        func: "owning_branch",
+        climb: Climb::NounOnly,
+        reads: &[],
+        why: "EXTGEO 的 STAREF / ENDREF 指到的桥架附着点（HATTA / TATTA / RATTA / RNODE）沿 owner 链上溯到 CWBRAN（只看 noun，\
+              POS 是报错文案里的名字），再由 extgeo_world_polyline / extgeo_span 读 CWBRAN 的 CWJUSL / VHEIG / VSHAPE / VWIDT 与 \
+              RPATH 子路径（见 ANCESTOR_CONSUMERS）。增量由 reference_reads_guard 的 STAREF / ENDREF 表 + 电缆端点/路由级联\
+              （gen-model issue #35，cable_endpoint::Rule::Route）覆盖",
+    },
+    Site {
+        file: "elmodl.rs",
+        func: "collect_owner_template_negatives",
+        climb: Climb::AboveUnit,
+        reads: &[],
+        why: "SCTN 挂在 TMPL ← FIXING 或 TMPL ← FITT ← STWALL 组合件里时，上溯一跳（TMPL）或两跳（FIXING）只看 noun，把模板里的\
+              设计负体（mode 7）或 FIXING 负体扫出来扣到 SCTN 上。SCTN 自成单元，TMPL / FIXING 在它之上：整棵子树重算的根口径下\
+              （负体改了 → 祖先闭包命中 FITT / FIXING 所在的 STWALL / STRU / FRMW 根 → 整棵重算）覆盖；ADR-080 单元级发布由 \
+              increment::implicit_frame_host_of 与 joint_consumer_of 覆盖（gen-model issue #34）",
+    },
 ];
 
 /// 接过一个祖先元素去读它的函数：`(文件名, fn 名, 一共读到的属性名, 理由)`。
@@ -280,14 +309,6 @@ const ANCESTOR_CONSUMERS: &[(&str, &str, &[&str], &str)] = &[
         &["POS"],
         "宿主 WALL 的 SPINE 成员点位：被 fixing_host_frame 用在 FIXING 单元之上（AboveUnit，理由见那一条）；\
          WALL 自己的生成也用它，那一侧在单元内",
-    ),
-    (
-        "elmodl.rs",
-        "wall_profile_thickness",
-        &["PARA"],
-        "宿主 WALL 的型材（SPRE → SPCO → CATR → SPRF）PARA[0] = 墙厚：fixing_host_frame 用它把 JLDATU 站位半径从 spine 推到 \
-         datum 面。目录件不在设计库，走目录读取集合那一侧；宿主 WALL 的 SPRE 改了在 FIXING 单元之上（AboveUnit，理由见 \
-         fixing_host_frame 那一条）",
     ),
     (
         "transform.rs",
