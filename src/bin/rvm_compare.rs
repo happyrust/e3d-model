@@ -850,11 +850,17 @@ fn main() -> anyhow::Result<()> {
                     .components
                     .iter()
                     .filter_map(|component| {
-                        aabb6(component.iter().map(|vertex| {
-                            (inverse * glam::DVec3::from_array(*vertex).extend(1.0))
-                                .truncate()
-                                .to_array()
-                        }))
+                        let local = component
+                            .iter()
+                            .map(|vertex| {
+                                (inverse * glam::DVec3::from_array(*vertex).extend(1.0))
+                                    .truncate()
+                                    .to_array()
+                            })
+                            .collect::<Vec<_>>();
+                        let bounds = aabb6(local.iter().copied())?;
+                        let planar = local.iter().map(|p| [p[0], p[1]]).collect::<Vec<_>>();
+                        Some((bounds, planar_width(&planar)))
                     })
                     .collect::<Vec<_>>()
             });
@@ -862,14 +868,14 @@ fn main() -> anyhow::Result<()> {
                 .components
                 .iter()
                 .map(|component| {
-                    [
+                    aabb_component([
                         component.local_aabb_min[0],
                         component.local_aabb_min[1],
                         component.local_aabb_min[2],
                         component.local_aabb_max[0],
                         component.local_aabb_max[1],
                         component.local_aabb_max[2],
-                    ]
+                    ])
                 })
                 .collect::<Vec<_>>();
             let significant = baseline_components
@@ -1193,16 +1199,71 @@ fn connected_polygon_components(polygons: &[Vec<[f64; 3]>]) -> Vec<Vec<[f64; 3]>
     components.into_values().collect()
 }
 
-/// 去掉局部 XY 中任一尺寸小于轮廓弦高的断开薄片；投影面积
-/// 最大的主分量永远保留。返回并集 AABB 和被过滤的分量数。
+/// 一个连通分量：局部 AABB 与局部 XY 里的最小宽度。
+type Component = ([f64; 6], f64);
+
+/// 只有 AABB 的分量（生成侧）：宽度取 XY 短边。
+fn aabb_component(bounds: [f64; 6]) -> Component {
+    let width = (bounds[3] - bounds[0])
+        .abs()
+        .min((bounds[4] - bounds[1]).abs());
+    (bounds, width)
+}
+
+/// 局部 XY 点集凸包的最小宽度（逐条包边量对面最远点）。共线或不足三个不同点时是 0。
+///
+/// 斜放的细条 AABB 并不窄：ams7997 `/1RX-FN09-F001` FLOOR 2 的 E3D 面片里有一块只有两个
+/// 不同 XY 点的零厚片，AABB 584 × 103 mm，宽度是 0。
+fn planar_width(points: &[[f64; 2]]) -> f64 {
+    let mut sorted = points.to_vec();
+    sorted.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
+    sorted.dedup();
+    if sorted.len() < 3 {
+        return 0.0;
+    }
+    let cross = |o: [f64; 2], a: [f64; 2], b: [f64; 2]| {
+        (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+    };
+    let mut hull: Vec<[f64; 2]> = Vec::with_capacity(sorted.len() + 1);
+    for point in sorted.iter().copied() {
+        while hull.len() >= 2 && cross(hull[hull.len() - 2], hull[hull.len() - 1], point) <= 0.0 {
+            hull.pop();
+        }
+        hull.push(point);
+    }
+    let lower = hull.len() + 1;
+    for point in sorted.iter().rev().skip(1).copied() {
+        while hull.len() >= lower && cross(hull[hull.len() - 2], hull[hull.len() - 1], point) <= 0.0
+        {
+            hull.pop();
+        }
+        hull.push(point);
+    }
+    hull.pop();
+    if hull.len() < 3 {
+        return 0.0;
+    }
+    (0..hull.len())
+        .map(|index| {
+            let (a, b) = (hull[index], hull[(index + 1) % hull.len()]);
+            let length = (b[0] - a[0]).hypot(b[1] - a[1]);
+            hull.iter()
+                .map(|&point| cross(a, b, point).abs() / length)
+                .fold(0.0_f64, f64::max)
+        })
+        .fold(f64::INFINITY, f64::min)
+}
+
+/// 去掉局部 XY 里最小宽度小于轮廓弦高的断开薄片；投影面积最大的主分量永远保留。
+/// 返回并集 AABB 和被过滤的分量数。
 fn significant_components_aabb(
-    components: &[[f64; 6]],
+    components: &[Component],
     tolerance: f64,
 ) -> Option<([f64; 6], usize)> {
     let main = components
         .iter()
         .enumerate()
-        .max_by(|(_, a), (_, b)| {
+        .max_by(|(_, (a, _)), (_, (b, _))| {
             let area =
                 |bounds: &[f64; 6]| (bounds[3] - bounds[0]).abs() * (bounds[4] - bounds[1]).abs();
             area(a).total_cmp(&area(b))
@@ -1211,10 +1272,8 @@ fn significant_components_aabb(
     let kept = components
         .iter()
         .enumerate()
-        .filter_map(|(index, bounds)| {
-            let dx = (bounds[3] - bounds[0]).abs();
-            let dy = (bounds[4] - bounds[1]).abs();
-            (index == main || dx.min(dy) >= tolerance).then_some(*bounds)
+        .filter_map(|(index, (bounds, width))| {
+            (index == main || *width >= tolerance).then_some(*bounds)
         })
         .collect::<Vec<_>>();
     let mut combined = kept[0];
@@ -1444,10 +1503,51 @@ mod tests {
         let components = [
             [-100.0, -200.0, -10.0, 100.0, 200.0, 0.0],
             [300.0, -500.0, -10.0, 305.0, -400.0, 0.0],
+        ]
+        .map(aabb_component);
+        let (aabb, filtered) = significant_components_aabb(&components, 10.0).unwrap();
+        assert_eq!(filtered, 1);
+        assert_eq!(aabb, components[0].0);
+    }
+
+    /// ams7997 `/1RX-FN09-F001` FLOOR 2：E3D 在负体拐角留下一块只有两个不同 XY 点的零厚片
+    /// （(30612.16, 4890.037) ↔ (31196.15, 4993.01)，70 mm 高）。AABB 短边 103 mm 留得住，宽度是 0。
+    #[test]
+    fn a_diagonal_zero_width_sheet_is_not_significant() {
+        let sheet = [
+            [30612.16, 4890.037],
+            [31196.15, 4993.01],
+            [31196.15, 4993.01],
+        ];
+        assert_eq!(planar_width(&sheet), 0.0);
+        let components = [
+            aabb_component([0.0, 24888.836, -70.0, 15225.079, 31600.0, 0.0]),
+            (
+                [30612.16, 4890.037, -70.0, 31196.15, 4993.01, 0.0],
+                planar_width(&sheet),
+            ),
         ];
         let (aabb, filtered) = significant_components_aabb(&components, 10.0).unwrap();
         assert_eq!(filtered, 1);
-        assert_eq!(aabb, components[0]);
+        assert_eq!(aabb, components[0].0);
+    }
+
+    #[test]
+    fn planar_width_measures_across_a_rotated_strip() {
+        let (angle, length, width) = (0.3_f64, 500.0, 4.0);
+        let (sin, cos) = angle.sin_cos();
+        let corners = [[0.0, 0.0], [length, 0.0], [length, width], [0.0, width]]
+            .map(|[x, y]| [x * cos - y * sin, x * sin + y * cos]);
+        assert!((planar_width(&corners) - width).abs() < 1e-9);
+        let bounds_short_side = corners
+            .iter()
+            .map(|p| p[1])
+            .fold(f64::NEG_INFINITY, f64::max)
+            - corners.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min);
+        assert!(
+            bounds_short_side > 100.0,
+            "AABB 短边量不出它窄：{bounds_short_side}"
+        );
     }
 
     /// RVM ↔ RVM 这条路的生成侧也要有分量账：一个成员里两块不连通的面片读回来是两个分量。
@@ -1519,12 +1619,12 @@ mod tests {
             .iter()
             .map(|c| {
                 let (lo, hi) = (c.local_aabb_min, c.local_aabb_max);
-                [lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]]
+                aabb_component([lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]])
             })
             .collect::<Vec<_>>();
-        components.sort_by(|a, b| a[0].total_cmp(&b[0]));
+        components.sort_by(|a, b| a.0[0].total_cmp(&b.0[0]));
         assert_eq!(components.len(), 2, "{components:?}");
-        assert!((components[1][3] - components[1][0] - 2.0).abs() < 0.01);
+        assert!((components[1].0[3] - components[1].0[0] - 2.0).abs() < 0.01);
         let (aabb, filtered) = significant_components_aabb(&components, 10.0).unwrap();
         assert_eq!(filtered, 1);
         assert!((aabb[3] - 1000.0).abs() < 0.01, "{aabb:?}");

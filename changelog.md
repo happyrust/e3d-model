@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-21 rvm_compare：基准侧断开薄片按凸包宽度判窄
+
+- `rvm_compare`：reference_artifact 判档里「窄于一个弦高的断开薄片」，基准侧改按分量在局部 XY 的凸包
+  最小宽度量（生成侧只有 AABB，仍按短边）。斜放的细条 AABB 并不窄：ams7997 `/1RX-FN09-F001` FLOOR 2
+  的 E3D 面片里有一块只有两个不同 XY 点的零厚片，AABB 584 × 103 mm，宽度是 0。主体与生成侧差
+  0.002 mm，判档 off → reference_artifact；其余各站不变。
+
 ## 2026-10-21 重接的倒圆弧按理论切点铺相位点（ams7997 E3D TTY 实证）
 
 - `discretise::flatten_ring`：环里有 Core3D 跳过的退化线段、倒圆两端都越界时，弧的两个端点重接到相邻
