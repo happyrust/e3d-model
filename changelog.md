@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-10-22 截面 `SPRE` 悬空的角钢上，FITT 的径向落在截面 x：ams8000 暖通支架 22 只端板对上 E3D
+
+- ams8000 整库按 ZONE 用 E3D TTY 只读导出（gen-model `verification/civil-tty-20261021/ams8000_lv6_*.rvm`，
+  10 个 ZONE）对拍：`/1CSV-HVACHB` 三个支架区的 22 只 FITT（`/-SR-CSV-S5001-V3/F1` 等，SFIT `/M8XP1`
+  端板）全是 off，11–110 mm。板的尺寸与目录偏移都对，只是整个绕梁轴转了 90°。
+- 这些竖杆的角钢 `SPRE`（`13244/271598` 等）在 db 5052 里已经不存在：E3D 自己也没有截面，梁只画一条
+  `Line`。`section::section_fitting_placement` 原先对「截面目录读不到」一律按径向 π/2 兜底（那是
+  ams7997 `/-KX-CAM-S4001` 缺 db 7600 时定的，那里 E3D 手上有截面）。现在分开：`SPRE` 在开着的库里
+  查无此号（`DbElementError::NotFound`）时径向取 0（截面 x），库没注册时照旧 π/2。
+- 对拍：ams8000 10 个 ZONE 2528 对全 exact（此前 off 22）。土建、`/SSC测试`、MDS、S1、FIXING / datum
+  真值逐件不变。
+- 真库门 `section_fitting_real::fittings_on_a_section_with_a_dangling_spre_turn_like_e3d`（270 × 110 与
+  270 × 270 两块板，世界包围盒对 E3D TTY RVM 的 Box 到 0.1 mm）。
+
 ## 2026-10-22 暖通分段弯头的 SSLC 斜切节写带斜切角的 `Snout`，零径目录圆台照写记录：e3d-model#6 三个区记录种类全部一致
 
 - happyrust/e3d-model#6 的三个暖通区（ams7997 `/-KX-CAM-E01`、`/-KX-CAM-S01`、`/-RX-CAV-E01`）正式对拍后几何

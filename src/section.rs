@@ -829,14 +829,21 @@ pub fn section_fitting_placement(
     let mut rotation = raw_rotation;
     let mut start = poss;
     let mut line = axis;
-    // 截面目录不在（链断、库没开）时的兜底，与下面解得开时 `POSL = NA` 那一档同一口径：
+    // 截面目录本机读不到（库没开、链断）时的兜底，与下面解得开时 `POSL = NA` 那一档同一口径：
     // 装在中性轴上、径向 π/2（`π/2 − neutral_angle + mount.rotation + π/2`，mount 就是 NA
-    // 时两项相消），只是 NA 的 PLAX 转角与 JUSL 偏移读不到、按 0 算。此前这里是 0，
-    // 与解得开时差整整 90° 的滚转：ams7997 `/-KX-CAM-S4001-V1/F1`（`DESP[8..9] = (−8.7, 8.7)`
-    // 的角钢端板）在 E3D 的 RVM 里板心落在截面包围盒中心，按 0 算就绕梁轴转到另一侧，
-    // y / z 各差 17.4 mm；`fitting_mount_matches_cam_native_axes_and_origin` 钉的
-    // S4003-BAR-1 真值也是 π/2。
-    let mut radial_angle = FRAC_PI_2;
+    // 时两项相消），只是 NA 的 PLAX 转角与 JUSL 偏移读不到、按 0 算。ams7997
+    // `/-KX-CAM-S4001-V1/F1`（`DESP[8..9] = (−8.7, 8.7)` 的角钢端板，截面在本机没给的 db 7600）
+    // 在 E3D 的 RVM 里板心落在截面包围盒中心，按 0 算就绕梁轴转到另一侧，y / z 各差 17.4 mm；
+    // `fitting_mount_matches_cam_native_axes_and_origin` 钉的 S4003-BAR-1 真值也是 π/2。
+    //
+    // `SPRE` 在开着的库里悬空则是另一回事：E3D 自己也没有截面（梁只画一条中心线），径向落在
+    // 截面 x 上。ams8000 暖通支架的 22 只 FITT（角钢 `SPRE` 指向 db 5052 里已不存在的元素）在
+    // E3D TTY RVM 里都是这样，按 π/2 算就绕梁轴差 90°。
+    let mut radial_angle = if section_spre_dangles(section)? {
+        0.0
+    } else {
+        FRAC_PI_2
+    };
     if let SectionChain::Resolved(catalogue) = section_catalogue(section)? {
         let env = DbElementParamEnv::new(Some(section.clone()), Some(catalogue.sprf.clone()))
             .without_insulation();
@@ -911,6 +918,18 @@ pub fn section_fitting_placement(
             .get_position("DELP")?
             .map(DVec3::from_array)
             .unwrap_or(DVec3::ZERO),
+    ))
+}
+
+/// 截面的 `SPRE` 指向一只**开着的**库里查无此号的元素——E3D 同样解不开。库没注册（`DbNotRegistered`）
+/// 不算：那是本机缺库，E3D 手上有截面。
+fn section_spre_dangles(section: &DbElement) -> Result<bool, SectionError> {
+    let Some(spre) = section.get_element("SPRE")? else {
+        return Ok(false);
+    };
+    Ok(matches!(
+        spre.element_type(),
+        Err(DbElementError::NotFound { .. })
     ))
 }
 

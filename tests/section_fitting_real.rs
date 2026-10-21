@@ -28,7 +28,11 @@ const DESIGN_DB: &str = "ams7997_0001";
 const TEMPLATE_DIR: &str = r"E:\reverse\e3d\shadow_e3d31_aps_all";
 
 fn fixtures_present() -> bool {
-    let design = Path::new(AMS_DIR).join(DESIGN_DB);
+    fixtures_present_for(DESIGN_DB)
+}
+
+fn fixtures_present_for(design_db: &str) -> bool {
+    let design = Path::new(AMS_DIR).join(design_db);
     let attlib = Path::new(TEMPLATE_DIR).join("attlib.dat");
     let missing: Vec<String> = [design.as_path(), Path::new(ACP_DIR), attlib.as_path()]
         .into_iter()
@@ -54,6 +58,10 @@ fn fixtures_present() -> bool {
 /// ams7997 设计库 + 扫 ams000 / acp000 的 resolver（端板 SFIT `/M8XP1` 在 13244；角钢截面的
 /// 7600 本机没有对得上的会话，SCTN 记 chain_broken、FITT 走兜底标架）。
 fn ams_set() -> Arc<DbSet> {
+    ams_set_for(DESIGN_DB)
+}
+
+fn ams_set_for(design_db: &str) -> Arc<DbSet> {
     let template = Path::new(TEMPLATE_DIR);
     let resolver =
         DirectoryDbResolver::scan(&[PathBuf::from(AMS_DIR), PathBuf::from(ACP_DIR)], template)
@@ -63,7 +71,7 @@ fn ams_set() -> Arc<DbSet> {
             .unwrap(),
     );
     set.add_db(DbFilePin {
-        file: Path::new(AMS_DIR).join(DESIGN_DB),
+        file: Path::new(AMS_DIR).join(design_db),
         template: template_file_for(template, "DESI").unwrap(),
         db_type: Some("DESI".into()),
         sesno: None,
@@ -134,4 +142,47 @@ fn section_fittings_stand_alone_where_e3d_draws_them() {
         section.refno(),
         "端板挂在 /-KX-CAM-S4001-V1 下"
     );
+}
+
+/// 截面 `SPRE` 在开着的库里悬空：ams8000 `/1CSV-HVACHB` 暖通支架的角钢指向 db 5052 里已不存在的
+/// 元素，E3D 的梁只画一条中心线，端板的径向落在截面 x 上（`section_fitting_placement` 的悬空那一档）。
+/// 真值是 E3D TTY 只读导出的 Box 世界包围盒（gen-model `verification/civil-tty-20261021/`
+/// `ams8000_lv6_24384_25586.rvm` / `ams8000_lv6_24384_24945.rvm`）。按库没开那档的 π/2 算，
+/// 270 × 110 那块绕梁轴转了 90°（差 110 mm），方板的板心偏 19.8 mm。
+#[test]
+fn fittings_on_a_section_with_a_dangling_spre_turn_like_e3d() {
+    if !fixtures_present_for("ams8000_0001") {
+        return;
+    }
+    let set = ams_set_for("ams8000_0001");
+    let cases: [(u32, [f64; 6], &str); 2] = [
+        (
+            25650,
+            [
+                29824.102, -8158.805, 16949.999, 29996.153, -7870.214, 16969.999,
+            ],
+            "/-SR-CSV-S6137-V4/F1（Box 270 × 20 × 110，竖杆向下）",
+        ),
+        (
+            24951,
+            [28122.853, -6692.617, 8480.0, 28450.152, -6365.318, 8500.0],
+            "/-SR-CSV-S5001-V3/F1（Box 270 × 20 × 270，竖杆向上）",
+        ),
+    ];
+    for (w1, rvm, what) in cases {
+        let fitting = set.element(RefNo::new(24384, w1));
+        assert!(is_model_unit_of(&fitting).unwrap(), "{what}");
+        let generated = model_catalogue_member(&fitting)
+            .unwrap()
+            .generated
+            .unwrap_or_else(|| panic!("{what} 没出实体"));
+        let (lo, hi) = generated.mesh().aabb().expect("端板非空");
+        let got = [lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]];
+        for (axis, (g, r)) in got.iter().zip(rvm).enumerate() {
+            assert!(
+                (g - r).abs() <= 0.1,
+                "{what}：包围盒第 {axis} 分量 {g:.3}，E3D RVM {r:.3}（全部 {got:?}）"
+            );
+        }
+    }
 }
