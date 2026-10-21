@@ -211,26 +211,12 @@ fn allow_box_recogniser(catalogue_noun: Option<&str>) -> bool {
     catalogue_noun != Some("SEXT")
 }
 
-/// E3D 导出时负体打不打洞（`EXPORT HOLES ON|OFF`）。环境变量 `E3D_EXPORT_HOLES=on|off`，缺省 on。
-///
-/// TTY 取证宏一律 `export holes on`：扣过负体的件 E3D 写的是布尔结果，整只一条 `FacetGroup`
-/// （MDS 关节 `IJOINT1` 两块开孔板是一条带孔面片；FT48B 设计 BOX 被 NBOX 切过也是面片）。
-/// C-IY-1R330-B 那份 addin 导出是关的：同一支桥架的 FTUBE 在那里是三条未扣减的 Box，
-/// 在 `export holes on` 的 TTY 重导（`evidence/20260902-repre-level-tty-experiments/data/ciy-1r330b/
-/// tbr100-C-IY-1R330-B-tty.rvm`）里是一条扣过的 FacetGroup。对拍那类基线时设 `off`。
-fn export_holes_on() -> bool {
-    !std::env::var("E3D_EXPORT_HOLES")
-        .unwrap_or_default()
-        .trim()
-        .eq_ignore_ascii_case("off")
-}
-
 /// `export holes off` 时桥架 / 托盘的负体不进 RVM 记录。C-IY `FTUBE 1`（`24384/22405`）E3D 的
 /// 三条 Box 就是未扣减的 SBOX：`1500×100×50`、`1500×103×50`、`1500×103×100`。
 /// BOARD 那只网格被负体切成 28 个三角、体积只剩 4.5e5 mm³，包围盒仍是 1500×103×50。
 /// 槽弯的 FacetGroup 也没有孔轮廓。NOZZ 相反：两个 SCYL 扣膛之后 E3D 仍写**一条**面片。
 /// 所以只在可见块全是 `SBOX` / `SEXT` / `SREV` 时按 `parts` 拆开写，其余带负体的仍整只一条。
-/// `export holes on` 不走这里（见 [`export_holes_on`]）。
+/// `export holes on` 不走这里（见 [`e3d_model::catalogue::export_holes_on`]）。
 fn write_uncut_catalogue_parts(record_level_cuts: usize, nouns: &[String]) -> bool {
     record_level_cuts > 0
         && !nouns.is_empty()
@@ -880,7 +866,7 @@ fn main() -> anyhow::Result<()> {
     let mut rvm_extrusion_facets = 0usize;
     // 打洞导出里扣过负体、照 E3D 整只写一条布尔结果面片的元素数。
     let mut rvm_boolean_facets = 0usize;
-    let holes_on = export_holes_on();
+    let holes_on = e3d_model::catalogue::export_holes_on();
     // 目录图元退化成零尺寸、跟着 E3D 照写的空记录数。
     let mut rvm_zero_size = 0usize;
     // 同一放置在 GMSE 里出现不止一次、跟着 E3D 多写的那几条记录数（体只有一块）。
@@ -1094,7 +1080,7 @@ fn main() -> anyhow::Result<()> {
                             .saturating_sub(generated.own_ngms_cuts),
                         &generated.part_catalogue_nouns,
                     );
-                // 打洞导出里扣过负体的件是布尔结果：整只一条面片，不认形状（见 [`export_holes_on`]）。
+                // 打洞导出里扣过负体的件是布尔结果：整只一条面片，不认形状（见 [`e3d_model::catalogue::export_holes_on`]）。
                 let boolean_result = holes_on && generated.negatives_applied > 0;
                 // 拉伸体族与多面体照 E3D 的写法一律面片，不进识别器（见 [`e3d_exports_facets_only`]）。
                 let facets_only = e3d_exports_facets_only(&generated.noun);

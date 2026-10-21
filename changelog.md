@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-10-22 桥架拼接板的 OUTA / OUTB 只在 addin 口径下算数：C-IY 对 E3D TTY 重导（holes on）35/35 exact
+
+- 用当前 ams8000 把 `/C-IY-1R330-B` 按 addin 基线的表现口径（LEVEL PIPE 6、REPRE OBST ON）TTY 重导两份
+  （gen-model `verification/ciy-tty-20261022/`）：`export holes on` 与 `off` 两份里 12 只 2.85°–10° 的 TBR-100
+  槽弯都画着 L / R 拼接板（`DESP[4] = DESP[5] = 1`，目录说明「0: Have, 1: No」）；只有 GenModelRvmExport addin
+  那份基线（`C-IY-1R330-B.rvm`）没有。`catalogue::application_filtered` 原先一律按 OUTA / OUTB 藏拼接板，
+  TTY 口径下这 12 只差约 100 mm。
+- `catalogue::export_holes_on`（从 `gen_ams` 挪进库，`E3D_EXPORT_HOLES` 缺省 on）：OUTA / OUTB 只在 `off`
+  （addin 口径）时算数；`COVR = 0` 的盖板两种口径都不画。
+- 对拍：C-IY 对今日 TTY holes on 导出 35/35 exact（此前 23/35），对 addin 基线（holes off）仍 35/35；
+  TTY holes off 那份另有 addin 没有的盒（FTUBE 多两条 Box），不当基线。土建、`/SSC测试`、
+  MDS、S1（含 1RX07-LCT 的槽弯）、FIXING / datum 真值逐件不变。
+- `pipe_tray_rvm`（`#[ignore]`，对 addin 基线）的运行口径补上 `E3D_EXPORT_HOLES=off`。
+
 ## 2026-10-22 db_discovery 按主项目 SYS 库的外项目表补外项目库：不给 ZDJ000 也能解析 MDB `/ALL` 挂的 db 7600（happyrust/e3d-model#5）
 
 - `DirectoryDbResolver::adopt_foreign_dbs`：读主项目目录里的 `<代号>sys`（`ams000/amssys`），取 `PROJ` 非空的 `DB`

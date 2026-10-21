@@ -1,7 +1,10 @@
 //! AMS 管道式桥架与 E3D 原生 RVM 的局部包围盒回归。
 //!
+//! 基线是 GenModelRvmExport addin 的导出（`C-IY-1R330-B.rvm`），口径是管道 6 级、障碍体开、holes off。
+//! 拼接板的 OUTA / OUTB 只在这一口径下算数：E3D 自己的 TTY 导出照画拼接板。
+//!
 //! 运行：
-//! `$env:E3D_REPRE_LEVEL_PIPE='6'; $env:E3D_REPRE_OBST='on'; cargo test --release --test pipe_tray_rvm -- --ignored --nocapture`
+//! `$env:E3D_REPRE_LEVEL_PIPE='6'; $env:E3D_REPRE_OBST='on'; $env:E3D_EXPORT_HOLES='off'; cargo test --release --test pipe_tray_rvm -- --ignored --nocapture`
 
 use std::{path::PathBuf, sync::Arc};
 

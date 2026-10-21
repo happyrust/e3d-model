@@ -701,6 +701,24 @@ pub(crate) fn repre_obst_on() -> bool {
     repre_obst_level() > 0
 }
 
+/// E3D 导出时负体打不打洞（`EXPORT HOLES ON|OFF`）。环境变量 `E3D_EXPORT_HOLES=on|off`，缺省 on。
+///
+/// TTY 取证宏一律 `export holes on`：扣过负体的件 E3D 写的是布尔结果，整只一条 `FacetGroup`
+/// （MDS 关节 `IJOINT1` 两块开孔板是一条带孔面片；FT48B 设计 BOX 被 NBOX 切过也是面片）。
+/// C-IY-1R330-B 那份 addin 导出是关的：同一支桥架的 FTUBE 在那里是三条未扣减的 Box，
+/// 在 `export holes on` 的 TTY 重导（`evidence/20260902-repre-level-tty-experiments/data/ciy-1r330b/
+/// tbr100-C-IY-1R330-B-tty.rvm`）里是一条扣过的 FacetGroup。对拍那类基线时设 `off`——这把开关
+/// 也就是 addin 口径，拼接板的 `OUTA` / `OUTB` 只在它下面算数（见 [`application_filtered`]）。
+pub fn export_holes_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        !std::env::var("E3D_EXPORT_HOLES")
+            .unwrap_or_default()
+            .trim()
+            .eq_ignore_ascii_case("off")
+    })
+}
+
 /// E3D 的几何集成员显示过滤（GTGEOM 侧 `sub_107149B0` 那一签：
 /// `LEVE[2]/OBST/TVIS/BVIS/CLFL/TUFL`），落到装配路上按 `REPR TUBE ON / CL OFF / OBST OFF`
 /// 这套导出口径的两条筛：
@@ -779,12 +797,15 @@ pub(crate) fn display_filtered(
 
 /// Filter optional catalogue parts controlled by route design properties.
 ///
-/// Core's `csg_gml4/DRWANT` calls `GATLG1` for cable-way member types before
-/// applying the ordinary representation flags.  The ACP tray catalogue uses
-/// the primitive label (stored as its name suffix) together with `RPRO COVR`,
-/// `OUTA`, and `OUTB`: zero means no cover, while the OUT flags document
-/// `0: Have, 1: No`.  These controls are independent of whether a profile
-/// expression happens to multiply a dimension by the flag.
+/// The ACP tray catalogue labels its primitives (name suffix) and drives them
+/// with `RPRO COVR`, `OUTA` and `OUTB`.  `COVR = 0` (no cover) holds in every
+/// export.  The splice-plate flags (`OUTA` / `OUTB`, documented `0: Have,
+/// 1: No`) do not: E3D's own export draws both plates whatever the flags say,
+/// with `export holes on` and `off` alike (`/C-IY-1R330-B` re-exported over TTY
+/// on 2026-10-22, the twelve 2.85°–10° TBR-100 bends with `DESP[4] = DESP[5] = 1`).
+/// Only the GenModelRvmExport addin baseline (`C-IY-1R330-B.rvm`) leaves them
+/// out, and that baseline is what `E3D_EXPORT_HOLES=off` reproduces, so the OUT
+/// flags count only there ([`export_holes_on`]).
 fn application_filtered(
     primitive: &DbElement,
     env: &DbElementParamEnv,
@@ -795,6 +816,9 @@ fn application_filtered(
     let label = name.to_ascii_uppercase();
     if label.contains("COVER") && env.rpro("COVR").is_some_and(|value| value <= 0.0) {
         return Ok(Some("rpro-covr"));
+    }
+    if export_holes_on() {
+        return Ok(None);
     }
     if label.contains("L_SPLICE_PLATE") && env.rpro("OUTA").is_some_and(|value| value != 0.0) {
         return Ok(Some("rpro-outa"));
