@@ -530,10 +530,20 @@ pub fn is_model_unit(noun: &str) -> bool {
         // （[`is_model_unit_of`] / [`fitting_stands_alone_under`]）：SCTN / STWALL 名下的在 E3D
         // 的 RVM 里各自一组（aps250110：`FITTING n of STWALL m of CWALL /B01_LEV01_INT_WALLS`
         // 63 组，57 组有几何；ams7997：`FITTING 1 / 2 of SCTN /1TFA004MP-SUPP-01-V1`），
-        // 别的属主下的没有标架、不成件。
+        // 别的属主下的没有标架、不成件。`PFIT`（板上配件）也走这条路，标架是自己的 POS / ORI
+        // 贴到属主板 SJUS 指的那一面（`catalogue::panel_fitting_world`），不挑属主。
         Category::Catalog => matches!(
             noun,
-            "SBFI" | "WALL" | "SCTN" | "GENSEC" | "STWALL" | "RAIL" | "KICKPL" | "FIXING" | "FITT"
+            "SBFI"
+                | "WALL"
+                | "SCTN"
+                | "GENSEC"
+                | "STWALL"
+                | "RAIL"
+                | "KICKPL"
+                | "FIXING"
+                | "FITT"
+                | "PFIT"
         ),
 
         // 路由成员的实体 = 目录 GMRE 程序求值（`crate::catalogue`），键正是
@@ -651,8 +661,8 @@ pub fn enters_catalogue_by_catref(noun: &str) -> bool {
 /// `POSS→POSE`（或 SPINE / RPATH）挤成一段。`FIXING` 身上没有路径可挤——它是一件
 /// 就地摆放的参数化构件，`POS`/`ORI` 直接给世界位姿。
 ///
-/// 认 `FIXING` 与 `FITT`：`PFIT`/`CMFI` 手上还没有对得上的语料，把它们一并放进来
-/// 等于拿一条没验过的入口去换它们账上那笔如实的欠款。
+/// 认 `FIXING`、`FITT` 与 `PFIT`：`CMFI` 手上还没有对得上的语料，把它一并放进来
+/// 等于拿一条没验过的入口去换它账上那笔如实的欠款。
 ///
 /// 取证（SLYK `/石楼装卸车-SUPP1`，2026-09-14）：69 只 FIXING 全部 `SPRE` 有值，
 /// 指向 `/FHG-PLAT-RECT(G)-C`（`DESP=[200,200,10]`，E3D 导的是 Box 200×200×10）
@@ -666,8 +676,16 @@ pub fn enters_catalogue_by_catref(noun: &str) -> bool {
 /// /B01_LEV01_INT_WALLS` 四块逐块对上（SRTO / SBOX 两块 `OBST=2 TUFL=false` 两边都不画）。
 /// 标架不读自己的 POS/ORI，是 `transform::ImplicitFrame::SectionFitting`（属主的 POSL 线 +
 /// ZDIS / BANG / DELP），`catalogue_member_world` 走 `world_matrix` 拿到的就是它。
+///
+/// `PFIT`（ams1112 FLOOR 上的 `/W-HOLE-F` 套管，2026-10-21）：与墙上 FIXING 的 `/W-HOLE-W` 共用
+/// 同一只 SFIT `/W-HOLE`，目录链与求值器一字不差。标架是自己的 POS / ORI，只是 `POS.z` 换成属主板
+/// SJUS 那一面（`catalogue::panel_fitting_world`）。E3D TTY RVM 里 `PFITTING n of FLOOR …` 的 199 组
+/// 逐组对上，ams7999 PANE 上的 194 只同样对上（gen-model `verification/civil-tty-20261021/`）。
 pub fn builds_from_catalogue_component(noun: &str) -> bool {
-    matches!(noun.trim().to_ascii_uppercase().as_str(), "FIXING" | "FITT")
+    matches!(
+        noun.trim().to_ascii_uppercase().as_str(),
+        "FIXING" | "FITT" | "PFIT"
+    )
 }
 
 /// 这个 noun 会不会**在自己名下派生出一批几何**——即全量管线不为它本身出实体，
@@ -1646,14 +1664,16 @@ mod tests {
             !fitting_stands_alone_under("CMPF"),
             "CMPF 里的 FITT 没有现算标架，照旧欠着"
         );
-        // 其余目录件本期不出几何，不能被顺手一起认成单元——那会让增量对着一批
-        // 模型集里根本不存在的 refno 发 Remove。`FIXING` / `FITT` 与它们同族同入口
-        // （都是 `SPRE`），语料只覆盖了那两个，另外两个照旧欠着。
-        for noun in ["PFIT", "CMFI"] {
-            assert_eq!(classify(noun), Category::Catalog, "{noun}");
-            assert!(!is_model_unit(noun), "{noun} 本期不产实体");
-            assert!(!builds_from_catalogue_component(noun), "{noun} 还没有语料");
-        }
+        // PFIT：同一条目录构件路（ams1112 FLOOR 上的 `/W-HOLE-F` 套管），标架是自己的 POS / ORI，
+        // 不挑属主。
+        assert_eq!(classify("PFIT"), Category::Catalog);
+        assert!(is_model_unit("PFIT"));
+        assert!(builds_from_catalogue_component("PFIT"));
+        // CMFI 本期不出几何，不能被顺手一起认成单元——那会让增量对着一批模型集里根本
+        // 不存在的 refno 发 Remove。它与 FIXING / FITT / PFIT 同族同入口（都是 `SPRE`），语料还没覆盖到。
+        assert_eq!(classify("CMFI"), Category::Catalog);
+        assert!(!is_model_unit("CMFI"), "CMFI 本期不产实体");
+        assert!(!builds_from_catalogue_component("CMFI"), "CMFI 还没有语料");
         // 路由容器会产出隐式管身，但那些几何不按容器 refno 索引，见判据文档。
         for noun in ["BRAN", "HANG", "LUG", "SUPC", "TRUNNI"] {
             assert!(!is_model_unit(noun), "{noun} 的管身不按容器 refno 索引");

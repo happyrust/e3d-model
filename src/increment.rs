@@ -1002,6 +1002,9 @@ const CABLE_TRAY_BRANCH_NOUN: &str = "CWBRAN";
 /// - 名下有 `JLDATU` 的 WALL（`elmodl::fixing_host_frame`，gen-model issue #37）：宿主自己（`DESP[0]` 墙高
 ///   → IBOW 站位，`LMIRR` → pline 基镜像），它的 SPINE 路径（POINSP / CURVE 的 POS），以及 datum 自己（JLDATU 的
 ///   ZDIS、PLDATU）。墙 datum 下的 FIXING 自成单元，实例标架与开孔刀都由它现算，这些输入全在 FIXING 单元之上。
+/// - 名下有 `PFIT` 的板（FLOOR / PANE / GWALL，`catalogue::panel_surface_z`）：板自己（第一个环上没有 `HEIG`
+///   时的 `HEIG`）与它的 PLOO / LOOP（第一个环的 `HEIG` / `SJUS`）。PFIT 自成单元，贴在板 SJUS 指的那一面上；
+///   板的顶点不在它的输入里（`profile::loop_extent` 不读顶点），改 PAVE / VERT 只上卷到板。
 ///
 /// 从候选上溯只许穿过上面这些 noun；起点在这一端不存在也是 `None`。
 ///
@@ -1060,7 +1063,10 @@ fn implicit_frame_host_of(set: &Arc<DbSet>, refno: RefNo) -> Result<Option<RefNo
             "WALL" => return owns(&current, "JLDATU"),
             "SCTN" | "STWALL" => return owns(&current, "FITT"),
             "HANDRA" => return detailed_handrail(&current),
-            "SPINE" | "POINSP" | "CURVE" | "JLDATU" | "PLDATU" | "ENDATU" | "FITT" => {}
+            // 板上配件 PFIT 贴在属主板 SJUS 指的那一面，吃板第一个环的 HEIG / SJUS。
+            "FLOOR" | "PANE" | "GWALL" => return owns(&current, "PFIT"),
+            "SPINE" | "POINSP" | "CURVE" | "JLDATU" | "PLDATU" | "ENDATU" | "FITT" | "PLOO"
+            | "LOOP" => {}
             "RPATH" | "POINTR" | "POSTSE" | "RAILSE" | "HRFEAT" | "HRPOST" | "HRTERM"
             | "HRGATE" => {}
             _ => return Ok(None),
@@ -1829,8 +1835,9 @@ pub fn plan_update_with(
                     }
                 }
 
-                // 现算标架级联：候选是宿主（GENSEC / WALL / SCTN / STWALL）、GENSEC / WALL 的 SPINE 路径、
-                // JLDATU / PLDATU 或 FITT，挂在下面的件标架都可能变了（见 `implicit_frame_host_of`）。
+                // 现算标架级联：候选是宿主（GENSEC / WALL / SCTN / STWALL / 挂 PFIT 的板）、GENSEC / WALL 的
+                // SPINE 路径、JLDATU / PLDATU、FITT 或板的 PLOO / LOOP，挂在下面的件标架都可能变了
+                // （见 `implicit_frame_host_of`）。
                 if resolved {
                     match cascade_implicit_frames(
                         target,
@@ -2377,6 +2384,55 @@ mod tests {
             points += 1;
         }
         assert!(points > 0, "墙 spine 上至少有一个点");
+    }
+
+    /// `implicit_frame_host_of` 的板支在 ams1112 真库上的形状（库或模板不在就跳过）：FLOOR 上的 PFIT
+    /// `17496/123446`（`/1RS03TT0073T`）贴在板 SJUS 指的那一面（`catalogue::panel_surface_z`）。板自己与它的
+    /// PLOO 上溯到板；PLOO 的顶点与 PFIT 自己不在这条腿上。
+    #[test]
+    fn panel_loops_climb_to_the_panel_carrying_pfits() {
+        let db = Path::new(r"D:\AVEVA\Projects\E3D3.1\AvevaMarineSample\ams000\ams1112_0001");
+        let template = Path::new(r"E:\reverse\e3d\shadow_e3d31_aps_all");
+        if !db.exists() || !template.join("attlib.dat").exists() {
+            return;
+        }
+        let set = Arc::new(DbSet::with_attlib_file(&template.join("attlib.dat")).unwrap());
+        set.add_db(e3d_io::db_element::DbFilePin {
+            file: db.to_path_buf(),
+            template: e3d_io::db_element::template_file_for(template, "DESI").unwrap(),
+            db_type: Some("DESI".into()),
+            sesno: None,
+        })
+        .unwrap();
+        let pfit = set.element(RefNo::new(17496, 123446));
+        assert_eq!(pfit.element_type().unwrap(), "PFIT");
+        let floor = pfit.owner().unwrap().expect("PFIT 的属主");
+        assert_eq!(floor.element_type().unwrap(), "FLOOR");
+        let host = Some(floor.refno());
+        let host_of = |refno| implicit_frame_host_of(&set, refno).unwrap();
+        assert_eq!(host_of(floor.refno()), host, "名下有 PFIT 的 FLOOR 自己");
+        assert_eq!(
+            host_of(pfit.refno()),
+            None,
+            "PFIT 自己改了，owner 链上卷到它就够"
+        );
+        let mut loops = 0usize;
+        for member in floor.members().unwrap() {
+            if member.element_type().unwrap() != "PLOO" {
+                continue;
+            }
+            assert_eq!(host_of(member.refno()), host, "PLOO → FLOOR");
+            for vertex in member.members().unwrap() {
+                assert_eq!(
+                    host_of(vertex.refno()),
+                    None,
+                    "{} 不在 PFIT 的输入里",
+                    vertex.element_type().unwrap()
+                );
+            }
+            loops += 1;
+        }
+        assert!(loops > 0, "FLOOR 名下至少一个 PLOO");
     }
 
     /// `implicit_frame_host_of` 的 HANDRA 支在 aps250110 真库上的形状（库或模板不在就跳过）：

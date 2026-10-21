@@ -1754,13 +1754,61 @@ pub(crate) fn catalogue_host_cuts(
 /// 各算各的，于是 1112 的 255 个 FIXING 全挤在 x∈[-2520,-1920] 的一条窄带上，对着
 /// E3D TTY 的 RVM 基准逐个偏 13~25 m。现在两处共用同一个标架。
 fn catalogue_member_world(member: &DbElement) -> Result<DMat4, ModelError> {
-    if member.element_type()? == "FIXING"
+    let noun = member.element_type()?;
+    if noun == "FIXING"
         && let Some(wall) = crate::elmodl::fixing_host_wall(member)?
     {
         return Ok(crate::elmodl::fixing_host_frame(&wall, member)?
             * crate::elmodl::fixing_local_matrix(member)?);
     }
+    if noun == "PFIT" {
+        return panel_fitting_world(member);
+    }
     Ok(world_matrix(member)?)
+}
+
+/// `PFIT`（板上配件）的目录实例标架：属主板的标架 × `T(POS.x, POS.y, z板面)` × `R(ORI)`——
+/// `POS.z` 不进实例，目录几何贴在属主板 PFIT `SJUS` 指的那一面上（[`panel_surface_z`]）。
+///
+/// E3D TTY 真值（gen-model `verification/civil-tty-20261021/`）：PFIT 自己的 `POS/ORI WRT WORLD`
+/// 含 `POS.z`（452 只与 `world_matrix` 逐件一致），但 RVM 里目录几何的记录原点落在属主板
+/// SJUS 指的那一面上。ams1112 FLOOR 上的 `/W-HOLE-F` 套管（与墙上 FIXING 的 `/W-HOLE-W` 共用同一只
+/// SFIT `/W-HOLE`）全是 `SJUS=UTOP`：板的 PLOO 是 UTOP 时顶面在局部 z = 0，`/16` 那块 DBOT 板
+/// （HEIG 1340）顶面在 z = 1340。按元素标架摆时 199 只全部沿板法向偏 240–840 mm。ams7999 PANE
+/// 上的 194 只 SJUS 未设，落在板底面。墙上 FIXING 没有这一步：它的记录原点就是元素原点。
+///
+/// 与 [`crate::elmodl::fixing_local_matrix`] 的 IBOW 那支同一个口径：设计侧 POS 的某个分量是配件的
+/// 定位输入，不是目录实例的平移。开孔刀（[`catalogue_host_cuts`]）与正体共用这一处。
+fn panel_fitting_world(member: &DbElement) -> Result<DMat4, ModelError> {
+    let local = crate::transform::local_matrix(member)?;
+    let surface = match member.owner()? {
+        Some(panel) => panel_surface_z(&panel, member)?,
+        None => 0.0,
+    };
+    let on_panel = DMat4::from_cols(
+        local.x_axis,
+        local.y_axis,
+        local.z_axis,
+        DVec3::new(local.w_axis.x, local.w_axis.y, surface).extend(1.0),
+    );
+    Ok(world_matrix(member)? * local.inverse() * on_panel)
+}
+
+/// 属主板上 PFIT `SJUS` 那一面在板局部系里的 z。板是 `[0, HEIG]` 挤出、再按自己第一个环的
+/// `SJUS` 下移（[`crate::profile::loop_extent`]），所以顶面 = `HEIG − drop`、底面 = `−drop`。
+/// PFIT 的 `SJUS` 按 [`crate::profile::sjus_drop`] 同一张表分族：TOP 族取顶面、CEN 族取中面、其余（含未设）
+/// 取底面。真值覆盖了 TOP 族（FLOOR 上的 PFIT 全是 UTOP，UTOP 板与 DBOT 板都有）与未设（ams7999 PANE 上的
+/// 194 只，板厚 16–30 mm，落在底面）；CEN 族还没有语料。属主名下没有环时按局部 z = 0。
+fn panel_surface_z(panel: &DbElement, member: &DbElement) -> Result<f64, ModelError> {
+    let Some(extent) = crate::profile::loop_extent(panel)? else {
+        return Ok(0.0);
+    };
+    let sjus = match member.get_string("SJUS") {
+        Ok(value) => value.unwrap_or_default(),
+        Err(e3d_io::db_element::DbElementError::UnknownAttribute { .. }) => String::new(),
+        Err(error) => return Err(error.into()),
+    };
+    Ok(crate::profile::sjus_drop(sjus.trim(), extent.height) - extent.sjus_drop)
 }
 
 fn preserves_catalogue_components(saw_display_primitive: bool) -> bool {

@@ -70,6 +70,54 @@ pub fn sjus_drop(sjus: &str, height: f64) -> f64 {
     }
 }
 
+/// 环属主的拉伸范围：[`LoopProfile`] 去掉顶点环剩下的两项，口径与它逐字相同。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LoopExtent {
+    /// 拉伸高度（mm）。
+    pub height: f64,
+    /// SJUS 对齐产生的沿局部 −Z 下移量（mm）。无 SJUS 时为 0。
+    pub sjus_drop: f64,
+}
+
+/// 只读第一个环（与属主自己的 `HEIG`）的拉伸范围，不读顶点、不校验环；名下没有 PLOO/LOOP 时 `None`。
+///
+/// 板上配件 PFIT 贴的那一面由它定（`catalogue::panel_surface_z`）：PFIT 吃板的厚度与对齐，不吃轮廓，
+/// 顶点挪了、环退化了都不动它——增量那一侧因此只需把环与板自己的改动级联到 PFIT
+/// （`increment::implicit_frame_host_of`）。
+pub fn loop_extent(el: &DbElement) -> Result<Option<LoopExtent>, DbElementError> {
+    for member in el.members()? {
+        let noun = member.element_type()?;
+        if noun == "PLOO" || noun == "LOOP" {
+            return first_loop_extent(el, &member, &noun).map(Some);
+        }
+    }
+    Ok(None)
+}
+
+/// `HEIG`：第一个环上的值优先，环上没有再取属主自己的；`SJUS` 只在第一个环是 PLOO 时读（见模块文档）。
+fn first_loop_extent(
+    el: &DbElement,
+    first: &DbElement,
+    noun: &str,
+) -> Result<LoopExtent, DbElementError> {
+    let height = match double_or_none(first, "HEIG")? {
+        Some(h) => h,
+        None => double_or_none(el, "HEIG")?.unwrap_or(0.0),
+    };
+    let sjus = if noun == "PLOO" {
+        string_or_none(first, "SJUS")?
+    } else {
+        None
+    };
+    Ok(LoopExtent {
+        height,
+        sjus_drop: sjus
+            .as_deref()
+            .map(|sjus| sjus_drop(sjus, height))
+            .unwrap_or(0.0),
+    })
+}
+
 /// 从环属主（PANE/FLOOR/GWALL/NXTR/EXTR…）采集剖面。
 ///
 /// 对标 Core3D 共享轮廓装配器 `sub_10719900`（EXT/REV/板/墙共用，活桥反编译，
@@ -80,19 +128,15 @@ pub fn sjus_drop(sjus: &str, height: f64) -> f64 {
 /// 翻正 + `FillRule::NonZero` 等价化解自交轮廓（见 `solid` 模块文档第 1、2 条）。
 pub fn loop_profile(el: &DbElement) -> Result<LoopProfile, ProfileError> {
     let mut rings: Vec<Vec<FilletVertex>> = Vec::new();
-    let mut first_loop_heig: Option<f64> = None;
-    let mut first_ploo_sjus: Option<String> = None;
+    let mut extent: Option<LoopExtent> = None;
 
     for member in el.members()? {
         let noun = member.element_type()?;
         if noun != "PLOO" && noun != "LOOP" {
             continue;
         }
-        if rings.is_empty() {
-            first_loop_heig = double_or_none(&member, "HEIG")?;
-            if noun == "PLOO" {
-                first_ploo_sjus = string_or_none(&member, "SJUS")?;
-            }
+        if extent.is_none() {
+            extent = Some(first_loop_extent(el, &member, &noun)?);
         }
         let mut ring = Vec::new();
         for vertex in member.members()? {
@@ -111,12 +155,12 @@ pub fn loop_profile(el: &DbElement) -> Result<LoopProfile, ProfileError> {
         rings.push(ring);
     }
 
-    if rings.is_empty() {
+    let Some(extent) = extent else {
         return Err(ProfileError::NoLoops {
             refno: el.refno().to_string(),
             noun: el.element_type()?,
         });
-    }
+    };
     for (ring_index, ring) in rings.iter().enumerate() {
         if ring.len() < 3 {
             return Err(ProfileError::DegenerateRing {
@@ -127,19 +171,10 @@ pub fn loop_profile(el: &DbElement) -> Result<LoopProfile, ProfileError> {
         }
     }
 
-    let height = match first_loop_heig {
-        Some(h) => h,
-        None => double_or_none(el, "HEIG")?.unwrap_or(0.0),
-    };
-    let drop = first_ploo_sjus
-        .as_deref()
-        .map(|sjus| sjus_drop(sjus, height))
-        .unwrap_or(0.0);
-
     Ok(LoopProfile {
         rings,
-        height,
-        sjus_drop: drop,
+        height: extent.height,
+        sjus_drop: extent.sjus_drop,
     })
 }
 

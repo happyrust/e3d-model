@@ -180,8 +180,8 @@ const OWNER_WALK_SITES: &[Site] = &[
         func: "implicit_frame_host_of",
         climb: Climb::NounOnly,
         reads: &[],
-        why: "现算标架的输入上溯到宿主（GENSEC / WALL / SCTN / STWALL / 详图式 HANDRA）：只看 noun，再看宿主名下有没有 JLDATU / \
-              FITT / POSTSE·HRFEAT·带 HRTERM 的 RAILSE",
+        why: "现算标架的输入上溯到宿主（GENSEC / WALL / SCTN / STWALL / 详图式 HANDRA / FLOOR·PANE·GWALL）：只看 noun，\
+              再看宿主名下有没有 JLDATU / FITT / POSTSE·HRFEAT·带 HRTERM 的 RAILSE / PFIT",
     },
     Site {
         file: "increment.rs",
@@ -251,6 +251,16 @@ const OWNER_WALK_SITES: &[Site] = &[
               设计负体（mode 7）或 FIXING 负体扫出来扣到 SCTN 上。SCTN 自成单元，TMPL / FIXING 在它之上：整棵子树重算的根口径下\
               （负体改了 → 祖先闭包命中 FITT / FIXING 所在的 STWALL / STRU / FRMW 根 → 整棵重算）覆盖；ADR-080 单元级发布由 \
               increment::implicit_frame_host_of 与 joint_consumer_of 覆盖（gen-model issue #34）",
+    },
+    Site {
+        file: "catalogue.rs",
+        func: "panel_fitting_world",
+        climb: Climb::AboveUnit,
+        reads: &[],
+        why: "PFIT 自成模型单元，它的目录实例标架取 owner（属主板）交给 panel_surface_z，读板第一个环的 HEIG / SJUS 与板自己的\
+              HEIG（见 ANCESTOR_CONSUMERS），都在 PFIT 单元之上。整棵子树重算的根口径下（PLOO 改了 → 祖先闭包命中板所在的\
+              STRU / FRMW 根 → 整棵重算）覆盖；ADR-080 单元级发布由 increment::implicit_frame_host_of 的板支覆盖——板自己或它的\
+              PLOO / LOOP 改了，就把整棵板子树级联进计划，与 point_on_host 那条同型（gen-model issue #39），单元规划已经补上",
     },
 ];
 
@@ -340,6 +350,26 @@ const ANCESTOR_CONSUMERS: &[(&str, &str, &[&str], &str)] = &[
         &["CURTYP", "POS"],
         "HANDRA 名下 RPATH 的首两只 POINTR 与 CURVE（CURTYP == THRU）的位置：THRU 圆弧上按 ZDIS 走出的实际站位。RPATH 在\
          立柱模板件的单元之上，覆盖口径同 handrail_post_world",
+    ),
+    (
+        "catalogue.rs",
+        "panel_surface_z",
+        &["SJUS"],
+        "PFIT 贴的那一面：读 PFIT 自己的 SJUS（单元内），属主板交给 profile::loop_extent 读。覆盖口径见 OWNER_WALK_SITES 的\
+         panel_fitting_world",
+    ),
+    (
+        "profile.rs",
+        "loop_extent",
+        &[],
+        "PFIT 的属主板：只看成员 noun 找第一个 PLOO / LOOP，交给 first_loop_extent 读",
+    ),
+    (
+        "profile.rs",
+        "first_loop_extent",
+        &["HEIG", "SJUS"],
+        "板第一个环的 HEIG / SJUS 与板自己的 HEIG：经 loop_extent 被 panel_surface_z 用在 PFIT 单元之上（AboveUnit，理由见\
+         panel_fitting_world）；loop_profile 给板自己出剖面也用它，那一侧在单元内",
     ),
 ];
 
