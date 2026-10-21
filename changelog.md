@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-21 圆弧墙 LMIRR 翻侧 + 扫掠段数取截面外径（ams7997 E3D TTY 实证）
+
+- `elmodl::circular_wall_radii` / `wall_end_frame` 改收 `side` = 扫掠角符号 ×（`LMIRR` 时 −1）：镜像的墙落在
+  行进方向的右手侧。ams7997 `24381/1597`（顺时针、`LMIRR`）回到 spine 内侧 `[r−厚, r]`，原先差一个
+  墙厚 600 mm；斜接端标架仍是右手系，体侧符号跟着 `LMIRR` 翻。
+- 扫掠段数按截面外径算（原先按 spine 半径）：落在外侧的 `24381/1932`、`24381/4302` 原先差 4.1 / 0.77 mm。
+- ams7997 `/电气测试模型`（`24381/777`）整区 RVM 对拍：WALL 18/21 → 21/21，整区 662/663（剩下的
+  `/Copy-of-R211-M01` 另案）；`/1RB-CIVI`、`/1RC-CIVI`、`/1RX-ARCHHB`、ams1112 逐件不变。
+
 ## 2026-10-21 挤出截面改用 Positive 填充（ams7997 E3D TTY 实证）
 
 - `solid::extrude_rings`：`FillRule::NonZero` → `FillRule::Positive`。单端越界的倒圆倒着发出去的那段线与弧
