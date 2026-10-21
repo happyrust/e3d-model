@@ -11,7 +11,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use e3d_io::db_element::{DbFilePin, DbSet, template_file_for};
+use e3d_io::db_element::{DbFilePin, DbFileResolver, DbSet, template_file_for};
 use e3d_io::refno::RefNo;
 use e3d_model::catalogue::model_catalogue_member;
 use e3d_model::db_discovery::DirectoryDbResolver;
@@ -40,6 +40,11 @@ fn ams_set() -> Arc<DbSet> {
     let resolver =
         DirectoryDbResolver::scan(&[PathBuf::from(AMS_DIR), PathBuf::from(ZDJ_DIR)], template)
             .unwrap();
+    set_with(resolver)
+}
+
+fn set_with(resolver: DirectoryDbResolver) -> Arc<DbSet> {
+    let template = Path::new(TEMPLATE_DIR);
     let set = Arc::new(
         DbSet::with_attlib_file_and_resolver(&template.join("attlib.dat"), Box::new(resolver))
             .unwrap(),
@@ -139,6 +144,35 @@ fn gmse_a_saddle_record_matches_e3d() {
     let want_hi = DVec3::new(87.55, 87.55 * angle.sin(), 75.0);
     assert!(lo.abs_diff_eq(want_lo, 0.05), "lo {lo} 应为 {want_lo}");
     assert!(hi.abs_diff_eq(want_hi, 0.05), "hi {hi} 应为 {want_hi}");
+}
+
+/// 鞍座目录在 ZDJ 的 db 7600，是 AMS 的 MDB 挂进来的外项目库（amssys 里 `PROJ` = ZDJ）。只给
+/// ams000，按外项目表补进来的就是 ZDJ000 里那份，建出来的记录与显式给 ZDJ000 时逐位相同。
+#[test]
+fn the_zdj_catalogue_is_adopted_from_the_ams_system_db() {
+    if !fixtures_present() {
+        return;
+    }
+    let template = Path::new(TEMPLATE_DIR);
+    let mut resolver = DirectoryDbResolver::scan(&[PathBuf::from(AMS_DIR)], template).unwrap();
+    assert!(resolver.resolve(7600).is_none(), "ams000 里没有 7600");
+    let notes =
+        resolver.adopt_foreign_dbs(Path::new(AMS_DIR), &template.join("attlib.dat"), template);
+    let pin = resolver
+        .resolve(7600)
+        .unwrap_or_else(|| panic!("7600 没补上：{notes:#?}"));
+    assert_eq!(pin.file, Path::new(ZDJ_DIR).join("zdj7600_0001"));
+
+    let adopted = saddle_records(&set_with(resolver), 68277);
+    let explicit = saddle_records(&ams_set(), 68277);
+    assert_eq!(adopted.len(), explicit.len());
+    for ((frame_a, part_a), (frame_b, part_b)) in adopted.iter().zip(&explicit) {
+        assert_eq!(frame_a, frame_b);
+        assert_eq!(
+            TriMesh::from_manifold(part_a).vertices,
+            TriMesh::from_manifold(part_b).vertices
+        );
+    }
 }
 
 /// GMSE-C：同一原点上四条环（P4/P5、P6/P7、P8/P9、P13/P14），两两扫掠轴相反；

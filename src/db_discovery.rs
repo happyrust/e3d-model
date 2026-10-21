@@ -28,15 +28,23 @@
 //! - 认不出类型（+0x20 反哈希不出名字）的库文件进 [`skipped`] 诊断、不进表：
 //!   类型派生不出模板文件，静默配一个错模板读出来的是别人的 schema。
 //!
+//! 外项目库是唯一一处不靠目录定的：E3D 的 MDB 把别的项目的库当外项目库挂进来（AMS 的 `/ALL`
+//! 挂着 ZDJ 的 db 7600），登记在主项目 SYS 库的 `DB` 元素上（`PROJ` = 外项目代号）。
+//! [`DirectoryDbResolver::adopt_foreign_dbs`] 只补表里登记、给定目录又解析不出的那几个库号，
+//! 不把整个外项目目录挂进来：外项目里没登记的库会拿同号把给定目录里的正身挤成「分不出」。
+//!
 //! [`discovered`]: DirectoryDbResolver::discovered
 //! [`skipped`]: DirectoryDbResolver::skipped
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read as _, Seek as _, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use e3d_io::db_element::{DbFilePin, DbFileResolver, template_file_for};
+use e3d_io::db_element::{DbFilePin, DbFileResolver, DbSet, template_file_for};
+use e3d_io::engine::{ReadOnlyEngine, ScanTier};
 use e3d_io::meta::{DbDescriptor, FileInfo};
+use e3d_io::record::descriptor::DescriptorValue;
 
 /// 目录里认出来的一个库文件（含 extent 文件）。
 #[derive(Debug, Clone)]
@@ -76,6 +84,8 @@ pub struct DirectoryDbResolver {
     discovered: Vec<DiscoveredDb>,
     skipped: Vec<SkippedFile>,
     non_db_files: usize,
+    /// 经 [`Self::adopt_foreign_dbs`] 从外项目目录补进来的库数。
+    adopted: usize,
 }
 
 impl DirectoryDbResolver {
@@ -241,6 +251,7 @@ impl DirectoryDbResolver {
             discovered,
             skipped,
             non_db_files,
+            adopted: 0,
         })
     }
 
@@ -292,13 +303,98 @@ impl DirectoryDbResolver {
             .map(|(db_type, count)| format!("{db_type}×{count}"))
             .collect::<Vec<_>>()
             .join(" ");
+        let adopted = if self.adopted > 0 {
+            format!("（其中 {} 个是 SYS 库登记的外项目库）", self.adopted)
+        } else {
+            String::new()
+        };
         format!(
-            "project-dir 扫到 {} 个库（{}），{} 个可疑文件进诊断，{} 个非库文件略过",
+            "project-dir 扫到 {} 个库（{}）{adopted}，{} 个可疑文件进诊断，{} 个非库文件略过",
             self.pins.len(),
             types,
             self.skipped.len(),
             self.non_db_files
         )
+    }
+
+    /// 补上主项目 SYS 库登记的外项目库，返回逐条说明（补了哪个、哪个补不上、哪个与登记不符）。
+    ///
+    /// `main_dir` 是主项目目录（`ams000`），系统库取它里面的 `<代号>sys`。外项目目录按
+    /// [`foreign_project_dir`] 找。只补给定目录解析不出的库号：给定目录里已有的照旧用给定目录，
+    /// 与登记不符时只记一条说明（ams000 里的 `ams7355_0001` 在 SYS 库里登记为 APS 的库）。
+    pub fn adopt_foreign_dbs(
+        &mut self,
+        main_dir: &Path,
+        attlib: &Path,
+        template_dir: &Path,
+    ) -> Vec<String> {
+        let mut notes = Vec::new();
+        let main_dir = std::path::absolute(main_dir).unwrap_or_else(|_| main_dir.to_path_buf());
+        let Some(own) = project_code_of(&main_dir) else {
+            notes.push(format!(
+                "{} 不是 `<代号>000` 形的项目目录，不补外项目库",
+                main_dir.display()
+            ));
+            return notes;
+        };
+        let Some(sys_file) = project_system_db(&main_dir, &own) else {
+            notes.push(format!(
+                "{} 里没有系统库 {own}sys，不补外项目库",
+                main_dir.display()
+            ));
+            return notes;
+        };
+        let foreign = match read_foreign_dbs(&sys_file, attlib, template_dir) {
+            Ok(foreign) => foreign,
+            Err(error) => {
+                notes.push(format!("读 {} 的外项目表失败：{error}", sys_file.display()));
+                return notes;
+            }
+        };
+        let mut projects: HashMap<String, Result<(PathBuf, DirectoryDbResolver), String>> =
+            HashMap::new();
+        for db in foreign {
+            if db.project.eq_ignore_ascii_case(&own) {
+                continue;
+            }
+            let project = projects
+                .entry(db.project.to_ascii_uppercase())
+                .or_insert_with(|| {
+                    let dir = foreign_project_dir(&db.project, &main_dir)?;
+                    let resolver =
+                        DirectoryDbResolver::scan(std::slice::from_ref(&dir), template_dir)
+                            .map_err(|error| error.to_string())?;
+                    Ok((dir, resolver))
+                });
+            let label = format!("外项目库 {} {}（{}）", db.dbno, db.name, db.project);
+            if let Some(pin) = self.pins.get(&db.dbno) {
+                if let Ok((dir, _)) = project
+                    && pin
+                        .file
+                        .parent()
+                        .is_none_or(|parent| !same_dir(parent, dir))
+                {
+                    notes.push(format!(
+                        "{label}：给定目录已有 {}，按给定目录（SYS 库登记在 {}）",
+                        pin.file.display(),
+                        dir.display()
+                    ));
+                }
+                continue;
+            }
+            match project {
+                Ok((dir, resolver)) => match resolver.pins.get(&db.dbno) {
+                    Some(pin) => {
+                        notes.push(format!("{label} ← {}", pin.file.display()));
+                        self.pins.insert(db.dbno, pin.clone());
+                        self.adopted += 1;
+                    }
+                    None => notes.push(format!("{label}：{} 里解析不出这个库号", dir.display())),
+                },
+                Err(error) => notes.push(format!("{label}：{error}")),
+            }
+        }
+        notes
     }
 }
 
@@ -306,6 +402,177 @@ impl DbFileResolver for DirectoryDbResolver {
     fn resolve(&self, dbno: u32) -> Option<DbFilePin> {
         self.pins.get(&dbno).cloned()
     }
+}
+
+/// 主项目 SYS 库里登记的一只外项目库。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForeignDb {
+    pub dbno: u32,
+    /// 外项目代号（`ZDJ`、`ACP`…）。
+    pub project: String,
+    /// 库名（`*SAMPLE/PPROJCATA`），只进说明。
+    pub name: String,
+}
+
+/// 读一份 SYS 库里的外项目表：`PROJ` 非空的 `DB` 元素，按库号排。
+///
+/// 包括主项目自己的代号（如果它给自己的库也填了 `PROJ`），由调用方排除。
+pub fn read_foreign_dbs(
+    sys_file: &Path,
+    attlib: &Path,
+    template_dir: &Path,
+) -> Result<Vec<ForeignDb>, String> {
+    let set = Arc::new(
+        DbSet::with_attlib_file(attlib)
+            .map_err(|error| format!("attlib {}: {error}", attlib.display()))?,
+    );
+    let template =
+        template_file_for(template_dir, "SYST").map_err(|error| format!("SYST 模板: {error}"))?;
+    let dbno = set
+        .add_db(DbFilePin {
+            file: sys_file.to_path_buf(),
+            template,
+            db_type: Some("SYST".into()),
+            sesno: None,
+        })
+        .map_err(|error| format!("开库: {error}"))?;
+    let mut engine = match set.pinned_sesno(dbno) {
+        Some(sesno) => ReadOnlyEngine::open_at(sys_file, sesno),
+        None => ReadOnlyEngine::open(sys_file),
+    }
+    .map_err(|error| format!("开库: {error}"))?;
+    let mut foreign = Vec::new();
+    for scanned in engine
+        .scan_elements(ScanTier::Header)
+        .map_err(|error| format!("扫元素: {error}"))?
+    {
+        let scanned = scanned.map_err(|error| format!("扫元素: {error}"))?;
+        let element = set.element(scanned.refno);
+        if !element.element_type().is_ok_and(|noun| noun == "DB") {
+            continue;
+        }
+        let Some(project) = element
+            .attribute("PROJ")
+            .ok()
+            .flatten()
+            .as_ref()
+            .and_then(project_code)
+        else {
+            continue;
+        };
+        // SYS 库里的 DBNO 存成 Word（`Word { raw: 7600 }`），不是 Int。
+        let dbno = match element.attribute("DBNO").ok().flatten() {
+            Some(DescriptorValue::Word { raw, .. }) => Some(raw),
+            Some(DescriptorValue::Int(dbno)) => u32::try_from(dbno).ok(),
+            _ => None,
+        };
+        let Some(dbno) = dbno else {
+            continue;
+        };
+        let name = element.stored_name().ok().flatten().unwrap_or_default();
+        foreign.push(ForeignDb {
+            dbno,
+            project,
+            name,
+        });
+    }
+    foreign.sort_by_key(|db| db.dbno);
+    foreign.dedup_by_key(|db| db.dbno);
+    Ok(foreign)
+}
+
+/// `PROJ` 存的是代号的字符码（`RawWords([90, 68, 74])` = `ZDJ`），空 = 主项目自己的库。
+fn project_code(value: &DescriptorValue) -> Option<String> {
+    let code = match value {
+        DescriptorValue::Text(text) => text.trim().to_string(),
+        DescriptorValue::RawWords(words) | DescriptorValue::WordArray(words) => words
+            .iter()
+            .filter_map(|word| char::from_u32(*word))
+            .collect::<String>()
+            .trim()
+            .to_string(),
+        _ => return None,
+    };
+    (!code.is_empty() && code.chars().all(|c| c.is_ascii_alphanumeric())).then_some(code)
+}
+
+/// 项目目录名去掉 `000` 就是项目代号（`ams000` → `ams`、`ZDJ000` → `ZDJ`）。
+fn project_code_of(dir: &Path) -> Option<String> {
+    let code = dir.file_name()?.to_str()?.strip_suffix("000")?;
+    (!code.is_empty()).then(|| code.to_string())
+}
+
+/// 项目的系统库文件 `<代号>sys`（`ams000/amssys`），文件名不分大小写。
+fn project_system_db(dir: &Path, code: &str) -> Option<PathBuf> {
+    let wanted = format!("{code}sys");
+    std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.is_file()
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.eq_ignore_ascii_case(&wanted))
+        })
+}
+
+/// 外项目代号 → 项目目录。E3D 按环境变量 `<代号>000` 找（`custom_evars.bat` 调的
+/// `evars<代号>.bat` 设的就是 `%projects_dir%<文件夹>\<代号>000`）；没设时在主项目同根
+/// （`main_dir` 的上两级）下一层里找名为 `<代号>000` 的目录，不分大小写。找不到或不唯一都不猜。
+pub fn foreign_project_dir(code: &str, main_dir: &Path) -> Result<PathBuf, String> {
+    let var = format!("{}000", code.to_ascii_uppercase());
+    if let Some(value) = std::env::var_os(&var) {
+        let dir = PathBuf::from(value);
+        return if dir.is_dir() {
+            Ok(dir)
+        } else {
+            Err(format!("环境变量 {var}={} 不是目录", dir.display()))
+        };
+    }
+    let root = main_dir
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| format!("{} 没有上两级目录，找不到项目根", main_dir.display()))?;
+    let wanted = format!("{code}000");
+    let mut hits: Vec<PathBuf> = std::fs::read_dir(root)
+        .map_err(|error| format!("读 {}: {error}", root.display()))?
+        .flatten()
+        .filter_map(|folder| std::fs::read_dir(folder.path()).ok())
+        .flat_map(|children| children.flatten())
+        .map(|child| child.path())
+        .filter(|path| {
+            path.is_dir()
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.eq_ignore_ascii_case(&wanted))
+        })
+        .collect();
+    hits.sort();
+    match hits.len() {
+        1 => Ok(hits.remove(0)),
+        0 => Err(format!(
+            "没设环境变量 {var}，{} 下一层也没有 {wanted} 目录",
+            root.display()
+        )),
+        _ => Err(format!(
+            "{} 下有 {} 个 {wanted} 目录（{}），不猜",
+            root.display(),
+            hits.len(),
+            hits.iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join("、")
+        )),
+    }
+}
+
+fn same_dir(a: &Path, b: &Path) -> bool {
+    let canonical =
+        |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    canonical(a) == canonical(b)
 }
 
 /// 描述符自报 0 号 extent 时按主文件算（`DbDescriptor::extent` 的同一条回退，
@@ -632,5 +899,44 @@ mod tests {
         let dirs = vec![dir.path().to_path_buf(), dir.path().to_path_buf()];
         let resolver = DirectoryDbResolver::scan(&dirs, Path::new("t")).unwrap();
         assert_eq!(resolver.dbnos(), vec![8000]);
+    }
+
+    /// amssys 里 `PROJ` 的存法：代号的字符码一字一个，空表是主项目自己的库。
+    #[test]
+    fn proj_words_spell_the_foreign_project_code() {
+        assert_eq!(
+            project_code(&DescriptorValue::RawWords(vec![90, 68, 74])).as_deref(),
+            Some("ZDJ")
+        );
+        assert_eq!(
+            project_code(&DescriptorValue::Text(" ACP ".into())).as_deref(),
+            Some("ACP")
+        );
+        assert_eq!(project_code(&DescriptorValue::RawWords(Vec::new())), None);
+        assert_eq!(
+            project_code_of(Path::new("projects/AvevaMarineSample/ams000")).as_deref(),
+            Some("ams")
+        );
+        assert_eq!(project_code_of(Path::new("ZDJ000")).as_deref(), Some("ZDJ"));
+        assert_eq!(project_code_of(Path::new("000")), None);
+        assert_eq!(project_code_of(Path::new("projects")), None);
+    }
+
+    /// 没设 `<代号>000` 时在主项目同根的下一层找：唯一一个才认，两个就不猜。
+    #[test]
+    fn a_foreign_project_dir_is_found_beside_the_main_project_or_refused() {
+        let root = TempDir::new("foreign-root");
+        let main = root.path().join("AvevaMarineSample").join("ams000");
+        std::fs::create_dir_all(&main).unwrap();
+        let qzx = root.path().join("Sample").join("qzx000");
+        std::fs::create_dir_all(&qzx).unwrap();
+        assert_eq!(foreign_project_dir("QZX", &main).unwrap(), qzx);
+
+        let error = foreign_project_dir("QZY", &main).unwrap_err();
+        assert!(error.contains("QZY000"), "{error}");
+
+        std::fs::create_dir_all(root.path().join("Copy").join("QZX000")).unwrap();
+        let error = foreign_project_dir("QZX", &main).unwrap_err();
+        assert!(error.contains("不猜"), "{error}");
     }
 }

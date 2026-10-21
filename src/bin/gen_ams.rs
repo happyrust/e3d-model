@@ -6,7 +6,7 @@
 //! gen_ams --attlib <attlib.dat> --db <ams1112_0001> --template <模板文件或目录> \
 //!         [--db-type DESI] [--sesno N] [--root w0/w1] [--out out/ams1112] \
 //!         [--catalogue <ams5052_0001> ...] [--project-dir <库目录> ...] \
-//!         [--route-only] [--no-instance-cache]
+//!         [--route-only] [--no-instance-cache] [--no-foreign-projects]
 //! ```
 //!
 //! `--catalogue` 可重复，把 `SPRE`/`CATR` 指向的目录库一并开进同一个 [`DbSet`]。
@@ -15,7 +15,9 @@
 //! `--project-dir` 可重复：扫这些目录（只扫本层）建「库号 → 文件」表，引用跳到
 //! 没开过的库时按需自动开，模板按库类型从 `--template` 的目录派生——一个目录顶
 //! 一串 `--catalogue`。两者可并用：`add_db` 先登记的文件不会被 resolver 顶掉。
-//! 目录仍然是显式给的，这条不猜安装位置的边界没有动。
+//! 目录仍然是显式给的；唯一的例外是 `--db` 所在项目 SYS 库登记的外项目库（AMS 的
+//! MDB `/ALL` 挂着 ZDJ 的 db 7600）：给定目录解析不出时按 E3D 的 `<代号>000` 约定找到那个项目、
+//! 只补登记的库号，逐条打印（[`DirectoryDbResolver::adopt_foreign_dbs`]）。`--no-foreign-projects` 关掉。
 //!
 //! 产物：
 //! - `<out>/model.obj`：全部实体，一个 OBJ object 一个元素（`refno noun name`）。
@@ -51,6 +53,7 @@ struct Args {
     no_instance_cache: bool,
     /// 给了就额外写一份 `<out>/generated.rvm`，见 [`e3d_model::rvm_write`]。
     rvm: bool,
+    no_foreign_projects: bool,
 }
 
 fn parse_args() -> anyhow::Result<Args> {
@@ -66,6 +69,7 @@ fn parse_args() -> anyhow::Result<Args> {
     let mut route_only = false;
     let mut no_instance_cache = false;
     let mut rvm = false;
+    let mut no_foreign_projects = false;
 
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
@@ -83,6 +87,7 @@ fn parse_args() -> anyhow::Result<Args> {
             "--route-only" => route_only = true,
             "--no-instance-cache" => no_instance_cache = true,
             "--rvm" => rvm = true,
+            "--no-foreign-projects" => no_foreign_projects = true,
             other => bail!("不认识的参数 {other}"),
         }
     }
@@ -99,6 +104,7 @@ fn parse_args() -> anyhow::Result<Args> {
         route_only,
         no_instance_cache,
         rvm,
+        no_foreign_projects,
     })
 }
 
@@ -773,7 +779,14 @@ fn main() -> anyhow::Result<()> {
             Vec::new(),
         )
     } else {
-        let resolver = DirectoryDbResolver::scan(&args.project_dirs, &template_dir)?;
+        let mut resolver = DirectoryDbResolver::scan(&args.project_dirs, &template_dir)?;
+        if !args.no_foreign_projects
+            && let Some(main_dir) = args.db_file.parent()
+        {
+            for note in resolver.adopt_foreign_dbs(main_dir, &args.attlib, &template_dir) {
+                println!("project-dir {note}");
+            }
+        }
         for skipped in resolver.skipped() {
             println!(
                 "project-dir 诊断 {}: {}",

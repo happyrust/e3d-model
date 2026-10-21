@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-10-22 db_discovery 按主项目 SYS 库的外项目表补外项目库：不给 ZDJ000 也能解析 MDB `/ALL` 挂的 db 7600（happyrust/e3d-model#5）
+
+- `DirectoryDbResolver::adopt_foreign_dbs`：读主项目目录里的 `<代号>sys`（`ams000/amssys`），取 `PROJ` 非空的 `DB`
+  元素（`PROJ` 存代号的字符码，`RawWords([90, 68, 74])` = ZDJ；`DBNO` 存成 Word），给定目录解析不出的库号到
+  外项目目录里取同号正身。外项目目录按 E3D 的约定找：环境变量 `<代号>000` 优先，否则主项目同根下一层
+  唯一一个 `<代号>000`（`custom_evars.bat` 调的 `evars<代号>.bat` 设的就是它）；找不到或不唯一只记说明。
+- 只补登记的库号，不把整个外项目目录挂进来：ZDJ000 自己也有 7009 / 7011 / 7015（与 ACP 同号），整目录挂进来会
+  把 ACP 的正身挤成「分不出」——S1 的整库生成给了 ZDJ000 + acp000，这三个库一直被扣着，现在按 SYS 库登记
+  从 ACP 补回。给定目录已有、但 SYS 库登记在别的项目的（ams000 的 `ams7355_0001`，登记为 APS 的
+  `*MDU/CATA`）照旧用给定目录，只记一条说明。
+- `gen_ams`：给了 `--project-dir` 时按 `--db` 所在项目补外项目库并逐条打印，`--no-foreign-projects` 关掉。
+- 验收：只给 ams000 + acp000，ams7999 `24383/66515` / `66585` 两只 ATTA 由 failed 变为生成，RVM 与
+  `elements.json` 与显式给 ZDJ000 时逐字节相同；ams7997 `/1PTU-INST23` 6 个 STRU 20/20 exact。土建、`/SSC测试`、
+  MDS、S1 逐件不变（SCB 6000–6003 随之补进）。
+- 真库门 `saddle_srto_real` 新增 `the_zdj_catalogue_is_adopted_from_the_ams_system_db`；单测
+  `proj_words_spell_the_foreign_project_code`、`a_foreign_project_dir_is_found_beside_the_main_project_or_refused`。
+
 ## 2026-10-22 截面成员按出身与元素标架写记录：单 SREC 截面的 STWALL 写 E3D 那条 `Pyramid`
 
 - `elmodl`：SCTN / STWALL 截面只有一个成员时也把目录出身交给写出端（此前要 ≥ 2 个成员才交），每个成员
