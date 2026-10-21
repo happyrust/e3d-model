@@ -1011,7 +1011,7 @@ fn joint_tip_slab(
 /// `SCTN` 与 `GENSEC` 是原住民；`STWALL`（直墙）2026-09-06 按 recheck-4 §十接进来——
 /// 语料里它的形状与 SCTN 逐条同型：`SPRE → SPRO`（`PX/PY = ATTRIB DESP[n]`，按设计件
 /// 自己的 `DESP` 参数化的矩形）、`POSS → POSE`、`DRNS`/`DRNE` 端向。它**不是** `WALL`：
-/// `WALL` 没有 SPRE，是 SPINE 弧上扫 DESP 矩形（[`wall_local_solid`]）。
+/// `WALL` 的路径是 SPINE 圆弧，截面虽然也取 SPRE 目录截面，实体却是沿弧扫出来的（[`wall_local_solid`]）。
 ///
 /// 这份名单与 [`crate::category::is_model_unit`] 的 `Catalog` 臂必须逐项对齐：
 /// 那边多认一个、这边没有臂，落到 `other` 臂是 `Skipped(NoShape)`，账面上看着像
@@ -1141,10 +1141,10 @@ fn section_body(el: &DbElement, notes: &mut Vec<String>) -> Result<SectionBody, 
     }
 }
 
-/// Build a design WALL from its SPINE.  The wall profile is the catalogue
-/// rectangle `(thickness, height)` carried by DESP; the design SPINE supplies
-/// the path.  The first supported path is E3D's common three-point circular
-/// spine (`POINSP, CURVE THRU, POINSP`).
+/// Build a design WALL from its SPINE.  The wall profile is the SPRE catalogue
+/// rectangle sized by DESP, shifted by the JUSL p-line and mirrored by LMIRR
+/// ([`wall_section`]); the design SPINE supplies the path.  The first supported
+/// path is E3D's common three-point circular spine (`POINSP, CURVE THRU, POINSP`).
 fn wall_local_solid(el: &DbElement, notes: &mut Vec<String>) -> Result<Manifold, ModelError> {
     let desp = el
         .get_double_array("DESP")?
@@ -1235,17 +1235,16 @@ fn wall_local_solid(el: &DbElement, notes: &mut Vec<String>) -> Result<Manifold,
     }
     let (center, radius, a0, sweep) = circular_spine_geometry(&points)?;
     let travel = sweep.signum();
-    let mirror = if matches!(el.get_bool("LMIRR"), Ok(Some(true))) {
-        -1.0
-    } else {
-        1.0
-    };
-    let (inner, outer) = circular_wall_radii(radius, thickness, travel * mirror);
-    if !(inner >= 0.0 && sweep.abs() > 1e-9) {
+    let section = wall_section(el, thickness, height, notes)?;
+    let (inner, outer) = circular_wall_radii(radius, section.x, travel);
+    let section_height = section.y[1] - section.y[0];
+    if !(inner >= 0.0 && section_height > f64::EPSILON && sweep.abs() > 1e-9) {
         return Err(ModelError::Solid(SolidError::Degenerate {
             what: "WALL circular spine",
             detail: format!(
-                "radius/thickness/sweep = {radius}/{thickness}/{}deg",
+                "radius = {radius}, section x {:?} y {:?}, sweep = {}deg",
+                section.x,
+                section.y,
                 sweep.to_degrees()
             ),
         }));
@@ -1259,8 +1258,9 @@ fn wall_local_solid(el: &DbElement, notes: &mut Vec<String>) -> Result<Manifold,
     let sweep_deg = sweep.to_degrees();
     let sweep_segments = negative_part_rev_segments(outer, sweep_deg);
     let mut torus =
-        rect_torus_solid_with_segments(inner, outer, height, sweep_deg, sweep_segments)?;
-    let local = DMat4::from_translation(DVec3::new(center.x, center.y, height * 0.5))
+        rect_torus_solid_with_segments(inner, outer, section_height, sweep_deg, sweep_segments)?;
+    let mid_height = 0.5 * (section.y[0] + section.y[1]);
+    let local = DMat4::from_translation(DVec3::new(center.x, center.y, mid_height))
         * DMat4::from_rotation_z(a0);
     torus = placed(&torus, local);
 
@@ -1281,12 +1281,7 @@ fn wall_local_solid(el: &DbElement, notes: &mut Vec<String>) -> Result<Manifold,
             _ => DVec3::ZERO,
         }
     };
-    let profile_ring = vec![
-        [0.0, 0.0],
-        [thickness, 0.0],
-        [thickness, height],
-        [0.0, height],
-    ];
+    let profile_ring = section.ring();
     let mut cuts = Vec::new();
     for (label, name, angle, is_start) in [
         ("起点", "DRNS", a0, true),
@@ -1306,8 +1301,8 @@ fn wall_local_solid(el: &DbElement, notes: &mut Vec<String>) -> Result<Manifold,
             ));
             continue;
         };
-        let frame = wall_end_frame(point, angle, travel * mirror);
-        let body_dir = if is_start { mirror } else { -mirror };
+        let frame = wall_end_frame(point, angle, travel);
+        let body_dir = if is_start { 1.0 } else { -1.0 };
         let rings = std::slice::from_ref(&profile_ring);
         let extended = mitre_extension_length(rings, frame, &plane, body_dir);
         if let Some(extension) = mitre_extension_solid(rings, frame, &plane, body_dir)? {
@@ -1343,29 +1338,133 @@ fn wall_local_solid(el: &DbElement, notes: &mut Vec<String>) -> Result<Manifold,
     Ok(torus)
 }
 
-/// 圆弧墙截面的 `(内径, 外径)`。`side` = 扫掠角的符号 ×（`LMIRR` 时 −1）：为正时墙在 spine
-/// 内侧 `[r−厚, r]`，为负时在外侧 `[r, r+厚]`——墙落在行进方向的左手侧（俯视），镜像的墙落在
-/// 右手侧。
-///
-/// 正扫掠是 ams1112 的全部 14 堵；负扫掠是 ams7997 `/1RB-CIVI`、`/1RC-CIVI` 的 24 堵（JUSL=OBOW），
-/// E3D TTY RVM 里它们都比「一律内侧」往外一个墙厚；ams7997 `24381/1597` 是负扫掠、`LMIRR`，又回到
-/// 内侧。墙上 FIXING 的 pline 基同样随行进方向与 `LMIRR` 翻（[`fixing_host_frame`]）。
-fn circular_wall_radii(radius: f64, thickness: f64, side: f64) -> (f64, f64) {
-    if side < 0.0 {
-        (radius, radius + thickness)
-    } else {
-        (radius - thickness, radius)
+/// 圆弧墙的截面范围，在截面系里：x 朝行进方向的左手侧（俯视）、y 朝上，原点在 spine 上。
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct WallSection {
+    x: [f64; 2],
+    y: [f64; 2],
+}
+
+impl WallSection {
+    /// 截面矩形，逆时针（Positive 填充下算实心）。
+    fn ring(&self) -> Vec<[f64; 2]> {
+        let ([x0, x1], [y0, y1]) = (self.x, self.y);
+        vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+    }
+
+    fn mirrored(self) -> Self {
+        Self {
+            x: [-self.x[1], -self.x[0]],
+            y: self.y,
+        }
     }
 }
 
-/// 圆弧墙斜接用的端标架：X 沿墙厚指向截面所在一侧（截面 x ∈ [0, 厚]）、Y 朝上（y ∈ [0, 高]）、
-/// Z = X × Y（右手系）。`side` 与 [`circular_wall_radii`] 同义；不镜像时 Z 就是行进方向，镜像时
-/// 与行进方向相反，调用方的体侧符号要跟着乘 `LMIRR` 的 ±1。
-fn wall_end_frame(point: DVec3, angle: f64, side: f64) -> DMat4 {
+/// 圆弧墙的截面：与 SCTN / GENSEC 同一条截面链（[`evaluate_section_profile`]），SPRE 目录截面
+/// 减去 `JUSL` 那条 p-line 的 `(PX, PY)`，`LMIRR` 时再沿 x 镜像。
+///
+/// 语料里 62 堵圆弧墙的 SPRE 都是 `/Single_leaf_wall` 或 `/Variable_thk_wall`：DESP 参数化的
+/// `[0, 厚] × [0, 高]` 矩形，`NA` 与 `OBOW` 在 x = 0，`IBOW` 在 x = 厚。没有 SPRE、链断或截面求不出
+/// 时按 DESP 矩形、原点对齐（仍认 `LMIRR`），记 note。
+fn wall_section(
+    el: &DbElement,
+    thickness: f64,
+    height: f64,
+    notes: &mut Vec<String>,
+) -> Result<WallSection, ModelError> {
+    let desp_rectangle = WallSection {
+        x: [0.0, thickness],
+        y: [0.0, height],
+    };
+    let fallback = if matches!(el.get_bool("LMIRR"), Ok(Some(true))) {
+        desp_rectangle.mirrored()
+    } else {
+        desp_rectangle
+    };
+    let catalogue = match section_catalogue(el)? {
+        SectionChain::Resolved(catalogue) => catalogue,
+        SectionChain::NoSpre => {
+            notes.push("WALL 无 SPRE：截面按 DESP 矩形、原点对齐".to_string());
+            return Ok(fallback);
+        }
+        SectionChain::Broken { hop, at, why } => {
+            notes.push(format!(
+                "WALL SPRE 链第 {hop} 跳断在 {at}：{why}；截面按 DESP 矩形、原点对齐"
+            ));
+            return Ok(fallback);
+        }
+    };
+    let profile = evaluate_section_profile(el, &catalogue)?;
+    notes.extend(profile.notes.iter().cloned());
+    match wall_section_from_profile(&profile) {
+        Some(section) => {
+            let rectangle = profile.members.len() == 1
+                && profile.members[0].rings.len() == 1
+                && profile.members[0].rings[0].len() == 4;
+            if !rectangle {
+                notes.push(format!(
+                    "WALL 目录截面不是单个四点环（{} 个成员）：按外包矩形 x {:?} y {:?} 扫",
+                    profile.members.len(),
+                    section.x,
+                    section.y
+                ));
+            }
+            Ok(section)
+        }
+        None => {
+            notes.push("WALL 目录截面没有顶点：截面按 DESP 矩形、原点对齐".to_string());
+            Ok(fallback)
+        }
+    }
+}
+
+/// 目录截面的外包矩形，已减 `JUSL` 偏移、已按 `LMIRR` 镜像（点 x → `−(x − jx)`，见
+/// [`crate::section::SectionProfile::mirrored`]）。一个顶点都没有时是 `None`。
+fn wall_section_from_profile(profile: &crate::section::SectionProfile) -> Option<WallSection> {
+    let [jx, jy] = profile.justification;
+    let mut x = [f64::INFINITY, f64::NEG_INFINITY];
+    let mut y = [f64::INFINITY, f64::NEG_INFINITY];
+    for vertex in profile
+        .members
+        .iter()
+        .flat_map(|member| member.rings.iter().flatten())
+    {
+        x = [x[0].min(vertex.x - jx), x[1].max(vertex.x - jx)];
+        y = [y[0].min(vertex.y - jy), y[1].max(vertex.y - jy)];
+    }
+    if !(x[0] <= x[1] && y[0] <= y[1]) {
+        return None;
+    }
+    let section = WallSection { x, y };
+    Some(if profile.mirrored {
+        section.mirrored()
+    } else {
+        section
+    })
+}
+
+/// 圆弧墙的 `(内径, 外径)`。截面 x 朝行进方向的左手侧：逆时针扫掠左手是圆心那侧，
+/// `[r − x₁, r − x₀]`；顺时针是外侧，`[r + x₀, r + x₁]`。
+///
+/// E3D TTY RVM 对拍过的四种组合：ams1112 的 14 堵逆时针 `NA`（内侧）；ams7997 `/1RB-CIVI`、
+/// `/1RC-CIVI` 的 24 堵顺时针 `OBOW`（外侧）；`24381/1597` 顺时针 `NA` + `LMIRR`（内侧）；
+/// `/1SL-WF01-W` 的 `24381/31100`、`24381/31106` 逆时针 `IBOW`（外侧 [28100, 28900]）。墙上 FIXING
+/// 的 pline 基另有一套随行进方向与 `LMIRR` 的翻法（[`fixing_host_frame`]）。
+fn circular_wall_radii(radius: f64, x: [f64; 2], travel: f64) -> (f64, f64) {
+    if travel < 0.0 {
+        (radius + x[0], radius + x[1])
+    } else {
+        (radius - x[1], radius - x[0])
+    }
+}
+
+/// 圆弧墙斜接用的端标架，就是该端的截面系：X 朝行进方向的左手侧、Y 朝上、Z 沿行进方向，
+/// 右手系；体在起点端沿 +Z、终点端沿 −Z。`travel` 是扫掠角的符号。
+fn wall_end_frame(point: DVec3, angle: f64, travel: f64) -> DMat4 {
     let radial = DVec3::new(angle.cos(), angle.sin(), 0.0);
     let ccw = DVec3::new(-angle.sin(), angle.cos(), 0.0);
     DMat4::from_translation(point)
-        * DMat4::from_mat3(DMat3::from_cols(-radial * side, DVec3::Z, ccw * side))
+        * DMat4::from_mat3(DMat3::from_cols(-radial * travel, DVec3::Z, ccw * travel))
 }
 
 fn circular_spine_geometry(points: &[DVec3]) -> Result<(DVec3, f64, f64, f64), ModelError> {
@@ -3960,7 +4059,7 @@ mod tests {
     ) -> (Manifold, Manifold, f64) {
         let radius = (outer_start - center).length();
         let a0 = (outer_start.y - center.y).atan2(outer_start.x - center.x);
-        let (inner, outer) = circular_wall_radii(radius, thickness, sweep);
+        let (inner, outer) = circular_wall_radii(radius, [0.0, thickness], sweep.signum());
         let sweep_deg = sweep.to_degrees();
         let segments = negative_part_rev_segments(outer, sweep_deg);
         let torus = rect_torus_solid_with_segments(inner, outer, height, sweep_deg, segments)
@@ -4050,20 +4149,29 @@ mod tests {
         assert!(mitred.volume() < plain.volume());
     }
 
-    /// 负扫掠圆弧墙落在 spine 外侧：ams7997 `/1RB-WF05-W-C-RR001` WALL 1（`24381/44295`，spine 半径
-    /// 26500、顺时针 90°、墙厚 1500、JUSL=OBOW）在 E3D TTY RVM 里是 [26500, 28000]，不是 [25000, 26500]。
-    /// 端标架同样翻到外侧，仍是右手系。`LMIRR` 再翻一次：ams7997 `24381/1597`（spine 半径
-    /// 8599.94、顺时针、墙厚 600、`LMIRR` true）在 E3D TTY RVM 里是 [7999.94, 8599.94]。
+    /// 截面 x 朝行进方向的左手侧：ams7997 `/1RB-WF05-W-C-RR001` WALL 1（`24381/44295`，spine 半径
+    /// 26500、顺时针 90°、墙厚 1500、JUSL=OBOW）在 E3D TTY RVM 里是 [26500, 28000]，不是 [25000, 26500]；
+    /// 端标架 X 跟着朝外，仍是右手系。镜像或 `IBOW` 的截面落在 x ≤ 0：`24381/1597`（R 8599.94、顺时针、
+    /// 墙厚 600、`LMIRR`）是 [7999.94, 8599.94]，`24381/31100`（R 28100、逆时针、墙厚 800、`IBOW`）是
+    /// [28100, 28900]。
     #[test]
     fn a_clockwise_wall_sits_outside_its_spine() {
         let sweep = -std::f64::consts::FRAC_PI_2;
         assert_eq!(
-            circular_wall_radii(26500.0, 1500.0, sweep),
+            circular_wall_radii(26500.0, [0.0, 1500.0], sweep.signum()),
             (26500.0, 28000.0)
         );
         assert_eq!(
-            circular_wall_radii(26500.0, 1500.0, -sweep),
+            circular_wall_radii(26500.0, [0.0, 1500.0], -sweep.signum()),
             (25000.0, 26500.0)
+        );
+        assert_eq!(
+            circular_wall_radii(8599.94, [-600.0, 0.0], -1.0),
+            (8599.94 - 600.0, 8599.94)
+        );
+        assert_eq!(
+            circular_wall_radii(28100.0, [-800.0, 0.0], 1.0),
+            (28100.0, 28900.0)
         );
         let frame = wall_end_frame(DVec3::new(26500.0, 0.0, 0.0), 0.0, sweep.signum());
         let (x, y, z) = (
@@ -4077,24 +4185,47 @@ mod tests {
             "Z 沿行进方向（顺时针在 0° 处朝 −Y）：{z:?}"
         );
         assert!((x.cross(y) - z).length() < 1e-12, "右手系");
+    }
 
-        let mirrored = sweep.signum() * -1.0;
-        assert_eq!(
-            circular_wall_radii(8599.94, 600.0, mirrored),
-            (8599.94 - 600.0, 8599.94)
-        );
-        let frame = wall_end_frame(DVec3::new(8599.94, 0.0, 0.0), 0.0, mirrored);
-        let (x, y, z) = (
-            frame.x_axis.truncate(),
-            frame.y_axis.truncate(),
-            frame.z_axis.truncate(),
-        );
-        assert!((x - DVec3::NEG_X).length() < 1e-12, "镜像后截面朝内：{x:?}");
-        assert!(
-            (z - DVec3::Y).length() < 1e-12,
-            "镜像后 Z 逆着行进方向：{z:?}"
-        );
-        assert!((x.cross(y) - z).length() < 1e-12, "镜像后仍是右手系");
+    /// 目录截面 → 圆弧墙截面：减 JUSL 线、`LMIRR` 沿 x 镜像。`/Single_leaf_wall` 的 `NA` / `OBOW` 在
+    /// (0, 0)、`IBOW` 在 (厚, 0)（目录截面探针对 ams1112 / ams7997 全部 62 堵墙的读数）。
+    #[test]
+    fn wall_section_follows_the_jusl_line_and_lmirr() {
+        let ring = [[0.0, 0.0], [800.0, 0.0], [800.0, 2400.0], [0.0, 2400.0]]
+            .into_iter()
+            .map(|[x, y]| crate::discretise::FilletVertex { x, y, frad: 0.0 })
+            .collect::<Vec<_>>();
+        let section = |justification: [f64; 2], mirrored: bool| {
+            let profile = crate::section::SectionProfile {
+                members: vec![crate::section::SectionMember {
+                    source: crate::section::SectionSource::Spro { vertices: 4 },
+                    member_refno: "0/0".into(),
+                    rings: vec![ring.clone()],
+                }],
+                justification,
+                justification_line: String::new(),
+                justification_found: true,
+                neutral_axis_spin: 0.0,
+                level: 0,
+                mirrored,
+                notes: Vec::new(),
+            };
+            wall_section_from_profile(&profile).expect("vertices")
+        };
+        let height = [0.0, 2400.0];
+        assert_eq!(section([0.0, 0.0], false).x, [0.0, 800.0]);
+        assert_eq!(section([800.0, 0.0], false).x, [-800.0, 0.0]);
+        assert_eq!(section([0.0, 0.0], true).x, [-800.0, 0.0]);
+        assert_eq!(section([800.0, 0.0], true).x, [0.0, 800.0]);
+        assert_eq!(section([800.0, 0.0], true).y, height);
+        let ring = section([800.0, 0.0], false).ring();
+        let twice_area: f64 = (0..ring.len())
+            .map(|i| {
+                let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+                a[0] * b[1] - b[0] * a[1]
+            })
+            .sum();
+        assert!(twice_area > 0.0, "逆时针：{ring:?}");
     }
 
     /// JLDATU 站位：弧内按弧长走、沿墙向取该点切向（WF05 RR001 `/1RS05CC0013T`，`ZDIS` 3000，

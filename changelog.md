@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-21 圆弧墙截面走 SPRE 目录截面 + JUSL（ams7997 E3D TTY 实证）
+
+- `elmodl::wall_section`：圆弧墙的截面与 SCTN / GENSEC 同一条截面链——SPRE 目录截面减去 `JUSL` 那条
+  p-line，`LMIRR` 时沿 x 镜像；`circular_wall_radii` 按截面 x 范围（朝行进方向左手侧）给内外径，斜接
+  端标架就是截面系，替掉上一条的「扫掠符号 × LMIRR」口径。语料 62 堵圆弧墙的 SPRE 都是 DESP
+  参数化的矩形：`NA` / `OBOW` 在 x = 0，`IBOW` 在 x = 厚。
+- ams7997 `/1SL-WF01-W` 的两堵逆时针 `IBOW` 墙（`24381/31100`、`24381/31106`）原先放在 spine 内侧，
+  差 736 / 752 mm，现在在外侧 [28100, 28900]；ams1112、ams7997 其余各站逐件不变。
+- 对拍范围扩到 `/SSC测试` 里混着 HVAC 的三个区：只导土建 STRU，每个 STRU 一份 RVM（12 份、
+  3679 件），exact 3678，余 `/1LR-WF05-S-C` FLOOR 6 一件另案。
+
 ## 2026-10-21 圆弧墙 LMIRR 翻侧 + 扫掠段数取截面外径（ams7997 E3D TTY 实证）
 
 - `elmodl::circular_wall_radii` / `wall_end_frame` 改收 `side` = 扫掠角符号 ×（`LMIRR` 时 −1）：镜像的墙落在
