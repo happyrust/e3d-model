@@ -631,7 +631,7 @@ pub fn model_element_with_cache(
                 if let Some(reason) = sbfitting_no_shape_reason(&error) {
                     // 嵌套在 `CMFI` 下的 `SBFI` 没有 DESP 时并非无件可出：原生 RVM
                     // 里的 `SBFITTING` 组就是 `SPRE→SFIT` 的目录求值结果（aps7200
-                    // `23584/8625`/`8629`，与 `FITT` 同一块带孔平板、平放标架）。
+                    // `23584/8625`/`8629`，与 `FITT` 同一块带孔平板）。
                     // 沿 `builds_from_catalogue_component` 那条臂求值，标架走
                     // `transform::ImplicitFrame::SubFitting`。
                     if el.get_element("SPRE")?.is_some() {

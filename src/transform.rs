@@ -114,16 +114,9 @@ enum ImplicitFrame {
     /// 属性面（POSL / ZDIS / DELP / BANG）相同。
     SectionFitting(DbElement),
     /// `CMFI` 名下的 `SBFI`：嵌套背板配件，原点沿用母件原点，成员自己的 POS/ORI 一样不读。
-    /// 旋转按母件的宿主分两条（`on_stwall`）：
-    ///
-    /// - STWALL 上的母件：[`sub_fitting_rotation`]——Z 取 `ZDIR`（母件系里的分量）、Y 取母件 Y
-    ///   去掉沿 Z 的分量、再绕 Z 转 `BANG`（ams1112 `17496/136127`、`17496/140426` 与 E3D TTY 的
-    ///   `ORI WRT WORLD` 逐轴对上）。
-    /// - SCTN 上的母件：y 取安装线（母件 Y）的水平投影、z 取世界竖直——原生 RVM 里 `SBFITTING`
-    ///   记录与母件 `FITTING` 同原点但平放（aps7200 `23584/8625`、`23584/8629` 逐列对上）。那两只
-    ///   `BANG = 0`、`ZDIR = (0, 0.656, 0.755)`：若 E3D 的母件标架是我们的绕 Y 转 90°，这条就是
-    ///   上一条的特例；没有 APS 的 TTY 真值前不合并。
-    SubFitting { cmfi: DbElement, on_stwall: bool },
+    /// 旋转见 [`sub_fitting_rotation`]（Z 取 `ZDIR`、Y 取母件 Y 去掉沿 Z 的分量、再绕 Z 转 `BANG`），
+    /// 母件在 STWALL 上还是 SCTN 上都是这一条。
+    SubFitting { cmfi: DbElement },
     /// SCTN 名下的 `SNOD`：结构节点，`ZDIS` 是沿梁轴（POSS→POSE）的距离。
     /// `world(属主 SCTN) * section_axis_frame(属主) * T(0,0,ZDIS)`——SCTN 自己没有 POS/ORI，
     /// 轴架现算（`section_axis_frame`，不含中性轴自旋：绕 Z 转不动沿 Z 的度量）。
@@ -153,18 +146,10 @@ fn implicit_frame(el: &DbElement) -> Result<Option<ImplicitFrame>, DbElementErro
         },
         "SBFI" => match el.owner()? {
             Some(cmfi) if cmfi.element_type()?.as_str() == "CMFI" => match cmfi.owner()? {
-                Some(host) => match host.element_type()?.as_str() {
-                    "SCTN" => Ok(Some(ImplicitFrame::SubFitting {
-                        cmfi,
-                        on_stwall: false,
-                    })),
-                    "STWALL" => Ok(Some(ImplicitFrame::SubFitting {
-                        cmfi,
-                        on_stwall: true,
-                    })),
-                    _ => Ok(None),
-                },
-                None => Ok(None),
+                Some(host) if matches!(host.element_type()?.as_str(), "SCTN" | "STWALL") => {
+                    Ok(Some(ImplicitFrame::SubFitting { cmfi }))
+                }
+                _ => Ok(None),
             },
             _ => Ok(None),
         },
@@ -198,34 +183,21 @@ fn implicit_world(el: &DbElement) -> Result<Option<DMat4>, DbElementError> {
                 })?;
             Ok(Some(world_matrix(&host)? * placement))
         }
-        ImplicitFrame::SubFitting { cmfi, on_stwall } => {
+        ImplicitFrame::SubFitting { cmfi } => {
             let parent = world_matrix(&cmfi)?;
             let origin = parent.transform_point3(DVec3::ZERO);
-            if on_stwall {
-                let zdir = el.get_direction("ZDIR")?.unwrap_or([0.0, 0.0, 1.0]);
-                let bang = el.get_double("BANG")?.unwrap_or(0.0);
-                return Ok(Some(match sub_fitting_rotation(&parent, zdir, bang) {
-                    Some(rotation) => DMat4::from_cols(
-                        rotation.x_axis.extend(0.0),
-                        rotation.y_axis.extend(0.0),
-                        rotation.z_axis.extend(0.0),
-                        origin.extend(1.0),
-                    ),
-                    // ZDIR 退化或与母件 Y 共线，投不出参考向：沿母件标架。
-                    None => parent,
-                }));
-            }
-            let line = parent.transform_vector3(DVec3::Y).normalize_or_zero();
-            let flat = (line - DVec3::Z * line.z).normalize_or_zero();
-            if flat.length_squared() <= f64::EPSILON {
-                // 安装线竖直时投不出水平向，沿母件标架。
-                return Ok(Some(parent));
-            }
-            let rotation = DMat3::from_cols(flat.cross(DVec3::Z), flat, DVec3::Z);
-            Ok(Some(DMat4::from_rotation_translation(
-                glam::DQuat::from_mat3(&rotation),
-                origin,
-            )))
+            let zdir = el.get_direction("ZDIR")?.unwrap_or([0.0, 0.0, 1.0]);
+            let bang = el.get_double("BANG")?.unwrap_or(0.0);
+            Ok(Some(match sub_fitting_rotation(&parent, zdir, bang) {
+                Some(rotation) => DMat4::from_cols(
+                    rotation.x_axis.extend(0.0),
+                    rotation.y_axis.extend(0.0),
+                    rotation.z_axis.extend(0.0),
+                    origin.extend(1.0),
+                ),
+                // ZDIR 退化或与母件 Y 共线，投不出参考向：沿母件标架。
+                None => parent,
+            }))
         }
         ImplicitFrame::SectionNode(host) => {
             let frame = crate::section::section_axis_frame(&host).map_err(|error| {
@@ -240,15 +212,20 @@ fn implicit_world(el: &DbElement) -> Result<Option<DMat4>, DbElementError> {
     }
 }
 
-/// STWALL 上 CMFI 名下 SBFI 的旋转（[`ImplicitFrame::SubFitting`]）：
+/// CMFI 名下 SBFI 的旋转（[`ImplicitFrame::SubFitting`]）：
 ///
 /// - `Z` = 母件旋转 × `ZDIR`——`ZDIR` 就是 SBFI 的 Z 轴在母件系里的分量（原样，不翻 y）；
 /// - `Y₀` = 母件 Y 去掉沿 Z 的分量后归一，`X₀ = Y₀ × Z`；
 /// - 绕 Z 转 `BANG`：`X = X₀·cos + Y₀·sin`，`Y = Y₀·cos − X₀·sin`。
 ///
-/// E3D TTY 真值（gen-model `verification/civil-tty-20261021/sbfi_truth.psv`）：ams1112 `17496/136127`
-/// （`BANG = 90`）与 `17496/140426`（`BANG = 180`）逐轴对上；同一条规则套在 CMPF 名下的
-/// `17496/137956`（`BANG = 0`，用 E3D 自己的母件标架）也对上。`ZDIR` 退化或与母件 Y 共线时 `None`。
+/// E3D TTY 真值（gen-model `verification/civil-tty-20261021/`）：
+/// - 母件在 STWALL 上（`sbfi_truth.psv`）：ams1112 `17496/136127`（`BANG = 90`）与 `17496/140426`
+///   （`BANG = 180`）逐轴对上；同一条规则套在 CMPF 名下的 `17496/137956`（`BANG = 0`）也对上。
+/// - 母件在 SCTN 上（APS 项目副本，`aps7200_sbfi_truth.psv` / `aps7200_cmfi_truth.psv`）：aps7200
+///   `23584/8625`、`23584/8629`（楼梯底板，`BANG = 0`）。E3D 的 Z 带 2.05e-6 的倾角，正是 `ZDIR` 存值
+///   经母件旋转后的余量——此前按 RVM 拟合的「安装线水平投影 + 世界竖直」在这里只是近似。
+///
+/// `ZDIR` 退化或与母件 Y 共线时 `None`。
 fn sub_fitting_rotation(parent: &DMat4, zdir: [f64; 3], bang_deg: f64) -> Option<DMat3> {
     let z = parent
         .transform_vector3(DVec3::from_array(zdir))
@@ -739,6 +716,34 @@ mod tests {
             sub_fitting_rotation(&parent, [0.0, 1.0, 0.0], 0.0).is_none(),
             "ZDIR 沿母件 Y 时投不出参考向"
         );
+    }
+
+    /// 母件在 SCTN 上：aps7200 `23584/8625` 的母件 `23584/8624` 取 E3D TTY 的 `ORI WRT WORLD`，结果对 SBFI
+    /// 自己的 TTY 真值到 1e-8——连 Z 那 2.05e-6 的倾角也对上（拿世界竖直当 Z 对不上这一位）。
+    #[test]
+    fn sub_fitting_rotation_matches_tty_on_sctn() {
+        let parent = DMat4::from_cols(
+            DVec3::new(-1.0, 0.0, 0.0).extend(0.0),
+            DVec3::new(0.0, -0.754593720, 0.656192287).extend(0.0),
+            DVec3::new(0.0, 0.656192287, 0.754593720).extend(0.0),
+            DVec3::new(12860.5, 10000.0, 1000.0).extend(1.0),
+        );
+        let zdir = [0.0, 0.6561907406682005, 0.7545950648270359];
+        let rotation = sub_fitting_rotation(&parent, zdir, 0.0).expect("ZDIR 不退化");
+        let axes = [
+            [-1.0, 0.0, 0.0],
+            [0.0, -1.0, 0.000002049],
+            [0.0, 0.000002049, 1.0],
+        ];
+        for (got, want) in [rotation.x_axis, rotation.y_axis, rotation.z_axis]
+            .into_iter()
+            .zip(axes)
+        {
+            assert!(
+                (got - DVec3::from_array(want)).length() < 1e-8,
+                "{got:?} != {want:?}"
+            );
+        }
     }
 
     /// 「不在子树里」报出来要指向关系，不能把人引到索引上去。

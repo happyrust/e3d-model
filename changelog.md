@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-21 SBFI 标架合成一条：SCTN 上的 CMFI 名下也按 ZDIR / BANG（aps7200 E3D TTY 实证）
+
+- `transform::ImplicitFrame::SubFitting`：母件 CMFI 在 SCTN 上的 SBFI 不再走「安装线水平投影 + 世界竖直」，
+  与 STWALL 上的同用 `sub_fitting_rotation`（Z = 母件旋转 × `ZDIR`、Y = 母件 Y 去掉沿 Z 的分量、再绕 Z 转
+  `BANG`）。
+- 真值取自 APS 项目副本（10-19 已把 aps7200 挂进 `/ALL`，`run_copy_tty.ps1` 只读宏）：aps7200
+  `23584/8625`、`23584/8629`（楼梯底板）的 `POS/ORI WRT WORLD`，母件 `23584/8624`、`23584/8628` 也一并取了。
+  E3D 的 Z 带 2.05e-6 的倾角，正是 `ZDIR` 存值经母件旋转后的余量；旧规则差 2.05e-6，现在 2e-10。
+- 语料里 CMFI 在 SCTN 上的 SBFI 只有这两只（APS 6 只 SBFI、AMS 156 只普查）；土建对拍逐件不变。
+- 单测 `sub_fitting_rotation_matches_tty_on_sctn`（到 1e-8）。
+
 ## 2026-10-21 零长度 SPINE 上的 PLDATU 照 GPLDAT 出标架（ams7330 E3D TTY 实证）
 
 - `datum::solve`：GENSEC 的 SPINE 长度为 0 时（两只 POINSP 重合），E3D 求不出站位——TTY 对 JLDATU 报
