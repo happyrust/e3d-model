@@ -106,7 +106,7 @@ pub fn world_matrix(el: &DbElement) -> Result<DMat4, DbElementError> {
 
 /// 标架由属主现算、不读自己 POS/ORI 的元素。
 enum ImplicitFrame {
-    /// GENSEC 名下的 `JLDATU` / `PLDATU`（[`crate::datum`]）。
+    /// GENSEC 名下的 `JLDATU` / `PLDATU` / `ENDATU`（[`crate::datum`]）。
     GensecDatum,
     /// SCTN / STWALL 名下的 `FITT` / `CMFI`：`world(属主) * section_fitting_placement(属主, 件)`，
     /// 与 SCTN builder 装配件用的是同一份标架（E3D TTY 真值：SCTN 名下 521 只、STWALL 名下
@@ -136,7 +136,7 @@ enum ImplicitFrame {
 fn implicit_frame(el: &DbElement) -> Result<Option<ImplicitFrame>, DbElementError> {
     let noun = el.element_type()?;
     match noun.as_str() {
-        "JLDATU" | "PLDATU" => Ok(crate::datum::is_gensec_datum(el)
+        "JLDATU" | "PLDATU" | "ENDATU" => Ok(crate::datum::is_gensec_datum(el)
             .map_err(|error| pseudo_attribute(el, &noun, error))?
             .then_some(ImplicitFrame::GensecDatum)),
         "FITT" | "CMFI" => match el.owner()? {

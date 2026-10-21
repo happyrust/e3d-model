@@ -991,16 +991,16 @@ const CABLE_TRAY_BRANCH_NOUN: &str = "CWBRAN";
 
 /// 候选（含自身）是某个现算标架的输入时，那个标架的宿主：
 ///
-/// - 名下有 `JLDATU` 的 GENSEC（[`crate::datum`]）：宿主自己（JUSL/BANG/LMIRR/SPRE）、
+/// - 名下有 `JLDATU` 或 `ENDATU` 的 GENSEC（[`crate::datum`]）：宿主自己（JUSL/BANG/LMIRR/SPRE）、
 ///   它的 SPINE 路径（SPINE 的 POS/ORI/YDIR，POINSP，CURVE），以及 datum 自己（JLDATU 的
-///   ZDIS/PKDI/HPREF、PLDATU 的 POSL/YDIR）；
+///   ZDIS/PKDI/HPREF、PLDATU 的 POSL/YDIR、ENDATU 的 ZDIS/POSL）；
 /// - 名下有 `FITT` 的 SCTN / STWALL（`section::section_fitting_placement`）：宿主自己
 ///   （POSS/POSE/BANG/JUSL/SPRE），以及 FITT 自己（POSL/ZDIS/BANG/DELP）；
 /// - 带详图式立柱的 HANDRA（`transform::handrail_post_world`，名下有 POSTSE / HRFEAT，或 RAILSE 里
 ///   有 HRTERM）：它的 RPATH 路径（POINTR / CURVE 的 POS、CURVE 的 CURTYP），以及立柱 HRPOST / HRTERM /
 ///   HRGATE 自己（POSREF / ZDIS / HRJUSL / SPRE / WIDT）；
 /// - 名下有 `JLDATU` 的 WALL（`elmodl::fixing_host_frame`，gen-model issue #37）：宿主自己（`DESP[0]` 墙高
-///   → IBOW 站位），它的 SPINE 路径（POINSP / CURVE 的 POS），以及 datum 自己（JLDATU 的
+///   → IBOW 站位，`LMIRR` → pline 基镜像），它的 SPINE 路径（POINSP / CURVE 的 POS），以及 datum 自己（JLDATU 的
 ///   ZDIS、PLDATU）。墙 datum 下的 FIXING 自成单元，实例标架与开孔刀都由它现算，这些输入全在 FIXING 单元之上。
 ///
 /// 从候选上溯只许穿过上面这些 noun；起点在这一端不存在也是 `None`。
@@ -1055,10 +1055,12 @@ fn implicit_frame_host_of(set: &Arc<DbSet>, refno: RefNo) -> Result<Option<RefNo
     for _ in 0..3 {
         match current.element_type()?.as_str() {
             // WALL 与 GENSEC 同型：datum（JLDATU → PLDATU）挂在宿主名下，FIXING 的标架沿宿主 spine 现算。
-            "GENSEC" | "WALL" => return owns(&current, "JLDATU"),
+            // GENSEC 的端部 datum（ENDATU）不经 JLDATU，直接挂在宿主名下、同一条 spine 现算。
+            "GENSEC" => return Ok(owns(&current, "JLDATU")?.or(owns(&current, "ENDATU")?)),
+            "WALL" => return owns(&current, "JLDATU"),
             "SCTN" | "STWALL" => return owns(&current, "FITT"),
             "HANDRA" => return detailed_handrail(&current),
-            "SPINE" | "POINSP" | "CURVE" | "JLDATU" | "PLDATU" | "FITT" => {}
+            "SPINE" | "POINSP" | "CURVE" | "JLDATU" | "PLDATU" | "ENDATU" | "FITT" => {}
             "RPATH" | "POINTR" | "POSTSE" | "RAILSE" | "HRFEAT" | "HRPOST" | "HRTERM"
             | "HRGATE" => {}
             _ => return Ok(None),

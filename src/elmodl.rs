@@ -1461,6 +1461,15 @@ pub(crate) fn fixing_host_frame(wall: &DbElement, fixing: &DbElement) -> Result<
     // `Single_leaf_wall` 拿回来的是名义参数 10000，站位被推出 10 m；ams1112
     // 当年能对上只是因为它的 `Variable_thk_wall` 没有 `PARA`、厚度回落成 0。
     let travel = if sweep < 0.0 { -1.0 } else { 1.0 };
+    // LMIRR 墙（ams7997 `=24381/1597`，CWALL `/1RS-WF02-W-C-R2407`）：型材镜像后 PLDATU 绕沿墙轴
+    // 转 180°——x、z 两列取负，y 列与原点不动。E3D TTY `ORI WRT WORLD`：镜像墙的 PLDATU
+    // 在 JLDATU 系里是 (+J.Y, J.Z, +J.X)，正常墙是 (−J.Y, J.Z, −J.X)；不翻时这堵墙上的
+    // FIXING 竖向按 POS.x 翻号、水平镜像（偏 1.2–3 m）。
+    let mirror = if matches!(wall.get_bool("LMIRR"), Ok(Some(true))) {
+        -1.0
+    } else {
+        1.0
+    };
     let joint = wall_joint_frame(curve_center, radius, a0, sweep, zdis);
     // PLDATU POSL=OBOW is E3D's implicit wall pline: PLAX=-X. With
     // YDIR=+Z, cal_ori_by_ydir gives columns (-Y,+Z,-X).
@@ -1511,9 +1520,9 @@ pub(crate) fn fixing_host_frame(wall: &DbElement, fixing: &DbElement) -> Result<
     };
     let pldatum = DMat4::from_translation(DVec3::new(0.0, ibow_z, 0.0))
         * DMat4::from_cols(
-            DVec3::NEG_Y.extend(0.0),
+            (DVec3::NEG_Y * mirror).extend(0.0),
             (DVec3::Z * travel).extend(0.0),
-            (DVec3::NEG_X * travel).extend(0.0),
+            (DVec3::NEG_X * (travel * mirror)).extend(0.0),
             DVec3::ZERO.extend(1.0),
         );
     Ok(world_matrix(wall)? * joint * pldatum)

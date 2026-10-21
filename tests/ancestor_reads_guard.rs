@@ -115,13 +115,14 @@ const OWNER_WALK_SITES: &[Site] = &[
         file: "elmodl.rs",
         func: "fixing_host_frame",
         climb: Climb::AboveUnit,
-        reads: &["DESP", "OWNER", "ZDIS"],
+        reads: &["DESP", "LMIRR", "OWNER", "ZDIS"],
         why: "FIXING 自成模型单元（category::is_model_unit），它的实例标架却读 owner²=JLDATU 的 ZDIS（OWNER 是报错文案里的名字），再经 \
-              wall_spine_points / world_matrix 读宿主 WALL，09-28 起还读宿主 WALL 的 DESP[0]（墙高 → IBOW 站位）——都在 FIXING 单元之上；\
+              wall_spine_points / world_matrix 读宿主 WALL，09-28 起还读宿主 WALL 的 DESP[0]（墙高 → IBOW 站位），\
+              10-21 起读宿主 WALL 的 LMIRR（型材镜像 → pline 基 x/z 列取负）——都在 FIXING 单元之上；\
               FIXING 自己的 DESP（门洞高宽）是同一个字面量，在单元内。整棵子树重算的根口径下 \
               （JLDATU 改了 → 祖先闭包命中 WALL 所在的 STRU / FRMW / SBFR 根 → 整棵重算）FIXING 跟着重生成；\
               ADR-080 单元级发布只重建 plan_update 点名的单元，FIXING 不在 JLDATU 的子树里，靠 \
-              increment::implicit_frame_host_of 的 WALL 支覆盖——墙自己（DESP / SPRE）、它的 SPINE 点、JLDATU / PLDATU \
+              increment::implicit_frame_host_of 的 WALL 支覆盖——墙自己（DESP / LMIRR / SPRE）、它的 SPINE 点、JLDATU / PLDATU \
               任一改了，就把整棵 WALL 子树级联进计划，与 point_on_host 那条同型（gen-model issue #39 / #37），单元规划已经补上。\
               墙型材换版（目录那一侧）走目录版本核对的级联",
     },
@@ -195,15 +196,15 @@ const OWNER_WALK_SITES: &[Site] = &[
         climb: Climb::NounOnly,
         reads: &[],
         why: "判一个元素的标架是不是由属主现算：FITT 取 owner 只核 noun 是不是 SCTN / STWALL；拿到的宿主交给 \
-              section_fitting_placement 读（见 ANCESTOR_CONSUMERS）。JLDATU / PLDATU 那支转给 datum::host_and_joint",
+              section_fitting_placement 读（见 ANCESTOR_CONSUMERS）。JLDATU / PLDATU / ENDATU 那支转给 datum::host_and_joint",
     },
     Site {
         file: "datum.rs",
         func: "host_and_joint",
         climb: Climb::NounOnly,
         reads: &[],
-        why: "PLDATU → JLDATU → GENSEC 连取 owner，只核 noun；拿到的宿主 GENSEC 与 JLDATU 交给 datum::solve 读\
-              （见 ANCESTOR_CONSUMERS）",
+        why: "PLDATU → JLDATU → GENSEC 连取 owner（ENDATU 直接取一跳到 GENSEC），只核 noun；拿到的宿主 GENSEC 与\
+              站位元素（JLDATU / ENDATU）交给 datum::solve 读（见 ANCESTOR_CONSUMERS）",
     },
     Site {
         file: "datum.rs",
@@ -286,12 +287,21 @@ const ANCESTOR_CONSUMERS: &[(&str, &str, &[&str], &str)] = &[
         &[
             "BANG", "HPREF", "JUSL", "LMIRR", "PKDI", "POSL", "YDIR", "ZDIS",
         ],
-        "GENSEC 名下 JLDATU / PLDATU 的现算标架：读 datum 自己（PLDATU 的 POSL / YDIR）、它的 JLDATU（ZDIS / PKDI / \
-         HPREF）与宿主 GENSEC（BANG / LMIRR / JUSL，SPRE 经 section_catalogue、SPINE 经 spine_path）。读者是 datum 下的 \
+        "GENSEC 名下 JLDATU / PLDATU / ENDATU 的现算标架：读 datum 自己（PLDATU / ENDATU 的 POSL / YDIR）、它的站位元素\
+         （JLDATU 的 ZDIS / PKDI / HPREF，ENDATU 的 ZDIS / PKDI）与宿主 GENSEC（BANG / LMIRR / JUSL，SPRE 经 section_catalogue、\
+         SPINE 经 spine_path）。读者是 datum 下的 \
          FIXING 与 TMPL 件，这些都在它们的单元之上：根口径下整棵重算覆盖；单元级规划由 increment::implicit_frame_host_of \
          把整棵 GENSEC 子树级联进计划覆盖（datum 输入改了、宿主 GENSEC 或 SPINE 路径改了都命中）。经 JOIS / JOIE 取这些 \
          TMPL 负体扣端头的梁（elmodl::collect_joint_negatives）不在宿主子树里，由 increment::joint_consumer_of 跟着 \
          FIXING 一起进计划",
+    ),
+    (
+        "datum.rs",
+        "endatu_at_end",
+        &["HANICP"],
+        "ENDATU 挂在 SPINE 哪一头：读 ENDATU 自己的 HANICP，与宿主 GENSEC 的 spine_path 两端比远近。ENDATU 是名下 FIXING / TMPL \
+         件的属主，在它们的单元之上：根口径下整棵重算覆盖；单元级规划由 increment::implicit_frame_host_of 的 GENSEC 支\
+         （名下有 ENDATU，且允许穿过 ENDATU 上溯）把整棵 GENSEC 子树级联进计划，与 solve 那条同型",
     ),
     (
         "section.rs",

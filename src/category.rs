@@ -435,8 +435,8 @@ pub fn classify(noun: &str) -> Category {
         | "POGO" | "POLOOP" | "LOOPTS" => ProfileData,
 
         // ---- 无三维表示 ----
-        "JLDATU" | "PLDATU" | "POINSP" | "PJOI" | "SJOI" | "PALJ" | "SELJ" | "SCOJ" | "SUBJ"
-        | "SEVE" | "APPDAR" | "APPLDA" | "APPLDW" => NonGraphic,
+        "JLDATU" | "PLDATU" | "ENDATU" | "POINSP" | "PJOI" | "SJOI" | "PALJ" | "SELJ" | "SCOJ"
+        | "SUBJ" | "SEVE" | "APPDAR" | "APPLDA" | "APPLDW" => NonGraphic,
 
         // PNOD / SNOD：判对了，理由记在这里免得下一个人再翻一遍反编译。
         //

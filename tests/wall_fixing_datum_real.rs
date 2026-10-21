@@ -249,3 +249,62 @@ fn obow_negative_sweep_wall_fixings_sit_where_e3d_puts_them() {
         }
     }
 }
+
+/// LMIRR 墙族：ams7997 `=24381/1597`（CWALL `/1RS-WF02-W-C-R2407`，`LMIRR=true`）名下两只穿墙套管
+/// FIXING——真值是 E3D TTY 只读宏逐件打出的 `POS/ORI WRT WORLD`（gen-model
+/// `verification/fixing-tty-20261021/frames_dbg_truth.psv`）。
+///
+/// 镜像墙的 PLDATU 在 JLDATU 系里是 (+J.Y, J.Z, +J.X)，即绕沿墙轴转了 180°。修前这两只竖向按
+/// `POS.x` 翻号、水平镜像，偏 1.2–3 m、三轴反向。
+#[test]
+fn obow_mirrored_wall_fixings_sit_where_e3d_puts_them() {
+    if !fixtures_present_for(&[DESIGN_DB_7997]) {
+        return;
+    }
+    let set = ams_set_db(DESIGN_DB_7997);
+    // (w1, E3D 平移, E3D X 列, Y 列, Z 列, 说明)
+    let cases: [(u32, [f64; 3], [f64; 3], [f64; 3], [f64; 3], &str); 2] = [
+        (
+            1600,
+            [-2927.7162, 9652.6324, 2620.0],
+            [-0.93667308, -0.350205, 0.0],
+            [0.0, 0.0, 1.0],
+            [-0.350205, 0.93667308, 0.0],
+            "JLDATUM /1RS02CC0008T（ZDIS 600）",
+        ),
+        (
+            1609,
+            [-5031.6354, 8413.2596, 1700.0],
+            [0.0, 0.0, -1.0],
+            [-0.798636877, -0.601813209, 0.0],
+            [-0.601813209, 0.798636877, 0.0],
+            "JLDATUM /1RS02LL0024T（ZDIS 1520，X 列朝下）",
+        ),
+    ];
+    for (w1, translation, x_axis, y_axis, z_axis, what) in cases {
+        let fixing = set.element(RefNo::new(24381, w1));
+        assert_eq!(fixing.element_type().unwrap(), "FIXING", "{what}");
+        let generated = model_catalogue_member(&fixing)
+            .unwrap()
+            .generated
+            .unwrap_or_else(|| panic!("{what} 没出实体"));
+        let world = generated.world;
+        let got_t = world.w_axis.truncate();
+        let want_t = DVec3::from_array(translation);
+        assert!(
+            (got_t - want_t).abs().max_element() <= 0.01,
+            "{what}：平移 {got_t:.3}，E3D TTY {want_t:.3}（差 {:.3}）",
+            got_t - want_t
+        );
+        for (name, got, want) in [
+            ("X", world.x_axis.truncate(), DVec3::from_array(x_axis)),
+            ("Y", world.y_axis.truncate(), DVec3::from_array(y_axis)),
+            ("Z", world.z_axis.truncate(), DVec3::from_array(z_axis)),
+        ] {
+            assert!(
+                (got - want).abs().max_element() <= 1e-6,
+                "{what}：{name} 列 {got:.9}，E3D TTY {want:.9}"
+            );
+        }
+    }
+}

@@ -12,6 +12,13 @@
 //!   镜像，再转 `BANG + 中性轴角`，与截面放置同一套）；GPLDAT 取 Z = p-line 的 PLAX 方向
 //!   `(cos θ, sin θ, 0)`（`LMIRR` 时 x 取负），Y = `YDIR`（截面标架里的向量）去掉 Z 分量后
 //!   归一，`ORNMAT(Z, Y)`。
+//! - ENDATU：GENSEC 端部的 datum，直接挂在宿主名下、自己带 `ZDIS` / `POSL` / `YDIR`，没有
+//!   JLDATU 一级。挂在哪一头看自带的 `HANICP`（[`endatu_at_end`]）：起点那头从 SPINE 起点走
+//!   `ZDIS`、三轴就是站位的截面放置标架（Z = 切向）；终点那头从终点往回走 `ZDIS`、三轴绕截面
+//!   Y 转 180°（Z = −切向），都让 Z 朝杆内。原点移到 `POSL` 那条 p-line（同 PLDATU 的位置
+//!   口径），旋转不走 GPLDAT。E3D TTY 真值：ams7324 / ams7329 / ams7350 全部 258 只 ENDATU（起点 6、
+//!   终点 252；`POSL` NA 68、BNA 190）逐件 ≤ 0.5 mm / 1e-5；未接的时候它们名下的 FIXING 丢了
+//!   端部标架（gen-model `verification/fixing-tty-20261021/`）。
 
 use std::f64::consts::FRAC_PI_2;
 
@@ -49,6 +56,10 @@ pub struct DatumSolve {
     pub pline_offset: Option<[f64; 2]>,
     pub pline_angle: Option<f64>,
     pub pl_ydir: Option<DVec3>,
+    /// ENDATU：站位标架平移到 `POSL` 的 p-line，旋转不走 GPLDAT（见模块头）。
+    pub end_datum: bool,
+    /// ENDATU 挂在 SPINE 终点那头：站位从终点往回量 `ZDIS`，三轴绕截面 Y 转 180° 让 Z 朝杆内。
+    pub at_end: bool,
     pub notes: Vec<String>,
 }
 
@@ -82,10 +93,10 @@ impl DatumSolve {
     }
 }
 
-/// 一只 datum 的宿主 GENSEC 与它自己的 JLDATU（PLDATU 取属主，JLDATU 取自身）。
+/// 一只 datum 的宿主 GENSEC 与它自己的站位元素（PLDATU 取属主 JLDATU，JLDATU / ENDATU 取自身）。
 fn host_and_joint(datum: &DbElement) -> Result<Option<(DbElement, DbElement)>, ModelError> {
     let joint = match datum.element_type()?.as_str() {
-        "JLDATU" => datum.clone(),
+        "JLDATU" | "ENDATU" => datum.clone(),
         "PLDATU" => match datum.owner()? {
             Some(owner) if owner.element_type()? == "JLDATU" => owner,
             _ => return Ok(None),
@@ -98,7 +109,7 @@ fn host_and_joint(datum: &DbElement) -> Result<Option<(DbElement, DbElement)>, M
     }
 }
 
-/// 这只元素是不是 GENSEC 名下、标架要现算的 JLDATU / PLDATU（只看属主链，不求标架）。
+/// 这只元素是不是 GENSEC 名下、标架要现算的 JLDATU / PLDATU / ENDATU（只看属主链，不求标架）。
 pub fn is_gensec_datum(el: &DbElement) -> Result<bool, ModelError> {
     Ok(host_and_joint(el)?.is_some())
 }
@@ -117,14 +128,26 @@ pub fn solve(datum: &DbElement) -> Result<Option<DatumSolve>, ModelError> {
     let zdis = joint.get_double("ZDIS")?.unwrap_or(0.0);
     let pkdi = joint.get_double("PKDI")?.unwrap_or(0.0);
     let path_length: f64 = path.segments.iter().map(SpineSegment::length).sum();
-    let hpref_s = match joint.get_element("HPREF")? {
+    // ENDATU 的模板里没有 HPREF：缺属性与未设同义，从 SPINE 起点量。
+    let hpref = match joint.get_element("HPREF") {
+        Ok(point) => point,
+        Err(e3d_io::db_element::DbElementError::UnknownAttribute { .. }) => None,
+        Err(error) => return Err(error.into()),
+    };
+    let hpref_s = match hpref {
         Some(point) if point.element_type()? == "POINSP" => match point_on_host(&host, &point)? {
             Some(local) => path_parameter(&path, local),
             None => 0.0,
         },
         _ => 0.0,
     };
-    let (point, tangent, ydir) = station(&path, hpref_s + zdis, &mut notes);
+    let end_datum = datum.element_type()? == "ENDATU";
+    let at_end = end_datum && endatu_at_end(datum, &path)?;
+    let (point, tangent, ydir) = if at_end {
+        station(&path, path_length - zdis, &mut notes)
+    } else {
+        station(&path, hpref_s + zdis, &mut notes)
+    };
 
     let mut spin = host.get_double("BANG")?.unwrap_or(0.0).to_radians();
     let mirrored = matches!(host.get_bool("LMIRR"), Ok(Some(true)));
@@ -133,7 +156,7 @@ pub fn solve(datum: &DbElement) -> Result<Option<DatumSolve>, ModelError> {
     let mut pline_offset = None;
     let mut pline_angle = None;
     let mut pl_ydir = None;
-    if datum.element_type()? == "PLDATU" {
+    if end_datum || datum.element_type()? == "PLDATU" {
         // 未设的 POSL 记成空串：不去截面里找线（见 [`datum_local`]）。
         let key = datum
             .get_string("POSL")?
@@ -199,8 +222,32 @@ pub fn solve(datum: &DbElement) -> Result<Option<DatumSolve>, ModelError> {
         pline_offset,
         pline_angle,
         pl_ydir,
+        end_datum,
+        at_end,
         notes,
     }))
+}
+
+/// ENDATU 挂在 SPINE 哪一头：它自带的 `HANICP`（宿主局部系的端点）离终点比离起点近就是终点。
+///
+/// E3D TTY 真值里 258 只 ENDATU 按这条分头全部对上：`HANICP` = (0, 0, 0) 的 6 只在起点，其余
+/// 252 只的 `HANICP` 就是终点（如 `/SUPPORT/FRAMES/BS/FT56/5-V1/PNOD`，`HANICP` = (0, 0, −313)，
+/// 杆长 313）。缺属性、缺分量或两头一样近按起点。
+fn endatu_at_end(datum: &DbElement, path: &SpinePath) -> Result<bool, ModelError> {
+    let hanicp = match datum.get_double_array("HANICP") {
+        Ok(value) => value,
+        Err(e3d_io::db_element::DbElementError::UnknownAttribute { .. }) => None,
+        Err(error) => return Err(error.into()),
+    };
+    let (Some([x, y, z, ..]), Some(first), Some(last)) = (
+        hanicp.as_deref(),
+        path.segments.first(),
+        path.segments.last(),
+    ) else {
+        return Ok(false);
+    };
+    let handle = DVec3::new(*x, *y, *z);
+    Ok((handle - last.end()).length() < (handle - first.start()).length())
 }
 
 fn find_pline(sprf: &DbElement, key: &str) -> Result<Option<DbElement>, ModelError> {
@@ -340,7 +387,7 @@ fn station(path: &SpinePath, s: f64, notes: &mut Vec<String>) -> (DVec3, DVec3, 
     unreachable!("路径至少一段，末段必返回")
 }
 
-/// JLDATU / PLDATU（宿主是 GENSEC）的世界标架；别的元素交 `None`。
+/// JLDATU / PLDATU / ENDATU（宿主是 GENSEC）的世界标架；别的元素交 `None`。
 pub fn gensec_datum_world(datum: &DbElement) -> Result<Option<DMat4>, ModelError> {
     let Some(solve) = solve(datum)? else {
         return Ok(None);
@@ -351,6 +398,16 @@ pub fn gensec_datum_world(datum: &DbElement) -> Result<Option<DMat4>, ModelError
 /// datum 在宿主 GENSEC 局部系里的标架。
 pub fn datum_local(solve: &DatumSolve) -> DMat4 {
     let profile = solve.profile_rotation();
+    if solve.end_datum {
+        let offset = solve.placed_pline_offset().unwrap_or([0.0; 2]);
+        let origin = solve.point + profile * DVec3::new(offset[0], offset[1], 0.0);
+        let rotation = if solve.at_end {
+            DMat3::from_cols(-profile.x_axis, profile.y_axis, -profile.z_axis)
+        } else {
+            profile
+        };
+        return DMat4::from_translation(origin) * DMat4::from_mat3(rotation);
+    }
     if solve.posl.is_none() {
         return DMat4::from_translation(solve.point) * DMat4::from_mat3(profile);
     }
