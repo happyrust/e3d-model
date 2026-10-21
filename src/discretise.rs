@@ -16,7 +16,10 @@
 //! 2. `mthArcFillet` 本身不裁剪。连续 span 链中只吸附两倍弦高容差内的近越界；
 //!    若原始 PAVE 链含 Core3D 会跳过的退化线段（相邻点距不超过 0.1mm），轮廓
 //!    组装器会把**两端都越界**的弧重新接到相邻 PAVE，但仍保留原圆心、半径和
-//!    弧内相位点；单端越界仍保留原弧。
+//!    弧内相位点；单端越界仍保留原弧。重接只换 span 的两个端点，相位点仍铺在理论
+//!    切点之间的整段弧上：ams7997 NXTR `24381/42463` 的 `FRAD 31441` 切点远在 90 km 外，
+//!    按「两个 PAVE 之间的角度」只剩一个格点，它切的 FN09 FLOOR 4 会在邻近负体交界处
+//!    剩一块 10×4 mm 的碎片，E3D TTY RVM 里没有。
 //!    两条路径都在 [`FlattenNotes::overshoot_fillets`] 记账。
 //! 3. 若一个孤立**凸**倒圆的两个理论切点都只给相邻直线留下 `<= 0.1mm`，
 //!    Core3D 仍保留按理论切点构造的原圆弧；不能把整段弧当成 consumed 删除，也不能
@@ -249,21 +252,23 @@ pub fn flatten_ring(ring: &[FilletVertex]) -> Option<(Vec<[f64; 2]>, FlattenNote
         };
         let dist = radius / alpha.sin();
         let center = [corner[0] + bis[0] * dist, corner[1] + bis[1] * dist];
+        let tangent_start = [corner[0] + u[0] * t, corner[1] + u[1] * t];
+        let tangent_end = [corner[0] + w[0] * t, corner[1] + w[1] * t];
         let start = if reconnect_both_ends {
             [prev.x, prev.y]
         } else {
-            [corner[0] + u[0] * t, corner[1] + u[1] * t]
+            tangent_start
         };
         let end = if reconnect_both_ends {
             [next.x, next.y]
         } else {
-            [corner[0] + w[0] * t, corner[1] + w[1] * t]
+            tangent_end
         };
 
-        // 从 start 到 end 的圆弧（不过角点一侧）。夹角 = π − 2α < π，
-        // 所以「转角绝对值最小的方向」就是要的那段弧。
-        let a0 = (start[1] - center[1]).atan2(start[0] - center[0]);
-        let a1 = (end[1] - center[1]).atan2(end[0] - center[0]);
+        // 弧的角度范围始终是理论切点之间那段（不过角点一侧，夹角 = π − 2α < π，
+        // 「转角绝对值最小的方向」就是它）。重接只换端点，不换角度范围。
+        let a0 = (tangent_start[1] - center[1]).atan2(tangent_start[0] - center[0]);
+        let a1 = (tangent_end[1] - center[1]).atan2(tangent_end[0] - center[0]);
         let mut delta = a1 - a0;
         while delta > std::f64::consts::PI {
             delta -= 2.0 * std::f64::consts::PI;
@@ -698,6 +703,55 @@ mod tests {
         assert!(
             max_x > 1050.0,
             "原半径圆弧的 +X 极值必须保留，max_x={max_x}"
+        );
+    }
+
+    #[test]
+    fn reconnected_fillet_keeps_the_phase_points_between_its_theoretical_tangents() {
+        // ams7997 NXTR 24381/42463（FN09 FLOOR 4 名下）的环：V2/V3 重复、V9 = V1，
+        // V4 的 FRAD 31441 切点距角点 90.5 km。重接后的弧从 V2 出发、绕整段理论弧回到 V5，
+        // 最后一个相位点紧挨理论切点，进 V5 的那条边与 V4→V5 几乎共线。
+        let ring = [
+            v(0.0, 0.0),
+            v(0.0, -3300.0),
+            v(0.0, -3300.0),
+            FilletVertex {
+                x: -1836.77,
+                y: -200.0,
+                frad: 31441.04,
+            },
+            v(-2267.32, -3389.94),
+            v(-2554.84, -103.49),
+            v(-1504.03, -35.0),
+            FilletVertex {
+                x: -461.47,
+                y: -100.0,
+                frad: 33469.93,
+            },
+            v(0.0, 0.0),
+        ];
+        let (poly, notes) = flatten_ring(&ring).unwrap();
+        assert!(notes.overshoot_fillets.contains(&3), "{notes:?}");
+        let v4 = [-1836.77, -200.0];
+        let v5 = [-2267.32, -3389.94];
+        let at = poly
+            .iter()
+            .position(|p| (p[0] - v5[0]).abs() < 1e-9 && (p[1] - v5[1]).abs() < 1e-9)
+            .expect("V5 在折线里");
+        let before = poly[at - 1];
+        let reach = (before[0] - v5[0]).hypot(before[1] - v5[1]);
+        assert!(reach > 50_000.0, "进 V5 的点应在理论切点附近：{before:?}");
+        let edge = (v5[0] - v4[0]).hypot(v5[1] - v4[1]);
+        let along = ((v5[0] - v4[0]) * (before[0] - v5[0]) + (v5[1] - v4[1]) * (before[1] - v5[1]))
+            / (edge * reach);
+        assert!(
+            along > 0.999_999,
+            "进 V5 的边应沿 V4→V5 的延长线，cos = {along}"
+        );
+        assert!(
+            poly.len() > 40,
+            "141.7° 的理论弧应铺满相位点：{} 个点",
+            poly.len()
         );
     }
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-21 重接的倒圆弧按理论切点铺相位点（ams7997 E3D TTY 实证）
+
+- `discretise::flatten_ring`：环里有 Core3D 跳过的退化线段、倒圆两端都越界时，弧的两个端点重接到相邻
+  PAVE，相位点仍铺在理论切点之间的整段弧上（只换端点，不换角度范围）。原先按两个 PAVE 的角度取
+  格点，切点远在 90 km 外的 `FRAD 31441`（ams7997 NXTR `24381/42463`）只剩一个格点。
+- ams7997 `/1RX-FN09-F001` FLOOR 4：两把负体交界处的 10×4×70 mm 碎片消失，与 E3D TTY RVM 一致
+  （0.004 mm）；其余各站逐件不变。
+
 ## 2026-10-21 圆弧墙截面走 SPRE 目录截面 + JUSL（ams7997 E3D TTY 实证）
 
 - `elmodl::wall_section`：圆弧墙的截面与 SCTN / GENSEC 同一条截面链——SPRE 目录截面减去 `JUSL` 那条
