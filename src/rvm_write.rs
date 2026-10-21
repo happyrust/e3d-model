@@ -2315,6 +2315,15 @@ pub fn pyramid_geometry_in_frame(
         } else {
             (pyramid.top, pyramid.bottom)
         };
+        // 底 / 顶边长是沿识别出来的 x / y 量的。标架的 X 落在识别的 y 上（绕轴转了 90°）时
+        // 两条边对调；斜着落（矩形边不贴标架）就不是同一只 RVM `Pyramid`，退回网格轴。
+        let (bottom, top) = if axes_collinear(rotation.x_axis, x_axis) {
+            (bottom, top)
+        } else if axes_collinear(rotation.x_axis, y_axis) {
+            ([bottom[1], bottom[0]], [top[1], top[0]])
+        } else {
+            return pyramid_geometry(world, pyramid);
+        };
         let sign = if same_way { 1.0 } else { -1.0 };
         let offset = (x_axis * pyramid.offset[0] + y_axis * pyramid.offset[1]) * sign;
         return place(Primitive::Pyramid([
@@ -4247,6 +4256,47 @@ mod tests {
             (Primitive::Pyramid(a), Primitive::Pyramid(b)) => assert_eq!(a, b),
             other => panic!("{other:?}"),
         }
+    }
+
+    /// 风管变径 `/-VES-E-2-M-4904` 那只 TAPER 的棱台：识别出来的 x 取的是短边，落在目录标架的 Y 上。
+    /// 底 / 顶边长要跟着对调，参数才是 E3D 的 `[500, 800, 1520, 1460, 335, 20, 750]`；不对调时
+    /// 偏心照标架、边长照网格，写出去的盒过不了自校闸，整只退成面片。
+    #[test]
+    fn pyramid_in_frame_swaps_the_cap_sides_when_the_frame_turns_a_quarter() {
+        let pyramid = RecognisedPyramid {
+            bottom: [800.0, 500.0],
+            top: [1460.0, 1520.0],
+            height: 750.0,
+            offset: [-20.0, 335.0],
+            centre: glam::DVec3::ZERO,
+            axis: glam::DVec3::Z,
+            x: glam::DVec3::X,
+        };
+        // 目录 X = 网格 +Y、目录 Y = 网格 −X、Z 不变。
+        let frame = glam::DMat4::from_cols(
+            glam::DVec3::Y.extend(0.0),
+            glam::DVec3::NEG_X.extend(0.0),
+            glam::DVec3::Z.extend(0.0),
+            glam::DVec4::W,
+        );
+        let got = pyramid_geometry_in_frame(&glam::DMat4::IDENTITY, &pyramid, &frame);
+        match got.geometry.primitive {
+            Primitive::Pyramid(params) => {
+                for (got, want) in params
+                    .iter()
+                    .zip([500.0, 800.0, 1520.0, 1460.0, 335.0, 20.0, 750.0])
+                {
+                    assert!((got - want).abs() < 1e-6, "{params:?} vs {want}");
+                }
+            }
+            other => panic!("不是 Pyramid：{other:?}"),
+        }
+        let plain = pyramid_geometry(&glam::DMat4::IDENTITY, &pyramid);
+        let (a, b) = (got.world_aabb_mm().unwrap(), plain.world_aabb_mm().unwrap());
+        assert!(
+            a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-6),
+            "{a:?} vs {b:?}"
+        );
     }
 
     /// `/1WCC189VN`：E3D 的球 Z 躺在 XY，半径和球心不变，矩阵改用目录标架。

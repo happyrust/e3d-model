@@ -205,11 +205,26 @@ fn allow_box_recogniser(catalogue_noun: Option<&str>) -> bool {
     catalogue_noun != Some("SEXT")
 }
 
-/// 桥架 / 托盘的负体不进 RVM 记录。C-IY `FTUBE 1`（`24384/22405`）E3D 的三条 Box
-/// 就是未扣减的 SBOX：`1500×100×50`、`1500×103×50`、`1500×103×100`。
+/// E3D 导出时负体打不打洞（`EXPORT HOLES ON|OFF`）。环境变量 `E3D_EXPORT_HOLES=on|off`，缺省 on。
+///
+/// TTY 取证宏一律 `export holes on`：扣过负体的件 E3D 写的是布尔结果，整只一条 `FacetGroup`
+/// （MDS 关节 `IJOINT1` 两块开孔板是一条带孔面片；FT48B 设计 BOX 被 NBOX 切过也是面片）。
+/// C-IY-1R330-B 那份 addin 导出是关的：同一支桥架的 FTUBE 在那里是三条未扣减的 Box，
+/// 在 `export holes on` 的 TTY 重导（`evidence/20260902-repre-level-tty-experiments/data/ciy-1r330b/
+/// tbr100-C-IY-1R330-B-tty.rvm`）里是一条扣过的 FacetGroup。对拍那类基线时设 `off`。
+fn export_holes_on() -> bool {
+    !std::env::var("E3D_EXPORT_HOLES")
+        .unwrap_or_default()
+        .trim()
+        .eq_ignore_ascii_case("off")
+}
+
+/// `export holes off` 时桥架 / 托盘的负体不进 RVM 记录。C-IY `FTUBE 1`（`24384/22405`）E3D 的
+/// 三条 Box 就是未扣减的 SBOX：`1500×100×50`、`1500×103×50`、`1500×103×100`。
 /// BOARD 那只网格被负体切成 28 个三角、体积只剩 4.5e5 mm³，包围盒仍是 1500×103×50。
 /// 槽弯的 FacetGroup 也没有孔轮廓。NOZZ 相反：两个 SCYL 扣膛之后 E3D 仍写**一条**面片。
 /// 所以只在可见块全是 `SBOX` / `SEXT` / `SREV` 时按 `parts` 拆开写，其余带负体的仍整只一条。
+/// `export holes on` 不走这里（见 [`export_holes_on`]）。
 fn write_uncut_catalogue_parts(record_level_cuts: usize, nouns: &[String]) -> bool {
     record_level_cuts > 0
         && !nouns.is_empty()
@@ -850,6 +865,9 @@ fn main() -> anyhow::Result<()> {
     let (mut rvm_analytic, mut rvm_analytic_rejected) = (0usize, 0usize);
     // 拉伸体族（SCTN / FLOOR / PANE…）不进识别器、照 E3D 直接写面片的组件数。
     let mut rvm_extrusion_facets = 0usize;
+    // 打洞导出里扣过负体、照 E3D 整只写一条布尔结果面片的元素数。
+    let mut rvm_boolean_facets = 0usize;
+    let holes_on = export_holes_on();
     // 目录图元退化成零尺寸、跟着 E3D 照写的空记录数。
     let mut rvm_zero_size = 0usize;
     // 同一放置在 GMSE 里出现不止一次、跟着 E3D 多写的那几条记录数（体只有一块）。
@@ -1050,23 +1068,30 @@ fn main() -> anyhow::Result<()> {
                 // 合成一条会让 `Cylinder×2 → FacetGroup` 这类差异永远消不掉。
                 // `components()` 有 `parts` 就用它，没有就按连通性拆——单块实体拆出来还是一块。
                 //
-                // **扣过负体、又不是桥架那一类可见图元的，整只一条。** NOZZ 的两个
-                // SCYL 扣完膛，E3D 写成一条面片。桥架 / 托盘的 SBOX / SEXT / SREV
-                // 相反：负体不进记录，每只可见图元各写一条未扣减的（C-IY 三条 Box
-                // 尺寸就是 SBOX 自己的 1500×100×50 / 1500×103×50 / 1500×103×100）。
-                // NGMS 自扣不算记录级负体：E3D 对这类件写的是**扣过的**整只面片
-                // （aps7200 `/STAIR-STEEL-PRE-12/BASE`：SBOX 被自己的两把 NSCY 开出
-                // Ø20 栓孔，RVM 是一条带孔轮廓的 FacetGroup，不是未扣减的 Box）。
-                // 桥架 / 托盘的记录级负体照旧走 `write_uncut_catalogue_parts`。
-                let split_uncut = write_uncut_catalogue_parts(
-                    generated
-                        .negatives_applied
-                        .saturating_sub(generated.own_ngms_cuts),
-                    &generated.part_catalogue_nouns,
-                );
+                // **扣过负体的整只一条。** `export holes on`（TTY 取证的口径）下 E3D 写布尔结果：
+                // NOZZ 的两个 SCYL 扣完膛是一条面片，MDS 关节 IJOINT1 两块开孔板是一条带孔面片，
+                // aps7200 `/STAIR-STEEL-PRE-12/BASE` 被自己的两把 NSCY 开出 Ø20 栓孔也是一条带孔面片。
+                // `export holes off`（C-IY 那份 addin 导出）时桥架 / 托盘的 SBOX / SEXT / SREV
+                // 负体不进记录，每只可见图元各写一条未扣减的（C-IY 三条 Box 尺寸就是 SBOX 自己的
+                // 1500×100×50 / 1500×103×50 / 1500×103×100），NGMS 自扣仍写扣过的面片。
+                let split_uncut = !holes_on
+                    && write_uncut_catalogue_parts(
+                        generated
+                            .negatives_applied
+                            .saturating_sub(generated.own_ngms_cuts),
+                        &generated.part_catalogue_nouns,
+                    );
+                // 打洞导出里扣过负体的件是布尔结果：整只一条面片，不认形状（见 [`export_holes_on`]）。
+                let boolean_result = holes_on && generated.negatives_applied > 0;
+                // 拉伸体族与多面体照 E3D 的写法一律面片，不进识别器（见 [`e3d_exports_facets_only`]）。
+                let facets_only = e3d_exports_facets_only(&generated.noun);
+                // 没有目录出身的拉伸体不按连通性拆：E3D 的拉伸写出器一只元素写一条面片。MDS
+                // `/SUPPORT/FRAMES/BS/FT08/4-BAR-1` 的网格是两个连通分量，E3D 只有一条 FacetGroup。
+                let whole_extrusion = facets_only && generated.part_catalogue_nouns.is_empty();
                 let component_meshes: Vec<TriMesh> = if (generated.negatives_applied > 0
                     && !split_uncut)
                     || generated.noun == "CABLE"
+                    || whole_extrusion
                 {
                     vec![mesh.clone()]
                 } else {
@@ -1091,35 +1116,34 @@ fn main() -> anyhow::Result<()> {
                 } else {
                     Vec::new()
                 };
-                // 拉伸体族与多面体照 E3D 的写法一律面片，不进识别器（见 [`e3d_exports_facets_only`]）。
-                let facets_only = e3d_exports_facets_only(&generated.noun);
                 // `PrimitiveInstance` / `AnalyticPrimitive` 描述的都是**整个元素**（在元素
                 // 局部系里），所以只有单组件时它们才说得准；多组件的逐块自己认几何。
                 // 后者是网格识别器认不出的那一族（SLCY → 带斜切角的 `Snout`），只能从属性直出，
                 // 自校闸照过。
-                let whole_element_instance = (!facets_only && component_meshes.len() == 1)
-                    .then(|| {
-                        generated
-                            .primitive_instance
-                            .as_ref()
-                            .and_then(|instance| {
-                                e3d_model::rvm_write::analytic_from_instance(
-                                    &generated.world,
-                                    instance,
-                                )
-                            })
-                            .or_else(|| {
-                                generated.analytic_primitive.as_ref().and_then(|primitive| {
-                                    e3d_model::rvm_write::analytic_from_primitive(
+                let whole_element_instance =
+                    (!facets_only && !boolean_result && component_meshes.len() == 1)
+                        .then(|| {
+                            generated
+                                .primitive_instance
+                                .as_ref()
+                                .and_then(|instance| {
+                                    e3d_model::rvm_write::analytic_from_instance(
                                         &generated.world,
-                                        primitive,
+                                        instance,
                                     )
                                 })
-                            })
-                    })
-                    .flatten()
-                    .filter(|candidate| candidate.matches_mesh_aabb(lo, hi, ANALYTIC_TOL_MM))
-                    .map(|candidate| candidate.geometry);
+                                .or_else(|| {
+                                    generated.analytic_primitive.as_ref().and_then(|primitive| {
+                                        e3d_model::rvm_write::analytic_from_primitive(
+                                            &generated.world,
+                                            primitive,
+                                        )
+                                    })
+                                })
+                        })
+                        .flatten()
+                        .filter(|candidate| candidate.matches_mesh_aabb(lo, hi, ANALYTIC_TOL_MM))
+                        .map(|candidate| candidate.geometry);
 
                 // 逐块的目录出身。对不上号（长度不等 = 这几块不是目录图元一块一条，
                 // 比如按连通性拆出来的、或上面带负体那一支）就当出身不明，照旧靠长相认。
@@ -1211,10 +1235,15 @@ fn main() -> anyhow::Result<()> {
                         // 不是未扣减的图元（aps7200 `/STAIR-STEEL-PRE-12/BASE` 的栓孔板
                         // 就是一条带孔轮廓的 FacetGroup）。记录级负体照旧能按出身写
                         // 未扣减图元（桥架/托盘那族）。
-                        let geometry = if (provenance_only && preferred.is_none())
+                        let geometry = if boolean_result
+                            || (provenance_only && preferred.is_none())
                             || generated.own_ngms_cuts > 0
                         {
-                            rvm_extrusion_facets += 1;
+                            if boolean_result {
+                                rvm_boolean_facets += 1;
+                            } else {
+                                rvm_extrusion_facets += 1;
+                            }
                             if let Some(shift) = angle_shift {
                                 e3d_model::rvm_write::facet_group_at_catalogue_origin(
                                     rotation,
@@ -1378,8 +1407,9 @@ fn main() -> anyhow::Result<()> {
         };
         file.write(&rvm_path)?;
         println!(
-            "RVM: {} 个成员（解析图元 {rvm_analytic} / 自校未过退回面片 {rvm_analytic_rejected} / 拉伸体 / 多面体照 E3D 写面片 {rvm_extrusion_facets} / 零尺寸空记录 {rvm_zero_size} / 重复放置补写 {rvm_repeated_records}）-> {}",
+            "RVM: {} 个成员（解析图元 {rvm_analytic} / 自校未过退回面片 {rvm_analytic_rejected} / 拉伸体 / 多面体照 E3D 写面片 {rvm_extrusion_facets} / 布尔结果写面片 {rvm_boolean_facets}（export holes {}） / 零尺寸空记录 {rvm_zero_size} / 重复放置补写 {rvm_repeated_records}）-> {}",
             file.members.len() - 1,
+            if holes_on { "on" } else { "off" },
             rvm_path.display()
         );
     }

@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-10-21 RVM 记录种类跟 E3D 走：扣过负体的件写布尔结果面片（`export holes on`），MDS 关节不再丢孔
+
+- `gen_ams` 新增 `E3D_EXPORT_HOLES=on|off`（缺省 on，即 TTY 取证宏的 `export holes on`）。打洞导出里扣过负体的件是
+  一条布尔结果 FacetGroup：不按图元拆、不认形状、不写整元素解析图元。MDS 关节 `IJOINT1`（JOIN
+  `/HCS-VT41-68/2`，两只 SBOX 各带一只图元级 NSCY）原先按桥架口径写成两条未扣减的 Box，孔在 RVM 里丢了；
+  FT48B 被 NBOX 切过的设计 BOX 原先按长相认成 `Pyramid`。
+- 桥架那条「可见图元各写一条未扣减的」口径是 `export holes off` 的：同一支 C-IY-1R330-B 在
+  `export holes on` 的 TTY 重导里 FTUBE 是一条 FacetGroup，在 addin 导出里是三条 Box。对拍那份 addin 基线时设
+  `E3D_EXPORT_HOLES=off`，结果不变（35 条 exact、种类一致）。
+- 拉伸体族没有目录出身时一只元素写一条面片，不再按连通分量拆（MDS `FT08/4-BAR-1` 等 15 根杆、
+  ams1112 `/1RS-WF04-F-C-F002` 的 3 块楼板、`/1RX-RM03-R312-VOLU` PANE 1）。
+- `rvm_write::pyramid_geometry_in_frame`：目录标架的 X 落在识别出来的 y 上（绕轴转 90°）时底 / 顶边长对调；
+  斜着落时退回网格轴。此前偏心照标架、边长照网格，自校闸不过，风管 TRNS / TAPER / BRCO 的偏心棱台
+  退成了面片。
+- 对拍：MDS BS 80 份 ZONE 记录种类不同 58 → 0；ams7997 `/SSC测试` 整站 9 → 4；土建 6 → 2；几何判档
+  全部不变。剩下的是两只 STWALL（E3D 写 Pyramid）与 `/-VES-E-4-L-2501` 的 THRE / BEND（E3D 只把被切的
+  图元合成面片，其余写 Pyramid）。
+- 真库门 `rvm_record_kinds_real`：IJOINT1 在 holes on 下是一条亏格 2 的 FacetGroup，holes off 下是两条 Box。
+  单测 `pyramid_in_frame_swaps_the_cap_sides_when_the_frame_turns_a_quarter`。
+
 ## 2026-10-21 rvm_compare 新增 `film` 判档：连在主体上的零厚残膜 / 发丝不再算 off
 
 - `reference_artifact` 只认断开的薄片；负体切剩的膜与发丝连在主体上，按包围盒差一律 off。新判法：对每一侧，
