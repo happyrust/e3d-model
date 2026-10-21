@@ -19,6 +19,10 @@
 //!   口径），旋转不走 GPLDAT。E3D TTY 真值：ams7324 / ams7329 / ams7350 全部 258 只 ENDATU（起点 6、
 //!   终点 252；`POSL` NA 68、BNA 190）逐件 ≤ 0.5 mm / 1e-5；未接的时候它们名下的 FIXING 丢了
 //!   端部标架（gen-model `verification/fixing-tty-20261021/`）。
+//! - SPINE 长度为 0（ams7330 `/SUPPORT/SPECIALS/BS/PIPE/3-BAR-2`、`4-BAR-2`，两点都在原点）：E3D 求不出
+//!   站位，TTY 对 JLDATU 报 `pos;xdir;ydir;zdir` 求值失败，PLDATU 却照样有标架：站位在宿主原点，
+//!   截面标架取单位阵（切向 +Z、Ydir +Y），不转 `BANG` 与中性轴角（这两根 `BANG` = −90°，转了就
+//!   差 90°），其余照 GPLDAT。JLDATU / ENDATU 自己不给标架。
 
 use std::f64::consts::FRAC_PI_2;
 
@@ -122,7 +126,8 @@ pub fn solve(datum: &DbElement) -> Result<Option<DatumSolve>, ModelError> {
     let Some(path) = spine_path(&host)? else {
         return Ok(None);
     };
-    if path.segments.is_empty() {
+    let stationless = path.segments.is_empty();
+    if stationless && datum.element_type()? != "PLDATU" {
         return Ok(None);
     }
     let zdis = joint.get_double("ZDIS")?.unwrap_or(0.0);
@@ -143,13 +148,20 @@ pub fn solve(datum: &DbElement) -> Result<Option<DatumSolve>, ModelError> {
     };
     let end_datum = datum.element_type()? == "ENDATU";
     let at_end = end_datum && endatu_at_end(datum, &path)?;
-    let (point, tangent, ydir) = if at_end {
+    let (point, tangent, ydir) = if stationless {
+        notes.push("SPINE 长度为 0，没有站位：截面标架取宿主原点上的单位阵".into());
+        (DVec3::ZERO, DVec3::Z, DVec3::Y)
+    } else if at_end {
         station(&path, path_length - zdis, &mut notes)
     } else {
         station(&path, hpref_s + zdis, &mut notes)
     };
 
-    let mut spin = host.get_double("BANG")?.unwrap_or(0.0).to_radians();
+    let mut spin = if stationless {
+        0.0
+    } else {
+        host.get_double("BANG")?.unwrap_or(0.0).to_radians()
+    };
     let mirrored = matches!(host.get_bool("LMIRR"), Ok(Some(true)));
     let mut justification = [0.0; 2];
     let mut posl = None;
@@ -187,8 +199,10 @@ pub fn solve(datum: &DbElement) -> Result<Option<DatumSolve>, ModelError> {
             if let Some(frame) = line(&jusl)? {
                 justification = frame.offset;
             }
-            if let Some(frame) = line("NA")? {
-                spin -= frame.rotation;
+            if !stationless {
+                if let Some(frame) = line("NA")? {
+                    spin -= frame.rotation;
+                }
             }
             if let Some(key) = posl.as_ref().filter(|key| !key.is_empty()) {
                 match line(key)? {

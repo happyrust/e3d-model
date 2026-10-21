@@ -5,7 +5,7 @@
 //! `verification/fixing-tty-20261021/`：`datums_truth.psv`、`fixing_rest_truth.psv`）。ams7324 的
 //! MDS 支架框（`/SUPPORT/FRAMES/BS/…`）每根 GENSEC 带一只 ENDATU，挂在哪一头看它自带的 `HANICP`。
 //! 接上之前 ENDATU 没有隐式标架、按单位阵折进 owner 链：名下 FIXING 全丢了端部标架，挂在
-//! 终点那头的还要再偏一个杆长。
+//! 终点那头的还要再偏一个杆长。零长度 SPINE 上的 PLDATU（ams7330）也在这里。
 //!
 //! 缺 E3D 安装或影子资产默认红（与 `increment_real.rs` 同一口径）；无语料环境显式设
 //! `E3D_SKIP_REAL_GATES=1` 换回跳过。
@@ -23,13 +23,20 @@ use glam::{DMat4, DVec3};
 const AMS_DIR: &str = r"D:\AVEVA\Projects\E3D3.1\AvevaMarineSample\ams000";
 const ACP_DIR: &str = r"D:\AVEVA\Projects\E3D3.1\AvevaCatalogue\acp000";
 const DESIGN_DB: &str = "ams7324_0001";
+const DESIGN_DB_7330: &str = "ams7330_0001";
 const TEMPLATE_DIR: &str = r"E:\reverse\e3d\shadow_e3d31_aps_all";
 /// ams7324 在 refno 里的库号。
 const DB_REFNO: u32 = 23708;
+/// ams7330 在 refno 里的库号。
+const DB_REFNO_7330: u32 = 23714;
 
 fn fixtures_present() -> bool {
+    fixtures_present_for(DESIGN_DB)
+}
+
+fn fixtures_present_for(design_db: &str) -> bool {
     let attlib = Path::new(TEMPLATE_DIR).join("attlib.dat");
-    let design = Path::new(AMS_DIR).join(DESIGN_DB);
+    let design = Path::new(AMS_DIR).join(design_db);
     let missing: Vec<String> = [design.as_path(), Path::new(ACP_DIR), attlib.as_path()]
         .into_iter()
         .filter(|path| !path.exists())
@@ -53,6 +60,10 @@ fn fixtures_present() -> bool {
 
 /// ams7324 + 扫 ams000 / acp000 的 resolver（支架型材的 SPRE 在别的目录库）。
 fn ams_set() -> Arc<DbSet> {
+    ams_set_db(DESIGN_DB)
+}
+
+fn ams_set_db(design_db: &str) -> Arc<DbSet> {
     let template = Path::new(TEMPLATE_DIR);
     let resolver =
         DirectoryDbResolver::scan(&[PathBuf::from(AMS_DIR), PathBuf::from(ACP_DIR)], template)
@@ -62,7 +73,7 @@ fn ams_set() -> Arc<DbSet> {
             .unwrap(),
     );
     set.add_db(DbFilePin {
-        file: Path::new(AMS_DIR).join(DESIGN_DB),
+        file: Path::new(AMS_DIR).join(design_db),
         template: template_file_for(template, "DESI").unwrap(),
         db_type: Some("DESI".into()),
         sesno: None,
@@ -186,5 +197,45 @@ fn end_datum_fixings_sit_where_e3d_puts_them() {
             .generated
             .unwrap_or_else(|| panic!("{} 没出实体", case.5));
         assert_frame(generated.world, case);
+    }
+}
+
+/// SPINE 长度为 0 的 GENSEC（ams7330 MDS 特殊支架里的 PowerClick 接头杆，两只 POINSP 都在原点，
+/// `BANG` = −90°）：E3D TTY 对它的 JLDATU 报求值失败，PLDATU 与名下 FIXING 却有标架——站位在
+/// GENSEC 原点、截面标架取单位阵、不转 `BANG`，Z 沿 `POSL` NA 的 PLAX。修前两级都退成单位阵。
+#[test]
+fn stationless_pline_datums_sit_where_e3d_puts_them() {
+    if !fixtures_present_for(DESIGN_DB_7330) {
+        return;
+    }
+    let set = ams_set_db(DESIGN_DB_7330);
+    // (w1, E3D 平移的 y, 说明)；四件的三列都是 (−X, +Z, +Y)。
+    let cases = [
+        (1294, 2250.0, "3-BAR-2/S1/PLDAT"),
+        (1295, 2250.0, "3-BAR-2/S1/J1（PowerClick 接头）"),
+        (1307, 3000.0, "4-BAR-2/S1/PLDAT"),
+        (1309, 3000.0, "4-BAR-2/S1/J1（PowerClick 接头）"),
+    ];
+    for (w1, y, what) in cases {
+        let case: FrameCase = (
+            w1,
+            [271.5, y, -31.5],
+            [-1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0],
+            what,
+        );
+        let element = set.element(RefNo::new(DB_REFNO_7330, w1));
+        let world = match element.element_type().unwrap().as_str() {
+            "FIXING" => {
+                model_catalogue_member(&element)
+                    .unwrap()
+                    .generated
+                    .unwrap_or_else(|| panic!("{what} 没出实体"))
+                    .world
+            }
+            _ => world_matrix(&element).unwrap(),
+        };
+        assert_frame(world, &case);
     }
 }

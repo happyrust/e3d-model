@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-21 零长度 SPINE 上的 PLDATU 照 GPLDAT 出标架（ams7330 E3D TTY 实证）
+
+- `datum::solve`：GENSEC 的 SPINE 长度为 0 时（两只 POINSP 重合），E3D 求不出站位——TTY 对 JLDATU 报
+  `pos;xdir;ydir;zdir` 求值失败——PLDATU 却照样有标架：站位在 GENSEC 原点，截面标架取单位阵（切向
+  +Z、Ydir +Y），不转 `BANG` 与中性轴角，其余照 GPLDAT。JLDATU / ENDATU 照旧不给标架。
+- ams7330 `/SUPPORT/SPECIALS/BS/PIPE/3-BAR-2`、`4-BAR-2` 的两只 PowerClick 接头 FIXING 原先退成单位阵，
+  包围盒差 22.4 mm；现在与 TTY 逐件对上。FIXING 真值对拍出体的 910 只全部一致；GENSEC datum 真值
+  3678 个对上 3588 个，剩下 90 个是 MDS FT44 斜撑上 `POSL=VV` 的 PLDATU（圆管「圆周 315°」p-line，
+  目录里 PX / PY 未填），另案。
+- `gensec_end_datum_real` 新增 `stationless_pline_datums_sit_where_e3d_puts_them`（两只 PLDATU + 两只 FIXING）。
+
 ## 2026-10-21 墙上 PLDATU 按 POSL p-line 落标架：IBOW 门窗对上 E3D TTY（ams7997 / aps250110 实证）
 
 - `elmodl::wall_pline_datum`：PLDATU 在 JLDATU 站位系里的标架与 GENSEC 的 PLDATU 同一套 GPLDAT——原点是墙截面
