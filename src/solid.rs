@@ -4,10 +4,13 @@
 //! 内核用 manifold-csg（gen-model ADR-029 同款）。三条从 gen-model 实测里搬来的
 //! 硬语义：
 //!
-//! 1. 截面填充用 `FillRule::NonZero`：E3D 的倒圆不裁剪，切点越界的自交轮廓
-//!    libgm 照铺，NonZero 能把它化解成正确的实心区域。
-//! 2. 环绕向按**外环**统一翻正：外环顺时针就整组反转，孔环靠与外环相反的绕向
-//!    在 NonZero 下扣掉。
+//! 1. 截面填充用 `FillRule::Positive`（绕数 > 0 才算实心）：E3D 的倒圆不裁剪，切点越界的
+//!    自交轮廓 libgm 照铺，正向重叠（绕数 2）仍是实心，反向的「耳朵」（绕数 −1）不算——
+//!    单端越界的倒圆把线段倒着发出去时就是这种耳朵。ams7997 `/1RX-ARCHHB` 的 PANE 在
+//!    NonZero 下 14 件对不上、Positive 下 325/325 exact（`/1RX-RM12-R976-VOLU`：FRAD 31601 的倒圆越界
+//!    261 mm，E3D 的轮廓从切点那根弦与底边的交点起步）；ams1112 的 5135 件两种规则结果相同。
+//! 2. 环绕向按**外环**统一翻正：外环顺时针就整组反转，孔环靠与外环相反的绕向扣掉；
+//!    孔环伸到外环外的那一截绕数是 −1，也不算实心。
 //! 3. libgm 的面级容差是 [`RES_TOL_MM`]（`GM_User::restol_` =
 //!    `gm_SetResolutionTolerance(0.051)`）。**它管的是消隐出图那条路**——`restol_`
 //!    的读者只有 `GM_Facets::obscureFaces` / `outputFaces` / `gm_PictureDraw` /
@@ -86,7 +89,7 @@ pub enum SolidError {
 ///
 /// 对标 Core3D 现代 CSG 路 `CSG_BasicEXT::getPrimGeom`(0x10726e50 → `sub_1071C0E0`)：
 /// 第一环 `gm_CreateExtrusionGroup(curve, H)` 作外边界、其余环 `gm_AddCurve(curve, group)`
-/// 作孔（活桥反编译，7UW4 档案 §3.7.2）。本 crate 把外环 + 孔放进单张 NonZero 截面，
+/// 作孔（活桥反编译，7UW4 档案 §3.7.2）。本 crate 把外环 + 孔放进单张 Positive 截面，
 /// 与 libgm「挤出组 + AddCurve」同解，见模块文档第 1、2 条。
 pub fn extrude_rings(rings: Vec<Vec<[f64; 2]>>, height: f64) -> Result<Manifold, SolidError> {
     extrude_rings_grown(rings, height, 0.0, false)
@@ -135,7 +138,7 @@ fn extrude_rings_grown(
             ring.reverse();
         }
     }
-    let mut section = CrossSection::from_polygons_with_fill_rule(&rings, FillRule::NonZero);
+    let mut section = CrossSection::from_polygons_with_fill_rule(&rings, FillRule::Positive);
     if largest_component_only {
         // WallJoiner/GM_Profile 的墙体主片语义：自交归一化产生的游离小岛不是
         // 第二堵墙。孔仍留在所选分量内部。
@@ -1696,10 +1699,28 @@ mod tests {
         );
     }
 
+    /// 单端越界的倒圆倒着发出去的那段线与弧围出一只反向耳朵（绕数 −1），E3D 不算实心
+    /// （ams7997 `/1RX-RM12-R976-VOLU`）：这里用一条倒走的边和一根斜弦做同样的耳朵。
     #[test]
-    fn a_hole_ring_subtracts_under_nonzero_fill() {
+    fn a_reversed_ear_is_not_solid() {
+        // 主体是 [0,100]² 的逆时针方块；左下角先往下倒走到 (0,−20)，再斜着回到 (20,100)——
+        // y < 0 那一块是绕数 −1 的耳朵。
+        let ring = vec![
+            [100.0, 0.0],
+            [100.0, 100.0],
+            [20.0, 100.0],
+            [0.0, -20.0],
+            [0.0, 0.0],
+        ];
+        let solid = extrude_rings(vec![ring], 10.0).unwrap();
+        let bounds = solid.bounding_box().unwrap();
+        assert!(bounds.min()[1] > -1e-9, "耳朵不该留下：{:?}", bounds.min());
+    }
+
+    #[test]
+    fn a_hole_ring_subtracts_under_positive_fill() {
         let outer = vec![[0.0, 0.0], [100.0, 0.0], [100.0, 100.0], [0.0, 100.0]];
-        // 孔环与外环反绕向（数据侧的约定），NonZero 下扣掉。
+        // 孔环与外环反绕向（数据侧的约定），绕数归零扣掉。
         let hole = vec![[20.0, 20.0], [20.0, 80.0], [80.0, 80.0], [80.0, 20.0]];
         let solid = extrude_rings(vec![outer, hole], 10.0).unwrap();
         let expect = (10_000.0 - 3_600.0) * 10.0;

@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-21 挤出截面改用 Positive 填充（ams7997 E3D TTY 实证）
+
+- `solid::extrude_rings`：`FillRule::NonZero` → `FillRule::Positive`。单端越界的倒圆倒着发出去的那段线与弧
+  围出的反向耳朵、几乎共线的折返尖刺、伸到外环外的孔环，绕数都是 −1，E3D 不算实心。
+- ams7997 `/1RX-ARCHHB`：PANE 311 exact + 13 off → 325/325 exact；ams1112 与 ams7997 另两站不变。
+
 ## 2026-10-21 负扫掠圆弧墙落在 spine 外侧（ams7997 E3D TTY 实证）
 
 - `elmodl::circular_wall_radii` / `wall_end_frame`：墙截面落在行进方向的左手侧——逆时针扫掠在

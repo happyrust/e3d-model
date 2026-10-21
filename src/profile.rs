@@ -125,7 +125,7 @@ fn first_loop_extent(
 /// (ATT FRAD，即 libgm `D2_Profile` span 的 bulge)，第一环外边界、其余作孔。
 /// §3.7.1 的绕向规范化（shoelace 有向面积 + `getApproxPolyLine`/`selfIntersecting`
 /// 自交翻绕向）本 crate 收在 `solid::extrude_rings`/`revolve_rings`：外环有向面积
-/// 翻正 + `FillRule::NonZero` 等价化解自交轮廓（见 `solid` 模块文档第 1、2 条）。
+/// 翻正 + `FillRule::Positive` 等价化解自交轮廓（见 `solid` 模块文档第 1、2 条）。
 pub fn loop_profile(el: &DbElement) -> Result<LoopProfile, ProfileError> {
     let mut rings: Vec<Vec<FilletVertex>> = Vec::new();
     let mut extent: Option<LoopExtent> = None;
