@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-10-22 电气连接件 `ELCONN` 按 `CATR` 进目录链：ams8000 34 只接线盒 / 底座对上 E3D
+
+- ams8000 整库按 ZONE 的 E3D TTY 导出里，`/1RX03-CASE-DQ`、`/1RX03-CASE-YK` 两个区的设备名下有 34 只
+  `ELCONN`（如 `24384/24874`），E3D 每只一组面片，我们一只不出：类 28 里只有 `NOZZ` 接了目录求值，
+  `ELCONN` / `EQUCOM` 当时没有语料。
+- `category::enters_catalogue_by_catref` 加上 `ELCONN`：它与 `NOZZ` 一样只有 `CATR`（这里是
+  `CATR → TABITE → PRTREF → GPART → SCOM`，`catalogue_point::follow_catalogue_component` 本来就跟得通），
+  `POS` / `ORI` 是自己的，模型单元与管线产出同进同退。`EQUCOM` 照旧没有语料、不接。
+- 对拍：ams8000 10 个 ZONE 只在 E3D 的 34 → 0，新增 34 对全 exact。其中 28 只接线盒 E3D 把整圈 SREV 拆成
+  两半写两条面片、我们写一条（几何相同，记录条数差一），另起一条跟。土建、`/SSC测试`、MDS、S1、
+  FIXING / datum 真值逐件不变。
+- 真库门 `rvm_record_kinds_real::electrical_connections_enter_their_catalogue_by_catr`；单测
+  `the_nozzle_enters_its_catalogue_by_catref_and_is_a_unit` 改钉 ELCONN 进、EQUCOM 不进。
+
 ## 2026-10-22 截面 `SPRE` 悬空的角钢上，FITT 的径向落在截面 x：ams8000 暖通支架 22 只端板对上 E3D
 
 - ams8000 整库按 ZONE 用 E3D TTY 只读导出（gen-model `verification/civil-tty-20261021/ams8000_lv6_*.rvm`，

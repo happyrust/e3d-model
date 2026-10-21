@@ -575,10 +575,9 @@ pub fn is_model_unit(noun: &str) -> bool {
             noun.trim().eq_ignore_ascii_case("HANDRA")
         }
 
-        // 类 28：`NOZZ` 的实体是它 `CATR` 那只目录件的 GMRE 求值结果，键就是
+        // 类 28：`NOZZ` / `ELCONN` 的实体是它 `CATR` 那只目录件的 GMRE 求值结果，键就是
         // element:refno——与路由成员同型，只是入口换了一跳
-        // （[`enters_catalogue_by_catref`]）。同族的 ELCONN / EQUCOM 还没有语料，
-        // 留在待建账上。
+        // （[`enters_catalogue_by_catref`]）。同族的 EQUCOM 还没有语料，留在待建账上。
         Category::Composite(CompositeFamily::CoreClass28) => enters_catalogue_by_catref(noun),
 
         // 以下都不产出挂在自己 refno 上的实体。逐条列而不是一个 `_ => false`：
@@ -647,10 +646,14 @@ pub fn fitting_stands_alone_under(owner_noun: &str) -> bool {
 /// 之后，后面 `SPCO/GPART/PRTELE --CATR-->`、`TABITEM --PRTREF-->` 的归一循环与
 /// GMRE 求值与路由成员逐句共用。
 ///
-/// 只认 `NOZZ`：类 28 另外两个 noun（`ELCONN` / `EQUCOM`）手上还没有语料，把它们
-/// 一并放进来等于拿一条没验过的入口去换它们账上那笔如实的欠款。
+/// `ELCONN`（电气连接件，2026-10-22）同样只有 `CATR`：ams8000 `/1RX03-CASE-DQ`、`/1RX03-CASE-YK` 里
+/// 34 只（如 `24384/24823`，`CATR` 指 db 5052 的目录件、`DESP` 5 个参数、`POS` / `ORI` 是自己的），
+/// E3D TTY RVM 里每只 `ELCONN n of EQUIPMENT …` 一组面片，此前我们一只不出。
+///
+/// 类 28 的 `EQUCOM` 手上还没有语料，把它一并放进来等于拿一条没验过的入口去换它账上
+/// 那笔如实的欠款。
 pub fn enters_catalogue_by_catref(noun: &str) -> bool {
-    noun.trim().eq_ignore_ascii_case("NOZZ")
+    matches!(noun.trim().to_ascii_uppercase().as_str(), "NOZZ" | "ELCONN")
 }
 
 /// 这个目录件的整件几何**就是目录构件 GMRE 的求值结果**，与路由成员逐句同形
@@ -1737,15 +1740,13 @@ mod tests {
                 "{noun} 只算放置，几何在它下面的 CTRAY 上"
             );
         }
-        // 类 28 剩下两个照旧不是单元：它们的 builder 还没有，全量也不为它们出实体。
-        // `NOZZ` 2026-09-14 起是单元，见
+        // 类 28 剩下的 `EQUCOM` 照旧不是单元：它的 builder 还没有，全量也不为它出实体。
+        // `NOZZ`（2026-09-14）与 `ELCONN`（2026-10-22）是单元，见
         // [`the_nozzle_enters_its_catalogue_by_catref_and_is_a_unit`]。
-        for noun in ["ELCONN", "EQUCOM"] {
-            assert!(!is_model_unit(noun), "{noun}");
-        }
+        assert!(!is_model_unit("EQUCOM"));
     }
 
-    /// `NOZZ` 的目录件挂在 `CATR` 上，不是 `SPRE`——它是一件模型单元，同族另外两个不是。
+    /// `NOZZ` 的目录件挂在 `CATR` 上，不是 `SPRE`——它是一件模型单元；`ELCONN` 同路，`EQUCOM` 不是。
     ///
     /// 这条钉的是 SLYK 上一次实跑：`/泵房设备` 那 9 台设备名下 34 只 NOZZ 一只都不出
     /// 几何，报告四本账（skipped / failed / unsupported / unknown）全是空的，只在
@@ -1768,10 +1769,14 @@ mod tests {
         );
         assert!(is_model_unit("NOZZ"), "NOZZ 的目录实体挂在自己 refno 上");
         assert!(!is_derived_unit("NOZZ"), "NOZZ 名下不派生别的键");
-        // 同族另外两个还没有语料：入口那一跳没验过，账上那笔欠款要留着。
-        for noun in ["ELCONN", "EQUCOM"] {
-            assert!(!enters_catalogue_by_catref(noun), "{noun}");
-        }
+        // ELCONN：ams8000 的 34 只对 E3D TTY RVM（`rvm_record_kinds_real` 里的真库门）。
+        assert!(enters_catalogue_by_catref("ELCONN"));
+        assert!(
+            is_model_unit("ELCONN"),
+            "ELCONN 的目录实体挂在自己 refno 上"
+        );
+        // EQUCOM 还没有语料：入口那一跳没验过，账上那笔欠款要留着。
+        assert!(!enters_catalogue_by_catref("EQUCOM"));
         // 路由成员照旧从 SPRE 起跳，这次改动不许动它们的入口。
         for noun in ["ELBO", "FTUB", "VALV", "FLAN"] {
             assert!(!enters_catalogue_by_catref(noun), "{noun}");

@@ -25,6 +25,7 @@ const AMS_DIR: &str = r"D:\AVEVA\Projects\E3D3.1\AvevaMarineSample\ams000";
 const ACP_DIR: &str = r"D:\AVEVA\Projects\E3D3.1\AvevaCatalogue\acp000";
 const MDS_DB: &str = "ams7324_0001";
 const SSC_DB: &str = "ams7997_0001";
+const CABLE_EQUIP_DB: &str = "ams8000_0001";
 const TEMPLATE_DIR: &str = r"E:\reverse\e3d\shadow_e3d31_aps_all";
 const IJOINT1: &str = "23708/42148";
 const IJOINT1_NAME: &str = "/SUPPORT/FRAMES/BS/FT03H/9-V1/S1/IJOINT1";
@@ -257,6 +258,61 @@ fn hvac_mitred_bends_and_flex_extensions_write_e3d_snouts() {
             .all(|snout| (snout[2] - 2.0).abs() < 1e-9 && snout[3..].iter().all(|v| *v == 0.0)),
         "{zero:?}"
     );
+
+    std::fs::remove_dir_all(&scratch).ok();
+}
+
+/// 类 28 的 `ELCONN`（电气连接件）只有 `CATR`（→ TABITE → PRTREF → GPART → SCOM），没有 `SPRE`。
+/// ams8000 设备 `/1-CAM-043-BC`（`24384/24873`）名下两只：E3D TTY 导出（gen-model
+/// `verification/civil-tty-20261021/ams8000_lv6_24384_24828.rvm`）各一组面片，接线盒那只 7 条（5 块 SEXT，
+/// 整圈 SREV E3D 拆成两半写，我们写一条），底座那只 1 条。此前我们一只不出。世界包围盒取 E3D 面片的。
+#[test]
+fn electrical_connections_enter_their_catalogue_by_catr() {
+    if !fixtures_present(CABLE_EQUIP_DB) {
+        return;
+    }
+    let scratch: PathBuf =
+        std::env::temp_dir().join(format!("e3d-model-rvm-kinds-elconn-{}", std::process::id()));
+    let (rvm, elements) = generate(CABLE_EQUIP_DB, "24384/24873", "on", &scratch);
+    let cases = [
+        (
+            "ELCONN 1 of EQUI /1-CAM-043-BC",
+            "24384/24874",
+            [-1860.572, 20562.219, 1125.0],
+            [-1646.403, 20821.404, 1275.0],
+        ),
+        (
+            "ELCONN 2 of EQUI /1-CAM-043-BC",
+            "24384/24875",
+            [-1793.836, 20492.162, 80.0],
+            [-1382.164, 20903.838, 1300.0],
+        ),
+    ];
+    for (name, refno, lo, hi) in cases {
+        let kinds = record_kinds(&rvm, name);
+        assert!(
+            !kinds.is_empty() && kinds.iter().all(|kind| *kind == "FacetGroup"),
+            "{name}: {kinds:?}"
+        );
+        let element = elements
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|element| element["refno"] == refno)
+            .unwrap_or_else(|| panic!("elements.json 里没有 {refno}"));
+        for axis in 0..3 {
+            let got = (
+                element["aabb_min"][axis].as_f64().unwrap(),
+                element["aabb_max"][axis].as_f64().unwrap(),
+            );
+            assert!(
+                (got.0 - lo[axis]).abs() <= 0.01 && (got.1 - hi[axis]).abs() <= 0.01,
+                "{name}：包围盒第 {axis} 分量 {got:?}，E3D ({}, {})",
+                lo[axis],
+                hi[axis]
+            );
+        }
+    }
 
     std::fs::remove_dir_all(&scratch).ok();
 }
