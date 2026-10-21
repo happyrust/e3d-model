@@ -250,6 +250,33 @@ fn endatu_at_end(datum: &DbElement, path: &SpinePath) -> Result<bool, ModelError
     Ok((handle - last.end()).length() < (handle - first.start()).length())
 }
 
+/// 截面里的一条 p-line：平面位置 `(PX, PY)` 与 PLAX 角（弧度）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct SectionPline {
+    pub(crate) offset: [f64; 2],
+    pub(crate) angle: f64,
+}
+
+/// 宿主截面里 `key` 那条 p-line（与 [`solve`] 同一套求值）；目录链不通或没有这条线给 `None`。
+/// 墙上 FIXING 的 PLDATU 也走它（`elmodl::wall_pline_datum`）。
+pub(crate) fn section_pline(
+    host: &DbElement,
+    key: &str,
+) -> Result<Option<SectionPline>, ModelError> {
+    let SectionChain::Resolved(catalogue) = section_catalogue(host)? else {
+        return Ok(None);
+    };
+    let env = DbElementParamEnv::new(Some(host.clone()), Some(catalogue.sprf.clone()))
+        .without_insulation();
+    Ok(match find_pline(&catalogue.sprf, key)? {
+        Some(pline) => member_frame(&pline, &env).ok().map(|frame| SectionPline {
+            offset: frame.offset,
+            angle: frame.rotation + FRAC_PI_2,
+        }),
+        None => None,
+    })
+}
+
 fn find_pline(sprf: &DbElement, key: &str) -> Result<Option<DbElement>, ModelError> {
     let Some(ptss) = sprf.get_element("PSTR")? else {
         return Ok(None);

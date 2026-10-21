@@ -1551,18 +1551,13 @@ fn collect_host_fixings(el: &DbElement, out: &mut Vec<DbElement>) -> Result<(), 
 /// `local_matrix` 在它们身上返回单位阵，于是落点既丢了关节站位、也丢了 pline 基变换。
 /// 这两级的标架是**隐式**的：
 ///
-/// - JLDATU：位置由 `ZDIS` 沿宿主 WALL 的 spine 弧长定出来（`joint`）。
-/// - PLDATU：`POSL=OBOW` 是 E3D 的隐式墙 pline（PLAX=-X），配 YDIR=+Z 由
-///   `cal_ori_by_ydir` 得到列 (-Y, +Z, -X)（`pldatum`）。
+/// - JLDATU：位置由 `ZDIS` 沿宿主 WALL 的 spine 弧长定出来（[`wall_joint_frame`]）。
+/// - PLDATU：站位截面里 `POSL` 那条 p-line（[`wall_pline_datum`]，与 GENSEC 的 PLDATU 同一套）。
 ///
 /// 开孔刀（[`fixing_world_cutter`]）与 FIXING **自己那一件实例**必须共用这一处：
 /// 两边各算一遍的那一版里，实例走的是 `world_matrix(fixing)`，1112 的 255 个 FIXING
 /// 因此全挤在 x∈[-2520,-1920] 的一条窄带上，对着 E3D TTY 的 RVM 基准逐个偏 13~25 m
 /// （`docs/evidence/2026-09-15-cata-dependency-cache.md`）。
-///
-/// 负扫掠墙（ams7997 `=24381/1776`，sweep≈−180°）的 pline 基两列随行进方向翻转
-/// （见下面 `pldatum` 的构造）；翻转已经把 E3D 的镜像语义吸收进标架，FIXING 自己的
-/// `ORI` 在 [`fixing_local_matrix`] 里原样读即可。
 pub(crate) fn fixing_host_frame(wall: &DbElement, fixing: &DbElement) -> Result<DMat4, ModelError> {
     let pldatu = fixing
         .owner()?
@@ -1589,71 +1584,86 @@ pub(crate) fn fixing_host_frame(wall: &DbElement, fixing: &DbElement) -> Result<
     // `Single_leaf_wall` 拿回来的是名义参数 10000，站位被推出 10 m；ams1112
     // 当年能对上只是因为它的 `Variable_thk_wall` 没有 `PARA`、厚度回落成 0。
     let travel = if sweep < 0.0 { -1.0 } else { 1.0 };
-    // LMIRR 墙（ams7997 `=24381/1597`，CWALL `/1RS-WF02-W-C-R2407`）：型材镜像后 PLDATU 绕沿墙轴
-    // 转 180°——x、z 两列取负，y 列与原点不动。E3D TTY `ORI WRT WORLD`：镜像墙的 PLDATU
-    // 在 JLDATU 系里是 (+J.Y, J.Z, +J.X)，正常墙是 (−J.Y, J.Z, −J.X)；不翻时这堵墙上的
-    // FIXING 竖向按 POS.x 翻号、水平镜像（偏 1.2–3 m）。
-    let mirror = if matches!(wall.get_bool("LMIRR"), Ok(Some(true))) {
-        -1.0
-    } else {
-        1.0
-    };
     let joint = wall_joint_frame(curve_center, radius, a0, sweep, zdis);
-    // PLDATU POSL=OBOW is E3D's implicit wall pline: PLAX=-X. With
-    // YDIR=+Z, cal_ori_by_ydir gives columns (-Y,+Z,-X).
-    //
-    // 负扫掠墙（travel=-1）上同一根 p-line 的 y/z 两列随行进方向翻转：
-    // (-Y, -Z, +X)。ams7997 `=24381/1776` 的 6 只 FIXING 按此对原生 RVM
-    // FacetGroup 变换逐件 0.00–0.03 mm；正扫掠（ams1112，sweep=+354.8°）
-    // 时与旧版逐位一致，原有 38 件验证不受影响。
-    //
-    // OBOW（ams1112 WF03 `/1RS-WF03-W-C-RR001` 的 38 只穿墙套管 FIXING，WALL FUNC=RING）：
-    // E3D TTY RVM 里 PLDATUM 的原点就是 JLDATUM 的站位（高差 0），FIXING 的 POS 三分量
-    // 全部从那里量——38/38 满足 |POS| = |T_fixi − T_pldatu|、竖向 = −POS.x、水平模长相等，
-    // 最大残差 0.001 mm（plant-model-5 `outputs/rvm-check-20261010/wall-1112/_hypothesis.py`）。
-    // 下面那套 IBOW 抬高 + `fixing_local_matrix` 清 POS[1]/POS[2] 套在它身上，38 只全部
-    // off 0.8–12.2 m。这里不抬高，POS 由 [`fixing_local_matrix`] 原样保留。
-    let ibow_z = if pldatu_posl(fixing)?.as_deref() == Some("OBOW") {
-        0.0
-    } else {
-        // Wall POSL=IBOW is the inner-bottom line, not the catalogue origin.  In
-        // the AMS wall family the line sits one 600 mm fixing clearance below the
-        // wall top (DESP[0]); leaving it at zero drops every wall FIXING by
-        // `height - 600` (4000 -> 3400 mm in the real sample).
-        let wall_height = wall
-            .get_double_array("DESP")?
-            .and_then(|values| values.first().copied())
-            .filter(|value| value.is_finite() && *value > 0.0)
-            .unwrap_or(0.0);
-        // Door FIXINGs carry the opening height/width in a two-value DESP and
-        // are centred in the wall: the live 1700x2045 door spans from the wall
-        // base to 2045 mm.  Window FIXINGs use the standard IBOW datum instead.
-        let door_fixing = fixing
-            .get_double_array("DESP")?
-            .is_some_and(|values| values.len() >= 2);
-        // The standard wall fixing datum stays at the 3400 mm design level for
-        // the shorter 3800 mm wall family as well: its generated fixing is 1100
-        // mm above the wall base in both the 4000 and 3800 mm live samples.  Do
-        // not lower the frame just because DESP reports the shorter wall height.
-        if door_fixing {
-            wall_height * 0.5
-                + fixing
-                    .get_double_array("DESP")?
-                    .and_then(|values| values.get(1).copied())
-                    .filter(|value| value.is_finite())
-                    .unwrap_or(0.0)
-        } else {
-            (wall_height - 600.0).max(3400.0)
-        }
-    };
-    let pldatum = DMat4::from_translation(DVec3::new(0.0, ibow_z, 0.0))
-        * DMat4::from_cols(
-            (DVec3::NEG_Y * mirror).extend(0.0),
-            (DVec3::Z * travel).extend(0.0),
-            (DVec3::NEG_X * (travel * mirror)).extend(0.0),
-            DVec3::ZERO.extend(1.0),
-        );
+    let pldatum = wall_pline_datum(wall, &pldatu, travel)?;
     Ok(world_matrix(wall)? * joint * pldatum)
+}
+
+/// PLDATU 在 JLDATU 站位系里的标架（[`wall_joint_frame`] 的列 = 朝圆心, 上, 沿墙）。
+///
+/// 与 GENSEC 的 PLDATU 同一套 GPLDAT（[`crate::datum`]）：站位截面系 X 朝行进方向左手侧、
+/// Y 朝上、Z 沿行进方向；原点是截面里 `POSL` 那条 p-line 减 `JUSL` 线（`LMIRR` 时 x 取负），
+/// Z 是那条线的 PLAX 方向，Y 是 `YDIR`（截面系里的向量）去掉 Z 分量，X = Y × Z。墙型材的
+/// p-line（`/STD-WALLS-SINGLE-PTSS`、`/STD-WALLS-SIZE-PTSS`）：`OBOW` 在 (0, 0)、PLAX −X；`IBOW` 在
+/// (墙厚, 0)、PLAX +X。
+///
+/// E3D TTY 取证：
+/// - `OBOW`：ams1112 WF03 RR001 的 38 只、ams7997 `=24381/1776` 的 6 只（负扫掠）、`=24381/1597`
+///   （`LMIRR`）——原点就是站位，三轴 (−上·镜像, 沿墙·行进, −朝圆心·行进·镜像)，就是此前写死的公式。
+/// - `IBOW`：ams7997 `/Copy-of-R211-M01`（`24381/2067`）与 aps250110 的窗（`2013286654/208` 等）：
+///   PLDATU 原点在站位朝外一个墙厚（900 / 100 mm）、高差 0，X 朝上、Z 朝外，FIXING 的 POS 三分量
+///   都从这里量。此前按 aps250110 RVM 拟合的「抬高 (DESP[0]−600).max(3400) + 清 POS[1]/POS[2]」把
+///   R211 放偏 1.9 m、X 轴反向。
+fn wall_pline_datum(
+    wall: &DbElement,
+    pldatu: &DbElement,
+    travel: f64,
+) -> Result<DMat4, ModelError> {
+    let line = |el: &DbElement, name: &str| -> Result<Option<String>, ModelError> {
+        Ok(el
+            .get_string(name)?
+            .map(|text| text.trim().to_ascii_uppercase())
+            .filter(|text| !text.is_empty()))
+    };
+    let jusl =
+        line(wall, "JUSL")?.unwrap_or_else(|| crate::section::DEFAULT_JUSTIFICATION_LINE.into());
+    let justification =
+        crate::datum::section_pline(wall, &jusl)?.map_or([0.0; 2], |found| found.offset);
+    let (pline, angle) = match line(pldatu, "POSL")? {
+        Some(posl) => crate::datum::section_pline(wall, &posl)?
+            .map_or((justification, 0.0), |found| (found.offset, found.angle)),
+        None => (justification, 0.0),
+    };
+    let mirrored = matches!(wall.get_bool("LMIRR"), Ok(Some(true)));
+    let ydir = pldatu
+        .get_direction("YDIR")?
+        .map(DVec3::from_array)
+        .unwrap_or(DVec3::Z);
+    Ok(pline_datum_in_joint(
+        [pline[0] - justification[0], pline[1] - justification[1]],
+        angle,
+        mirrored,
+        ydir,
+        travel,
+    ))
+}
+
+/// [`wall_pline_datum`] 的几何部分。`offset` 是 p-line 减 JUSL 线（尚未镜像），`angle` 是它的
+/// PLAX 角，`ydir` 是截面系里的向量。截面系在站位系里是 (朝圆心·行进, 上, 沿墙·行进)。
+fn pline_datum_in_joint(
+    offset: [f64; 2],
+    angle: f64,
+    mirrored: bool,
+    ydir: DVec3,
+    travel: f64,
+) -> DMat4 {
+    let mirror = if mirrored { -1.0 } else { 1.0 };
+    let to_joint = |v: DVec3| DVec3::new(v.x * travel, v.y, v.z * travel);
+    let z = to_joint(DVec3::new(angle.cos() * mirror, angle.sin(), 0.0));
+    let raw_y = to_joint(ydir);
+    let mut y = raw_y - z * raw_y.dot(z);
+    if y.length() < 1e-9 {
+        y = to_joint(DVec3::Z);
+    }
+    let y = y.normalize();
+    let x = y.cross(z);
+    let origin = to_joint(DVec3::new(offset[0] * mirror, offset[1], 0.0));
+    DMat4::from_cols(
+        x.extend(0.0),
+        y.extend(0.0),
+        z.extend(0.0),
+        origin.extend(1.0),
+    )
 }
 
 /// JLDATU 在圆弧墙 spine 上的站位标架（WALL 局部系）：列 = (朝圆心, 上, 沿墙)，原点在站位。
@@ -1733,48 +1743,14 @@ pub(crate) fn fixing_host_wall(fixing: &DbElement) -> Result<Option<DbElement>, 
     Ok(None)
 }
 
-/// FIXING 属主 PLDATU 的 `POSL`（大写、去空白）；属主不是 PLDATU 或没设返回 `None`。
+/// 墙上 FIXING 自己的局部矩阵：`POS` 三分量与 `ORI` 都从 PLDATU 量（[`fixing_host_frame`]），
+/// `ORI` 按原样 `Rz(γ)·Ry(β)·Rx(α)` 读。
 ///
-/// 墙上 FIXING 的 PLDATU 标架按这条 p-line 分两套（见 [`fixing_host_frame`] /
-/// [`fixing_local_matrix`]）：`OBOW` 原点在 JLDATU 站位、FIXING 的 POS 全量生效；
-/// `IBOW`（aps250110 门窗）沿用 09-28 对 RVM 拟合的那套抬高 + 清 POS[1]/POS[2]。
-fn pldatu_posl(fixing: &DbElement) -> Result<Option<String>, ModelError> {
-    let Some(pldatu) = fixing.owner()? else {
-        return Ok(None);
-    };
-    if pldatu.element_type()? != "PLDATU" {
-        return Ok(None);
-    }
-    Ok(pldatu
-        .get_string("POSL")?
-        .map(|text| text.trim().to_ascii_uppercase())
-        .filter(|text| !text.is_empty()))
-}
-
-/// WALL FIXING 的 `POS[1]`/`POS[2]` 是目录件的定位输入，不是目录几何
-/// 实例的附加平移。Core3D 将它们留给墙体 p-line / SFIT 求值；若把完整
-/// `local_matrix(FIXING)` 再乘到目录实体上，窗件会按 `POS[1]` 在墙向重复
-/// 平移（APS250110 的 77.965/50.847/20.339 mm 三组 RVM 偏差正好相等）。
-/// `POS[0]` 与 `ORI` 仍是实例标架的一部分；门的 `DESP[1]` 高程偏置在
-/// `fixing_host_frame` 中消费，不能再把 `POS[1]` 当作第二次平移。
-///
-/// 以上只对 `POSL=IBOW` 那一族成立。`POSL=OBOW` 的穿墙套管（ams1112）E3D 把 POS 三分量
-/// 全部用上（取证见 [`fixing_host_frame`]），这里原样返回 `local_matrix`。
-///
-/// `ORI` 在两条 p-line 族上都按原样 `Rz(γ)·Ry(β)·Rx(α)` 读——负扫掠墙的镜像差异
-/// 已经由 [`fixing_host_frame`] 的 pline 基翻转吸收（ams7997 `=24381/1776` 6 只
-/// FIXING 用原样 ORI 对原生 RVM FacetGroup 逐件 ~1e-6），局部矩阵这里不再补偿。
+/// 负扫掠墙、镜像墙的差异已经由 PLDATU 的 p-line 标架吸收（ams7997 `=24381/1776` 6 只 FIXING 用
+/// 原样 ORI 对原生 RVM FacetGroup 逐件 ~1e-6）。`POSL=IBOW` 也用全 POS：E3D TTY 里 R211 与 aps250110
+/// 的窗都是按全 POS 从 IBOW p-line 上量的（此前清掉 POS[1]/POS[2] 是在补错的 PLDATU 标架）。
 pub(crate) fn fixing_local_matrix(fixing: &DbElement) -> Result<DMat4, ModelError> {
-    let local = crate::transform::local_matrix(fixing)?;
-    if pldatu_posl(fixing)?.as_deref() == Some("OBOW") {
-        return Ok(local);
-    }
-    Ok(DMat4::from_cols(
-        local.x_axis,
-        local.y_axis,
-        local.z_axis,
-        DVec3::new(local.w_axis.x, 0.0, 0.0).extend(1.0),
-    ))
+    Ok(crate::transform::local_matrix(fixing)?)
 }
 
 fn fixing_world_cutter(wall: &DbElement, fixing: &DbElement) -> Result<Manifold, ModelError> {
@@ -4185,6 +4161,42 @@ mod tests {
             "Z 沿行进方向（顺时针在 0° 处朝 −Y）：{z:?}"
         );
         assert!((x.cross(y) - z).length() < 1e-12, "右手系");
+    }
+
+    /// 墙上 PLDATU 的 p-line 标架（站位系列 = 朝圆心, 上, 沿墙）。`OBOW`（(0, 0)、PLAX −X）得到的就是此前
+    /// 写死、已被 E3D TTY 验过的 (−上·镜像, 沿墙·行进, −朝圆心·行进·镜像)；`IBOW` 照 ams7997
+    /// `/Copy-of-R211-M01`（顺时针墙 `24381/1932`，厚 900）的 TTY 真值：原点朝外 900，X 朝上、Y 逆沿墙、Z 朝外。
+    #[test]
+    fn wall_pline_datum_follows_the_posl_pline() {
+        for travel in [1.0, -1.0] {
+            for mirrored in [false, true] {
+                let mirror = if mirrored { -1.0 } else { 1.0 };
+                let obow = pline_datum_in_joint(
+                    [0.0, 0.0],
+                    std::f64::consts::PI,
+                    mirrored,
+                    DVec3::Z,
+                    travel,
+                );
+                let expected = [
+                    DVec3::NEG_Y * mirror,
+                    DVec3::Z * travel,
+                    DVec3::NEG_X * (travel * mirror),
+                ];
+                for (axis, want) in [obow.x_axis, obow.y_axis, obow.z_axis].iter().zip(expected) {
+                    assert!(
+                        (axis.truncate() - want).length() < 1e-12,
+                        "{travel} {mirrored}: {axis:?}"
+                    );
+                }
+                assert!(obow.w_axis.truncate().length() < 1e-12);
+            }
+        }
+        let ibow = pline_datum_in_joint([900.0, 0.0], 0.0, false, DVec3::Z, -1.0);
+        assert!((ibow.w_axis.truncate() - DVec3::new(-900.0, 0.0, 0.0)).length() < 1e-9);
+        assert!((ibow.x_axis.truncate() - DVec3::Y).length() < 1e-12);
+        assert!((ibow.y_axis.truncate() - DVec3::NEG_Z).length() < 1e-12);
+        assert!((ibow.z_axis.truncate() - DVec3::NEG_X).length() < 1e-12);
     }
 
     /// 目录截面 → 圆弧墙截面：减 JUSL 线、`LMIRR` 沿 x 镜像。`/Single_leaf_wall` 的 `NA` / `OBOW` 在

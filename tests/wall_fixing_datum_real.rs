@@ -1,4 +1,4 @@
-//! 真库门：WALL 名下 `JLDATU → PLDATU(POSL=OBOW) → FIXING` 的隐式标架与 E3D 一致
+//! 真库门：WALL 名下 `JLDATU → PLDATU(POSL=OBOW / IBOW) → FIXING` 的隐式标架与 E3D 一致
 //! （`elmodl::fixing_host_frame` + `elmodl::fixing_local_matrix`，经 `catalogue::model_catalogue_member`）。
 //!
 //! 真值是 E3D TTY 只读导出的 RVM（gen-model `test_data/rvm/1RS-WF03-W-C-RR001.rvm`，CWALL
@@ -20,12 +20,14 @@ use e3d_io::db_element::{DbFilePin, DbSet, template_file_for};
 use e3d_io::refno::RefNo;
 use e3d_model::catalogue::model_catalogue_member;
 use e3d_model::db_discovery::DirectoryDbResolver;
-use glam::DVec3;
+use glam::{DMat4, DVec3};
 
 const AMS_DIR: &str = r"D:\AVEVA\Projects\E3D3.1\AvevaMarineSample\ams000";
+const APS_DIR: &str = r"D:\AVEVA\Projects\E3D3.1\AvevaPlantSample\aps000";
 const ACP_DIR: &str = r"D:\AVEVA\Projects\E3D3.1\AvevaCatalogue\acp000";
 const DESIGN_DB: &str = "ams1112_0001";
 const DESIGN_DB_7997: &str = "ams7997_0001";
+const DESIGN_DB_APS: &str = "aps250110_0001";
 const TEMPLATE_DIR: &str = r"E:\reverse\e3d\shadow_e3d31_aps_all";
 
 fn fixtures_present() -> bool {
@@ -33,7 +35,11 @@ fn fixtures_present() -> bool {
 }
 
 fn fixtures_present_for(dbs: &[&str]) -> bool {
-    let design: Vec<PathBuf> = dbs.iter().map(|db| Path::new(AMS_DIR).join(db)).collect();
+    fixtures_present_in(AMS_DIR, dbs)
+}
+
+fn fixtures_present_in(dir: &str, dbs: &[&str]) -> bool {
+    let design: Vec<PathBuf> = dbs.iter().map(|db| Path::new(dir).join(db)).collect();
     let attlib = Path::new(TEMPLATE_DIR).join("attlib.dat");
     let mut missing: Vec<String> = design
         .iter()
@@ -63,16 +69,20 @@ fn fixtures_present_for(dbs: &[&str]) -> bool {
 
 /// ams 设计库 + 扫 ams000 / acp000 的 resolver（套管 SPRE 在 ams5052，墙型材 SPRE 在 acp7001）。
 fn ams_set_db(design_db: &str) -> Arc<DbSet> {
+    project_set_db(AMS_DIR, design_db)
+}
+
+/// `dir` 里的设计库 + 扫 `dir` / acp000 的 resolver。
+fn project_set_db(dir: &str, design_db: &str) -> Arc<DbSet> {
     let template = Path::new(TEMPLATE_DIR);
     let resolver =
-        DirectoryDbResolver::scan(&[PathBuf::from(AMS_DIR), PathBuf::from(ACP_DIR)], template)
-            .unwrap();
+        DirectoryDbResolver::scan(&[PathBuf::from(dir), PathBuf::from(ACP_DIR)], template).unwrap();
     let set = Arc::new(
         DbSet::with_attlib_file_and_resolver(&template.join("attlib.dat"), Box::new(resolver))
             .unwrap(),
     );
     set.add_db(DbFilePin {
-        file: Path::new(AMS_DIR).join(design_db),
+        file: Path::new(dir).join(design_db),
         template: template_file_for(template, "DESI").unwrap(),
         db_type: Some("DESI".into()),
         sesno: None,
@@ -306,5 +316,146 @@ fn obow_mirrored_wall_fixings_sit_where_e3d_puts_them() {
                 "{what}：{name} 列 {got:.9}，E3D TTY {want:.9}"
             );
         }
+    }
+}
+
+/// 实例世界矩阵对 E3D TTY 的 `POS/ORI WRT WORLD`：平移取到 0.01 mm，三列取到 1e-6。
+fn assert_tty_frame(world: DMat4, translation: [f64; 3], axes: [[f64; 3]; 3], what: &str) {
+    let got_t = world.w_axis.truncate();
+    let want_t = DVec3::from_array(translation);
+    assert!(
+        (got_t - want_t).abs().max_element() <= 0.01,
+        "{what}：平移 {got_t:.3}，E3D TTY {want_t:.3}（差 {:.3}）",
+        got_t - want_t
+    );
+    let columns = [world.x_axis, world.y_axis, world.z_axis];
+    for ((name, got), want) in ["X", "Y", "Z"].into_iter().zip(columns).zip(axes) {
+        let (got, want) = (got.truncate(), DVec3::from_array(want));
+        assert!(
+            (got - want).abs().max_element() <= 1e-6,
+            "{what}：{name} 列 {got:.9}，E3D TTY {want:.9}"
+        );
+    }
+}
+
+/// `POSL=IBOW` 墙族：ams7997 `/Copy-of-R211-M01`（`24381/2067`，顺时针墙 `24381/1932`，厚 900，
+/// 目录「简图1-双开门」）。真值是 E3D TTY 只读宏打出的 `POS/ORI WRT WORLD` 与同一会话导出的
+/// RVM（gen-model `verification/civil-tty-20261021/ibow_ams_truth.psv`、`ibow_ams.rvm`）。
+///
+/// PLDATU 原点在 IBOW p-line 上（离 JUSL 线一个壁厚），Z 沿 IBOW 的 PLAX，Y 取 PLDATU 的 `YDIR`。
+/// 修前按 aps250110 拟合的「抬高 (DESP[0]−600).max(3400) + 清 POS[1]/POS[2]」放偏 1.9 m、X 轴反向。
+///
+/// 两块门扇再拿 RVM 的世界包围盒钉住：P8 / P12 的 PTCD `Y ( ATTRIB RPRO G ) Z` 里 `G` 是
+/// `PTYP DIST`，E3D 求不出（`unable to evaluate catalogue expression for attribute PTCD`），方向回
+/// FIXING 的 +Y，门扇贴在墙面里；把 G 当度数读，门扇就转出墙面（偏 750 mm）。
+#[test]
+fn ibow_wall_fixing_sits_where_e3d_puts_it() {
+    if !fixtures_present_for(&[DESIGN_DB_7997]) {
+        return;
+    }
+    let set = ams_set_db(DESIGN_DB_7997);
+    let what = "/Copy-of-R211-M01";
+    let fixing = set.element(RefNo::new(24381, 2067));
+    assert_eq!(fixing.element_type().unwrap(), "FIXING", "{what}");
+    let generated = model_catalogue_member(&fixing)
+        .unwrap()
+        .generated
+        .unwrap_or_else(|| panic!("{what} 没出实体"));
+    assert_tty_frame(
+        generated.world,
+        [14466.341, -8353.3382, 2900.0],
+        [
+            [0.0, 0.0, 1.0],
+            [-0.568542971, -0.822653566, 0.0],
+            [0.822653566, -0.568542971, 0.0],
+        ],
+        what,
+    );
+    let bb = generated.solid.bounding_box().expect("门扇非空");
+    let (lo, hi) = (bb.min(), bb.max());
+    let got = [lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]];
+    let rvm = [13613.526, -9672.6, 1250.0, 14892.748, -7651.067, 2900.0];
+    for (axis, (g, r)) in got.iter().zip(rvm).enumerate() {
+        assert!(
+            (g - r).abs() <= 0.01,
+            "{what}：包围盒第 {axis} 分量 {g:.3}，E3D RVM {r:.3}（全部 {got:?}）"
+        );
+    }
+}
+
+/// 同一族的 aps250110 门窗：`/B01_LEV01_EXT_WALLS` 与 `/B01_LEV02_EXT_WALLS` 两堵外墙（墙厚 100）
+/// 上的 5 只窗、1 只门（真值 gen-model `verification/civil-tty-20261021/ibow_aps_truth.psv`）。
+#[test]
+fn ibow_aps_wall_fixings_sit_where_e3d_puts_them() {
+    if !fixtures_present_in(APS_DIR, &[DESIGN_DB_APS]) {
+        return;
+    }
+    let set = project_set_db(APS_DIR, DESIGN_DB_APS);
+    let window = "Window-Spec/DG-S/1200x1200";
+    // (w1, E3D 平移, E3D X 列, Y 列, Z 列, 说明)
+    let cases: [(u32, [f64; 3], [f64; 3], [f64; 3], [f64; 3], &str); 6] = [
+        (
+            208,
+            [-309432.068, 316887.646, 101100.0],
+            [0.0, 0.0, -1.0],
+            [0.964307371, -0.264785373, 0.0],
+            [-0.264785373, -0.964307371, 0.0],
+            window,
+        ),
+        (
+            211,
+            [-301049.023, 317040.361, 101100.0],
+            [0.0, 0.0, -1.0],
+            [0.954024003, 0.299730216, 0.0],
+            [0.299730216, -0.954024003, 0.0],
+            window,
+        ),
+        (
+            214,
+            [-305479.528, 316357.624, 100000.0],
+            [0.0, 0.0, -1.0],
+            [0.999999049, 0.001378897, 0.0],
+            [0.001378897, -0.999999049, 0.0],
+            "Doors-Spec/EE-DOO-NS/1710x2045",
+        ),
+        (
+            400,
+            [-309432.023, 316887.81, 105100.0],
+            [0.0, 0.0, -1.0],
+            [0.964307371, -0.264785373, 0.0],
+            [-0.264785373, -0.964307371, 0.0],
+            window,
+        ),
+        (
+            403,
+            [-305479.528, 316357.704, 105100.0],
+            [0.0, 0.0, -1.0],
+            [0.999999049, 0.001378897, 0.0],
+            [0.001378897, -0.999999049, 0.0],
+            window,
+        ),
+        (
+            406,
+            [-301049.032, 317040.389, 105100.0],
+            [0.0, 0.0, -1.0],
+            [0.954024003, 0.299730216, 0.0],
+            [0.299730216, -0.954024003, 0.0],
+            window,
+        ),
+    ];
+    for (w1, translation, x_axis, y_axis, z_axis, spec) in cases {
+        let what = format!("=2013286654/{w1}（{spec}）");
+        let fixing = set.element(RefNo::new(2013286654, w1));
+        assert_eq!(fixing.element_type().unwrap(), "FIXING", "{what}");
+        let generated = model_catalogue_member(&fixing)
+            .unwrap()
+            .generated
+            .unwrap_or_else(|| panic!("{what} 没出实体"));
+        assert_tty_frame(
+            generated.world,
+            translation,
+            [x_axis, y_axis, z_axis],
+            &what,
+        );
     }
 }

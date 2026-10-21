@@ -106,23 +106,15 @@ const OWNER_WALK_SITES: &[Site] = &[
     },
     Site {
         file: "elmodl.rs",
-        func: "pldatu_posl",
-        climb: Climb::AboveUnit,
-        reads: &["POSL"],
-        why: "FIXING 自成模型单元，这里上溯一跳读属主 PLDATU 的 POSL（OBOW 走站位原点，其余走门窗 IBOW）。POSL 在 FIXING 单元之上：整棵子树重算时祖先闭包带上 WALL 所在根，FIXING 跟着重生成；ADR-080 单元级发布不覆盖这条边，与 fixing_host_frame 同一缺口（gen-model issue #39）",
-    },
-    Site {
-        file: "elmodl.rs",
         func: "fixing_host_frame",
         climb: Climb::AboveUnit,
-        reads: &["DESP", "LMIRR", "OWNER", "ZDIS"],
+        reads: &["OWNER", "ZDIS"],
         why: "FIXING 自成模型单元（category::is_model_unit），它的实例标架却读 owner²=JLDATU 的 ZDIS（OWNER 是报错文案里的名字），再经 \
-              wall_spine_points / world_matrix 读宿主 WALL，09-28 起还读宿主 WALL 的 DESP[0]（墙高 → IBOW 站位），\
-              10-21 起读宿主 WALL 的 LMIRR（型材镜像 → pline 基 x/z 列取负）——都在 FIXING 单元之上；\
-              FIXING 自己的 DESP（门洞高宽）是同一个字面量，在单元内。整棵子树重算的根口径下 \
+              wall_spine_points / world_matrix 读宿主 WALL，把宿主 WALL 与 owner=PLDATU 交给 wall_pline_datum 读（见 \
+              ANCESTOR_CONSUMERS）——都在 FIXING 单元之上。整棵子树重算的根口径下 \
               （JLDATU 改了 → 祖先闭包命中 WALL 所在的 STRU / FRMW / SBFR 根 → 整棵重算）FIXING 跟着重生成；\
               ADR-080 单元级发布只重建 plan_update 点名的单元，FIXING 不在 JLDATU 的子树里，靠 \
-              increment::implicit_frame_host_of 的 WALL 支覆盖——墙自己（DESP / LMIRR / SPRE）、它的 SPINE 点、JLDATU / PLDATU \
+              increment::implicit_frame_host_of 的 WALL 支覆盖——墙自己（JUSL / LMIRR / SPRE）、它的 SPINE 点、JLDATU / PLDATU \
               任一改了，就把整棵 WALL 子树级联进计划，与 point_on_host 那条同型（gen-model issue #39 / #37），单元规划已经补上。\
               墙型材换版（目录那一侧）走目录版本核对的级联",
     },
@@ -329,6 +321,20 @@ const ANCESTOR_CONSUMERS: &[(&str, &str, &[&str], &str)] = &[
         &["POS"],
         "宿主 WALL 的 SPINE 成员点位：被 fixing_host_frame 用在 FIXING 单元之上（AboveUnit，理由见那一条）；\
          WALL 自己的生成也用它，那一侧在单元内",
+    ),
+    (
+        "elmodl.rs",
+        "wall_pline_datum",
+        &["JUSL", "LMIRR", "POSL", "YDIR"],
+        "墙上 FIXING 的 PLDATU 标架：读宿主 WALL 的 JUSL / LMIRR（SPRE 目录截面的 p-line 经 datum::section_pline）与 \
+         PLDATU 的 POSL / YDIR。都在 FIXING 单元之上，覆盖口径见 fixing_host_frame 那一条（implicit_frame_host_of 的 WALL 支）",
+    ),
+    (
+        "datum.rs",
+        "section_pline",
+        &[],
+        "宿主（GENSEC / WALL）截面里某条 p-line：只走宿主的 SPRE 目录链（section_catalogue）与目录侧的 PLIN，\
+         PX / PY 表达式按宿主的设计参数求值；覆盖口径与调用方（wall_pline_datum）相同",
     ),
     (
         "transform.rs",

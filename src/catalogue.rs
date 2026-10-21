@@ -1777,8 +1777,7 @@ fn catalogue_member_world(member: &DbElement) -> Result<DMat4, ModelError> {
 /// （HEIG 1340）顶面在 z = 1340。按元素标架摆时 199 只全部沿板法向偏 240–840 mm。ams7999 PANE
 /// 上的 194 只 SJUS 未设，落在板底面。墙上 FIXING 没有这一步：它的记录原点就是元素原点。
 ///
-/// 与 [`crate::elmodl::fixing_local_matrix`] 的 IBOW 那支同一个口径：设计侧 POS 的某个分量是配件的
-/// 定位输入，不是目录实例的平移。开孔刀（[`catalogue_host_cuts`]）与正体共用这一处。
+/// 开孔刀（[`catalogue_host_cuts`]）与正体共用这一处。
 fn panel_fitting_world(member: &DbElement) -> Result<DMat4, ModelError> {
     let local = crate::transform::local_matrix(member)?;
     let surface = match member.owner()? {

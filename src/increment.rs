@@ -999,9 +999,9 @@ const CABLE_TRAY_BRANCH_NOUN: &str = "CWBRAN";
 /// - 带详图式立柱的 HANDRA（`transform::handrail_post_world`，名下有 POSTSE / HRFEAT，或 RAILSE 里
 ///   有 HRTERM）：它的 RPATH 路径（POINTR / CURVE 的 POS、CURVE 的 CURTYP），以及立柱 HRPOST / HRTERM /
 ///   HRGATE 自己（POSREF / ZDIS / HRJUSL / SPRE / WIDT）；
-/// - 名下有 `JLDATU` 的 WALL（`elmodl::fixing_host_frame`，gen-model issue #37）：宿主自己（`DESP[0]` 墙高
-///   → IBOW 站位，`LMIRR` → pline 基镜像），它的 SPINE 路径（POINSP / CURVE 的 POS），以及 datum 自己（JLDATU 的
-///   ZDIS、PLDATU）。墙 datum 下的 FIXING 自成单元，实例标架与开孔刀都由它现算，这些输入全在 FIXING 单元之上。
+/// - 名下有 `JLDATU` 的 WALL（`elmodl::fixing_host_frame`，gen-model issue #37）：宿主自己（`JUSL` /
+///   `LMIRR` 与 SPRE 目录截面的 p-line → PLDATU 标架），它的 SPINE 路径（POINSP / CURVE 的 POS），以及 datum
+///   自己（JLDATU 的 ZDIS、PLDATU 的 POSL / YDIR）。墙 datum 下的 FIXING 自成单元，实例标架与开孔刀都由它现算，这些输入全在 FIXING 单元之上。
 /// - 名下有 `PFIT` 的板（FLOOR / PANE / GWALL，`catalogue::panel_surface_z`）：板自己（第一个环上没有 `HEIG`
 ///   时的 `HEIG`）与它的 PLOO / LOOP（第一个环的 `HEIG` / `SJUS`）。PFIT 自成单元，贴在板 SJUS 指的那一面上；
 ///   板的顶点不在它的输入里（`profile::loop_extent` 不读顶点），改 PAVE / VERT 只上卷到板。

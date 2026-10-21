@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-10-21 墙上 PLDATU 按 POSL p-line 落标架：IBOW 门窗对上 E3D TTY（ams7997 / aps250110 实证）
+
+- `elmodl::wall_pline_datum`：PLDATU 在 JLDATU 站位系里的标架与 GENSEC 的 PLDATU 同一套 GPLDAT——原点是墙截面
+  里 `POSL` 那条 p-line 减 `JUSL` 线（`LMIRR` 时 x 取负），Z 是那条线的 PLAX，Y 是 `YDIR` 去掉 Z 分量，X = Y × Z；
+  p-line 由新的 `datum::section_pline` 从 SPRE 目录截面求。`OBOW` 在 (0, 0)、PLAX −X，与原来写死的公式逐位
+  相同；`IBOW` 在 (墙厚, 0)、PLAX +X。
+- 删掉按 aps250110 RVM 拟合的 IBOW 规则（PLDATU 抬高 `(DESP[0]−600).max(3400)` + 清 FIXING `POS[1]/POS[2]`）：
+  E3D TTY 里 IBOW 的 FIXING 同样按全 POS 从 PLDATU 量。ams7997 `/Copy-of-R211-M01`（`24381/2067`）原先放偏
+  1.9 m、X 轴反向；它和 aps250110 的 6 只门窗现在对 TTY `POS/ORI WRT WORLD` 逐件 ≤ 0.00004 mm / 4.3e-10。
+- R211 的两块门扇另靠 e3d-io 3bed2ba（FIXING 上 `PTYP DIST` 的 `ATTRIB RPRO` 转角求值失败、方向回 +Y）：P8 / P12
+  的 PTCD 回到 FIXING +Y，门扇贴回墙面。土建对拍 9982 件里只有 R211 一件变化（off 1496 mm → exact），
+  `/电气测试模型` 整区 663/663 exact。
+- `wall_fixing_datum_real` 新增两条 IBOW 真库门：R211（标架 + RVM 世界包围盒）与 aps250110 的 6 只门窗。
+
 ## 2026-10-21 rvm_compare：基准侧断开薄片按凸包宽度判窄
 
 - `rvm_compare`：reference_artifact 判档里「窄于一个弦高的断开薄片」，基准侧改按分量在局部 XY 的凸包
