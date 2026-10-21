@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-21 负扫掠圆弧墙落在 spine 外侧（ams7997 E3D TTY 实证）
+
+- `elmodl::circular_wall_radii` / `wall_end_frame`：墙截面落在行进方向的左手侧——逆时针扫掠在
+  spine 内侧 `[r−厚, r]`（原口径），顺时针在外侧 `[r, r+厚]`；斜接端标架跟着翻，仍是右手系。
+- ams7997 `/1RB-CIVI`、`/1RC-CIVI` 整站 RVM 对拍：WALL 1/13 → 13/13、0/12 → 12/12（原先各差一个墙厚
+  1500 / 1300 mm），FLOOR / GWALL 本来就对；ams1112 的 14 堵正扫掠墙不变。
+
 ## 2026-10-21 SBFI：DESP 套管两头接长 + STWALL 上 CMFI 名下的标架（E3D TTY 实证）；ams1112 全库收口
 
 - `elmodl::sbfitting_axial_span`：DESP 套管占 `Z−LENGTH−DESP[5] .. Z+DESP[4]`（目录件 SFIT `/GW-HOLE` 的

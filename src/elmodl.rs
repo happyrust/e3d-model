@@ -1234,7 +1234,7 @@ fn wall_local_solid(el: &DbElement, notes: &mut Vec<String>) -> Result<Manifold,
         });
     }
     let (center, radius, a0, sweep) = circular_spine_geometry(&points)?;
-    let inner = radius - thickness;
+    let (inner, outer) = circular_wall_radii(radius, thickness, sweep);
     if !(inner >= 0.0 && sweep.abs() > 1e-9) {
         return Err(ModelError::Solid(SolidError::Degenerate {
             what: "WALL circular spine",
@@ -1251,7 +1251,7 @@ fn wall_local_solid(el: &DbElement, notes: &mut Vec<String>) -> Result<Manifold,
     let sweep_deg = sweep.to_degrees();
     let sweep_segments = negative_part_rev_segments(radius, sweep_deg);
     let mut torus =
-        rect_torus_solid_with_segments(inner, radius, height, sweep_deg, sweep_segments)?;
+        rect_torus_solid_with_segments(inner, outer, height, sweep_deg, sweep_segments)?;
     let local = DMat4::from_translation(DVec3::new(center.x, center.y, height * 0.5))
         * DMat4::from_rotation_z(a0);
     torus = placed(&torus, local);
@@ -1299,11 +1299,8 @@ fn wall_local_solid(el: &DbElement, notes: &mut Vec<String>) -> Result<Manifold,
             ));
             continue;
         };
-        // 端标架：X 沿墙厚朝内（截面 x ∈ [0, 厚]）、Y 朝上（y ∈ [0, 高]）、Z = 逆时针切向，
-        // 右手系；体所在一侧在 Z 上的符号：起点端随行进方向，终点端反之。
-        let frame = DMat4::from_translation(point)
-            * DMat4::from_mat3(DMat3::from_cols(-radial, DVec3::Z, ccw));
-        let body_dir = if is_start { travel } else { -travel };
+        let frame = wall_end_frame(point, angle, travel);
+        let body_dir = if is_start { 1.0 } else { -1.0 };
         let rings = std::slice::from_ref(&profile_ring);
         let extended = mitre_extension_length(rings, frame, &plane, body_dir);
         if let Some(extension) = mitre_extension_solid(rings, frame, &plane, body_dir)? {
@@ -1337,6 +1334,29 @@ fn wall_local_solid(el: &DbElement, notes: &mut Vec<String>) -> Result<Manifold,
         sweep.to_degrees()
     ));
     Ok(torus)
+}
+
+/// 圆弧墙截面的 `(内径, 外径)`：墙落在行进方向的左手侧（俯视）——逆时针扫掠在 spine 内侧
+/// `[r−厚, r]`，顺时针在外侧 `[r, r+厚]`。
+///
+/// 正扫掠是 ams1112 的全部 14 堵；负扫掠是 ams7997 `/1RB-CIVI`、`/1RC-CIVI` 的 24 堵（JUSL=OBOW），
+/// E3D TTY RVM 里它们都比「一律内侧」往外一个墙厚。墙上 FIXING 的 pline 基同样随行进方向翻（[`fixing_host_frame`]）。
+fn circular_wall_radii(radius: f64, thickness: f64, sweep: f64) -> (f64, f64) {
+    if sweep < 0.0 {
+        (radius, radius + thickness)
+    } else {
+        (radius - thickness, radius)
+    }
+}
+
+/// 圆弧墙斜接用的端标架：X 沿墙厚指向截面所在一侧（截面 x ∈ [0, 厚]，见
+/// [`circular_wall_radii`]）、Y 朝上（y ∈ [0, 高]）、Z 沿行进方向，右手系；体在起点端沿 +Z、
+/// 终点端沿 −Z。`travel` 是扫掠角的符号。
+fn wall_end_frame(point: DVec3, angle: f64, travel: f64) -> DMat4 {
+    let radial = DVec3::new(angle.cos(), angle.sin(), 0.0);
+    let ccw = DVec3::new(-angle.sin(), angle.cos(), 0.0);
+    DMat4::from_translation(point)
+        * DMat4::from_mat3(DMat3::from_cols(-radial * travel, DVec3::Z, ccw * travel))
 }
 
 fn circular_spine_geometry(points: &[DVec3]) -> Result<(DVec3, f64, f64, f64), ModelError> {
@@ -3931,10 +3951,10 @@ mod tests {
     ) -> (Manifold, Manifold, f64) {
         let radius = (outer_start - center).length();
         let a0 = (outer_start.y - center.y).atan2(outer_start.x - center.x);
-        let inner = radius - thickness;
+        let (inner, outer) = circular_wall_radii(radius, thickness, sweep);
         let sweep_deg = sweep.to_degrees();
         let segments = negative_part_rev_segments(radius, sweep_deg);
-        let torus = rect_torus_solid_with_segments(inner, radius, height, sweep_deg, segments)
+        let torus = rect_torus_solid_with_segments(inner, outer, height, sweep_deg, segments)
             .expect("wall torus");
         let local = DMat4::from_translation(DVec3::new(center.x, center.y, height * 0.5))
             * DMat4::from_rotation_z(a0);
@@ -3945,18 +3965,17 @@ mod tests {
         let ccw = DVec3::new(-a0.sin(), a0.cos(), 0.0);
         let point = center + radial * radius;
         let plane = spine_mitre_plane(drns, ccw * travel, point, true).expect("a real mitre");
-        let frame = DMat4::from_translation(point)
-            * DMat4::from_mat3(DMat3::from_cols(-radial, DVec3::Z, ccw));
+        let frame = wall_end_frame(point, a0, travel);
         let ring = vec![
             [0.0, 0.0],
             [thickness, 0.0],
             [thickness, height],
             [0.0, height],
         ];
-        let extended = mitre_extension_length(&[ring.clone()], frame, &plane, travel);
+        let extended = mitre_extension_length(&[ring.clone()], frame, &plane, 1.0);
         let mut mitred = plain.clone();
         if let Some(extension) =
-            mitre_extension_solid(&[ring], frame, &plane, travel).expect("extension")
+            mitre_extension_solid(&[ring], frame, &plane, 1.0).expect("extension")
         {
             mitred = &mitred + &extension;
         }
@@ -4020,6 +4039,34 @@ mod tests {
         assert!((after.max()[1] - before.max()[1]).abs() < 1e-6);
         assert!((after.max()[2] - height).abs() < 1e-6 && after.min()[2].abs() < 1e-6);
         assert!(mitred.volume() < plain.volume());
+    }
+
+    /// 负扫掠圆弧墙落在 spine 外侧：ams7997 `/1RB-WF05-W-C-RR001` WALL 1（`24381/44295`，spine 半径
+    /// 26500、顺时针 90°、墙厚 1500、JUSL=OBOW）在 E3D TTY RVM 里是 [26500, 28000]，不是 [25000, 26500]。
+    /// 端标架同样翻到外侧，仍是右手系。
+    #[test]
+    fn a_clockwise_wall_sits_outside_its_spine() {
+        let sweep = -std::f64::consts::FRAC_PI_2;
+        assert_eq!(
+            circular_wall_radii(26500.0, 1500.0, sweep),
+            (26500.0, 28000.0)
+        );
+        assert_eq!(
+            circular_wall_radii(26500.0, 1500.0, -sweep),
+            (25000.0, 26500.0)
+        );
+        let frame = wall_end_frame(DVec3::new(26500.0, 0.0, 0.0), 0.0, sweep.signum());
+        let (x, y, z) = (
+            frame.x_axis.truncate(),
+            frame.y_axis.truncate(),
+            frame.z_axis.truncate(),
+        );
+        assert!((x - DVec3::X).length() < 1e-12, "截面朝外：{x:?}");
+        assert!(
+            (z - DVec3::NEG_Y).length() < 1e-12,
+            "Z 沿行进方向（顺时针在 0° 处朝 −Y）：{z:?}"
+        );
+        assert!((x.cross(y) - z).length() < 1e-12, "右手系");
     }
 
     /// JLDATU 站位：弧内按弧长走、沿墙向取该点切向（WF05 RR001 `/1RS05CC0013T`，`ZDIS` 3000，
