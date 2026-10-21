@@ -201,14 +201,14 @@ fn recogniser_for_design_noun(noun: &str) -> Option<Recogniser> {
     }
 }
 
-/// 兜底次序里要不要试 `Box`。
+/// 这只目录图元 E3D 只写 `FacetGroup`，按长相的识别器一把都不许上场。
 ///
-/// E3D 的拉伸写出器对目录 `SEXT` 一律写 `FacetGroup`（`DRWEXT`，记录种类常数 11），
-/// 不因为截面是矩形就改走 `DRBOX`。90°、半径 0 的槽弯网格是 8 个角、12 个三角，
-/// `box_from_local_mesh` 认得出盒子——种类却和 E3D 相反（`/1RX07-LCT` 的 20 只 BEND）。
-/// `SBOX` 不走这里：它由 [`recogniser_for_catalogue_noun`] 先挑中 `Box`。出身不明时照旧按长相认。
-fn allow_box_recogniser(catalogue_noun: Option<&str>) -> bool {
-    catalogue_noun != Some("SEXT")
+/// E3D 的拉伸写出器对目录 `SEXT` 一律写 `FacetGroup`（`DRWEXT`，记录种类常数 11）：截面是
+/// 矩形不改走 `DRBOX`（`/1RX07-LCT` 的 20 只 90° 槽弯，网格是盒子），是整圆也不改走 `DRCYL`
+/// （ams8000 竖梯 FTUB `/ACP1000-RFVL-R3B-500` 的圆板，每只 22 块，E3D TTY RVM 里全是面片）。
+/// `SBOX` / `SCYL` 不走这里：它们由 [`recogniser_for_catalogue_noun`] 按出身挑中。出身不明时照旧按长相认。
+fn catalogue_noun_writes_facets_only(catalogue_noun: Option<&str>) -> bool {
+    catalogue_noun == Some("SEXT")
 }
 
 /// `export holes off` 时桥架 / 托盘的负体不进 RVM 记录。C-IY `FTUBE 1`（`24384/22405`）E3D 的
@@ -388,7 +388,6 @@ fn rvm_component_geometry(
     preferred: Option<Recogniser>,
     frame: Option<&glam::DMat4>,
     provenance_only: bool,
-    allow_box: bool,
     analytic_count: &mut usize,
     rejected_count: &mut usize,
 ) -> e3d_model::rvm_read::RvmGeometry {
@@ -404,7 +403,6 @@ fn rvm_component_geometry(
                 .iter()
                 .copied()
                 .filter(|recogniser| Some(*recogniser) != preferred)
-                .filter(|recogniser| allow_box || *recogniser != Recogniser::Box)
                 .find_map(|recogniser| {
                     analytic_candidate(recogniser, world, local_vertices, triangles, false, frame)
                 })
@@ -1226,10 +1224,10 @@ fn main() -> anyhow::Result<()> {
                         // 成员 E3D 走 DRPYR，不进拉伸体写出器（见 `e3d_exports_facets_only`）。
                         // 这一族只认出身挑的那一把，认不出来就是面片——按长相轮一遍正是
                         // 64f3f01 挡掉的那件事（矩形截面写成 `Box`）。
-                        let provenance_only = facets_only;
-                        // `SEXT` 的矩形挤出长得像盒子，E3D 仍写 FacetGroup。`SBOX` 不受影响。
+                        // 目录 `SEXT` 同理：矩形、整圆的挤出 E3D 都写 FacetGroup。
                         let catalogue_noun = component_nouns.get(index).map(String::as_str);
-                        let allow_box = allow_box_recogniser(catalogue_noun);
+                        let provenance_only =
+                            facets_only || catalogue_noun_writes_facets_only(catalogue_noun);
                         // 本件 `NGMR`（→ NGMS）自扣过的组件：E3D 写的是**扣过的**面片，
                         // 不是未扣减的图元（aps7200 `/STAIR-STEEL-PRE-12/BASE` 的栓孔板
                         // 就是一条带孔轮廓的 FacetGroup）。记录级负体照旧能按出身写
@@ -1292,7 +1290,6 @@ fn main() -> anyhow::Result<()> {
                                         preferred,
                                         frame,
                                         provenance_only,
-                                        allow_box,
                                         &mut rvm_analytic,
                                         &mut rvm_analytic_rejected,
                                     )
@@ -1517,19 +1514,24 @@ fn aabb_of_points(points: impl IntoIterator<Item = [f64; 3]>) -> Option<([f64; 3
 #[cfg(test)]
 mod tests {
     use super::{
-        Recogniser, allow_box_recogniser, is_record_splinter, recogniser_for_catalogue_noun,
-        write_uncut_catalogue_parts,
+        Recogniser, catalogue_noun_writes_facets_only, is_record_splinter,
+        recogniser_for_catalogue_noun, write_uncut_catalogue_parts,
     };
 
-    /// `/1RX07-LCT` 的 90° 槽弯是 SEXT，网格是盒子，E3D 写 FacetGroup。
-    /// `SBOX` 仍由出身先挑中 Box。出身不明时不挡。
+    /// `/1RX07-LCT` 的 90° 槽弯（网格是盒子）与 ams8000 竖梯的圆板（网格是圆柱）都是 SEXT，
+    /// E3D 写 FacetGroup。`SBOX` / `SCYL` 仍由出身先挑中。出身不明时不挡。
     #[test]
-    fn a_rectangular_sext_is_not_offered_the_box_recogniser() {
-        assert!(!allow_box_recogniser(Some("SEXT")));
+    fn a_catalogue_sext_is_offered_no_shape_recogniser() {
+        assert!(catalogue_noun_writes_facets_only(Some("SEXT")));
         assert!(recogniser_for_catalogue_noun("SEXT").is_none());
-        assert!(allow_box_recogniser(Some("SBOX")));
+        assert!(!catalogue_noun_writes_facets_only(Some("SBOX")));
         assert_eq!(recogniser_for_catalogue_noun("SBOX"), Some(Recogniser::Box));
-        assert!(allow_box_recogniser(None));
+        assert!(!catalogue_noun_writes_facets_only(Some("SCYL")));
+        assert_eq!(
+            recogniser_for_catalogue_noun("SCYL"),
+            Some(Recogniser::Cylinder)
+        );
+        assert!(!catalogue_noun_writes_facets_only(None));
     }
 
     /// C-IY 带负体的托盘 / 槽弯按可见 SBOX / SEXT / SREV 拆开。NOZZ 的 SCYL 仍整只一条。

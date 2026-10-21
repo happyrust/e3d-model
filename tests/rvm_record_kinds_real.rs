@@ -316,3 +316,20 @@ fn electrical_connections_enter_their_catalogue_by_catr() {
 
     std::fs::remove_dir_all(&scratch).ok();
 }
+
+/// 目录 `SEXT` 不论截面长什么样，E3D 都写 `FacetGroup`：ams8000 竖梯 `FTUB 1 of BRAN /C-GR-1RX-3AB0A`
+/// （`24384/3200`，目录 `/ACP1000-RFVL-R3B-500`）的 11 根槽钢与 22 块圆板全是 SEXT，E3D TTY 导出
+/// （`ams8000_lv6_24384_2498.rvm`）写 33 条面片；此前我们把圆板认成了 22 条 `Cylinder`。
+#[test]
+fn catalogue_extrusions_stay_facet_groups_even_when_round() {
+    if !fixtures_present(CABLE_EQUIP_DB) {
+        return;
+    }
+    let scratch: PathBuf =
+        std::env::temp_dir().join(format!("e3d-model-rvm-kinds-riser-{}", std::process::id()));
+    let (rvm, _) = generate(CABLE_EQUIP_DB, "24384/3199", "on", &scratch);
+    let kinds = record_kinds(&rvm, "FTUB 1 of BRAN /C-GR-1RX-3AB0A");
+    assert_eq!(kinds, vec!["FacetGroup"; 33]);
+
+    std::fs::remove_dir_all(&scratch).ok();
+}

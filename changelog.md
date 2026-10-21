@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-10-22 目录 `SEXT` 一律写 `FacetGroup`：整圆截面的挤出也不认成 `Cylinder`
+
+- ams8000 竖梯 FTUB（目录 `/ACP1000-RFVL-R3B-500`，14 只）的圆板是整圆截面的 SEXT，E3D TTY 导出里全是
+  `FacetGroup`；我们的长相识别器把它们认成了 `Cylinder`（每只 22–55 条）。同库 3 只 `ELCONN` 的矩形 SEXT
+  认成了 `Pyramid`。
+- E3D 的拉伸写出器（`DRWEXT`，记录种类常数 11）对目录 SEXT 只写面片。此前只挡了 `Box`
+  （`allow_box_recogniser`），现在 `gen_ams` 的 `catalogue_noun_writes_facets_only` 让目录 SEXT 只走出身
+  （与拉伸体族同一条），按长相的识别器一把都不上场；`rvm_component_geometry` 的 `allow_box` 参数随之去掉。
+- 对拍：ams8000 记录种类不同 45 → 28（剩下的是整圈 SREV 的记录条数），几何判档不变。土建、
+  `/SSC测试`、MDS、S1、FIXING / datum 真值逐件不变。
+- 真库门 `rvm_record_kinds_real::catalogue_extrusions_stay_facet_groups_even_when_round`；单测
+  `a_catalogue_sext_is_offered_no_shape_recogniser`。
+
 ## 2026-10-22 电气连接件 `ELCONN` 按 `CATR` 进目录链：ams8000 34 只接线盒 / 底座对上 E3D
 
 - ams8000 整库按 ZONE 的 E3D TTY 导出里，`/1RX03-CASE-DQ`、`/1RX03-CASE-YK` 两个区的设备名下有 34 只
