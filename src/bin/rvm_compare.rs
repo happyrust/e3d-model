@@ -435,7 +435,12 @@ fn load_rvm_side(path: &std::path::Path, want_facets: bool) -> anyhow::Result<Rv
             None => ([0.0; 3], [0.0; 3]),
         };
 
-        if want_facets && !world_vertices.is_empty() {
+        // reference_artifact 那一档两侧都按连通分量滤掉窄于弦高的断开薄片
+        // （[`significant_components_aabb`]）。基准侧连顶点一起留进面片索引；生成侧只留每个分量的
+        // 局部 AABB，顶点当场丢掉。
+        let parts = if world_vertices.is_empty() {
+            Vec::new()
+        } else {
             let polygons = member
                 .geometries
                 .iter()
@@ -458,10 +463,27 @@ fn load_rvm_side(path: &std::path::Path, want_facets: bool) -> anyhow::Result<Rv
                     },
                 })
                 .collect::<Vec<_>>();
+            connected_polygon_components(&polygons)
+        };
+        let components = parts
+            .iter()
+            .filter_map(|part| {
+                aabb6(part.iter().map(|vertex| {
+                    (inverse * glam::DVec3::from_array(*vertex).extend(1.0))
+                        .truncate()
+                        .to_array()
+                }))
+            })
+            .map(|a| GeneratedComponent {
+                local_aabb_min: [a[0], a[1], a[2]],
+                local_aabb_max: [a[3], a[4], a[5]],
+            })
+            .collect();
+        if want_facets && !world_vertices.is_empty() {
             facets.insert(
                 member.name.trim().to_string(),
                 FacetData {
-                    components: connected_polygon_components(&polygons),
+                    components: parts,
                     vertices: world_vertices,
                 },
             );
@@ -480,7 +502,7 @@ fn load_rvm_side(path: &std::path::Path, want_facets: bool) -> anyhow::Result<Rv
             local_aabb_min: Some(local_min),
             local_aabb_max: Some(local_max),
             world: Some(world),
-            components: Vec::new(),
+            components,
             kinds: member
                 .geometries
                 .iter()
@@ -1426,5 +1448,85 @@ mod tests {
         let (aabb, filtered) = significant_components_aabb(&components, 10.0).unwrap();
         assert_eq!(filtered, 1);
         assert_eq!(aabb, components[0]);
+    }
+
+    /// RVM ↔ RVM 这条路的生成侧也要有分量账：一个成员里两块不连通的面片读回来是两个分量。
+    /// 没有它，基准侧滤掉了窄于弦高的断开薄片、生成侧却交不出分量，reference_artifact 那一档
+    /// 在 RVM ↔ RVM 上永远进不去（ams1112 FLOOR 9 of CFLOOR /1RS-WF05-F-C-F001 就这样判成了 off）。
+    #[test]
+    fn rvm_side_reports_components_for_the_generated_side() {
+        fn cuboid(lo: [f64; 3], hi: [f64; 3], base: u32) -> (Vec<[f64; 3]>, Vec<[u32; 3]>) {
+            let vertices = (0..8)
+                .map(|i| {
+                    [
+                        if i & 1 == 0 { lo[0] } else { hi[0] },
+                        if i & 2 == 0 { lo[1] } else { hi[1] },
+                        if i & 4 == 0 { lo[2] } else { hi[2] },
+                    ]
+                })
+                .collect();
+            let faces: [[u32; 4]; 6] = [
+                [0, 2, 3, 1],
+                [4, 5, 7, 6],
+                [0, 1, 5, 4],
+                [2, 6, 7, 3],
+                [0, 4, 6, 2],
+                [1, 3, 7, 5],
+            ];
+            let triangles = faces
+                .iter()
+                .flat_map(|[a, b, c, d]| {
+                    [
+                        [a + base, b + base, c + base],
+                        [a + base, c + base, d + base],
+                    ]
+                })
+                .collect();
+            (vertices, triangles)
+        }
+        let (mut vertices, mut triangles) = cuboid([0.0, 0.0, -100.0], [1000.0, 800.0, 0.0], 0);
+        let (sliver_vertices, sliver_triangles) =
+            cuboid([2000.0, 0.0, -100.0], [2002.0, 500.0, 0.0], 8);
+        vertices.extend(sliver_vertices);
+        triangles.extend(sliver_triangles);
+        let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        let geometry = e3d_model::rvm_write::facet_group_from_world_triangles(
+            identity, [0.0; 3], &vertices, &triangles,
+        );
+        let file = e3d_model::rvm_read::RvmFile {
+            header: Default::default(),
+            members: vec![e3d_model::rvm_read::RvmMember {
+                name: "FLOOR 1 of CFLOOR /T".to_string(),
+                path: "/FLOOR 1 of CFLOOR /T".to_string(),
+                parent: None,
+                translation_mm: [0.0; 3],
+                material: 0,
+                geometries: vec![geometry],
+            }],
+        };
+        let path =
+            std::env::temp_dir().join(format!("rvm_compare_components_{}.rvm", std::process::id()));
+        file.write(&path).unwrap();
+        let loaded = load_rvm_side(&path, false);
+        std::fs::remove_file(&path).ok();
+        let (_, facets, generated) = loaded.unwrap();
+        assert!(facets.is_empty(), "生成侧不建面片索引");
+        let [element] = generated.as_slice() else {
+            panic!("应该恰好一个成员");
+        };
+        let mut components = element
+            .components
+            .iter()
+            .map(|c| {
+                let (lo, hi) = (c.local_aabb_min, c.local_aabb_max);
+                [lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]]
+            })
+            .collect::<Vec<_>>();
+        components.sort_by(|a, b| a[0].total_cmp(&b[0]));
+        assert_eq!(components.len(), 2, "{components:?}");
+        assert!((components[1][3] - components[1][0] - 2.0).abs() < 0.01);
+        let (aabb, filtered) = significant_components_aabb(&components, 10.0).unwrap();
+        assert_eq!(filtered, 1);
+        assert!((aabb[3] - 1000.0).abs() < 0.01, "{aabb:?}");
     }
 }
