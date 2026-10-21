@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-10-21 rvm_read 认 E3D 给偏心棱台、偏心 / 斜切 Snout 写的声明盒：FT48B 与 `/SSC测试` 整站不再拒判
+
+- `rvm_read::Primitive::declared_box_mm` 给偏心 `Pyramid`（XOFF / YOFF 非零）补上与 Snout 同形的声明盒：每轴半宽
+  `max(底/2 − off/2, 顶/2 + off/2)`、z = ±h/2。MDS `/SUPPORT/FRAMES/BS/FT48B/6-SUBS1` 的四只楔块记录盒
+  y ∈ ±12.75，真几何 y ∈ [−38.25, 12.75]（TTY `Q PPOS 1 / 2` 实取两端面心）。生成器与
+  `local_hull_points_mm` 本来就对，只是判帧对不上声明盒，整份 RVM 被 `rvm_compare` 拒读。
+- 同一次普查补齐 Snout 声明盒的两处：`hx > hy` 时 y 上界 E3D 写的是 `hx`（ams7997 风管 TRNS 的圆锥段、
+  zone-66457 的偏心阀体）；X 向斜切与 Y 向一样按「度当弧度」计入 z 两端（hvac-5201 的风管斜切段；
+  XBSH 没有样本，按对称写）。
+- 普查盘上 350 份 E3D 3.1 导出物：402 条 `Pyramid` 里 140 条偏心、243 条偏心 / 斜切 `Snout` 逐条命中
+  （残差 ≤ 0.01 mm）；判帧 `unknown` 的记录从 226 条（12 份文件）降到 0。
+- 对拍（缺省表现级生成，对 `LEVEL 6` / `LEVEL HVAC 6` 的 TTY 导出）：MDS BS 80 份 ZONE 全部读进，FT48B 36 对
+  exact（其中 20 对记录种类不同，另案），合计 1477 对：1473 exact、4 chord、0 off；`/SUPPORT/FRAMES/BS/DATA/FT`
+  整份同样结果。ams7997 `/SSC测试` 整站（土建 + 暖通）第一次能整站对拍：4523 对，4522 exact，1 off 是已知的
+  FLOOR 6 残膜。S1 基准与土建逐件不变。
+- `examples/rvm_facets_dump`：记录盒对上声明盒时改拿真外形挑三角化候选，偏心棱台不再报「口径不合」。
+- 单测 `eccentric_pyramid_declares_the_snout_style_box`、`snout_declared_box_tops_y_with_hx_and_counts_x_shear`。
+
 ## 2026-10-21 只有负体集的目录件也算链终点：MDS 关节 JOIN 截杆（ams7324 E3D TTY 实证）
 
 - `catalogue_point::follow_catalogue_component`：目录链上的节点有 GMRE 或 NGMR 就是组件终点（原先只认

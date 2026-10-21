@@ -333,15 +333,19 @@ impl Primitive {
     /// 要拿 E3D 的口径去对；空间判定一律走 [`local_hull_points_mm`](Self::local_hull_points_mm)
     /// 的真几何，**不许**改用这里的盒——偏心 `Snout` 这一档它比真实体还小。
     ///
-    /// 目前只有偏心 `Snout`（`XOFF`/`YOFF` 非零）。E3D 写的是一只**对称**盒，
+    /// 偏心 `Snout`（`XOFF`/`YOFF` 非零）。E3D 写的是一只近乎**对称**的盒，
     /// 半跨取两端「带符号盖心 + 该端半径」的较大者：
     ///
     /// ```text
     /// hx = max(rb − ox/2, rt + ox/2)      hy = max(rb − oy/2, rt + oy/2)
-    /// 盒 = [−hx, −hy, −h/2] .. [hx, hy, h/2]
+    /// 盒 = [−hx, −hy, −h/2] .. [hx, max(hx, hy), h/2]
     /// ```
     ///
     /// 也就是说它只算了 `+` 那一侧、再镜像过去，`−` 侧的盖心偏出去的部分被吃掉了。
+    /// y 上界另有一处毛病：`hx > hy` 时 E3D 写的是 `hx`（y 下界仍是 `−hy`）。ams7997
+    /// `/SSC测试` 风管 TRNS 里的圆锥段（rb 0 / rt 300 / XOFF 438.29）写的是
+    /// `y ∈ [−300, 519.146]`，zone-66457 的偏心阀体（rb 20 / rt 28 / XOFF 8）写的是
+    /// `y ∈ [−28, 32]`。下面那只大小头 `hx < hy`，上界就是 `hy`。`YOFF` 非零的没有样本。
     /// 一只 `rb 136.5 / rt 109.55 / h 178 / ox 26.95` 的同心异径管接头（273.1×219.1 偏心大小头）
     /// 真几何是 `x ∈ [−149.975, 123.025]`，E3D 写的是 `x ∈ ±123.025`——**比实体还窄 26.95 mm**，
     /// 差值恰好等于 `XOFF`。所以它不是「放宽过的估计」，是一条算漏了的公式，凑不出、也不该凑。
@@ -350,13 +354,19 @@ impl Primitive {
     /// （其中 51 条偏心），上面这条公式**逐条**对得上（残差 ≤ 0.01 mm）；真几何那条只对上
     /// 非偏心的 5514 条，51 条偏心的残差恰好是 `|XOFF|`，大到顶穿容差时整份文件的判帧就塌了
     /// （`/1#罐组管线` 等 10 个 ZONE 的 REDUCER 因此被判 `Unknown`，严尺子对拍直接拒判）。
+    /// 2026-10-21 又普查了盘上 349 份 E3D 3.1 导出物（gen-model `verification/`、`test_data/rvm`、
+    /// plant-model-5 基准、本仓 `evidence/` 与 `tests/fixtures/`）：223 条偏心 / 斜切 `Snout` 逐条命中
+    /// 这里的公式；没有 y 上界那处毛病与 X 向斜切时只对得上 33 条，其余 180 条偏心与 10 条 X 向斜切靠
+    /// 判帧容差混过去，混不过去的让 `/SSC测试` 整站与 hvac-5201 那几份被拒判。
     ///
     /// **斜切 `Snout`**（设计 SLCY 走 DRSNO 写出来的那一族）E3D 的盒更离谱：z 两端不是几何的极值，
     /// 而是各按**一个点**挪——顶端挪 `rt·tan(YTSH)`、底端挪 `−rb·tan(YBSH)`——而且喂给 `tan` 的是
-    /// **度数当弧度**（22.5 → tan(22.5 rad) = 0.5578，不是 tan(22.5°) = 0.4142）：
+    /// **度数当弧度**（22.5 → tan(22.5 rad) = 0.5578，不是 tan(22.5°) = 0.4142）。X 向斜切计入的
+    /// 办法一样，像是在 `(r, r)` 那个角上取斜切面的高度：
     ///
     /// ```text
-    /// z_max = +h/2 + rt · tan(tshear_y 的度数)        z_min = −h/2 − rb · tan(bshear_y 的度数)
+    /// z_max = +h/2 + rt · (tan(XTSH 的度数) + tan(YTSH 的度数))
+    /// z_min = −h/2 − rb · (tan(XBSH 的度数) + tan(YBSH 的度数))
     /// ```
     ///
     /// 取证是表现级 6 的四根探针（`_probe14/`，2026-09-15）：120 只 SLCY、10 种参数组合，
@@ -364,20 +374,42 @@ impl Primitive {
     /// （残差 ≤ 0.002 mm）：−22.5° 让顶面**降** 10.599（= 19·tan(22.5 rad)），+67.5° 让它**升**
     /// 429.175（= 19·tan(67.5 rad)，67.5 rad 离 21.5π 只差 0.044），−25.06° 反而升 1.451
     /// （25.06 rad 刚过 8π）——单调的公式一条都凑不出这组符号，度当弧度是唯一解。真几何的
-    /// 顶面在 h/2 ± rt·tan(θ) 之间，跟这只盒没有关系。X 方向的斜切没有样本（120 只 XTSH / XBSH
-    /// 全是 0），这里按同一个点（x = 0）算、不计入——真有样本时它会以 Unknown 报出来。
+    /// 顶面在 h/2 ± rt·tan(θ) 之间，跟这只盒没有关系。X 向的样本是 hvac-5201 导出里 10 条
+    /// XTSH −11.25° / −5.625° 的风管斜切段（顶面升 672.92 = 175·tan(−11.25 rad)），残差 ≤ 0.001 mm；
+    /// XBSH 没有样本，按对称写进 z_min，错了会以 Unknown 报出来。两向同时斜切也没有样本。
+    ///
+    /// **偏心 `Pyramid`** 是同一条公式，半径换成半边长：
+    ///
+    /// ```text
+    /// hx = max(xbot/2 − ox/2, xtop/2 + ox/2)      hy = max(ybot/2 − oy/2, ytop/2 + oy/2)
+    /// 盒 = [−hx, −hy, −h/2] .. [hx, hy, h/2]
+    /// ```
+    ///
+    /// MDS `/SUPPORT/FRAMES/BS/FT48B/6-SUBS1` 的四只楔块（底 10×0、顶 10×51、YOFF −25.5、高 51）
+    /// 真几何是 `y ∈ [−38.25, 12.75]`（TTY `Q PPOS 1 / 2`：顶面心 y = −12.75、底面心 +12.75），
+    /// E3D 写的是 `y ∈ ±12.75`。风管的 TRNS / TAPER / BRCO 也是偏心棱台，同样对不上真几何。
+    /// 普查 2026-10-21 盘上 349 份 E3D 3.1 导出物里的 330 条 `Pyramid`：113 条偏心的逐条命中这条
+    /// 公式（残差 0），其中 103 条与真几何不同、无一条只对得上真几何。差到顶穿容差的那些让整份
+    /// 文件判帧塌掉（FT48B 那份 ZONE、ams7997 `/SSC测试` 整站），`rvm_compare` 拒判。
     pub fn declared_box_mm(&self) -> Option<[f64; 6]> {
         match self {
-            Self::Snout([rb, rt, h, ox, oy, _bsx, bsy, _tsx, tsy])
-                if *ox != 0.0 || *oy != 0.0 || *bsy != 0.0 || *tsy != 0.0 =>
+            Self::Snout([rb, rt, h, ox, oy, bsx, bsy, tsx, tsy])
+                if [ox, oy, bsx, bsy, tsx, tsy].iter().any(|v| **v != 0.0) =>
             {
                 let hx = (rb - ox / 2.0).max(rt + ox / 2.0);
                 let hy = (rb - oy / 2.0).max(rt + oy / 2.0);
                 // E3D 把度数当弧度喂给 tan。
                 let degrees_as_radians_tan = |rad: f64| rad.to_degrees().tan();
-                let z_min = -h / 2.0 - rb * degrees_as_radians_tan(*bsy);
-                let z_max = h / 2.0 + rt * degrees_as_radians_tan(*tsy);
-                Some([-hx, -hy, z_min, hx, hy, z_max])
+                let z_min =
+                    -h / 2.0 - rb * (degrees_as_radians_tan(*bsx) + degrees_as_radians_tan(*bsy));
+                let z_max =
+                    h / 2.0 + rt * (degrees_as_radians_tan(*tsx) + degrees_as_radians_tan(*tsy));
+                Some([-hx, -hy, z_min, hx, hx.max(hy), z_max])
+            }
+            Self::Pyramid([bx, by, tx, ty, ox, oy, h]) if *ox != 0.0 || *oy != 0.0 => {
+                let hx = (bx / 2.0 - ox / 2.0).max(tx / 2.0 + ox / 2.0);
+                let hy = (by / 2.0 - oy / 2.0).max(ty / 2.0 + oy / 2.0);
+                Some([-hx, -hy, -h / 2.0, hx, hy, h / 2.0])
             }
             _ => None,
         }
@@ -815,8 +847,8 @@ fn detect_bbox_frame(geometry: &RvmGeometry) -> BboxFrame {
             .fold(0.0f64, |acc, (x, y)| acc.max((x - y).abs()))
     };
     // 两套点云各判一次，取更贴的那一档：真几何，以及 E3D 写 bbox 时另算的那只盒
-    // （见 `Primitive::declared_box_mm`，只有偏心 / 斜切 `Snout` 有）。E3D 哪天把那条公式
-    // 补齐了，真几何这一套自己就会重新贴上，这里不用回来改。
+    // （见 `Primitive::declared_box_mm`，只有偏心 / 斜切 `Snout` 与偏心 `Pyramid` 有）。
+    // E3D 哪天把那条公式补齐了，真几何这一套自己就会重新贴上，这里不用回来改。
     let mut best: Option<(f64, BboxFrame)> = None;
     let hulls = std::iter::once(points).chain(
         geometry
@@ -1050,6 +1082,39 @@ mod tests {
     }
 
     #[test]
+    fn eccentric_pyramid_declares_the_snout_style_box() {
+        // MDS `/SUPPORT/FRAMES/BS/FT48B/6-SUBS1` PYRAMID 1–4 的实测记录：底 10×0、顶 10×51、
+        // YOFF −25.5、高 51，E3D 写的盒是 y ∈ ±12.75，真几何是 y ∈ [−38.25, 12.75]。
+        let wedge = Primitive::Pyramid([10.0, 0.0, 10.0, 51.0, 0.0, -25.5, 51.0]);
+        assert_close(
+            &wedge.declared_box_mm().unwrap(),
+            &[-5.0, -12.75, -25.5, 5.0, 12.75, 25.5],
+            1e-9,
+        );
+        assert_close(
+            &wedge.local_aabb_mm().unwrap(),
+            &[-5.0, -38.25, -25.5, 5.0, 12.75, 25.5],
+            1e-9,
+        );
+        // ams7997 `/SSC测试` 风管 TRNS：底 500×600 收成一点、XOFF 300 / YOFF −60、高 370。
+        // 记录盒 [−150, −330, −185, 150, 330, 185]，真几何是 x ∈ [−400, 150]、y ∈ [−270, 330]。
+        let transition = Primitive::Pyramid([500.0, 600.0, 0.0, 0.0, 300.0, -60.0, 370.0]);
+        assert_close(
+            &transition.declared_box_mm().unwrap(),
+            &[-150.0, -330.0, -185.0, 150.0, 330.0, 185.0],
+            1e-9,
+        );
+        assert_close(
+            &transition.local_aabb_mm().unwrap(),
+            &[-400.0, -270.0, -185.0, 150.0, 330.0, 185.0],
+            1e-9,
+        );
+        // 不偏心时公式与真几何重合，不另给候选。
+        let frustum = Primitive::Pyramid([12.0, 50.0, 6.0, 25.0, 0.0, 0.0, 50.0]);
+        assert!(frustum.declared_box_mm().is_none());
+    }
+
+    #[test]
     fn eccentric_snout_declares_a_box_narrower_than_the_solid() {
         // `/装卸车汇管PI` 里 `/250-CGA-0311-B1/B1` 那只 REDUCER 的实测记录：
         // rb 136.5 / rt 109.55 / h 178 / XOFF 26.95，E3D 写的盒是 X ∈ ±123.025。
@@ -1067,6 +1132,54 @@ mod tests {
             &hull,
             &[-149.975, -136.5, -89.0, 123.025, 136.5, 89.0],
             0.01,
+        );
+    }
+
+    #[test]
+    fn snout_declared_box_tops_y_with_hx_and_counts_x_shear() {
+        // zone-66457 的偏心阀体 `/1WCC784WV`：rb 20 / rt 28 / h 36 / XOFF 8，记录盒
+        // [−32, −28, −18, 32, 32, 18]——y 下界是 −hy，上界却是 hx。
+        let valve = Primitive::Snout([20.0, 28.0, 36.0, 8.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        assert_close(
+            &valve.declared_box_mm().unwrap(),
+            &[-32.0, -28.0, -18.0, 32.0, 32.0, 18.0],
+            1e-9,
+        );
+        // ams7997 `/SSC测试` 风管 TRNS 的圆锥段：rb 0 / rt 300 / h 370 / XOFF 438.29，
+        // 记录盒 [−519.146, −300, −185, 519.146, 519.146, 185]。
+        let cone = Primitive::Snout([
+            0.0,
+            300.0,
+            370.0,
+            438.2921447753906,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+        ]);
+        assert_close(
+            &cone.declared_box_mm().unwrap(),
+            &[-519.146057, -300.0, -185.0, 519.146057, 519.146057, 185.0],
+            1e-4,
+        );
+        // hvac-5201 的风管斜切段：rb = rt = 175、h 69.619、XTSH −11.25°，记录盒顶面 z = 707.727
+        // = h/2 + 175·tan(−11.25 rad)。
+        let sheared = Primitive::Snout([
+            175.0,
+            175.0,
+            69.61933135986328,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -0.19634954631328583,
+            0.0,
+        ]);
+        assert_close(
+            &sheared.declared_box_mm().unwrap(),
+            &[-175.0, -175.0, -34.809666, 175.0, 175.0, 707.727295],
+            0.002,
         );
     }
 

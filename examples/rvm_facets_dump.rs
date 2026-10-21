@@ -11,13 +11,15 @@
 //! 顶点坐标 = rvm-rs 局部顶点 × group 内 transform × 1000（RVM 存米，输出世界 mm），
 //! 与 gen-model `mesh_compare::add_local_triangulation` 同一口径。
 //!
-//! 非 FacetGroup 图元逐件与 PRIM 记录自带的局部 bbox 对账，按对账结果决定三角化是原样
+//! 非 FacetGroup 图元逐件与 PRIM 记录自带的局部 bbox 对账（偏心棱台、偏心或斜切 Snout 的记录盒
+//! 是 E3D 的声明盒，对上它时改对真外形，见 [`reference_box`]），按对账结果决定三角化是原样
 //! 用还是先从 rvm-rs 旧版的 Y-up 局部系转回 RVM 的 Z-up 再乘 transform（见
 //! [`rvm_local_vertices`]）；两种都对不上的件数与样例打在末尾——图元帧口径再漂就当场看得见。
 
 use std::path::PathBuf;
 
 use anyhow::{Context, bail};
+use e3d_model::rvm_read::Primitive;
 use rvm_rs::export::Tessellate;
 use rvm_rs::export::tessellator::get_scale;
 use rvm_rs::parse_rvm;
@@ -81,13 +83,57 @@ fn undo_pyramid_shift(kind: &GeometryKind, points: &[[f32; 3]]) -> Option<Vec<[f
     )
 }
 
-/// 选出与记录 bbox 同口径的那份局部顶点；`Some(true)` = 原样（或只去掉棱台偏心）就对，
-/// `Some(false)` = 还用了 Y→Z 转换，`None` = 都对不上（照原样倒出）。
+/// 挑候选时拿来对的那只盒。偏心 `Pyramid`、偏心或斜切 `Snout` 的记录盒是 E3D 另算的声明盒
+/// （`e3d_model::rvm_read::Primitive::declared_box_mm`），不是真外形：记录盒对得上声明盒时
+/// 改拿真外形的局部 AABB 去挑，否则照旧拿记录盒。
+fn reference_box(kind: &GeometryKind, record: &[f32; 6]) -> [f32; 6] {
+    let primitive = match kind {
+        GeometryKind::Pyramid(p) => Primitive::Pyramid(
+            [
+                p.bottom[0],
+                p.bottom[1],
+                p.top[0],
+                p.top[1],
+                p.offset[0],
+                p.offset[1],
+                p.height,
+            ]
+            .map(f64::from),
+        ),
+        GeometryKind::Snout(s) => Primitive::Snout(
+            [
+                s.radius_bottom,
+                s.radius_top,
+                s.height,
+                s.offset_x,
+                s.offset_y,
+                s.bottom_shear_x,
+                s.bottom_shear_y,
+                s.top_shear_x,
+                s.top_shear_y,
+            ]
+            .map(f64::from),
+        ),
+        _ => return *record,
+    };
+    let to_f32 = |b: [f64; 6]| b.map(|v| v as f32);
+    match (primitive.declared_box_mm(), primitive.local_aabb_mm()) {
+        (Some(declared), Some(solid)) if matches_record_bbox(&to_f32(declared), record) => {
+            to_f32(solid)
+        }
+        _ => *record,
+    }
+}
+
+/// 选出与记录 bbox（声明盒那几种换成真外形，见 [`reference_box`]）同口径的那份局部顶点；
+/// `Some(true)` = 原样（或只去掉棱台偏心）就对，`Some(false)` = 还用了 Y→Z 转换，
+/// `None` = 都对不上（照原样倒出）。
 fn rvm_local_vertices(
     kind: &GeometryKind,
     tri: &rvm_rs::export::Triangulation,
     record: &[f32; 6],
 ) -> (Vec<[f32; 3]>, Option<bool>) {
+    let reference = reference_box(kind, record);
     // 顺序即优先级：先不转帧、后转帧，每一档后面紧跟它去掉棱台偏心的版本。
     let mut candidates = Vec::with_capacity(4);
     for (points, in_record_frame) in [
@@ -100,7 +146,7 @@ fn rvm_local_vertices(
     }
     let fallback = candidates[0].0.clone();
     for (points, in_record_frame) in candidates {
-        if aabb_of(&points).is_some_and(|aabb| matches_record_bbox(&aabb, record)) {
+        if aabb_of(&points).is_some_and(|aabb| matches_record_bbox(&aabb, &reference)) {
             return (points, in_record_frame);
         }
     }
