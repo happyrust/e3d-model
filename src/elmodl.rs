@@ -1771,9 +1771,11 @@ fn wall_spine_points(wall: &DbElement) -> Result<(DVec3, DVec3, DVec3), ModelErr
 /// Build the design-side SBFI sleeve carried directly by `DESP`.
 ///
 /// E3D's RVM for this family is an annular extrusion, not the two solid
-/// cylinders used by the legacy generator.  The observed descriptor layout is
-/// `[ID, OD, THK, LENGTH, .., X, Y, Z]` (millimetres); the sleeve ends at its
-/// local datum, hence it occupies `Z-LENGTH .. Z`.
+/// cylinders used by the legacy generator.  The descriptor layout is
+/// `[ID, OD, THK, LENGTH, EXT_DATUM, EXT_FAR, .., X, Y, Z]` (millimetres); the
+/// sleeve's `LENGTH` ends at its local datum `Z` and each end is lengthened by its
+/// extension, so it occupies `Z-LENGTH-EXT_FAR .. Z+EXT_DATUM`
+/// ([`sbfitting_axial_span`]).
 fn sbfitting_local_solid(el: &DbElement, notes: &mut Vec<String>) -> Result<Manifold, ModelError> {
     let refno = el.refno().to_string();
     let desp = el
@@ -1848,14 +1850,30 @@ fn sbfitting_from_desp(desp: &[f64], notes: &mut Vec<String>) -> Result<Manifold
         ));
     }
 
+    let (bottom, span) = sbfitting_axial_span(desp);
     let solid = extrude_rings(
         vec![
             sbfitting_ring(outer_diam * 0.5, false),
             sbfitting_ring(inner_diam * 0.5, true),
         ],
-        length,
+        span,
     )?;
-    Ok(solid.translate(desp[7], desp[8], desp[9] - length))
+    Ok(solid.translate(desp[7], desp[8], bottom))
+}
+
+/// 套管沿局部 Z 的 `(底, 长)`：本体 `LENGTH` 止于基准 `Z`，`DESP[4]` 接在基准那头、`DESP[5]` 接在
+/// 另一头。
+///
+/// 目录件的写法（SFIT `/GW-HOLE` 的 GMSE 13244/695337，DESP 下标从 1 起）：两只 LCYL 从中点各朝
+/// 一头长出去，`PTDI` 分别是 `DESP[5] + DESP[4]/2`（PAXI 1001，朝基准）与 `DESP[6] + DESP[4]/2`
+/// （PAXI 1002）。ams1112 `/1RS03CC0028T` 的 SBFI（`DESP[4]=50`）在 E3D TTY RVM 里是 z ∈ [−1600, 50]；
+/// 同库另外 136 只两项都是 0。
+fn sbfitting_axial_span(desp: &[f64]) -> (f64, f64) {
+    let (length, past_datum, past_far_end) = (desp[3], desp[4], desp[5]);
+    (
+        desp[9] - length - past_far_end,
+        length + past_datum + past_far_end,
+    )
 }
 
 /// The reference RVM uses eight circumferential panels for this catalogue
@@ -1897,8 +1915,9 @@ fn sbfitting_bore_from_desp(desp: &[f64]) -> Result<Manifold, SolidError> {
             detail: format!("OD/LENGTH = {outer_diam}/{length}"),
         });
     }
-    let bore = extrude_rings(vec![sbfitting_ring(outer_diam * 0.5, false)], length)?;
-    Ok(bore.translate(desp[7], desp[8], desp[9] - length))
+    let (bottom, span) = sbfitting_axial_span(desp);
+    let bore = extrude_rings(vec![sbfitting_ring(outer_diam * 0.5, false)], span)?;
+    Ok(bore.translate(desp[7], desp[8], bottom))
 }
 
 enum LocalSolid {
@@ -4187,6 +4206,31 @@ mod tests {
         assert!((bounds.max()[1] - 62.0).abs() < 1e-9);
         assert!(bounds.max()[2].abs() < 1e-9);
         assert!(notes.is_empty());
+    }
+
+    /// `DESP[4]` / `DESP[5]` 把套管往两头接长（[`sbfitting_axial_span`]）。ams1112 `/1RS03CC0028T` 的
+    /// SBFI（`DESP[4]=50`）在 E3D TTY RVM 里是 z ∈ [−1600, 50]；开孔刀跟着一起接长，与套管同壳同位。
+    #[test]
+    fn sleeve_extensions_lengthen_both_the_sleeve_and_its_bore() {
+        let mut notes = Vec::new();
+        let datum_only = [
+            150.0, 186.0, 18.0, 1600.0, 50.0, 0.0, 2000.0, -2320.0, 0.0, 0.0,
+        ];
+        let sleeve = sbfitting_from_desp(&datum_only, &mut notes).expect("valid SBFI DESP");
+        let bounds = sleeve.bounding_box().expect("SBFI bounds");
+        assert!((bounds.min()[2] + 1600.0).abs() < 1e-9);
+        assert!((bounds.max()[2] - 50.0).abs() < 1e-9);
+
+        let both_ends = [
+            150.0, 186.0, 18.0, 1600.0, 50.0, 30.0, 2000.0, -2320.0, 0.0, 0.0,
+        ];
+        let sleeve = sbfitting_from_desp(&both_ends, &mut notes).expect("valid SBFI DESP");
+        let bore = sbfitting_bore_from_desp(&both_ends).expect("valid SBFI DESP");
+        for solid in [&sleeve, &bore] {
+            let bounds = solid.bounding_box().expect("bounds");
+            assert!((bounds.min()[2] + 1630.0).abs() < 1e-9);
+            assert!((bounds.max()[2] - 50.0).abs() < 1e-9);
+        }
     }
 
     /// 套管在宿主墙上开的洞 = 套管外圆那只实心八棱柱，与套管本体**同一组顶点、
