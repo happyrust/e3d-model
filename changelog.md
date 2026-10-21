@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-10-21 rvm_compare 新增 `film` 判档：连在主体上的零厚残膜 / 发丝不再算 off
+
+- `reference_artifact` 只认断开的薄片；负体切剩的膜与发丝连在主体上，按包围盒差一律 off。新判法：对每一侧，
+  取落在对侧局部 AABB 加弦高之外的面片顶点，连同面片边穿过那只盒面的交点（只拿盒外顶点会把「真的
+  长出一截」的端面量成 0 厚），量它在三个主方向上的最小跨度；每一侧多出来的部分都 ≤ 0.05 mm、且去掉
+  以后两侧 AABB 在弦高内一致，记 `film`，膜厚与所在侧写进 `pairs[]`。
+- 只走 RVM ↔ RVM、局部帧那条路；只为 off 的那几件把两侧面片轮廓再读一遍，不多留点云。
+- 土建 3 件 off 全部转为 film：ams1112 `/1RS-WF03-W-C-RR001` GWALL 13（E3D 侧，膜厚 0.010 mm）、ams7997
+  `/1LR-WF05-S-C` FLOOR 6（E3D 侧，0.010 mm）、`/1RX-FN01-F001` FLOOR 12（生成侧发丝，0.00005 mm）；去掉膜以后
+  主体差 ≤ 0.0014 mm。其余土建 9979 件、S1 基准（`/MDS/FT01/1-BAR-1` 那根同名杆仍是 off）、MDS、
+  `/SSC测试` 整站判档不变。
+- 单测 `a_thin_fin_on_top_is_a_film_but_a_longer_block_is_not`、
+  `a_zero_thickness_hair_on_the_generated_side_is_a_film`、`principal_span_finds_the_thickness_of_a_tilted_sheet`。
+
 ## 2026-10-21 rvm_read 认 E3D 给偏心棱台、偏心 / 斜切 Snout 写的声明盒：FT48B 与 `/SSC测试` 整站不再拒判
 
 - `rvm_read::Primitive::declared_box_mm` 给偏心 `Pyramid`（XOFF / YOFF 非零）补上与 Snout 同形的声明盒：每轴半宽
