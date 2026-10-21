@@ -377,6 +377,8 @@ impl Primitive {
     /// 顶面在 h/2 ± rt·tan(θ) 之间，跟这只盒没有关系。X 向的样本是 hvac-5201 导出里 10 条
     /// XTSH −11.25° / −5.625° 的风管斜切段（顶面升 672.92 = 175·tan(−11.25 rad)），残差 ≤ 0.001 mm；
     /// XBSH 没有样本，按对称写进 z_min，错了会以 Unknown 报出来。两向同时斜切也没有样本。
+    /// 斜切大到 z 上界算到下界以下时 E3D 照写倒着的盒：`/-CAM-E-2-H-5302` 的 BEND 2 / 3（XTSH 或
+    /// YTSH −7.5°）记录里是 `z ∈ [−34.56, −438.99]`，判帧拿原样的六个数对（[`detect_bbox_frame`]）。
     ///
     /// **偏心 `Pyramid`** 是同一条公式，半径换成半边长：
     ///
@@ -867,6 +869,14 @@ fn detect_bbox_frame(geometry: &RvmGeometry) -> BboxFrame {
             if best.is_none_or(|(best_d, _)| d < best_d) {
                 best = Some((d, frame));
             }
+        }
+    }
+    // 斜切大到 z 的上界算到下界以下时，E3D 照公式写出 min > max 的盒；角点 AABB 会把它摆正、
+    // 对不上，所以声明盒再拿原样的六个数在局部帧里对一次。
+    if let Some(declared) = geometry.primitive.declared_box_mm() {
+        let d = residual(&declared);
+        if best.is_none_or(|(best_d, _)| d < best_d) {
+            best = Some((d, BboxFrame::Local));
         }
     }
     let Some((d_best, frame)) = best else {
@@ -1400,6 +1410,43 @@ mod tests {
             .zip(want.iter())
             .fold(0.0f64, |acc, (a, b)| acc.max((a - b).abs()));
         assert!(worst <= tolerance, "{got:?} vs {want:?}，最大差 {worst}");
+    }
+
+    /// `/-CAM-E-2-H-5302` BEND 2 的斜切段：XTSH −7.5° 让公式里的 z 上界落到下界以下，E3D 照写
+    /// `[…, −34.56, …, −438.99]`。角点 AABB 会把它摆正，判帧得认原样的那六个数。
+    #[test]
+    fn an_inverted_declared_box_still_frames_the_record() {
+        let primitive = Primitive::Snout([
+            175.0,
+            175.0,
+            69.11756134033203,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -0.13089969754219055,
+            0.0,
+        ]);
+        let declared = primitive.declared_box_mm().unwrap();
+        assert!(declared[5] < declared[2], "{declared:?}");
+        let geometry = RvmGeometry {
+            tag: "PRIM".to_string(),
+            flags: 1,
+            primitive,
+            matrix3: [0.001, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.001],
+            translation_mm: [0.0; 3],
+            record_bbox: [
+                -175.0,
+                -175.0,
+                -34.558780670166016,
+                175.0,
+                175.0,
+                -438.99365234375,
+            ],
+            bbox_frame: BboxFrame::Unknown,
+            level: None,
+        };
+        assert_eq!(detect_bbox_frame(&geometry), BboxFrame::Local);
     }
 
     #[test]

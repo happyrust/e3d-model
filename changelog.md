@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-22 rvm_read 认 E3D 给斜切大小头写的倒着的声明盒：e3d-model#6 的三个暖通区不再拒判
+
+- `rvm_read::detect_bbox_frame`：斜切大到 z 上界算到下界以下时，E3D 照公式写 min > max 的记录盒
+  （`/-CAM-E-2-H-5302` BEND 2 / 3，XTSH 或 YTSH −7.5°，z ∈ [−34.56, −438.99]）。角点 AABB 会把它摆正、对不上，
+  声明盒再拿原样的六个数在局部帧里对一次。
+- happyrust/e3d-model#6 的三个区（plant-model-6 `outputs/t43-*`，`LEVEL HVAC 6` 的 TTY 导出）此前整份拒判，
+  现在正式对拍：`/-KX-CAM-E01` 96 对、`/-KX-CAM-S01` 34 对、`/-RX-CAV-E01` 82 对，全部 exact；只在 E3D 的
+  一条是 `/-CAM-E-2-H-5302` 那根 `PDIA` 求值失败的零半径 TUBE。
+- 单测 `an_inverted_declared_box_still_frames_the_record`。
+
 ## 2026-10-21 RVM 记录种类跟 E3D 走：扣过负体的件写布尔结果面片（`export holes on`），MDS 关节不再丢孔
 
 - `gen_ams` 新增 `E3D_EXPORT_HOLES=on|off`（缺省 on，即 TTY 取证宏的 `export holes on`）。打洞导出里扣过负体的件是
