@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-10-22 圆管圆周 p-line（`PX` / `PY` 空程序）落在管外圆上：GENSEC datum 真值 3588 → 3678 / 3678
+
+- MDS 支架 FT44 斜撑（ams7324 / 7329 / 7350 各 30 个）的 PLDATU，`POSL` 是 CTUB p-line 集 `/GTYPE_CTUB_PTSS` 里的圆周线
+  VV（315°，30 个）与 PP（225°，60 个）。这一集 24 条圆周线里只有 0° / 90° / 180° / 270° 四条写了 `PX` / `PY`
+  （`ATTRIB RPRO DPTH / 2`），其余 20 条两个表达式程序都空着（原始字全 0；常量 0 存 `[0, 1, 0, 0]`）。E3D TTY 真值里
+  这 90 个 PLDATU 离 JLDATU 站位一个管外半径、沿 PLAX（CHS 88.9 / 114.3 / 114.0 → 44.45 / 57.15 / 57.0 mm），我们当
+  常量 0 放在圆心。
+- `section::pline_offset`：`PX` / `PY` 都是空程序时，取截面里最大的 SANN（以它自己的 `PX` / `PY` 为圆心）沿 PLAX 的
+  半径点；没有 SANN 的截面照旧取程序值。`datum::solve` 的 `POSL` 与 `datum::section_pline`（墙上 FIXING 的
+  JUSL / POSL）都走它。core.dll 里的求值没有反查；别的截面上的空程序线没有语料，照旧按 0。
+- 真值：datum 3678 / 3678；名下 90 只 JOINT1 FIXING（没有 SPRE、不出实体）的世界标架随之对上。土建、`/SSC测试`、
+  MDS 四套框、ams8000、APS、S1、其余 FIXING 逐件不变。
+- 真库门 `gensec_end_datum_real::circumference_pline_datums_sit_on_the_tube_wall`。
+
 ## 2026-10-22 扶手面板 `HRPANE` 按立柱站位现算标架、PFIT 目录实例转 `BANG`：aps250110 off 56 → 1
 
 - aps250110 `/B01_LEVEL_03_ACCESS/HR_001` 的两块扶手面板 `HRPANE`（`HRPNSE` 名下）没有 POS / ORI，模板里的

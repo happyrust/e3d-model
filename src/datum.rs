@@ -205,9 +205,19 @@ pub fn solve(datum: &DbElement) -> Result<Option<DatumSolve>, ModelError> {
                 }
             }
             if let Some(key) = posl.as_ref().filter(|key| !key.is_empty()) {
-                match line(key)? {
-                    Some(frame) => {
-                        pline_offset = Some(frame.offset);
+                let found = match find_pline(&catalogue.sprf, key)? {
+                    Some(pline) => match member_frame(&pline, &env) {
+                        Ok(frame) => Some((
+                            crate::section::pline_offset(&pline, &frame, &catalogue.gmss, &env)?,
+                            frame,
+                        )),
+                        Err(_) => None,
+                    },
+                    None => None,
+                };
+                match found {
+                    Some((offset, frame)) => {
+                        pline_offset = Some(offset);
                         pline_angle = Some(frame.rotation + FRAC_PI_2);
                     }
                     None => notes.push(format!(
@@ -283,10 +293,13 @@ pub(crate) fn section_pline(
     let env = DbElementParamEnv::new(Some(host.clone()), Some(catalogue.sprf.clone()))
         .without_insulation();
     Ok(match find_pline(&catalogue.sprf, key)? {
-        Some(pline) => member_frame(&pline, &env).ok().map(|frame| SectionPline {
-            offset: frame.offset,
-            angle: frame.rotation + FRAC_PI_2,
-        }),
+        Some(pline) => match member_frame(&pline, &env) {
+            Ok(frame) => Some(SectionPline {
+                offset: crate::section::pline_offset(&pline, &frame, &catalogue.gmss, &env)?,
+                angle: frame.rotation + FRAC_PI_2,
+            }),
+            Err(_) => None,
+        },
         None => None,
     })
 }

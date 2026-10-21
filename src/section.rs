@@ -382,6 +382,52 @@ pub(crate) fn member_frame(
     })
 }
 
+/// p-line 在截面平面里的位置。`PX` / `PY` 都是空程序（存的字全 0；常量 0 存 `[0, 1, 0, 0]`）时位置不在程序里，
+/// 而在截面外轮廓上：CTUB 的 p-line 集 `/GTYPE_CTUB_PTSS` 里圆周线只有 0° / 90° / 180° / 270° 四条写了
+/// `ATTRIB RPRO DPTH / 2`，其余 20 条（15°…345°，如 `PP` = 225°、`VV` = 315°）两个程序都空着，E3D 把它们放在
+/// 管外圆上——MDS FT44 斜撑 90 个 PLDATU（`POSL` 为 VV 的 30 个、PP 的 60 个，管径 88.9 / 114.3 / 114.0），
+/// TTY 真值与 JLDATU 站位正好差一个外半径、沿 PLAX。只接有真值的这一种：截面里最大的 SANN（以它自己的
+/// `PX` / `PY` 为圆心）沿 PLAX 的半径点；没有 SANN 的截面照旧取程序值（0）。
+pub(crate) fn pline_offset(
+    pline: &DbElement,
+    frame: &MemberFrame,
+    gmss: &DbElement,
+    env: &DbElementParamEnv,
+) -> Result<[f64; 2], SectionError> {
+    let unset = |name: &str| -> Result<bool, SectionError> {
+        Ok(matches!(
+            pline.attribute(name)?,
+            Some(DescriptorValue::RawWords(words)) if words.iter().all(|word| *word == 0)
+        ))
+    };
+    if !(unset("PX")? && unset("PY")?) {
+        return Ok(frame.offset);
+    }
+    let mut outer: Option<([f64; 2], f64)> = None;
+    for member in gmss.members()? {
+        if !member.element_type()?.eq_ignore_ascii_case("SANN") {
+            continue;
+        }
+        let Some(radius) = optional_number(&member, "PRAD", env) else {
+            continue;
+        };
+        if outer.is_none_or(|(_, best)| radius > best) {
+            let center = [
+                optional_number(&member, "PX", env).unwrap_or(0.0),
+                optional_number(&member, "PY", env).unwrap_or(0.0),
+            ];
+            outer = Some((center, radius));
+        }
+    }
+    let angle = frame.rotation + FRAC_PI_2;
+    Ok(outer.map_or(frame.offset, |(center, radius)| {
+        [
+            center[0] + radius * angle.cos(),
+            center[1] + radius * angle.sin(),
+        ]
+    }))
+}
+
 fn plax_words(member: &DbElement) -> Result<Vec<i32>, SectionError> {
     Ok(match member.attribute("PLAX")? {
         Some(DescriptorValue::RawWords(words) | DescriptorValue::WordArray(words)) => {

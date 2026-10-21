@@ -6,7 +6,7 @@
 //! MDS 支架框（`/SUPPORT/FRAMES/BS/…`）每根 GENSEC 带一只 ENDATU，挂在哪一头看它自带的 `HANICP`。
 //! 接上之前 ENDATU 没有隐式标架、按单位阵折进 owner 链：名下 FIXING 全丢了端部标架，挂在
 //! 终点那头的还要再偏一个杆长。零长度 SPINE 上的 PLDATU（ams7330）、
-//! 端部关节 FIXING 的目录负体（`JOIN` 的 NGMR）截杆也在这里。
+//! 端部关节 FIXING 的目录负体（`JOIN` 的 NGMR）截杆、圆管圆周 p-line 上的 PLDATU 也在这里。
 //!
 //! 缺 E3D 安装或影子资产默认红（与 `increment_real.rs` 同一口径）；无语料环境显式设
 //! `E3D_SKIP_REAL_GATES=1` 换回跳过。
@@ -281,5 +281,65 @@ fn stationless_pline_datums_sit_where_e3d_puts_them() {
             _ => world_matrix(&element).unwrap(),
         };
         assert_frame(world, &case);
+    }
+}
+
+/// MDS 斜撑 FT44 的 PLDATU：`POSL` 是 CTUB p-line 集里的圆周线 VV（315°）/ PP（225°），这两条的 `PX` / `PY`
+/// 程序都空着。E3D 把线放在管外圆上，站位沿 PLAX 离 JLDATU 一个外半径（这根 CHS 88.9 是 44.45 mm）；修前当
+/// 常量 0 放在圆心。名下的 JOINT1 FIXING 没有 SPRE、不出实体，标架跟着 PLDATU 走。
+#[test]
+fn circumference_pline_datums_sit_on_the_tube_wall() {
+    if !fixtures_present() {
+        return;
+    }
+    let set = ams_set();
+    let vv = (
+        [-0.707106781, 0.707106781, 0.0],
+        [0.0, 0.0, -1.0],
+        [-0.707106781, -0.707106781, 0.0],
+    );
+    let pp = (
+        [-0.707106781, -0.707106781, 0.0],
+        [0.0, 0.0, -1.0],
+        [0.707106781, -0.707106781, 0.0],
+    );
+    // (w1, 名词, E3D 平移, 三列, 说明)
+    let cases = [
+        (
+            45947,
+            "PLDATU",
+            [-206.4309, -2706.4309, -7.88],
+            vv,
+            "FT44/6-V1/S2/PLDAT（POSL VV）",
+        ),
+        (
+            45948,
+            "FIXING",
+            [-237.8618, -2675.0, 172.49],
+            vv,
+            "FT44/6-V1/S2/JOINT1",
+        ),
+        (
+            45957,
+            "PLDATU",
+            [-143.5691, -2356.4309, -9.27],
+            pp,
+            "FT44/6-V2/S2/PLDAT（POSL PP）",
+        ),
+        (
+            45958,
+            "FIXING",
+            [-112.1382, -2325.0, -189.14],
+            pp,
+            "FT44/6-V2/S2/JOINT1",
+        ),
+    ];
+    for (w1, noun, translation, (x, y, z), what) in cases {
+        let element = set.element(RefNo::new(DB_REFNO, w1));
+        assert_eq!(element.element_type().unwrap(), noun, "{what}");
+        assert_frame(
+            world_matrix(&element).unwrap(),
+            &(w1, translation, x, y, z, what),
+        );
     }
 }
