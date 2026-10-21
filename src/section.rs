@@ -1065,6 +1065,12 @@ impl SectionCutPlane {
         self.normal.x == 0.0 && self.normal.y == 0.0
     }
 
+    /// 几何上就是平头：法向偏离轴不超过 1e-9。与 [`Self::is_axial`] 不同，BANG 旋出来的 1e-17 级余量
+    /// 不算斜切。
+    pub fn is_square(&self) -> bool {
+        self.normal.x.hypot(self.normal.y) <= 1e-9
+    }
+
     /// 截面点 `(x, y)` 那条平行于轴的棱与本平面的交点 z（XSPYR 里的 `POSCAL`）。
     /// 平面几乎含着轴（`|n.z|` 过小）时给 `None`，由调用方保持原区间。
     fn axis_crossing(&self, x: f64, y: f64) -> Option<f64> {

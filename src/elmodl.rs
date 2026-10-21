@@ -564,6 +564,7 @@ pub fn model_element_with_cache(
     // 截面本体并集前的那几块（局部系）。RVM 的记录单位是 GMSS 成员，不是并集后的一块。
     let mut section_members: Vec<Manifold> = Vec::new();
     let mut section_member_sources: Vec<SectionSource> = Vec::new();
+    let mut section_square_ends = false;
 
     let local_timing = crate::perf::local_solid_scope();
     let mut analytic_primitive: Option<AnalyticPrimitive> = None;
@@ -690,11 +691,13 @@ pub fn model_element_with_cache(
                 solid,
                 members,
                 member_sources,
+                square_ends,
                 frame,
             } => {
                 section_frame = Some(frame);
                 section_members = members;
                 section_member_sources = member_sources;
+                section_square_ends = square_ends;
                 (solid, None)
             }
             // 本体建不出来就是这一件没有：名下 FITT 的几何不在这里兜——它们自己是单元
@@ -864,10 +867,15 @@ pub fn model_element_with_cache(
         // （ams7997 `/1SL-WF08-W-C-S8038`、`/1SL-WF08-W-C-S8019` 的 STWA 1），不是拉伸体面片。
         if negatives_applied == 0 && !section_members.is_empty() {
             // 逐块的出身跟着一起交出去：E3D 对 `SREC` 成员走 DRPYR，对 `SPRO` / `SANN`
-            // 才走拉伸体的面片（见 [`GeneratedElement::part_catalogue_nouns`]）。
+            // 才走拉伸体的面片（见 [`GeneratedElement::part_catalogue_nouns`]）。端头斜切的 `SREC`
+            // 不是棱台，E3D 写面片（aps250110 门框模板里 45° 斜接的 FBAR），出身不交：包围盒自校拦不住
+            // 斜切——斜接前后的包围盒一样。
             part_catalogue_nouns = section_member_sources
                 .iter()
-                .map(|source| section_source_noun(*source).to_string())
+                .map(|source| match source {
+                    SectionSource::Srec if !section_square_ends => String::new(),
+                    source => section_source_noun(*source).to_string(),
+                })
                 .collect();
             // 记录矩阵照元素局部系写：DRPYR 把 SREC 的高写在挤出方向（局部 Z）、底边写在截面的
             // X / Y 上。盒子哪三根轴都能当棱台轴，不给标架识别器就随便挑（S8038 的 STWA 1：E3D
@@ -893,6 +901,16 @@ pub fn model_element_with_cache(
     } else {
         None
     };
+    // 设计 DISH 的 `RADI ≠ 0` 是折边碟：E3D 的 DRDISH 只看折边半径，写 `EllipticalDish`；半球按长相会先被
+    // 球形碟认走（aps250110 扶手立柱模板里 `DIAM 60.3 / HEIG 30.15 / RADI 25` 的封头）。
+    if noun == "DISH" && negatives_applied == 0 && default_zero(el, "RADI")? != 0.0 {
+        part_record_repeats = vec![CataloguePartRecord {
+            repeats: 1,
+            frame: None,
+            knuckled_dish: true,
+            analytic: None,
+        }];
+    }
 
     Ok(Modeled::Solid(Box::new(GeneratedElement {
         geometry_id: GeometryId::Element {
@@ -1056,6 +1074,8 @@ enum SectionBody {
         members: Vec<Manifold>,
         /// 与 `members` 逐块对齐的出身，见 [`crate::section::SectionSolid::member_sources`]。
         member_sources: Vec<SectionSource>,
+        /// 两端都是平头：`SREC` 成员挤出来才是一只棱台，记录可以写 `Pyramid`。
+        square_ends: bool,
         frame: DMat4,
     },
     CentrelineOnly(String),
@@ -1136,6 +1156,7 @@ fn section_body(el: &DbElement, notes: &mut Vec<String>) -> Result<SectionBody, 
                 solid,
                 members: Vec::new(),
                 member_sources: Vec::new(),
+                square_ends: false,
                 frame: DMat4::IDENTITY,
             }),
             None => Ok(SectionBody::CentrelineOnly(
@@ -1156,6 +1177,7 @@ fn section_body(el: &DbElement, notes: &mut Vec<String>) -> Result<SectionBody, 
             solid: built.body,
             members: built.members,
             member_sources: built.member_sources,
+            square_ends: cuts.start.is_square() && cuts.end.is_square(),
             frame: placement.local,
         }),
         None => Ok(SectionBody::CentrelineOnly(

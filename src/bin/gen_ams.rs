@@ -1170,10 +1170,20 @@ fn main() -> anyhow::Result<()> {
                 // 设计图元的出身就是元素自己的名词（[`recogniser_for_design_noun`]）。只在
                 // **单块、没扣负体、没有目录出身**时才说得准：多块是按连通性拆出来的，扣过
                 // 负体的是布尔结果（E3D 也只能写面片），有目录出身的听目录的。
+                // 折边的设计 DISH（`RADI ≠ 0`）写 `EllipticalDish`，见 `elmodl` 里给它记的 `knuckled_dish`。
                 let design_recogniser = (component_meshes.len() == 1
                     && generated.negatives_applied == 0
                     && generated.part_catalogue_nouns.is_empty())
-                .then(|| recogniser_for_design_noun(&generated.noun))
+                .then(|| {
+                    let knuckled = component_records
+                        .first()
+                        .is_some_and(|record| record.knuckled_dish);
+                    if generated.noun == "DISH" && knuckled {
+                        Some(Recogniser::EllipticalDish)
+                    } else {
+                        recogniser_for_design_noun(&generated.noun)
+                    }
+                })
                 .flatten();
                 let mut geometries = Vec::with_capacity(component_meshes.len());
                 let mut push_repeated = |geometry: e3d_model::rvm_read::RvmGeometry,

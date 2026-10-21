@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-10-22 端头斜切的 SREC 截面成员写面片、折边设计 DISH 写 `EllipticalDish`：aps250110 记录种类不同 40 → 10
+
+- APS aps250110 整库对 E3D TTY 只读导出（gen-model `verification/civil-tty-20261021/aps250110_lv6_*.rvm`）：门框模板
+  （`FITT 1 of STWALL n of CWALL …`）里 45° 斜接的 FBAR 20 只，E3D 写面片、我们写 `Pyramid`。截面就是一只 SREC，
+  可端头斜切就不是棱台；包围盒自校拦不住——斜接前后包围盒一样。这是 happyrust/e3d-model@9d08daa 把单 SREC
+  截面也交出身之后才有的（那一批语料里的 STWALL 都是平头）。
+- `section::SectionCutPlane::is_square`（法向偏离轴 ≤ 1e-9，BANG 旋出的余量不算斜切）；`elmodl` 的截面本体
+  带 `square_ends`，两端不都是平头时 SREC 成员不交出身，走拉伸体族的面片。
+- 扶手立柱模板里 10 只 `DIAM 60.3 / HEIG 30.15 / RADI 25` 的设计 DISH：E3D 的 DRDISH 只看折边半径，写
+  `EllipticalDish`；半球按长相先被球形碟认走。`elmodl` 给 `RADI ≠ 0` 的 DISH 记 `knuckled_dish`，`gen_ams`
+  的设计出身按它挑 `EllipticalDish`。
+- 对拍：aps250110 记录种类不同 40 → 10（剩整圈设计 REVO 的记录条数），几何判档不变。土建、`/SSC测试`、
+  MDS 四套框、ams8000、S1、FIXING / datum 真值逐件不变。
+- 真库门 `rvm_record_kinds_real::mitred_flat_bars_and_knuckled_dishes_follow_e3d_writers`。
+
 ## 2026-10-22 目录 `SEXT` 一律写 `FacetGroup`：整圆截面的挤出也不认成 `Cylinder`
 
 - ams8000 竖梯 FTUB（目录 `/ACP1000-RFVL-R3B-500`，14 只）的圆板是整圆截面的 SEXT，E3D TTY 导出里全是

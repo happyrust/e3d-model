@@ -26,13 +26,19 @@ const ACP_DIR: &str = r"D:\AVEVA\Projects\E3D3.1\AvevaCatalogue\acp000";
 const MDS_DB: &str = "ams7324_0001";
 const SSC_DB: &str = "ams7997_0001";
 const CABLE_EQUIP_DB: &str = "ams8000_0001";
+const APS_DIR: &str = r"D:\AVEVA\Projects\E3D3.1\AvevaPlantSample\aps000";
+const APS_STRUCTURAL_DB: &str = "aps250110_0001";
 const TEMPLATE_DIR: &str = r"E:\reverse\e3d\shadow_e3d31_aps_all";
 const IJOINT1: &str = "23708/42148";
 const IJOINT1_NAME: &str = "/SUPPORT/FRAMES/BS/FT03H/9-V1/S1/IJOINT1";
 
 fn fixtures_present(design_db: &str) -> bool {
+    fixtures_present_in(AMS_DIR, design_db)
+}
+
+fn fixtures_present_in(project_dir: &str, design_db: &str) -> bool {
     let attlib = Path::new(TEMPLATE_DIR).join("attlib.dat");
-    let design = Path::new(AMS_DIR).join(design_db);
+    let design = Path::new(project_dir).join(design_db);
     let missing: Vec<String> = [design.as_path(), Path::new(ACP_DIR), attlib.as_path()]
         .into_iter()
         .filter(|path| !path.exists())
@@ -56,6 +62,17 @@ fn fixtures_present(design_db: &str) -> bool {
 
 /// 只生成 `root` 这一只，返回写出的 RVM 与 `elements.json`。
 fn generate(design_db: &str, root: &str, holes: &str, out: &Path) -> (RvmFile, serde_json::Value) {
+    generate_in(AMS_DIR, design_db, root, holes, out)
+}
+
+/// [`generate`]，设计库在另一个项目目录里（APS）。
+fn generate_in(
+    project_dir: &str,
+    design_db: &str,
+    root: &str,
+    holes: &str,
+    out: &Path,
+) -> (RvmFile, serde_json::Value) {
     let template = Path::new(TEMPLATE_DIR);
     let status = Command::new(env!("CARGO_BIN_EXE_gen_ams"))
         .arg("--attlib")
@@ -63,9 +80,9 @@ fn generate(design_db: &str, root: &str, holes: &str, out: &Path) -> (RvmFile, s
         .arg("--template")
         .arg(template)
         .arg("--db")
-        .arg(Path::new(AMS_DIR).join(design_db))
+        .arg(Path::new(project_dir).join(design_db))
         .args(["--db-type", "DESI", "--root", root])
-        .args(["--project-dir", AMS_DIR, "--project-dir", ACP_DIR])
+        .args(["--project-dir", project_dir, "--project-dir", ACP_DIR])
         .arg("--out")
         .arg(out)
         .arg("--rvm")
@@ -330,6 +347,49 @@ fn catalogue_extrusions_stay_facet_groups_even_when_round() {
     let (rvm, _) = generate(CABLE_EQUIP_DB, "24384/3199", "on", &scratch);
     let kinds = record_kinds(&rvm, "FTUB 1 of BRAN /C-GR-1RX-3AB0A");
     assert_eq!(kinds, vec!["FacetGroup"; 33]);
+
+    std::fs::remove_dir_all(&scratch).ok();
+}
+
+/// aps250110 门框模板（`FITT 1 of STWALL 1 of CWALL /B01_LEV02_INT_WALLS`）里 45° 斜接的 FBAR：截面就是
+/// 一只 SREC，但端头斜切就不是棱台，E3D TTY 导出（gen-model `verification/civil-tty-20261021/`
+/// `aps250110_lv6_2013286654_2.rvm`）写一条面片；平头的同类 STWALL 仍写 `Pyramid`（上面那条）。
+/// 扶手立柱模板里 `RADI = 25` 的设计 DISH 是折边碟，E3D 写 `EllipticalDish`，按长相会认成球形碟。
+#[test]
+fn mitred_flat_bars_and_knuckled_dishes_follow_e3d_writers() {
+    if !fixtures_present_in(APS_DIR, APS_STRUCTURAL_DB) {
+        return;
+    }
+    let scratch: PathBuf =
+        std::env::temp_dir().join(format!("e3d-model-rvm-kinds-aps-{}", std::process::id()));
+    let (rvm, _) = generate_in(
+        APS_DIR,
+        APS_STRUCTURAL_DB,
+        "2013286654/444",
+        "on",
+        &scratch.join("fbar"),
+    );
+    assert_eq!(
+        record_kinds(
+            &rvm,
+            "SCTN 2 of TMPL 1 of FITT 1 of STWALL 1 of CWALL /B01_LEV02_INT_WALLS"
+        ),
+        ["FacetGroup"]
+    );
+    let (rvm, _) = generate_in(
+        APS_DIR,
+        APS_STRUCTURAL_DB,
+        "2013286654/3545",
+        "on",
+        &scratch.join("dish"),
+    );
+    assert_eq!(
+        record_kinds(
+            &rvm,
+            "DISH 1 of TMPL 1 of HRPOST 1 of POSTSE 1 of HANDRA /B01_LEVEL_01_HANDRAILS/HR_001"
+        ),
+        ["EllipticalDish"]
+    );
 
     std::fs::remove_dir_all(&scratch).ok();
 }
