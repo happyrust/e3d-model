@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-21 只有负体集的目录件也算链终点：MDS 关节 JOIN 截杆（ams7324 E3D TTY 实证）
+
+- `catalogue_point::follow_catalogue_component`：目录链上的节点有 GMRE 或 NGMR 就是组件终点（原先只认
+  SCOM 与 GMRE）。MDS 内部关节的 `JOIN`（`/E3D/Joint-for-FT55/JOIN`）GMRE 未设、NGMR 一把 NSCY（Ø `DESP[1]` ×
+  `DESP[2]`），把它接的杆从端面截掉 100 mm；链在这里断掉时宿主 FIXING 扫描拿不到这把刀。
+- MDS BS 支架 80 个 ZONE 逐个用 E3D TTY 导 RVM 对拍（1441 对）：FT54A–D、FT55A–D 的 36 根杆原先长 100 mm，
+  现在 exact；按导出会话的表现级（`LEVEL 0`）生成时 1437 exact、4 chord（FT44 圆管弦高）、0 off；FT48B 那份
+  RVM 因 4 只 PYRAMID 记录 bbox 帧认不出未对。FIXING 真值、土建与 S1 基准逐件不变。
+- `gensec_end_datum_real` 新增 `joint_catalogue_negatives_trim_mds_bars`。
+
 ## 2026-10-21 SBFI 标架合成一条：SCTN 上的 CMFI 名下也按 ZDIR / BANG（aps7200 E3D TTY 实证）
 
 - `transform::ImplicitFrame::SubFitting`：母件 CMFI 在 SCTN 上的 SBFI 不再走「安装线水平投影 + 世界竖直」，

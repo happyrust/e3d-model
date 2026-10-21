@@ -5,7 +5,8 @@
 //! `verification/fixing-tty-20261021/`：`datums_truth.psv`、`fixing_rest_truth.psv`）。ams7324 的
 //! MDS 支架框（`/SUPPORT/FRAMES/BS/…`）每根 GENSEC 带一只 ENDATU，挂在哪一头看它自带的 `HANICP`。
 //! 接上之前 ENDATU 没有隐式标架、按单位阵折进 owner 链：名下 FIXING 全丢了端部标架，挂在
-//! 终点那头的还要再偏一个杆长。零长度 SPINE 上的 PLDATU（ams7330）也在这里。
+//! 终点那头的还要再偏一个杆长。零长度 SPINE 上的 PLDATU（ams7330）、
+//! 端部关节 FIXING 的目录负体（`JOIN` 的 NGMR）截杆也在这里。
 //!
 //! 缺 E3D 安装或影子资产默认红（与 `increment_real.rs` 同一口径）；无语料环境显式设
 //! `E3D_SKIP_REAL_GATES=1` 换回跳过。
@@ -16,7 +17,9 @@ use std::sync::Arc;
 use e3d_io::db_element::{DbFilePin, DbSet, template_file_for};
 use e3d_io::refno::RefNo;
 use e3d_model::catalogue::model_catalogue_member;
+use e3d_model::category::classify;
 use e3d_model::db_discovery::DirectoryDbResolver;
+use e3d_model::elmodl::{Modeled, model_element};
 use e3d_model::transform::world_matrix;
 use glam::{DMat4, DVec3};
 
@@ -197,6 +200,47 @@ fn end_datum_fixings_sit_where_e3d_puts_them() {
             .generated
             .unwrap_or_else(|| panic!("{} 没出实体", case.5));
         assert_frame(generated.world, case);
+    }
+}
+
+/// MDS 框 FT54A / FT55A 的短杆：端部 ENDATU 名下的关节 FIXING 走 `SPRE → CATR` 到 `JOIN`
+/// （`/E3D/Joint-for-FT55/JOIN`，GMRE 未设、NGMR 一把 NSCY：Ø`DESP[1]` × `DESP[2]`，从端面往杆里
+/// 截 100 mm）。E3D TTY RVM 里 300 mm 的杆只剩 200 mm；目录链在没有 GMRE 的 JOIN 上断掉时这把刀丢了，
+/// BS 标准的 FT54A–D、FT55A–D 共 36 根杆都长了 100 mm。
+#[test]
+fn joint_catalogue_negatives_trim_mds_bars() {
+    if !fixtures_present() {
+        return;
+    }
+    let set = ams_set();
+    // (w1, E3D RVM 世界包围盒 [lo; hi], 说明)
+    let cases: [(u32, [f64; 6], &str); 2] = [
+        (
+            47418,
+            [27200.0, 4975.0, -119.995, 27250.0, 5025.0, 80.0],
+            "FT54A/1-BAR-2",
+        ),
+        (
+            47609,
+            [29150.0, 5075.0, -80.0, 29199.998, 5125.0, 119.995],
+            "FT55A/1-BAR-1",
+        ),
+    ];
+    for (w1, rvm, what) in cases {
+        let el = set.element(RefNo::new(DB_REFNO, w1));
+        let generated = match model_element(&el, classify("GENSEC")).unwrap() {
+            Modeled::Solid(generated) => generated,
+            Modeled::Skipped { reason, .. } => panic!("{what} 没出实体：{reason}"),
+        };
+        let bb = generated.solid.bounding_box().expect("杆非空");
+        let (lo, hi) = (bb.min(), bb.max());
+        let got = [lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]];
+        for (axis, (g, r)) in got.iter().zip(rvm).enumerate() {
+            assert!(
+                (g - r).abs() <= 0.01,
+                "{what}：包围盒第 {axis} 分量 {g:.3}，E3D RVM {r:.3}（全部 {got:?}）"
+            );
+        }
     }
 }
 

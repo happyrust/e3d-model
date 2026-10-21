@@ -638,10 +638,15 @@ fn follow_catalogue_component(mut current: DbElement) -> Result<Option<DbElement
         // 结构 FITT 的 SPCO.CATR 可以直接落到 SFIT，而不是再经过 SCOM。
         // SFIT 与 SCOM 对求值器暴露同一组 GMRE/PTRE/PARA 接口；以可解析的
         // GMRE 作为组件终点，避免把这种合法直连误判成目录链断开。
-        match current.get_element("GMRE") {
-            Ok(Some(_)) => return Ok(Some(current)),
-            Ok(None) | Err(DbElementError::UnknownAttribute { .. }) => {}
-            Err(error) => return Err(error),
+        //
+        // 只有负体集的也是终点：MDS 内部关节的 `JOIN`（`/E3D/Joint-for-FT55/JOIN`）GMRE 未设、
+        // NGMR 一把 NSCY，给它接的杆件截掉端部 100 mm——链在这里断掉就丢了这把刀。
+        for set in ["GMRE", "NGMR"] {
+            match current.get_element(set) {
+                Ok(Some(_)) => return Ok(Some(current)),
+                Ok(None) | Err(DbElementError::UnknownAttribute { .. }) => {}
+                Err(error) => return Err(error),
+            }
         }
         let next = match current.get_element(CATALOGUE_REF) {
             Ok(Some(next)) => Some(next),

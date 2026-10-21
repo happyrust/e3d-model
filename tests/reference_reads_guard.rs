@@ -85,6 +85,12 @@ const INDIRECT_READ_SITES: &[(&str, &str, &[&str])] = &[
             "const CATALOGUE_REF: &str = \"CATR\"",
         ],
     ),
+    // `follow_catalogue_component` 在链上每个节点依次看 GMRE / NGMR，有其一就是目录件终点。
+    (
+        "catalogue_point.rs",
+        "set",
+        &["for set in [\"GMRE\", \"NGMR\"]"],
+    ),
     // catalogue.rs 里同一个 `entry` 只用来给「没形状」的诊断点名，读的仍是上面二者之一；
     // 名字本身钉在 catalogue_point.rs 那一条里，这里只钉它确实经由同一个函数取名。
     ("catalogue.rs", "entry", &["catalogue_entry_attribute("]),
