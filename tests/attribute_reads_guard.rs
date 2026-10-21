@@ -194,9 +194,9 @@ fn every_attribute_literal_in_the_generator_is_in_the_read_set() {
 
     // 今天的形状：142 个属性名（141 个字典 / schema 名 + 伪属性 `CPAR`；关节负体带进 JOIS / JOIE /
     // NAPP / CREF，宿主 FIXING 扫描带进 NGMR，详图式扶手立柱的现算标架带进 HRJUSL / WIDT，
-    // GENSEC 端部 datum 判挂在哪一头带进 HANICP）；
+    // GENSEC 端部 datum 判挂在哪一头带进 HANICP；外项目库读主项目 SYS 库带进 DBNO / PROJ）；
     // 变了不是错，是提醒把 gen-model 那份 generation_read_set.json 一起重生成。
-    assert_eq!(names.len(), 149, "读取集合条数漂移：两份产物要一起重生成");
+    assert_eq!(names.len(), 151, "读取集合条数漂移：两份产物要一起重生成");
 }
 
 /// 直接读点的字面量必然在集合里——`get_*("X")` / `attribute("X")` 一个都不许漏，这是宽口径之下
