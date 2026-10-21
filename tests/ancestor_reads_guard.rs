@@ -173,7 +173,7 @@ const OWNER_WALK_SITES: &[Site] = &[
         climb: Climb::NounOnly,
         reads: &[],
         why: "现算标架的输入上溯到宿主（GENSEC / WALL / SCTN / STWALL / 详图式 HANDRA / FLOOR·PANE·GWALL）：只看 noun，\
-              再看宿主名下有没有 JLDATU / FITT / POSTSE·HRFEAT·带 HRTERM 的 RAILSE / PFIT",
+              再看宿主名下有没有 JLDATU / FITT / POSTSE·HRPNSE·HRFEAT·带 HRTERM 的 RAILSE / PFIT",
     },
     Site {
         file: "increment.rs",
@@ -213,9 +213,11 @@ const OWNER_WALK_SITES: &[Site] = &[
         file: "transform.rs",
         func: "handrail_post_world",
         climb: Climb::AboveUnit,
-        reads: &["HRJUSL", "POS", "POSREF", "SPRE", "WIDT", "ZDIS"],
-        why: "详图式扶手的 HRPOST / HRTERM / HRGATE 没有 POS / ORI，标架按 Core3D 现算（transform::ImplicitFrame::HandrailPost）：\
-              读立柱自己的 POSREF / ZDIS / HRJUSL / SPRE / WIDT，取 owner²=HANDRA 只核 noun、经 world_matrix 折它的位姿，再把 HANDRA \
+        reads: &[
+            "HRJUSL", "POS", "POSREF", "SPRE", "WIDT", "XOFF", "ZDIS", "ZOFF",
+        ],
+        why: "详图式扶手的 HRPOST / HRTERM / HRGATE 与面板 HRPANE 没有 POS / ORI，标架按 Core3D 现算（transform::ImplicitFrame::HandrailPost）：\
+              读立柱 / 面板自己的 POSREF / ZDIS / HRJUSL / SPRE / WIDT / XOFF / ZOFF，取 owner²=HANDRA 只核 noun、经 world_matrix 折它的位姿，再把 HANDRA \
               交给 handrail_path_tangent / handrail_straight_run_distance / handrail_curve_station 读它 RPATH 下 POINTR / CURVE 的 \
               POS / CURTYP（见 ANCESTOR_CONSUMERS）；POSREF 指的 POINTR 的 POS 也在那棵 RPATH 下。读者是立柱 TMPL 里自成单元的 \
               EXTR / CYLI / GENSEC / PANE 件（aps250110 栏杆 ~1780 件），立柱与 HANDRA 的 RPATH 都在它们的单元之上。整棵子树重算的\
@@ -248,8 +250,8 @@ const OWNER_WALK_SITES: &[Site] = &[
         file: "catalogue.rs",
         func: "panel_fitting_world",
         climb: Climb::AboveUnit,
-        reads: &[],
-        why: "PFIT 自成模型单元，它的目录实例标架取 owner（属主板）交给 panel_surface_z，读板第一个环的 HEIG / SJUS 与板自己的\
+        reads: &["BANG"],
+        why: "PFIT 自成模型单元，它的目录实例标架读 PFIT 自己的 BANG（单元内），取 owner（属主板）交给 panel_surface_z，读板第一个环的 HEIG / SJUS 与板自己的\
               HEIG（见 ANCESTOR_CONSUMERS），都在 PFIT 单元之上。整棵子树重算的根口径下（PLOO 改了 → 祖先闭包命中板所在的\
               STRU / FRMW 根 → 整棵重算）覆盖；ADR-080 单元级发布由 increment::implicit_frame_host_of 的板支覆盖——板自己或它的\
               PLOO / LOOP 改了，就把整棵板子树级联进计划，与 point_on_host 那条同型（gen-model issue #39），单元规划已经补上",

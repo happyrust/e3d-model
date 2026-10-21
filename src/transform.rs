@@ -127,7 +127,8 @@ enum ImplicitFrame {
     SectionNode(DbElement),
     /// Detailed handrail posts have no POS/ORI.  Core3D places the post at
     /// its `POSREF` path point and applies `ZDIS`; template children inherit
-    /// that frame through their owner chain.
+    /// that frame through their owner chain.  Infill panels (`HRPANE` under
+    /// `HRPNSE`) use the same station plus their `XOFF` / `ZOFF`.
     HandrailPost(DbElement),
 }
 
@@ -159,7 +160,9 @@ fn implicit_frame(el: &DbElement) -> Result<Option<ImplicitFrame>, DbElementErro
             }
             _ => Ok(None),
         },
-        "HRPOST" | "HRGATE" | "HRTERM" => Ok(Some(ImplicitFrame::HandrailPost(el.clone()))),
+        "HRPOST" | "HRGATE" | "HRTERM" | "HRPANE" => {
+            Ok(Some(ImplicitFrame::HandrailPost(el.clone())))
+        }
         _ => Ok(None),
     }
 }
@@ -247,8 +250,8 @@ fn sub_fitting_rotation(parent: &DMat4, zdir: [f64; 3], bang_deg: f64) -> Option
     ))
 }
 
-/// World frame for a detailed handrail post (`POSTSE -> HANDRA`).  `HRPOST`
-/// deliberately has no `POS`/`ORI`; its placement is the referenced RPATH
+/// World frame for a detailed handrail post (`POSTSE -> HANDRA`) or infill
+/// panel (`HRPNSE -> HANDRA`).  `HRPOST` / `HRPANE` deliberately have no `POS`/`ORI`; its placement is the referenced RPATH
 /// point plus the scalar distance along the selected path run.  Keeping
 /// this as an implicit frame also makes every nested TMPL/primitive inherit
 /// the same placement via the ordinary owner-chain fold.
@@ -291,7 +294,7 @@ fn handrail_post_world(post: &DbElement) -> Result<Option<DMat4>, DbElementError
     let orient_term = post_kind == "HRTERM"
         && (justification.as_deref() != Some("LEFT")
             || terminal_template.is_some_and(|reference| reference.word1 == 36004));
-    let local = if (post_kind == "HRPOST" || orient_term)
+    let local = if (post_kind == "HRPOST" || post_kind == "HRPANE" || orient_term)
         && let Some(run) = tangent.and_then(|value| value.try_normalize())
     {
         // LEFT and RIGH are mirror placements of the same catalogue post.
@@ -322,6 +325,16 @@ fn handrail_post_world(post: &DbElement) -> Result<Option<DMat4>, DbElementError
     } else {
         DMat4::from_translation(path_position)
     };
+    if post_kind == "HRPANE" {
+        // Infill panels sit at the same station, shifted by `ZOFF` up and by
+        // `XOFF` along the station frame's -Y (the right-hand side of the run
+        // for LEFT): aps250110 `/B01_LEVEL_03_ACCESS/HR_001`, both panels
+        // (`XOFF 69 / ZOFF -170`) against the E3D TTY export.
+        let xoff = post.get_double("XOFF")?.unwrap_or(0.0);
+        let zoff = post.get_double("ZOFF")?.unwrap_or(0.0);
+        let offset = DMat4::from_translation(DVec3::new(0.0, -xoff, zoff));
+        return Ok(Some(world_matrix(&handrail)? * local * offset));
+    }
     if post.element_type()?.as_str() == "HRGATE" {
         let width = post.get_double("WIDT")?.unwrap_or(0.0);
         let gate_frame = DMat4::from_translation(DVec3::new(0.0, width * 0.5, 0.0))

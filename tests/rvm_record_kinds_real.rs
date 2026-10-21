@@ -393,3 +393,70 @@ fn mitred_flat_bars_and_knuckled_dishes_follow_e3d_writers() {
 
     std::fs::remove_dir_all(&scratch).ok();
 }
+
+/// `elements.json` 里一件的世界包围盒对一组 E3D 值，逐分量不超过 `tol` mm。
+fn assert_world_aabb(elements: &serde_json::Value, refno: &str, want: [f64; 6], tol: f64) {
+    let element = elements
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|element| element["refno"] == refno)
+        .unwrap_or_else(|| panic!("elements.json 里没有 {refno}"));
+    let got: Vec<f64> = (0..3)
+        .map(|axis| element["aabb_min"][axis].as_f64().unwrap())
+        .chain((0..3).map(|axis| element["aabb_max"][axis].as_f64().unwrap()))
+        .collect();
+    for (axis, (g, w)) in got.iter().zip(want).enumerate() {
+        assert!(
+            (g - w).abs() <= tol,
+            "{refno}：包围盒第 {axis} 分量 {g:.3}，E3D {w:.3}（全部 {got:?}）"
+        );
+    }
+}
+
+/// 没有 POS / ORI 的两类件，标架都由属主现算：
+/// - 扶手面板 `HRPANE 1 of HRPNSE 1 of HANDRA /B01_LEVEL_03_ACCESS/HR_001`：站位与立柱同一套（`POSREF` +
+///   `ZDIS`），再加 `XOFF 69 / ZOFF -170`；模板里的 `PANE 2`（`2013286654/8658`）此前偏 3.3 m。
+/// - 墙板上的 `PFIT 1 of PANE 1 of FRMW /B02_LEVEL_01_WALLS`（`2013286654/639`，`BANG = 90`）：目录实例绕板法向转
+///   `BANG`，此前 1600 × 300 的板长短边对调。
+/// 真值是 E3D TTY 导出里这两件面片的世界包围盒。
+#[test]
+fn handrail_panels_and_panel_fittings_sit_where_e3d_draws_them() {
+    if !fixtures_present_in(APS_DIR, APS_STRUCTURAL_DB) {
+        return;
+    }
+    let scratch: PathBuf =
+        std::env::temp_dir().join(format!("e3d-model-rvm-frames-aps-{}", std::process::id()));
+    let (_, elements) = generate_in(
+        APS_DIR,
+        APS_STRUCTURAL_DB,
+        "2013286654/8650",
+        "on",
+        &scratch.join("hrpane"),
+    );
+    assert_world_aabb(
+        &elements,
+        "2013286654/8658",
+        [
+            -299564.62, 326238.75, 112530.0, -299384.66, 326253.75, 112630.0,
+        ],
+        0.1,
+    );
+    let (_, elements) = generate_in(
+        APS_DIR,
+        APS_STRUCTURAL_DB,
+        "2013286654/639",
+        "on",
+        &scratch.join("pfit"),
+    );
+    assert_world_aabb(
+        &elements,
+        "2013286654/639",
+        [
+            -289685.0, 318239.75, 103960.0, -288065.0, 318439.75, 104280.01,
+        ],
+        0.1,
+    );
+
+    std::fs::remove_dir_all(&scratch).ok();
+}

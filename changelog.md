@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-10-22 扶手面板 `HRPANE` 按立柱站位现算标架、PFIT 目录实例转 `BANG`：aps250110 off 56 → 1
+
+- aps250110 `/B01_LEVEL_03_ACCESS/HR_001` 的两块扶手面板 `HRPANE`（`HRPNSE` 名下）没有 POS / ORI，模板里的
+  PANE / GENSEC / DISH 55 件按 HANDRA 的标架摆，偏 3.3 m。对 E3D TTY 导出反算：面板与立柱同一套站位（`POSREF`
+  路径点 + `ZDIS` 沿路径，`HRJUSL LEFT` 时 X 顺路径），再在站位标架里加 `(0, −XOFF, ZOFF)`。
+  `transform::ImplicitFrame::HandrailPost` 认 `HRPANE`，`increment::implicit_frame_host_of` 把 `HRPNSE` / `HRPANE`
+  算进详图式扶手的输入。
+- 同库墙板 `/B02_LEVEL_01_WALLS` PANE 1 上 `BANG = 90` 的 PFIT：目录实例绕板法向转 `BANG`（不进 PFIT 自己的 ORI），
+  此前 1600 × 300 的板长短边对调。`catalogue::panel_fitting_world` 右乘 `Rz(BANG)`。
+- 对拍：aps250110 off 56 → 1（剩 `/AREA02_PR_AXIS_P2.2` 截面宽 1.07 mm）。土建、`/SSC测试`、MDS 四套框、
+  ams8000、S1、FIXING / datum 真值逐件不变。
+- 真库门 `rvm_record_kinds_real::handrail_panels_and_panel_fittings_sit_where_e3d_draws_them`；
+  `ancestor_reads_guard` 里 `handrail_post_world` 加读 `XOFF` / `ZOFF`、`panel_fitting_world` 加读 `BANG`。
+
 ## 2026-10-22 端头斜切的 SREC 截面成员写面片、折边设计 DISH 写 `EllipticalDish`：aps250110 记录种类不同 40 → 10
 
 - APS aps250110 整库对 E3D TTY 只读导出（gen-model `verification/civil-tty-20261021/aps250110_lv6_*.rvm`）：门框模板

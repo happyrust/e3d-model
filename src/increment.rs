@@ -996,9 +996,9 @@ const CABLE_TRAY_BRANCH_NOUN: &str = "CWBRAN";
 ///   ZDIS/PKDI/HPREF、PLDATU 的 POSL/YDIR、ENDATU 的 ZDIS/POSL）；
 /// - 名下有 `FITT` 的 SCTN / STWALL（`section::section_fitting_placement`）：宿主自己
 ///   （POSS/POSE/BANG/JUSL/SPRE），以及 FITT 自己（POSL/ZDIS/BANG/DELP）；
-/// - 带详图式立柱的 HANDRA（`transform::handrail_post_world`，名下有 POSTSE / HRFEAT，或 RAILSE 里
+/// - 带详图式立柱的 HANDRA（`transform::handrail_post_world`，名下有 POSTSE / HRPNSE / HRFEAT，或 RAILSE 里
 ///   有 HRTERM）：它的 RPATH 路径（POINTR / CURVE 的 POS、CURVE 的 CURTYP），以及立柱 HRPOST / HRTERM /
-///   HRGATE 自己（POSREF / ZDIS / HRJUSL / SPRE / WIDT）；
+///   HRGATE 与面板 HRPANE 自己（POSREF / ZDIS / HRJUSL / SPRE / WIDT / XOFF / ZOFF）；
 /// - 名下有 `JLDATU` 的 WALL（`elmodl::fixing_host_frame`，gen-model issue #37）：宿主自己（`JUSL` /
 ///   `LMIRR` 与 SPRE 目录截面的 p-line → PLDATU 标架），它的 SPINE 路径（POINSP / CURVE 的 POS），以及 datum
 ///   自己（JLDATU 的 ZDIS、PLDATU 的 POSL / YDIR）。墙 datum 下的 FIXING 自成单元，实例标架与开孔刀都由它现算，这些输入全在 FIXING 单元之上。
@@ -1036,11 +1036,11 @@ fn implicit_frame_host_of(set: &Arc<DbSet>, refno: RefNo) -> Result<Option<RefNo
         }
         Ok(None)
     };
-    // 详图式扶手：立柱集 POSTSE、门 HRFEAT，或 RAILSE 里夹着的端头 HRTERM，任一在场就算。
+    // 详图式扶手：立柱集 POSTSE、面板集 HRPNSE、门 HRFEAT，或 RAILSE 里夹着的端头 HRTERM，任一在场就算。
     let detailed_handrail = |host: &DbElement| -> Result<Option<RefNo>, DbElementError> {
         for member in host.members()? {
             match member.element_type()?.as_str() {
-                "POSTSE" | "HRFEAT" => return Ok(Some(host.refno())),
+                "POSTSE" | "HRPNSE" | "HRFEAT" => return Ok(Some(host.refno())),
                 "RAILSE" => {
                     for rail in member.members()? {
                         if rail.element_type()? == "HRTERM" {
@@ -1067,8 +1067,8 @@ fn implicit_frame_host_of(set: &Arc<DbSet>, refno: RefNo) -> Result<Option<RefNo
             "FLOOR" | "PANE" | "GWALL" => return owns(&current, "PFIT"),
             "SPINE" | "POINSP" | "CURVE" | "JLDATU" | "PLDATU" | "ENDATU" | "FITT" | "PLOO"
             | "LOOP" => {}
-            "RPATH" | "POINTR" | "POSTSE" | "RAILSE" | "HRFEAT" | "HRPOST" | "HRTERM"
-            | "HRGATE" => {}
+            "RPATH" | "POINTR" | "POSTSE" | "HRPNSE" | "RAILSE" | "HRFEAT" | "HRPOST"
+            | "HRPANE" | "HRTERM" | "HRGATE" => {}
             _ => return Ok(None),
         }
         match current.owner()? {

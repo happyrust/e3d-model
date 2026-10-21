@@ -1832,7 +1832,10 @@ fn panel_fitting_world(member: &DbElement) -> Result<DMat4, ModelError> {
         local.z_axis,
         DVec3::new(local.w_axis.x, local.w_axis.y, surface).extend(1.0),
     );
-    Ok(world_matrix(member)? * local.inverse() * on_panel)
+    // `BANG` 绕板法向（局部 Z）转目录实例，不进 PFIT 自己的 ORI：aps250110 `/B02_LEVEL_01_WALLS` PANE 1 上
+    // `BANG = 90` 的 1600 × 300 板，E3D TTY RVM 里长边转了 90°。
+    let bang = member.get_double("BANG")?.unwrap_or(0.0).to_radians();
+    Ok(world_matrix(member)? * local.inverse() * on_panel * DMat4::from_rotation_z(bang))
 }
 
 /// 属主板上 PFIT `SJUS` 那一面在板局部系里的 z。板是 `[0, HEIG]` 挤出、再按自己第一个环的
