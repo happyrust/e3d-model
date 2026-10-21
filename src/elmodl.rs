@@ -261,6 +261,9 @@ pub struct CataloguePartRecord {
     /// 目录 `SDSH` 且 `PRAD > 0`。E3D 的 `DRDISH` 据此写 `EllipticalDish`，不看形状：
     /// r = h 时形体退化成半球，与球形碟逐点相同，网格认不出种类。
     pub knuckled_dish: bool,
+    /// 网格识别器认不出的目录图元的参数（目前只有 `SSLC` → 带斜切角的 `Snout`），在 [`Self::frame`]
+    /// 里。只是参数的搬运，写出端仍要过自校闸。
+    pub analytic: Option<AnalyticPrimitive>,
 }
 
 pub struct GeneratedElement {
@@ -875,6 +878,7 @@ pub fn model_element_with_cache(
                     repeats: 1,
                     frame: Some(DMat4::IDENTITY),
                     knuckled_dish: false,
+                    analytic: None,
                 })
                 .collect();
             Some(

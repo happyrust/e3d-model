@@ -97,6 +97,19 @@ fn record_kinds(rvm: &RvmFile, name: &str) -> Vec<&'static str> {
         .collect()
 }
 
+fn snouts(rvm: &RvmFile, name: &str) -> Vec<[f64; 9]> {
+    let mut out: Vec<[f64; 9]> = member(rvm, name)
+        .geometries
+        .iter()
+        .filter_map(|geometry| match geometry.primitive {
+            Primitive::Snout(parameters) => Some(parameters),
+            _ => None,
+        })
+        .collect();
+    out.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    out
+}
+
 fn pyramids(rvm: &RvmFile, name: &str) -> Vec<[f64; 7]> {
     member(rvm, name)
         .geometries
@@ -181,6 +194,69 @@ fn single_srec_walls_and_flat_duct_plates_write_e3d_pyramids() {
             );
         }
     }
+
+    std::fs::remove_dir_all(&scratch).ok();
+}
+
+/// happyrust/e3d-model#6 的暖通区：5 节分段弯头 `BEND 1 of BRANCH /-CAM-E-2-H-5202`（`24381/47002`，
+/// 目录 `/C5SEGB`）的 SSLC 斜切节，E3D 写带斜切角的 `Snout`（11.25°）；软接头 `/1CAM501FL`
+/// （`24381/47029`，目录 `/CFLEX`）的 27 只零径延长段，E3D 写 `Snout[0, 0, 2, …]`。预期值是 TTY
+/// 导出（plant-model-6 `outputs/t43-kx-cam-e01/kx-cam-e01.rvm`）里的记录原样。
+#[test]
+fn hvac_mitred_bends_and_flex_extensions_write_e3d_snouts() {
+    if !fixtures_present(SSC_DB) {
+        return;
+    }
+    let scratch: PathBuf =
+        std::env::temp_dir().join(format!("e3d-model-rvm-kinds-hvac-{}", std::process::id()));
+    let shear = 11.25f64.to_radians();
+
+    let bend = "BEND 1 of BRAN /-CAM-E-2-H-5202";
+    let (rvm, _) = generate(SSC_DB, "24381/47002", "on", &scratch.join("bend"));
+    let kinds = record_kinds(&rvm, bend);
+    assert_eq!(
+        kinds.iter().filter(|kind| **kind == "Snout").count(),
+        9,
+        "{kinds:?}"
+    );
+    assert_eq!(
+        kinds.iter().filter(|kind| **kind == "Cylinder").count(),
+        4,
+        "{kinds:?}"
+    );
+    assert!(!kinds.contains(&"FacetGroup"), "{kinds:?}");
+    let sheared: Vec<[f64; 9]> = snouts(&rvm, bend)
+        .into_iter()
+        .filter(|snout| snout[5..].iter().any(|angle| *angle != 0.0))
+        .collect();
+    let mut want = vec![
+        [175.0, 175.0, 104.429, 0.0, 0.0, 0.0, 0.0, -shear, 0.0],
+        [175.0, 175.0, 104.429, 0.0, 0.0, 0.0, 0.0, 0.0, -shear],
+        [175.0, 175.0, 208.858, 0.0, 0.0, 0.0, shear, 0.0, -shear],
+        [175.0, 175.0, 208.858, 0.0, 0.0, 0.0, shear, 0.0, -shear],
+        [175.0, 175.0, 208.858, 0.0, 0.0, 0.0, shear, 0.0, -shear],
+    ];
+    want.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    assert_eq!(sheared.len(), want.len(), "{sheared:?}");
+    for (got, want) in sheared.iter().zip(&want) {
+        assert!(
+            got.iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-2),
+            "{got:?} vs {want:?}"
+        );
+    }
+
+    let flex = "/1CAM501FL";
+    let (rvm, _) = generate(SSC_DB, "24381/47029", "on", &scratch.join("flex"));
+    let zero: Vec<[f64; 9]> = snouts(&rvm, flex)
+        .into_iter()
+        .filter(|snout| snout[0] == 0.0 && snout[1] == 0.0)
+        .collect();
+    assert_eq!(zero.len(), 27, "{zero:?}");
+    assert!(
+        zero.iter()
+            .all(|snout| (snout[2] - 2.0).abs() < 1e-9 && snout[3..].iter().all(|v| *v == 0.0)),
+        "{zero:?}"
+    );
 
     std::fs::remove_dir_all(&scratch).ok();
 }

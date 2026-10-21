@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-10-22 暖通分段弯头的 SSLC 斜切节写带斜切角的 `Snout`，零径目录圆台照写记录：e3d-model#6 三个区记录种类全部一致
+
+- happyrust/e3d-model#6 的三个暖通区（ams7997 `/-KX-CAM-E01`、`/-KX-CAM-S01`、`/-RX-CAV-E01`）正式对拍后几何
+  212 对全 exact，记录种类不同 62 件：分段弯头（BEND 33、ELBO 28）的斜切节是目录 `SSLC`，E3D 走 DRSNO
+  写带斜切角的 `Snout`，我们写面片；软接头 `/1CAM501FL`（目录 `/CFLEX`）少 27 条 `Snout[0, 0, 2, …]`。
+- `CataloguePartRecord::analytic`：目录件逐块带上网格认不出的那族的参数——`SSLC` 的半径、高与四个
+  斜切角本来就在网格键里（`catalogue::mesh_key_analytic`）。`gen_ams` 用设计 SLCY 的同一个写法
+  （`rvm_write::analytic_from_primitive`，记录帧 = 元素世界帧 × 目录标架）直出，自校闸照过；被自己的
+  NGMS 切过的块不给。
+- `catalogue::evaluate_catalogue_snout`：两端直径都是 0、高还在的 LSNO 不再丢弃，和高为 0 的法兰盘一样走
+  `SnoutBuild::Bodyless` 记一条无体 `Snout`（原 `Flat`，现在带高）。
+- 对拍：三个区 96 / 34 / 82 对全 exact、记录种类不同 62 → 0，`Snout` 记录逐条与 E3D 相同（斜切角 ±11.25°）。土建、
+  `/SSC测试`、MDS、S1、FIXING / datum 真值逐件不变。
+- 真库门 `rvm_record_kinds_real::hvac_mitred_bends_and_flex_extensions_write_e3d_snouts`；单测
+  `a_slope_cylinder_key_carries_its_snout_parameters`。
+
 ## 2026-10-22 桥架拼接板的 OUTA / OUTB 只在 addin 口径下算数：C-IY 对 E3D TTY 重导（holes on）35/35 exact
 
 - 用当前 ams8000 把 `/C-IY-1R330-B` 按 addin 基线的表现口径（LEVEL PIPE 6、REPRE OBST ON）TTY 重导两份

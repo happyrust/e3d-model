@@ -25,7 +25,7 @@ use crate::discretise::{FilletVertex, flatten_ring};
 use crate::elmodl::{
     DegenerateCataloguePart, DegenerateCatalogueShape, GeneratedElement, GeometryId, ModelError,
 };
-use crate::primitive_instance::instantiate_box;
+use crate::primitive_instance::{AnalyticPrimitive, instantiate_box};
 use crate::route::orimat;
 use crate::solid::{
     SolidError, box_solid, circ_torus_solid, csg_cylinder_solid, cylinder_segments,
@@ -1160,13 +1160,14 @@ pub fn model_catalogue_member_with_cache(
                             Err(error) => diagnostics.push(local_failure(&primitive, &error)),
                         }
                     }
-                    Ok(SnoutBuild::Flat {
+                    Ok(SnoutBuild::Bodyless {
                         bottom_diameter,
                         top_diameter,
+                        height,
                         offset,
                         transform,
                     }) => {
-                        // 高为 0 仍有直径：Core 不出体，E3D 的 DRSNO 照写一条 Snout。
+                        // 高为 0 仍有直径、或直径为 0 仍有高：Core 不出体，E3D 的 DRSNO 照写一条 Snout。
                         degenerate_other += 1;
                         degenerate_parts.push(DegenerateCataloguePart {
                             noun: primitive_noun.clone(),
@@ -1174,7 +1175,7 @@ pub fn model_catalogue_member_with_cache(
                             shape: DegenerateCatalogueShape::Snout {
                                 bottom_radius_mm: bottom_diameter * 0.5,
                                 top_radius_mm: top_diameter * 0.5,
-                                height_mm: 0.0,
+                                height_mm: height,
                                 offset_x_mm: offset,
                             },
                         });
@@ -1560,6 +1561,7 @@ pub fn model_catalogue_member_with_cache(
                     frame,
                     repeats,
                     knuckled_dish,
+                    analytic: _,
                 } = part;
                 match subtract_owned_negatives(solid, &own_cutters, "catalogue own negatives") {
                     Ok(solid) => kept.push(CataloguePart {
@@ -1568,6 +1570,7 @@ pub fn model_catalogue_member_with_cache(
                         frame,
                         repeats,
                         knuckled_dish,
+                        analytic: None,
                     }),
                     Err(ModelError::Solid(SolidError::EmptyManifold { .. })) => {
                         diagnostics.push(format!(
@@ -1657,6 +1660,7 @@ pub fn model_catalogue_member_with_cache(
                 repeats: part.repeats,
                 frame: Some(part.frame),
                 knuckled_dish: part.knuckled_dish,
+                analytic: part.analytic.clone(),
             })
             .collect()
     } else {
@@ -2150,10 +2154,11 @@ fn lpyr_axial_and_offsets(
 
 enum SnoutBuild {
     Solid(EvaluatedSnout),
-    /// 高低于容差、至少一端直径还在。没有网格，记录照 DRSNO 写。
-    Flat {
+    /// 没有体但 E3D 的 DRSNO 照写记录：高低于容差、至少一端直径还在；或两端直径都没有、高还在。
+    Bodyless {
         bottom_diameter: f64,
         top_diameter: f64,
+        height: f64,
         offset: f64,
         transform: DMat4,
     },
@@ -2211,16 +2216,25 @@ fn evaluate_catalogue_snout(
         return Ok(if dbot.max(dtop) < HEIGHT_TOL_MM {
             SnoutBuild::None
         } else {
-            SnoutBuild::Flat {
+            SnoutBuild::Bodyless {
                 bottom_diameter: dbot,
                 top_diameter: dtop,
+                height: 0.0,
                 offset: xoff,
                 transform,
             }
         });
     }
     if dbot.max(dtop) < HEIGHT_TOL_MM {
-        return Ok(SnoutBuild::None);
+        // 软接头目录 `/CFLEX` 的 27 只延长段：`PBDI 2 / PTDI 0`、两端直径都是 0。E3D 写
+        // `Snout[0, 0, 2, …]`（ams7997 `/1CAM501FL`）。
+        return Ok(SnoutBuild::Bodyless {
+            bottom_diameter: dbot,
+            top_diameter: dtop,
+            height,
+            offset: xoff,
+            transform,
+        });
     }
     let parameters = [dbot, dtop, height, xoff, 0.0];
     Ok(SnoutBuild::Solid(EvaluatedSnout {
@@ -2781,8 +2795,8 @@ fn collect_owned_negatives_where(
                         transform: rebase * cutter.transform,
                     });
                 }
-                // 零高的负圆台没有体积可扣，和改前 `Ok(None)` 一样丢掉。
-                Ok(SnoutBuild::Flat { .. } | SnoutBuild::None) => {}
+                // 零高 / 零径的负圆台没有体积可扣，和改前 `Ok(None)` 一样丢掉。
+                Ok(SnoutBuild::Bodyless { .. } | SnoutBuild::None) => {}
                 Err(error) => diagnostics.push(format!(
                     "catalogue negative {} skipped by Core-style local failure: {error}",
                     child.refno()
@@ -3314,6 +3328,8 @@ pub(crate) struct CataloguePart {
     /// 网格键是折边碟（`PRAD > 0`），含被负体包了一层的那只。写出器据此选
     /// `EllipticalDish`，不从网格长相猜——r = h 时两种碟是同一只半球。
     pub(crate) knuckled_dish: bool,
+    /// 网格认不出的那族的解析描述，见 [`mesh_key_analytic`]。
+    pub(crate) analytic: Option<AnalyticPrimitive>,
 }
 
 /// 取网格 → 放置去重 → 摆放。G0-1c 三条臂共用这一份；其余臂的手抄版见计划 G2-5。
@@ -3377,8 +3393,29 @@ fn place_part_once(
         frame: transform,
         repeats: 1,
         knuckled_dish: mesh_key_is_knuckled_dish(mesh_key),
+        analytic: mesh_key_analytic(mesh_key),
     });
     true
+}
+
+/// 网格识别器认不出的目录图元从网格键里取回参数：`SSLC` 的半径、高与四个斜切角。E3D 对它
+/// 走 DRSNO 写带斜切角的 `Snout`（暖通分段弯头的斜切节），局部帧与
+/// [`crate::solid::slope_ended_cylinder_solid`] 同一个。被负体包了一层的不再是那只斜切圆柱，不给。
+fn mesh_key_analytic(key: &CatalogueMeshKey) -> Option<AnalyticPrimitive> {
+    let CatalogueMeshKey::SlopeCylinder { parameter_bits, .. } = key else {
+        return None;
+    };
+    let [radius, height, xtop_deg, ytop_deg, xbot_deg, ybot_deg] =
+        parameter_bits.map(f64::from_bits);
+    Some(AnalyticPrimitive::SlopedCylinder {
+        radius,
+        height,
+        xtop_deg,
+        ytop_deg,
+        xbot_deg,
+        ybot_deg,
+        segments: crate::solid::cylinder_segments(radius),
+    })
 }
 
 /// `SDSH` 的 `PRAD > 0` 留在网格键的 `knuckled` 上。负体把键包成 [`CatalogueMeshKey::Cut`]
@@ -4367,6 +4404,35 @@ mod tests {
         assert!((transform.w_axis.truncate() - DVec3::new(0.0, 0.0, 100.0)).length() < 1e-12);
         assert!((transform.z_axis.truncate() - DVec3::Z).length() < 1e-12);
         assert!(flat_lpyr_geometry([0.0; 4], axial, pa, pb, pc).is_none());
+    }
+
+    /// 暖通分段弯头的斜切节（`/C5SEGB` 的 SSLC）：参数留在网格键里，写出端从这里拿回带斜切角的
+    /// `Snout`，圆周段数与网格同一张表。其余网格键不给。
+    #[test]
+    fn a_slope_cylinder_key_carries_its_snout_parameters() {
+        let key = CatalogueMeshKey::SlopeCylinder {
+            tessellation_version: SLOPE_CYLINDER_TESSELLATION_VERSION,
+            parameter_bits: [175.0, 208.858, 0.0, -11.25, 0.0, 11.25].map(f64::to_bits),
+        };
+        assert_eq!(
+            mesh_key_analytic(&key),
+            Some(AnalyticPrimitive::SlopedCylinder {
+                radius: 175.0,
+                height: 208.858,
+                xtop_deg: 0.0,
+                ytop_deg: -11.25,
+                xbot_deg: 0.0,
+                ybot_deg: 11.25,
+                segments: crate::solid::cylinder_segments(175.0),
+            })
+        );
+        let dish = CatalogueMeshKey::Dish {
+            tessellation_version: 1,
+            radius_bits: 1.0f64.to_bits(),
+            height_bits: 1.0f64.to_bits(),
+            knuckled: true,
+        };
+        assert_eq!(mesh_key_analytic(&dish), None);
     }
 
     /// 三根轴都解不出来时 Core 也不失败：z 换 `(1,0,0)`、x 换 `(0,1,0)`。

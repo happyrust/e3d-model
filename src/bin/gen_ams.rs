@@ -1261,20 +1261,43 @@ fn main() -> anyhow::Result<()> {
                             }
                         } else {
                             let (clo, chi) = component.aabb().unwrap_or(([0.0; 3], [0.0; 3]));
-                            rvm_component_geometry(
-                                world,
-                                rotation,
-                                &local,
-                                &tris,
-                                clo,
-                                chi,
-                                preferred,
-                                frame,
-                                provenance_only,
-                                allow_box,
-                                &mut rvm_analytic,
-                                &mut rvm_analytic_rejected,
-                            )
+                            // 网格认不出的目录图元（`SSLC` 的斜切节）照目录参数直出，自校闸照过。
+                            let catalogue_analytic = component_records
+                                .get(index)
+                                .and_then(|record| Some((record.analytic.as_ref()?, record.frame?)))
+                                .and_then(|(primitive, frame)| {
+                                    e3d_model::rvm_write::analytic_from_primitive(
+                                        &(*world * frame),
+                                        primitive,
+                                    )
+                                });
+                            match catalogue_analytic {
+                                Some(candidate)
+                                    if candidate.matches_mesh_aabb(clo, chi, ANALYTIC_TOL_MM) =>
+                                {
+                                    rvm_analytic += 1;
+                                    candidate.geometry
+                                }
+                                rejected => {
+                                    if rejected.is_some() {
+                                        rvm_analytic_rejected += 1;
+                                    }
+                                    rvm_component_geometry(
+                                        world,
+                                        rotation,
+                                        &local,
+                                        &tris,
+                                        clo,
+                                        chi,
+                                        preferred,
+                                        frame,
+                                        provenance_only,
+                                        allow_box,
+                                        &mut rvm_analytic,
+                                        &mut rvm_analytic_rejected,
+                                    )
+                                }
+                            }
                         };
                         // 出身是 SEXT / SREV 且这条最终写成面片：记录帧改目录轮廓标架。
                         // SEXT 原点旋进标架，SREV 原点不旋，两只矩阵都在 CataloguePart.frame 里。
