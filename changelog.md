@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-22 高为 0 的目录棱台照写一条 `Pyramid`：风管 THRE / BEND 的无体板对上 E3D
+
+- `catalogue`：高为 0、底顶仍有边长的正体 LPYR，Core 不出体，E3D 的 DRPYR 照写一条 `Pyramid`，高是 `-0`
+  （ams7997 `/-VES-E-4-L-2501` 风管 BEND 1 带 2 块、THRE 1 带 4 块 `Pyramid[500, 500, 500, 500, 0, ±0, -0]`）。
+  `flat_lpyr_geometry` 与正常棱台同一套标架与轴向翻转，经新的 `DegenerateCatalogueShape::Pyramid` 交给
+  `rvm_write::bodyless_pyramid_geometry` 写记录；七个参数与 E3D 逐位相同（含 `-0`）。
+- 这两只没有负体：本体那条 FacetGroup 两侧本来一致，差的就是这几块无体的板。「E3D 只把被切的图元合成
+  面片」那条假设用不上，布尔结果的写法不动。
+- 单测 `a_flat_lpyr_has_no_body_but_keeps_its_record`。
+
 ## 2026-10-22 rvm_read 认 E3D 给斜切大小头写的倒着的声明盒：e3d-model#6 的三个暖通区不再拒判
 
 - `rvm_read::detect_bbox_frame`：斜切大到 z 上界算到下界以下时，E3D 照公式写 min > max 的记录盒

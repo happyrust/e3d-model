@@ -1324,6 +1324,13 @@ fn main() -> anyhow::Result<()> {
                             height_mm,
                             offset_x_mm,
                         ),
+                        e3d_model::elmodl::DegenerateCatalogueShape::Pyramid { parameters } => {
+                            e3d_model::rvm_write::bodyless_pyramid_geometry(
+                                &generated.world,
+                                &part.local_transform,
+                                parameters,
+                            )
+                        }
                     });
                 }
                 let name = rvm_display_name(

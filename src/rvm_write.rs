@@ -1854,6 +1854,38 @@ pub fn bodyless_snout_geometry(
     }
 }
 
+/// 给一只**没有体**的目录四棱台造一条 `Pyramid` 记录：高为 0，底 / 顶边长与偏心照留。
+///
+/// ams7997 `/-VES-E-4-L-2501` 的风管 THRE 1 / BEND 1：Core 不出体，E3D 的 DRPYR 仍写
+/// `Pyramid[500, 500, 500, 500, 0, 0, -0]`。`parameters` 是记录单位（mm）的
+/// `[xbot, ybot, xtop, ytop, xoff, yoff, height]`，记录盒照 E3D 的声明盒写。
+pub fn bodyless_pyramid_geometry(
+    world: &glam::DMat4,
+    local: &glam::DMat4,
+    parameters: [f64; 7],
+) -> crate::rvm_read::RvmGeometry {
+    let cols = (*world * *local).to_cols_array();
+    let matrix3 = [
+        cols[0], cols[1], cols[2], cols[4], cols[5], cols[6], cols[8], cols[9], cols[10],
+    ]
+    .map(|value| value / M_TO_MM);
+    let primitive = Primitive::Pyramid(parameters);
+    let record_bbox = primitive
+        .declared_box_mm()
+        .or_else(|| primitive.local_aabb_mm())
+        .unwrap_or([0.0; 6]);
+    RvmGeometry {
+        tag: "PRIM".to_string(),
+        flags: 1,
+        primitive,
+        matrix3,
+        translation_mm: [cols[12], cols[13], cols[14]],
+        record_bbox,
+        bbox_frame: crate::rvm_read::BboxFrame::Local,
+        level: None,
+    }
+}
+
 /// 由 [`snout_from_local_mesh`] 认出来的圆台造一条 `Snout` 记录。
 ///
 /// RVM 的 `Snout`：轴向局部 **Z**、原点在两个面心的中点，`XOFF`/`YOFF` 是顶面中心相对

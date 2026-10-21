@@ -225,10 +225,15 @@ pub enum DegenerateCatalogueShape {
         height_mm: f64,
         offset_x_mm: f64,
     },
+    /// 高为 0 的 LPYR：底 / 顶边长与偏心照留，E3D 的 DRPYR 写 `Pyramid[…, -0]`。
+    /// `parameters` 是记录参数 `[xbot, ybot, xtop, ytop, xoff, yoff, height]`（mm）。
+    Pyramid {
+        parameters: [f64; 7],
+    },
 }
 
 pub struct DegenerateCataloguePart {
-    /// 目录图元的名词（`SCYL` / `LCYL` / `LSNO` / `SCON`）。
+    /// 目录图元的名词（`SCYL` / `LCYL` / `LSNO` / `SCON` / `LPYR`）。
     pub noun: String,
     /// 图元在元素局部系里的放置：平移是图元原点，Z 轴是它的轴向。
     pub local_transform: DMat4,

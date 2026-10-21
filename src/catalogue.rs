@@ -1073,7 +1073,21 @@ pub fn model_catalogue_member_with_cache(
                             Err(error) => diagnostics.push(local_failure(&primitive, &error)),
                         }
                     }
-                    Ok(None) => degenerate_other += 1,
+                    Ok(None) => {
+                        // 高为 0 仍有边长：Core 不出体，E3D 的 DRPYR 照写一条 Pyramid。
+                        degenerate_other += 1;
+                        match evaluate_flat_lpyr(member, &component, &primitive, &env) {
+                            Ok(Some((transform, parameters))) => {
+                                degenerate_parts.push(DegenerateCataloguePart {
+                                    noun: primitive_noun.clone(),
+                                    local_transform: transform,
+                                    shape: DegenerateCatalogueShape::Pyramid { parameters },
+                                })
+                            }
+                            Ok(None) => {}
+                            Err(error) => diagnostics.push(local_failure(&primitive, &error)),
+                        }
+                    }
                     Err(error) => diagnostics.push(local_failure(&primitive, &error)),
                 }
             }
@@ -1931,6 +1945,29 @@ fn evaluate_lpyr_as(
     what: &'static str,
     axis_what: &'static str,
 ) -> Result<Option<EvaluatedPyramid>, ModelError> {
+    let (caps, axial, pa, pb, pc) = read_lpyr(member, component, pyramid, env, what, axis_what)?;
+    lpyr_geometry(caps, axial, pa, pb, pc)
+}
+
+/// LPYR / NLPY 的输入：底 / 顶边长 `[xbot, ybot, xtop, ytop]`、轴向与偏心
+/// `[top_distance, bottom_distance, xoff, yoff]`，以及 PAAX / PBAX / PCAX 三根轴。
+fn read_lpyr(
+    member: &DbElement,
+    component: &DbElement,
+    pyramid: &DbElement,
+    env: &DbElementParamEnv,
+    what: &'static str,
+    axis_what: &'static str,
+) -> Result<
+    (
+        [f64; 4],
+        [f64; 4],
+        CatalogueAxis,
+        CatalogueAxis,
+        CatalogueAxis,
+    ),
+    ModelError,
+> {
     let xtop = required_number(pyramid, "PBTP", env, what)?.abs();
     let ytop = required_number(pyramid, "PCTP", env, what)?.abs();
     let xbot = required_number(pyramid, "PBBT", env, what)?.abs();
@@ -1946,13 +1983,69 @@ fn evaluate_lpyr_as(
     let pb = catalogue_axis_or_fail(member, component, pyramid, "PBAX", axis_what)?;
     let pc = catalogue_axis_or_fail(member, component, pyramid, "PCAX", axis_what)?;
 
-    lpyr_geometry(
+    Ok((
         [xbot, ybot, xtop, ytop],
         [top_distance, bottom_distance, xoff, yoff],
         pa,
         pb,
         pc,
-    )
+    ))
+}
+
+/// 高为 0、底顶仍有边长的正体 LPYR（[`evaluate_lpyr`] 给 `None` 的那一种）：返回记录的放置与
+/// 参数，见 [`flat_lpyr_geometry`]。
+fn evaluate_flat_lpyr(
+    member: &DbElement,
+    component: &DbElement,
+    pyramid: &DbElement,
+    env: &DbElementParamEnv,
+) -> Result<Option<(DMat4, [f64; 7])>, ModelError> {
+    let (caps, axial, pa, pb, pc) = read_lpyr(
+        member,
+        component,
+        pyramid,
+        env,
+        "catalogue LPYR",
+        "catalogue LPYR axis",
+    )?;
+    Ok(flat_lpyr_geometry(caps, axial, pa, pb, pc))
+}
+
+/// 高为 0、底顶仍有边长的 LPYR：Core 不出体，E3D 的 DRPYR 照写一条 `Pyramid`，高是 `-0`
+/// （ams7997 `/-VES-E-4-L-2501` 的风管 THRE 1 / BEND 1 各带这样的
+/// `Pyramid[500, 500, 500, 500, 0, 0, -0]`）。标架与轴向翻转与 [`lpyr_geometry`] 同一套，
+/// 返回 `(放置, [xbot, ybot, xtop, ytop, xoff, yoff, height])`。四条边都是 0 或高不为 0 时 `None`。
+fn flat_lpyr_geometry(
+    [mut xbot, mut ybot, mut xtop, mut ytop]: [f64; 4],
+    [top_distance, bottom_distance, xoff, mut yoff]: [f64; 4],
+    pa: CatalogueAxis,
+    mut pb: CatalogueAxis,
+    pc: CatalogueAxis,
+) -> Option<(DMat4, [f64; 7])> {
+    let mut height = top_distance - bottom_distance;
+    if height.abs() >= HEIGHT_TOL_MM || [xbot, ybot, xtop, ytop].iter().all(|side| *side == 0.0) {
+        return None;
+    }
+    if height <= 0.0 {
+        height = -height;
+        pb.direction = -pb.direction;
+        std::mem::swap(&mut xbot, &mut xtop);
+        std::mem::swap(&mut ybot, &mut ytop);
+    }
+    let (x, y, z) = orthog(pa.direction, pb.direction);
+    if pc.direction.dot(y) < 0.0 {
+        yoff = -yoff;
+    }
+    let rotation = DMat3::from_cols(x, y, z);
+    let centre = DVec3::new(
+        xoff * 0.5,
+        yoff * 0.5,
+        (top_distance + bottom_distance) * 0.5,
+    );
+    Some((
+        DMat4::from_translation(pa.origin + rotation * centre) * DMat4::from_mat3(rotation),
+        [xbot, ybot, xtop, ytop, xoff, yoff, height],
+    ))
 }
 
 fn lpyr_geometry(
@@ -4230,6 +4323,26 @@ mod tests {
         assert!((span(0) - 263.1).abs() < 1e-6, "{bounds:?}");
         assert!((span(1) - 315.0).abs() < 1e-6, "{bounds:?}");
         assert!((span(2) - 198.125).abs() < 1e-6, "{bounds:?}");
+    }
+
+    /// 风管 `/-VES-E-4-L-2501` 那种高为 0 的 LPYR：正体出不来，记录照写——参数是 E3D 的
+    /// `Pyramid[500, 500, 500, 500, 0, 0, -0]`，放置与正常棱台同一套。四条边全是 0 的不写。
+    #[test]
+    fn a_flat_lpyr_has_no_body_but_keeps_its_record() {
+        let axis = |direction| CatalogueAxis {
+            origin: DVec3::new(0.0, 0.0, 100.0),
+            direction,
+        };
+        let caps = [500.0, 500.0, 500.0, 500.0];
+        let axial = [0.0, 0.0, 0.0, 0.0];
+        let (pa, pb, pc) = (axis(DVec3::Z), axis(DVec3::X), axis(DVec3::Y));
+        assert!(lpyr_geometry(caps, axial, pa, pb, pc).unwrap().is_none());
+        let (transform, parameters) = flat_lpyr_geometry(caps, axial, pa, pb, pc).unwrap();
+        assert_eq!(parameters[..6], [500.0, 500.0, 500.0, 500.0, 0.0, 0.0]);
+        assert!(parameters[6] == 0.0 && parameters[6].is_sign_negative());
+        assert!((transform.w_axis.truncate() - DVec3::new(0.0, 0.0, 100.0)).length() < 1e-12);
+        assert!((transform.z_axis.truncate() - DVec3::Z).length() < 1e-12);
+        assert!(flat_lpyr_geometry([0.0; 4], axial, pa, pb, pc).is_none());
     }
 
     /// 三根轴都解不出来时 Core 也不失败：z 换 `(1,0,0)`、x 换 `(0,1,0)`。
