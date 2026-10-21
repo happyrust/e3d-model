@@ -255,8 +255,8 @@ pub struct CataloguePartRecord {
     /// 这一块在 GMSE 里被几个成员算成了同一只网格、同一个放置，RVM 就写几条记录。
     pub repeats: usize,
     /// 放置标架（元素局部系）：列 = 图元自己的 X / Y / Z，平移 = 图元自己的原点，
-    /// 就是 [`crate::catalogue`] 把局部网格摆到元素里用的那只矩阵。没有标架的（型材成员）
-    /// 是 `None`，记录照网格反推。
+    /// 就是 [`crate::catalogue`] 把局部网格摆到元素里用的那只矩阵。SCTN / STWALL 的截面成员
+    /// 建在元素局部系里、沿局部 Z 挤出，标架是单位阵（只管转动，平移不用）。`None` = 记录照网格反推。
     pub frame: Option<DMat4>,
     /// 目录 `SDSH` 且 `PRAD > 0`。E3D 的 `DRDISH` 据此写 `EllipticalDish`，不看形状：
     /// r = h 时形体退化成半球，与球形碟逐点相同，网格认不出种类。
@@ -852,16 +852,30 @@ pub fn model_element_with_cache(
     // CNTB（`test_data/rvm/SCTN-HW150-C80.rvm`）。2026-09-29 之前这里把 FITT 的目录几何拼进
     // 梁的 `parts`，梁的 AABB 因此吞掉端板，而 FITT 自己在模型集里没有一行。
     let mut part_catalogue_nouns: Vec<String> = Vec::new();
-    let parts = if noun == "SCTN" {
+    let mut part_record_repeats: Vec<CataloguePartRecord> = Vec::new();
+    let parts = if noun == "SCTN" || noun == "STWALL" {
         // 本体那几块：E3D 逐 GMSS 成员写记录（管型材的截面是两个 `PANG=180` 的 SANN 半环，
         // 基准 RVM 里就是同心反向的两条面片），所以记录单位取并集前的成员，而不是并集后的
         // 一块。带负体时只有并集体是可见结果——`parts` 按定义是「非布尔」的那一份，退回整只。
-        if negatives_applied == 0 && section_members.len() > 1 {
+        // 只有一个成员时也要把出身交出去：截面就是一只 SREC 的 STWALL，E3D 写一条 `Pyramid`
+        // （ams7997 `/1SL-WF08-W-C-S8038`、`/1SL-WF08-W-C-S8019` 的 STWA 1），不是拉伸体面片。
+        if negatives_applied == 0 && !section_members.is_empty() {
             // 逐块的出身跟着一起交出去：E3D 对 `SREC` 成员走 DRPYR，对 `SPRO` / `SANN`
             // 才走拉伸体的面片（见 [`GeneratedElement::part_catalogue_nouns`]）。
             part_catalogue_nouns = section_member_sources
                 .iter()
                 .map(|source| section_source_noun(*source).to_string())
+                .collect();
+            // 记录矩阵照元素局部系写：DRPYR 把 SREC 的高写在挤出方向（局部 Z）、底边写在截面的
+            // X / Y 上。盒子哪三根轴都能当棱台轴，不给标架识别器就随便挑（S8038 的 STWA 1：E3D
+            // `Pyramid[150, 700, 150, 700, 0, 0, 1835]`，记录矩阵与元素标架逐列相同）。
+            part_record_repeats = section_members
+                .iter()
+                .map(|_| CataloguePartRecord {
+                    repeats: 1,
+                    frame: Some(DMat4::IDENTITY),
+                    knuckled_dish: false,
+                })
                 .collect();
             Some(
                 section_members
@@ -887,7 +901,7 @@ pub fn model_element_with_cache(
         solid,
         parts,
         part_catalogue_nouns,
-        part_record_repeats: Vec::new(),
+        part_record_repeats,
         degenerate_parts: Vec::new(),
         world,
         primitive_instance: (!had_negative_members)

@@ -8,24 +8,30 @@
 //! 多边形、28 条轮廓的带孔 FacetGroup；此前我们按桥架的口径写成两条未扣减的 Box，孔在 RVM
 //! 里丢了。
 //!
+//! ams7997 `/SSC测试` 整站对拍（gen-model `verification/civil-tty-20261021/ams7997_ssc_lv6.rvm`）里
+//! 另外两类：截面就是一只 SREC 的 STWALL，E3D 走 DRPYR 写一条 `Pyramid`，高沿挤出方向；风管
+//! `/-VES-E-4-L-2501` 的 BEND 1 / THRE 1 本体是一条面片，另带 2 / 4 块高为 0 的 LPYR 板，Core 不出体，
+//! E3D 照写 `Pyramid[500, 500, 500, 500, 0, ±0, -0]`。
+//!
 //! 缺 E3D 安装或影子资产默认红（与 `increment_real.rs` 同一口径）；无语料环境显式设
 //! `E3D_SKIP_REAL_GATES=1` 换回跳过。
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use e3d_model::rvm_read::RvmFile;
+use e3d_model::rvm_read::{Primitive, RvmFile, RvmMember};
 
 const AMS_DIR: &str = r"D:\AVEVA\Projects\E3D3.1\AvevaMarineSample\ams000";
 const ACP_DIR: &str = r"D:\AVEVA\Projects\E3D3.1\AvevaCatalogue\acp000";
-const DESIGN_DB: &str = "ams7324_0001";
+const MDS_DB: &str = "ams7324_0001";
+const SSC_DB: &str = "ams7997_0001";
 const TEMPLATE_DIR: &str = r"E:\reverse\e3d\shadow_e3d31_aps_all";
 const IJOINT1: &str = "23708/42148";
 const IJOINT1_NAME: &str = "/SUPPORT/FRAMES/BS/FT03H/9-V1/S1/IJOINT1";
 
-fn fixtures_present() -> bool {
+fn fixtures_present(design_db: &str) -> bool {
     let attlib = Path::new(TEMPLATE_DIR).join("attlib.dat");
-    let design = Path::new(AMS_DIR).join(DESIGN_DB);
+    let design = Path::new(AMS_DIR).join(design_db);
     let missing: Vec<String> = [design.as_path(), Path::new(ACP_DIR), attlib.as_path()]
         .into_iter()
         .filter(|path| !path.exists())
@@ -48,7 +54,7 @@ fn fixtures_present() -> bool {
 }
 
 /// 只生成 `root` 这一只，返回写出的 RVM 与 `elements.json`。
-fn generate(root: &str, holes: &str, out: &Path) -> (RvmFile, serde_json::Value) {
+fn generate(design_db: &str, root: &str, holes: &str, out: &Path) -> (RvmFile, serde_json::Value) {
     let template = Path::new(TEMPLATE_DIR);
     let status = Command::new(env!("CARGO_BIN_EXE_gen_ams"))
         .arg("--attlib")
@@ -56,7 +62,7 @@ fn generate(root: &str, holes: &str, out: &Path) -> (RvmFile, serde_json::Value)
         .arg("--template")
         .arg(template)
         .arg("--db")
-        .arg(Path::new(AMS_DIR).join(DESIGN_DB))
+        .arg(Path::new(AMS_DIR).join(design_db))
         .args(["--db-type", "DESI", "--root", root])
         .args(["--project-dir", AMS_DIR, "--project-dir", ACP_DIR])
         .arg("--out")
@@ -76,36 +82,105 @@ fn generate(root: &str, holes: &str, out: &Path) -> (RvmFile, serde_json::Value)
     (rvm, elements)
 }
 
-fn record_kinds(rvm: &RvmFile, name: &str) -> Vec<&'static str> {
-    let member = rvm
-        .members
+fn member<'a>(rvm: &'a RvmFile, name: &str) -> &'a RvmMember {
+    rvm.members
         .iter()
         .find(|member| member.name.trim() == name)
-        .unwrap_or_else(|| panic!("RVM 里没有 {name}"));
-    member
+        .unwrap_or_else(|| panic!("RVM 里没有 {name}"))
+}
+
+fn record_kinds(rvm: &RvmFile, name: &str) -> Vec<&'static str> {
+    member(rvm, name)
         .geometries
         .iter()
         .map(|geometry| geometry.primitive.name())
         .collect()
 }
 
+fn pyramids(rvm: &RvmFile, name: &str) -> Vec<[f64; 7]> {
+    member(rvm, name)
+        .geometries
+        .iter()
+        .filter_map(|geometry| match geometry.primitive {
+            Primitive::Pyramid(parameters) => Some(parameters),
+            _ => None,
+        })
+        .collect()
+}
+
 #[test]
 fn a_joint_with_primitive_holes_is_one_holed_facet_group() {
-    if !fixtures_present() {
+    if !fixtures_present(MDS_DB) {
         return;
     }
     let scratch: PathBuf =
         std::env::temp_dir().join(format!("e3d-model-rvm-kinds-{}", std::process::id()));
 
-    let (rvm, elements) = generate(IJOINT1, "on", &scratch.join("holes-on"));
+    let (rvm, elements) = generate(MDS_DB, IJOINT1, "on", &scratch.join("holes-on"));
     assert_eq!(record_kinds(&rvm, IJOINT1_NAME), ["FacetGroup"]);
     let element = &elements[0];
     assert_eq!(element["negatives_applied"], 2, "{element}");
     // 两块板各一个通孔：写进 RVM 的就是这只亏格 2 的网格。
     assert_eq!(element["genus"], 2, "{element}");
 
-    let (rvm, _) = generate(IJOINT1, "off", &scratch.join("holes-off"));
+    let (rvm, _) = generate(MDS_DB, IJOINT1, "off", &scratch.join("holes-off"));
     assert_eq!(record_kinds(&rvm, IJOINT1_NAME), ["Box", "Box"]);
+
+    std::fs::remove_dir_all(&scratch).ok();
+}
+
+/// 预期值是 E3D TTY 导出里的记录原样（种类顺序、`Pyramid` 七个参数）。
+#[test]
+fn single_srec_walls_and_flat_duct_plates_write_e3d_pyramids() {
+    if !fixtures_present(SSC_DB) {
+        return;
+    }
+    let scratch: PathBuf =
+        std::env::temp_dir().join(format!("e3d-model-rvm-kinds-ssc-{}", std::process::id()));
+    let walls = [
+        (
+            "24381/15586",
+            "STWALL 1 of CWALL /1SL-WF08-W-C-S8038",
+            [150.0, 700.0, 150.0, 700.0, 0.0, 0.0, 1835.0],
+        ),
+        (
+            "24381/15726",
+            "STWALL 1 of CWALL /1SL-WF08-W-C-S8019",
+            [200.0, 200.0, 200.0, 200.0, 0.0, 0.0, 1200.0],
+        ),
+    ];
+    for (root, name, want) in walls {
+        let (rvm, _) = generate(SSC_DB, root, "on", &scratch.join(root.replace('/', "_")));
+        assert_eq!(record_kinds(&rvm, name), ["Pyramid"], "{name}");
+        let got = pyramids(&rvm, name)[0];
+        assert!(
+            got.iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-3),
+            "{name}: {got:?}"
+        );
+    }
+
+    let fittings = [
+        ("24381/30463", "BEND 1 of BRAN /-VES-E-4-L-2501", 2),
+        ("24381/30501", "THRE 1 of BRAN /-VES-E-4-L-2501", 4),
+    ];
+    for (root, name, plates) in fittings {
+        let (rvm, _) = generate(SSC_DB, root, "on", &scratch.join(root.replace('/', "_")));
+        let mut want = vec!["FacetGroup"];
+        want.extend(std::iter::repeat_n("Pyramid", plates));
+        assert_eq!(record_kinds(&rvm, name), want, "{name}");
+        for plate in pyramids(&rvm, name) {
+            assert_eq!(
+                plate[..5],
+                [500.0, 500.0, 500.0, 500.0, 0.0],
+                "{name}: {plate:?}"
+            );
+            assert!(plate[5] == 0.0, "{name}: {plate:?}");
+            assert!(
+                plate[6] == 0.0 && plate[6].is_sign_negative(),
+                "{name}: {plate:?}"
+            );
+        }
+    }
 
     std::fs::remove_dir_all(&scratch).ok();
 }

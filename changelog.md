@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-10-22 截面成员按出身与元素标架写记录：单 SREC 截面的 STWALL 写 E3D 那条 `Pyramid`
+
+- `elmodl`：SCTN / STWALL 截面只有一个成员时也把目录出身交给写出端（此前要 ≥ 2 个成员才交），每个成员
+  另带一只元素局部系的标架（单位阵）：成员建在元素局部系里、沿局部 Z 挤出，DRPYR 把 SREC 的高写在挤出
+  方向、底边写在截面 X / Y 上。ams7997 `/1SL-WF08-W-C-S8038`、`/1SL-WF08-W-C-S8019` 的 STWA 1 截面就是
+  一只 `SREC`：E3D 写 `Pyramid[150, 700, 150, 700, 0, 0, 1835]` / `[200, 200, 200, 200, 0, 0, 1200]`，记录矩阵与
+  元素标架逐列相同；此前我们写拉伸体面片。只交出身不给标架时，识别器对盒子随便挑轴
+  （`[150, 1835, 150, 1835, 0, 0, 700]`）。
+- 语料里没有带 SREC 成员的 SCTN（S1 基准、MDS、`/SSC测试` 的 `Pyramid` 记录逐条普查过），SCTN 走的是
+  同一条截面路径；标架对不上识别出来的轴时 `pyramid_geometry_in_frame` 照旧退回网格轴。
+- 对拍（连同上一条）：ams7997 `/SSC测试` 整站记录种类不同 4 → 0，4522 exact、1 film 不变；`Pyramid` 记录
+  逐条普查 35 只里 33 只与 E3D 逐位相同，剩风管 OFST 1 / TAPER 1 两只偏心棱台换了一种等价写法（几何一致，
+  另案）。土建 9982 件、MDS BS 80 份 ZONE、S1 基准、FIXING / datum 真值逐件不变；两只 STWALL 的轴差
+  0.0023 / 0.0008 → 0。
+- 真库门 `rvm_record_kinds_real` 新增 `single_srec_walls_and_flat_duct_plates_write_e3d_pyramids`：两只 STWALL 与
+  BEND 1 / THRE 1 的记录种类顺序、`Pyramid` 七个参数照 E3D 原样。
+
 ## 2026-10-22 高为 0 的目录棱台照写一条 `Pyramid`：风管 THRE / BEND 的无体板对上 E3D
 
 - `catalogue`：高为 0、底顶仍有边长的正体 LPYR，Core 不出体，E3D 的 DRPYR 照写一条 `Pyramid`，高是 `-0`
