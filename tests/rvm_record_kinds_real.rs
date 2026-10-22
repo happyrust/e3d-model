@@ -31,6 +31,7 @@ const APS_STRUCTURAL_DB: &str = "aps250110_0001";
 const APS_SUPPORTS_DB: &str = "aps250104_0001";
 const APS_PIPING_DB: &str = "aps250124_0001";
 const APS_HVAC_DB: &str = "aps250142_0001";
+const APS_VALVE_DB: &str = "aps250132_0001";
 const TEMPLATE_DIR: &str = r"E:\reverse\e3d\shadow_e3d31_aps_all";
 const IJOINT1: &str = "23708/42148";
 const IJOINT1_NAME: &str = "/SUPPORT/FRAMES/BS/FT03H/9-V1/S1/IJOINT1";
@@ -523,6 +524,47 @@ fn duct_splitters_do_not_end_a_duct() {
         lengths.iter().any(|length| (length - 144.7).abs() < 0.01),
         "Box{lengths:?}"
     );
+
+    std::fs::remove_dir_all(&scratch).ok();
+}
+
+/// aps250132 阀门 `/V118`（`2013286676/1591`，E3D TTY 导出 gen-model
+/// `verification/civil-tty-20261021/aps_survey_lv6_2013286676_490.rvm`）：目录 `LINE`（`PTS 0 3`、`TUFL` 真）
+/// E3D 写一条 `Line[5, 292]`，原点在阀杆 P0→P3 的中点，Z 沿阀杆 `(0, -0.0872, 0.9962)`，X 是世界 −X。
+#[test]
+fn valve_stem_lines_write_e3d_line_records() {
+    if !fixtures_present_in(APS_DIR, APS_VALVE_DB) {
+        return;
+    }
+    let scratch: PathBuf =
+        std::env::temp_dir().join(format!("e3d-model-rvm-line-aps-{}", std::process::id()));
+    let (rvm, _) = generate_in(APS_DIR, APS_VALVE_DB, "2013286676/1591", "on", &scratch);
+    let lines: Vec<_> = member(&rvm, "/V118")
+        .geometries
+        .iter()
+        .filter(|geometry| matches!(geometry.primitive, Primitive::Line(_)))
+        .collect();
+    let [line] = lines.as_slice() else {
+        panic!("/V118 应有一条 Line，实际 {} 条", lines.len());
+    };
+    let Primitive::Line([width, length]) = line.primitive else {
+        unreachable!();
+    };
+    assert!(
+        width == 5.0 && (length - 292.0).abs() < 0.01,
+        "Line[{width}, {length}]"
+    );
+    let origin = line.translation_mm;
+    for (got, want) in origin.iter().zip([-313092.99, 300822.81, 101490.45]) {
+        assert!((got - want).abs() < 0.05, "原点 {origin:?}");
+    }
+    let axes = line.matrix3.map(|value| value * 1000.0);
+    for (got, want) in axes[6..9].iter().zip([0.0, -0.0872, 0.9962]) {
+        assert!((got - want).abs() < 1e-3, "Z {axes:?}");
+    }
+    for (got, want) in axes[0..3].iter().zip([-1.0, 0.0, 0.0]) {
+        assert!((got - want).abs() < 1e-3, "X {axes:?}");
+    }
 
     std::fs::remove_dir_all(&scratch).ok();
 }

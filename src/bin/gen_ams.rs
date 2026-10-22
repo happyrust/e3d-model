@@ -1377,6 +1377,13 @@ fn main() -> anyhow::Result<()> {
                                 parameters,
                             )
                         }
+                        e3d_model::elmodl::DegenerateCatalogueShape::Line { length_mm } => {
+                            e3d_model::rvm_write::bodyless_line_geometry(
+                                &generated.world,
+                                &part.local_transform,
+                                length_mm,
+                            )
+                        }
                     });
                 }
                 let name = rvm_display_name(

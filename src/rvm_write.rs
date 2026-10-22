@@ -1886,6 +1886,54 @@ pub fn bodyless_pyramid_geometry(
     }
 }
 
+/// E3D 每条 `Line` 记录的第一个参数，声明盒在 X / Y 上也取 ±它（APS 普查的 2504 条全是 5）。
+const LINE_RECORD_WIDTH_MM: f64 = 5.0;
+
+/// 给目录 `LINE` 造一条 `Line` 记录：`Line[5, 长]`，线段沿记录 Z、以原点为中点，声明盒
+/// `[-5, -5, -长/2, 5, 5, 长/2]`。
+///
+/// 标架只看线段的**世界**方向，与构件自己的 X / Y 无关：Y 取世界 −Z 在垂直于线段那张面上的投影，
+/// 线段竖直时取世界 +Y，X = Y × Z。APS 普查的 TTY 导出（gen-model
+/// `verification/civil-tty-20261021/aps_survey_lv6_*.rvm`）里 2504 条 `Line` 无一例外——26 条阀杆线、
+/// 2478 条 GENSEC 基准线，竖直的 821 条、斜的 1683 条。
+///
+/// `local` 的平移是线段中点、Z 沿线段（元素局部系），与
+/// [`crate::elmodl::DegenerateCataloguePart::local_transform`] 同一份。
+pub fn bodyless_line_geometry(
+    world: &glam::DMat4,
+    local: &glam::DMat4,
+    length: f64,
+) -> crate::rvm_read::RvmGeometry {
+    let placed = *world * *local;
+    let z = placed.z_axis.truncate().normalize();
+    let across = glam::DVec3::NEG_Z + z * z.z;
+    let y = if across.length() > 1.0e-9 {
+        across.normalize()
+    } else {
+        glam::DVec3::Y
+    };
+    let x = y.cross(z);
+    let matrix3 = [x.x, x.y, x.z, y.x, y.y, y.z, z.x, z.y, z.z].map(|value| value / M_TO_MM);
+    let origin = placed.w_axis;
+    RvmGeometry {
+        tag: "PRIM".to_string(),
+        flags: 1,
+        primitive: Primitive::Line([LINE_RECORD_WIDTH_MM, length]),
+        matrix3,
+        translation_mm: [origin.x, origin.y, origin.z],
+        record_bbox: [
+            -LINE_RECORD_WIDTH_MM,
+            -LINE_RECORD_WIDTH_MM,
+            -length / 2.0,
+            LINE_RECORD_WIDTH_MM,
+            LINE_RECORD_WIDTH_MM,
+            length / 2.0,
+        ],
+        bbox_frame: crate::rvm_read::BboxFrame::NotApplicable,
+        level: None,
+    }
+}
+
 /// 由 [`snout_from_local_mesh`] 认出来的圆台造一条 `Snout` 记录。
 ///
 /// RVM 的 `Snout`：轴向局部 **Z**、原点在两个面心的中点，`XOFF`/`YOFF` 是顶面中心相对
@@ -3621,6 +3669,40 @@ mod tests {
                     (record.translation_mm[axis] - want[axis]).abs() < 1e-9,
                     "{record:?}"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn a_line_record_takes_its_frame_from_the_world_direction_alone() {
+        // Y 取世界 −Z 的投影、竖直时取世界 +Y，X = Y × Z。数是 aps250132 的三只阀门：`/V138` 沿 −X、
+        // `/V118` 阀杆斜 5°、`/V134` 竖直。构件绕自己的 Z 随便转一个角，记录的 X / Y 不跟着转。
+        let world = glam::DMat4::from_translation(glam::DVec3::new(100.0, 200.0, 300.0))
+            * glam::DMat4::from_rotation_z(1.1);
+        let cases = [
+            (glam::DVec3::NEG_X, [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]),
+            (
+                glam::DVec3::new(0.0, -0.0872, 0.9962),
+                [-1.0, 0.0, 0.0],
+                [0.0, -0.9962, -0.0872],
+            ),
+            (glam::DVec3::Z, [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+        ];
+        for (dir, want_x, want_y) in cases {
+            let local_dir = world.inverse().transform_vector3(dir.normalize());
+            let rotation = crate::route::orimat(local_dir).unwrap();
+            let local = glam::DMat4::from_translation(glam::DVec3::new(0.0, 0.0, 146.0))
+                * glam::DMat4::from_mat3(rotation);
+            let record = bodyless_line_geometry(&world, &local, 292.0);
+            assert!(
+                matches!(record.primitive, Primitive::Line([w, l]) if w == 5.0 && l == 292.0),
+                "{record:?}"
+            );
+            assert_eq!(record.record_bbox, [-5.0, -5.0, -146.0, 5.0, 5.0, 146.0]);
+            let m = record.matrix3.map(|value| value * M_TO_MM);
+            for axis in 0..3 {
+                assert!((m[axis] - want_x[axis]).abs() < 1e-3, "{dir}: X {m:?}");
+                assert!((m[3 + axis] - want_y[axis]).abs() < 1e-3, "{dir}: Y {m:?}");
             }
         }
     }

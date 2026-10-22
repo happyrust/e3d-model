@@ -232,10 +232,16 @@ pub enum DegenerateCatalogueShape {
     Pyramid {
         parameters: [f64; 7],
     },
+    /// 目录 `LINE`（过得了表现级、两点）：E3D 写 `Line[5, 长]`。它本来就不是体，借这条路是因为
+    /// 写法一样——没有网格、记录照写。`local_transform` 的平移是线段中点、Z 沿线段（`PTS` 第一点
+    /// 指向第二点）；记录的 X / Y 由写出端按世界方向另定（[`crate::rvm_write::bodyless_line_geometry`]）。
+    Line {
+        length_mm: f64,
+    },
 }
 
 pub struct DegenerateCataloguePart {
-    /// 目录图元的名词（`SCYL` / `LCYL` / `LSNO` / `SCON` / `LPYR`）。
+    /// 目录图元的名词（`SCYL` / `LCYL` / `LSNO` / `SCON` / `LPYR` / `LINE`）。
     pub noun: String,
     /// 图元在元素局部系里的放置：平移是图元原点，Z 轴是它的轴向。
     pub local_transform: DMat4,

@@ -198,7 +198,7 @@ fn every_attribute_literal_in_the_generator_is_in_the_read_set() {
     // 通用图元 GENPRI 的归档带进 ELDATA；楼梯踏步随梯段现算的尺寸带进 TWIDTH / TREADD / TREADO /
     // OGOING / RISE；详图式栏杆按两端距离截段带进 SZDI / EZDI）；
     // 变了不是错，是提醒把 gen-model 那份 generation_read_set.json 一起重生成。
-    assert_eq!(names.len(), 160, "读取集合条数漂移：两份产物要一起重生成");
+    assert_eq!(names.len(), 161, "读取集合条数漂移：两份产物要一起重生成");
 }
 
 /// 直接读点的字面量必然在集合里——`get_*("X")` / `attribute("X")` 一个都不许漏，这是宽口径之下

@@ -18,7 +18,8 @@ use e3d_io::record::catalogue_eval::AttributeNumber;
 use e3d_io::record::descriptor::DescriptorValue;
 
 use crate::catalogue_point::{
-    CatalogueAxis, catalogue_component, catalogue_entry_attribute, resolve_catalogue_axis,
+    CatalogueAxis, catalogue_component, catalogue_entry_attribute, catalogue_point_local,
+    resolve_catalogue_axis,
 };
 use crate::category::{RepreDiscipline, repre_discipline};
 use crate::discretise::{FilletVertex, flatten_ring};
@@ -829,6 +830,59 @@ fn application_filtered(
     Ok(None)
 }
 
+/// 目录 `LINE` 的点号表与它的收尾记号：`PTS = [0, 3, 1000]` 是 P0 → P3。
+const LINE_POINTS: &str = "PTS";
+const LINE_POINTS_END: u32 = 1000;
+
+/// 目录 `LINE` → 一条 `Line` 记录（[`DegenerateCatalogueShape::Line`]）。
+///
+/// LINE 不出体（CRCATI 把它送进 `gml_bkend/CRCURV`），但过得了表现级的那几条 E3D 照写 `Line`：
+/// aps250132 / aps250160 的 26 只阀门，目录 `LINE`（`PTS 0 3`、`TUFL` 真）在 TTY 导出里各是一条
+/// `Line[5, 长]`，线段从 P0 到 P3。`TUFL` 假的（acp7000 里 3000 来条，ams 的阀门全是）过不了表现级，
+/// E3D 也不写。只认两点线：acp7000 里 `TUFL` 为真的 26 条全是两点；多点线（中间夹 `100` / `103`
+/// 这类记号）E3D 怎么写没有样本，照旧只记账。P0 是构件原点，不在 PTSE 里。
+fn catalogue_line_part(
+    member: &DbElement,
+    component: &DbElement,
+    line: &DbElement,
+    env: &DbElementParamEnv,
+    level: u32,
+) -> Result<Option<DegenerateCataloguePart>, ModelError> {
+    if application_filtered(line, env)?.is_some() || display_filtered(line, level)?.is_some() {
+        return Ok(None);
+    }
+    let words = match line.attribute(LINE_POINTS)? {
+        Some(DescriptorValue::RawWords(words) | DescriptorValue::WordArray(words)) => words,
+        _ => return Ok(None),
+    };
+    let numbers: Vec<u32> = words
+        .into_iter()
+        .take_while(|&number| number < LINE_POINTS_END)
+        .collect();
+    let &[start, end] = numbers.as_slice() else {
+        return Ok(None);
+    };
+    let position = |number: u32| -> Result<Option<DVec3>, ModelError> {
+        if number == 0 {
+            return Ok(Some(DVec3::ZERO));
+        }
+        Ok(catalogue_point_local(member, component, number)?.map(|point| point.pos))
+    };
+    let (Some(start), Some(end)) = (position(start)?, position(end)?) else {
+        return Ok(None);
+    };
+    let Some(rotation) = orimat(end - start) else {
+        return Ok(None);
+    };
+    Ok(Some(DegenerateCataloguePart {
+        noun: "LINE".to_string(),
+        local_transform: DMat4::from_translation((start + end) * 0.5) * DMat4::from_mat3(rotation),
+        shape: DegenerateCatalogueShape::Line {
+            length_mm: start.distance(end),
+        },
+    }))
+}
+
 /// Build the visible catalogue geometry carried by one design route member.
 ///
 /// A missing component/GMRE is a no-shape result. Primitive-local failures are
@@ -929,7 +983,8 @@ pub fn model_catalogue_member_with_cache(
             ));
             continue;
         }
-        // LINE 成员本来就只记账不建体，不进显示过滤，保住 centre_lines 的账目口径。
+        // LINE / SLINE 不进这里的两道过滤：LINE 画不画由 [`catalogue_line_part`] 自己判，筛掉的照旧
+        // 记进 centre_lines，不进 display_filtered 的账。
         if !curve_only && let Some(reason) = display_filtered(&primitive, member_level)? {
             display_filter_notes.push(format!(
                 "catalogue primitive {} noun {primitive_noun} display-filtered by {reason} (repre {} {member_level}, obst {})",
@@ -1504,7 +1559,15 @@ pub fn model_catalogue_member_with_cache(
             // (`0x10345ACC`) 把 LINE(640317) 与 SLINE(3471112) 送进同一个 `gml_bkend/CRCURV`
             // (`0x103474C7`)——出的是曲线不是实体，两个 noun 同一口径。此前只认 LINE，
             // SLINE 会落 `is not implemented`，把一条 E3D 也不出体的线记成欠账。
-            "LINE" | "SLINE" => ignored_lines += 1,
+            // 不出体不等于不写：过得了表现级（`TUFL` 为真）的两点 LINE，E3D 照写一条 `Line`
+            // 记录（[`catalogue_line_part`]）。
+            "LINE" => {
+                match catalogue_line_part(member, &component, &primitive, &env, member_level)? {
+                    Some(part) => degenerate_parts.push(part),
+                    None => ignored_lines += 1,
+                }
+            }
+            "SLINE" => ignored_lines += 1,
             unsupported => diagnostics.push(format!(
                 "catalogue primitive {} noun {unsupported} is not implemented",
                 primitive.refno()
