@@ -574,10 +574,12 @@ pub fn is_model_unit(noun: &str) -> bool {
 
         // 扶手：布局式 HANDRA 的栏杆与立柱是一件挂在 HANDRA 自己 refno 上的实体
         // （`crate::handrail`，管线的 `Composite(Structural) if noun == "HANDRA"` 臂产出，
-        // 增量上卷到它后走 `model_element` 的同名臂）。同族的 HRPOST/STRFLT/RLADDR
+        // 增量上卷到它后走 `model_element` 的同名臂）。折弯板 `BPANEL` 同一族、同一种消费语义
+        // （吃自己的 RPATH 与开孔负体），几何在 `crate::bpanel`。同族的 HRPOST/STRFLT/RLADDR
         // 还没有 builder，不是单元。
         Category::Composite(CompositeFamily::Structural) => {
-            noun.trim().eq_ignore_ascii_case("HANDRA")
+            let noun = noun.trim();
+            noun.eq_ignore_ascii_case("HANDRA") || noun.eq_ignore_ascii_case("BPANEL")
         }
 
         // 类 28：`NOZZ` / `ELCONN` 的实体是它 `CATR` 那只目录件的 GMRE 求值结果，键就是

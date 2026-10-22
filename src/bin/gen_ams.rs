@@ -446,9 +446,12 @@ fn rvm_component_geometry(
 /// `GeoTessellationFunnel`，由 SMLib `IwTess` 三角化成面片集再进 libgm。aps250162 的 TTY 导出里
 /// 75 只全是 `FacetGroup`；我们分段粗的圆柱会被认成 `Pyramid`。
 ///
+/// **折弯板**（BPANEL，[`e3d_model::bpanel`]）：aps250110 的 52 只全是 `FacetGroup`——没有开孔的一段一条，
+/// 有开孔的整只一条；直板那几段按长相会被认成 `Box`。
+///
 /// 名单 = 设计侧环拉伸（[`e3d_model::category::Category::LoopExtrusion`]：PANE / FLOOR / EXTR /
 /// AEXTR / SCREED / GWALL）+ 型材扫掠（SCTN / GENSEC / STWALL / WALL / RAIL / KICKPL）+
-/// 多面体（[`e3d_model::category::Category::Polyhedron`]：POHE / POLYHE）+ 通用图元 GENPRI。
+/// 多面体（[`e3d_model::category::Category::Polyhedron`]：POHE / POLYHE）+ 通用图元 GENPRI + 折弯板 BPANEL。
 /// 目录构件（FITT / FIXING / SBFI / PCOM…）**不在**名单里：它们由 GMSE 图元拼成，E3D 走
 /// DRBOX / DRCYL 等图元写出器——`:SDS_Entity 3` 那块底板就是 E3D 自己写的 `Pyramid`。
 ///
@@ -460,7 +463,7 @@ fn e3d_exports_facets_only(noun: &str) -> bool {
         e3d_model::category::Category::LoopExtrusion | e3d_model::category::Category::Polyhedron
     ) || matches!(
         noun,
-        "SCTN" | "GENSEC" | "STWALL" | "WALL" | "RAIL" | "KICKPL" | "GENPRI"
+        "SCTN" | "GENSEC" | "STWALL" | "WALL" | "RAIL" | "KICKPL" | "GENPRI" | "BPANEL"
     )
 }
 

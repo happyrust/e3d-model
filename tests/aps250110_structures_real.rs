@@ -13,7 +13,7 @@ use e3d_io::db_element::{DbFilePin, DbSet, template_file_for};
 use e3d_io::refno::RefNo;
 use e3d_model::category::classify;
 use e3d_model::db_discovery::DirectoryDbResolver;
-use e3d_model::elmodl::{Modeled, model_element};
+use e3d_model::elmodl::{GeneratedElement, Modeled, model_element};
 use e3d_model::stair::tread_size;
 
 const PLANT_DIR: &str = r"D:\AVEVA\Projects\E3D3.1\AvevaPlantSample\aps000";
@@ -66,23 +66,96 @@ fn aps_set() -> Arc<DbSet> {
     set
 }
 
+fn generated(set: &Arc<DbSet>, noun: &str, w1: u32, what: &str) -> Box<GeneratedElement> {
+    let el = set.element(RefNo::new(2013286654, w1));
+    match model_element(&el, classify(noun)).unwrap() {
+        Modeled::Solid(generated) => generated,
+        Modeled::Skipped { reason, .. } => panic!("{what} 没出实体：{reason}"),
+    }
+}
+
+/// 世界包围盒逐分量对 E3D。
+fn assert_box(generated: &GeneratedElement, e3d: [f64; 6], what: &str) {
+    let bb = generated.solid.bounding_box().expect("非空");
+    let (lo, hi) = (bb.min(), bb.max());
+    let got = [lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]];
+    for (axis, (g, e)) in got.iter().zip(e3d).enumerate() {
+        assert!(
+            (g - e).abs() <= 0.06,
+            "{what}：世界包围盒第 {axis} 分量 {g:.3}，E3D {e:.2}（全部 {got:?}）"
+        );
+    }
+}
+
 /// 按 noun 建一件，世界包围盒逐分量对 E3D。
 fn assert_world_box(set: &Arc<DbSet>, noun: &str, cases: &[(u32, [f64; 6], &str)]) {
     for (w1, e3d, what) in cases {
-        let el = set.element(RefNo::new(2013286654, *w1));
-        let generated = match model_element(&el, classify(noun)).unwrap() {
-            Modeled::Solid(generated) => generated,
-            Modeled::Skipped { reason, .. } => panic!("{what} 没出实体：{reason}"),
-        };
-        let bb = generated.solid.bounding_box().expect("非空");
-        let (lo, hi) = (bb.min(), bb.max());
-        let got = [lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]];
-        for (axis, (g, e)) in got.iter().zip(e3d).enumerate() {
-            assert!(
-                (g - e).abs() <= 0.06,
-                "{what}：世界包围盒第 {axis} 分量 {g:.3}，E3D {e:.2}（全部 {got:?}）"
-            );
-        }
+        assert_box(&generated(set, noun, *w1, what), *e3d, what);
+    }
+}
+
+/// 折弯板：没有开孔的一段一块（N 个点 → 2N − 3 块，与 E3D 的 FacetGroup 条数相同），开孔的整只扣完
+/// 一块。屋面板 9 的最低点在只剩一条弦的 R25 弯上（开孔板的弯走布尔操作数的粗分段）。
+#[test]
+fn bent_panels_follow_their_rpath_and_the_e3d_record_split() {
+    if !fixtures_present() {
+        return;
+    }
+    let set = aps_set();
+    let cases: [(u32, [f64; 6], Option<usize>, &str); 6] = [
+        (
+            17197,
+            [
+                -321183.30, 334709.00, 100010.07, -321133.30, 337673.00, 102440.07,
+            ],
+            None,
+            "BPANEL 1 of SBFRAMEWORK /AREA02_WS_CLADDING\\WEST（3 只 NCYL 开孔）",
+        ),
+        (
+            17301,
+            [
+                -321183.32, 337511.99, 100010.07, -321133.30, 340490.99, 102440.07,
+            ],
+            Some(93),
+            "BPANEL 3 of SBFRAMEWORK /AREA02_WS_CLADDING\\WEST",
+        ),
+        (
+            18191,
+            [
+                -305136.32, 340871.99, 100010.07, -305086.31, 343209.01, 102440.07,
+            ],
+            Some(73),
+            "BPANEL 2 of SBFRAMEWORK /AREA02_WS_CLADDING\\EAST",
+        ),
+        (
+            18961,
+            [
+                -305254.00, 343168.02, 100010.07, -305120.99, 343292.99, 104035.07,
+            ],
+            Some(3),
+            "BPANEL 1 of SBFRAMEWORK /AREA02_WS_CLADDING\\TRIM（板厚 10）",
+        ),
+        (
+            19295,
+            [
+                -310730.91, 339389.77, 104499.66, -304993.15, 341633.36, 105103.80,
+            ],
+            Some(291),
+            "BPANEL 3 of FRMWORK /AREA02_WS_ROOFING",
+        ),
+        (
+            20149,
+            [
+                -316394.89, 341242.06, 104017.35, -310699.89, 343478.38, 104630.24,
+            ],
+            None,
+            "BPANEL 9 of FRMWORK /AREA02_WS_ROOFING（NBOX 开孔）",
+        ),
+    ];
+    for (w1, e3d, pieces, what) in cases {
+        let panel = generated(&set, "BPANEL", w1, what);
+        assert_eq!(panel.parts.as_ref().map(Vec::len), pieces, "{what}");
+        assert_box(&panel, e3d, what);
     }
 }
 

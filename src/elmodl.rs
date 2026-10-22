@@ -636,6 +636,14 @@ pub fn model_element_with_cache(
                 }
             }
         }
+        // 折弯板：RPATH 中线 + `WTHICK` 厚 + `WIDT` 宽（`crate::bpanel`）。各段另记在
+        // `section_members` 里：名下没有负体时 E3D 逐段写记录（见下面 `parts`）。
+        Category::Composite(CompositeFamily::Structural) if noun == "BPANEL" => {
+            let panel =
+                crate::bpanel::bent_panel_local_solid(el, had_negative_members, &mut notes)?;
+            section_members = panel.pieces;
+            (panel.solid, None)
+        }
         // 通用图元：归档里的 SMLib B-rep 解码、三角化（`crate::genpri`）。判据在
         // `category::is_model_unit` 的 `Composite(Equipment) => GENPRI`。
         Category::Composite(CompositeFamily::Equipment) if noun == "GENPRI" => {
@@ -913,6 +921,16 @@ pub fn model_element_with_cache(
         } else {
             None
         }
+    } else if noun == "BPANEL" && negatives_applied == 0 && !section_members.is_empty() {
+        // 折弯板没有开孔时 E3D 一段一条 FacetGroup（`crate::bpanel` 模块文档）；有开孔就是扣完的整只。
+        // 出身不交（空名词），只为让写出端逐块一条；种类照面片族一律 FacetGroup。
+        part_catalogue_nouns = vec![String::new(); section_members.len()];
+        Some(
+            section_members
+                .iter()
+                .map(|member| placed(member, world))
+                .collect(),
+        )
     } else {
         None
     };

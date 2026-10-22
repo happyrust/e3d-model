@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-10-22 折弯板 BPANEL 沿 RPATH 中线建体，没开孔的逐段一条 FacetGroup——aps250110 52 只全出、exact
+
+- aps250110 的 52 只折弯板（`/AREA02_WS_CLADDING*` 墙板 40 只、`/AREA02_WS_ROOFING` 屋面板 12 只）此前整族
+  落在 `Composite(Structural)` 待建账上。截面中线是名下 `RPATH` 的 `POINTR` 点串，拐角按 `FRAD` 倒圆；板厚
+  `WTHICK` 以中线对称（`WJUSL = CENT`，语料里全是），沿 `RPATH.YDIR` 从 0 拉到板宽 `WIDT`。
+- 新模块 `bpanel`：段表与扶手同一套（`handrail::path_layout`）；直段是矩形板（`FRAD = 0` 的拐角先加长再按
+  角平分面切），拐角是一节矩形截面圆环。`BPANEL` 与 `HANDRA` 同列为 `Composite(Structural)` 里的模型单元，
+  开孔负体照旧由 `model_element` 扣。
+- E3D TTY RVM 有两种写法，弯的分段也不同：名下没有负体时逐段一条 FacetGroup（N 个点 = 2N − 3 条，弯按曲面
+  图元口径分段、至少 2 段）；有开孔时扣完整只一条，弯按布尔操作数的粗口径（10 mm 弦高的整圈段数按扫角缩、
+  至少 1 段）——屋面板 9 / 10 / 11 的 R25 弯只剩一条弦，板的最低点就在弦上，按细口径分会差 0.76 mm。
+  `model_element` 没扣负体时把各段交给写出端（出身名词留空，只为逐块一条记录）；`gen_ams` 把 BPANEL 列进
+  只写面片的名单（直板段按长相会被认成 `Box`）。
+- 读取集合不变（157：`WIDT` / `WTHICK` / `WJUSL` / `FRAD` / `CLOSEF` / `YDIR` 早已在内）。
+- aps250110：两侧都有 3375 → 3427，exact 3373 → 3425，只在 E3D 54 → 2。真库门 `aps250110_structures_real`
+  加六只板（有孔 / 无孔，墙板、屋面板、收边）的世界包围盒与逐段记录条数。
+
 ## 2026-10-22 梯段输入改了级联整棵梯段子树：楼梯踏步的尺寸随梯段现算，增量要跟上
 
 - `f21e7a1` 让 `stair::owning_flight` 沿 owner 链上溯到梯段，读它的 `TWIDTH` / `TREADO` / `OGOING` / `RISE` 与
