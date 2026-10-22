@@ -788,7 +788,7 @@ pub const DERIVED_ROUTE_CONTAINER_NOUNS: [&str; 3] = ["BRAN", "LUG", "TRUNNI"];
 /// 机理与管道那支**同形**：离开侧的 `LSTU` 指向 `/CADCHVACSPEC/RTUBEA|B|C` / `CTUBE`，其目录件
 /// `/RTUBE1..3` 的 BOXING 与 `/CTUBE` 的 TUBE 用 `( ATTRIB LEAWID OF PREV )` /
 /// `( ATTRIB LEAHEI OF PREV )` / `( ATTRIB LBOR OF PREV )` 取**离开侧构件**的断面，而那三个伪属性
-/// 就是离开 P 点的 `PWID` / `PHEI` / `PBOR`。与管道不同的两处：ATTA 在风管链上一律穿过
+/// 就是离开 P 点的 `PWID` / `PHEI` / `PBOR`。与管道不同的两处：ATTA、SPLR 在风管链上一律穿过
 /// （见 [`crate::route::station_verdict`]），断面是矩形或圆（见 [`crate::route::TubeSection`]）。
 /// 取证：`_runs/ams-init-1112-7997-20260917-mc/ledger-seg15-frameall.md` §10–§13，
 /// `e3d-hvac-all-121918/`。

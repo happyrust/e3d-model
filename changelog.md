@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-22 风管链上的分流片 SPLR 不当管身端点——aps250142 `/SUPPLY_WORKSHOP-001` 多出的 25 mm 风管去掉
+
+- 分流片 SPLR 装在风管里面，E3D 不拿它当管身端点，与风管链上的 ATTA 同路穿过。aps250142 的 19 只 SPLR 有
+  18 只坐在两件的接缝上，当不当站点都一样；`/SUPPLY_WORKSHOP-001` 的 `2013286686/18` 伸进下一件 25 mm，
+  当站点多画一根 25 mm 的矩形管，E3D 那里没有管。
+- 零长构件不一概穿过：同一条支管的 BRCO `2013286686/56` 也是零长、也错开 144.7 mm，E3D 照样画了它到
+  下一件的那一根。
+- 单测 `a_splitter_on_a_duct_route_is_passed_through`；真库门 `rvm_record_kinds_real` 加这条支管：只出那一根
+  144.7 mm 的 Box。
+
 ## 2026-10-22 设了坡度方向（SLODIR）的 P 点按实际方向判共轴——aps250124 放坡 TEE 两侧的管身补齐
 
 - E3D 的坡度工具（E3D 2.1 `PMLLIB/design/objects/pipeSlopeComponent.pmlobj`：`PSLDIR $!componentRef.leave …`、

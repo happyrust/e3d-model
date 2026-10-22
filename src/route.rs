@@ -17,7 +17,7 @@
 //! **属主是 HVAC 的风管 BRAN 也补**——2026-09-02 到 2026-09-18 之间它被关在门外，依据是
 //! 唯一一份 RVM 参照（24381/30598）里没有 TUBE；2026-09-18 把 ams7997 的 216 条风管 BRAN 全对了
 //! 一遍，E3D 给 14 条画了 17 段（15 Box + 2 Cylinder）。风管链与管道链走法相同、两处不同
-//! （[`crate::category::RouteDiscipline`]）：ATTA 在风管链上一律穿过（[`station_verdict`]），
+//! （[`crate::category::RouteDiscipline`]）：ATTA、SPLR 在风管链上一律穿过（[`station_verdict`]），
 //! 断面是矩形或圆、从离开 P 点的 `PWID/PHEI/PBOR` 来（[`TubeSection`]、[`crate::hvac_tube`]）。
 //!
 //! # 两端点有两种来源，可得性完全不同
@@ -281,12 +281,24 @@ pub enum StationVerdict {
 /// 无名支管 `24381/79980` 是 179.52 mm（按站点算是 844.5 mm）。反过来
 /// `/-VES-E-2-L-3807` 的 STRT 30285→ATTA 30286 有 405 mm 的真缝、断面也读得出，E3D 一样不画。
 /// 所以风管链上 ATTA 不看目录、直接穿过；管道那条 ANCI 判据原样保留。
+///
+/// # 风管链上的 SPLR 也穿过
+///
+/// 分流片 SPLR 装在风管里面，E3D 不拿它当管身端点。aps250142 的 19 只 SPLR 有 18 只坐在两件的接缝上，
+/// 当不当站点都一样（进、出两条槽位与穿过后的那一条都是零长）；`/SUPPLY_WORKSHOP-001` 的
+/// `2013286686/18` 伸进下一件 25 mm，当站点会多出一根 25 mm 的矩形管（外加一条反向槽位），E3D 那里
+/// 一根管也没有（TTY 导出 gen-model `verification/civil-tty-20261021/aps_survey_lv6_2013286686_2.rvm`）。
+/// 零长构件不能一概穿过：同一条支管的 BRCO `2013286686/56` 也是零长、也错开 144.7 mm，E3D 照样画了
+/// 它到下一件的那一根。
 pub fn station_verdict(
     discipline: RouteDiscipline,
     noun: &str,
     scom_gtyp: Option<&str>,
 ) -> StationVerdict {
     if !matches!(classify(noun), Category::RouteMember) {
+        return StationVerdict::PassThrough;
+    }
+    if discipline == RouteDiscipline::Hvac && noun.eq_ignore_ascii_case("SPLR") {
         return StationVerdict::PassThrough;
     }
     if !noun.eq_ignore_ascii_case("ATTA") {
@@ -1289,6 +1301,20 @@ mod tests {
         // 管道链上同一只 ANCI ATTA 仍是站点：两个学科的判据互不串。
         assert_eq!(
             station_verdict(RouteDiscipline::Pipe, "ATTA", Some("ANCI")),
+            StationVerdict::Station
+        );
+    }
+
+    /// 风管链上的分流片 SPLR 也穿过：aps250142 `/SUPPLY_WORKSHOP-001` 的 `2013286686/18` 伸进下一件
+    /// 25 mm，当站点会多画一根 25 mm 的矩形管。同样零长、同样错开的 BRCO 仍是站点。
+    #[test]
+    fn a_splitter_on_a_duct_route_is_passed_through() {
+        assert_eq!(
+            station_verdict(RouteDiscipline::Hvac, "SPLR", None),
+            StationVerdict::PassThrough
+        );
+        assert_eq!(
+            station_verdict(RouteDiscipline::Hvac, "BRCO", None),
             StationVerdict::Station
         );
     }

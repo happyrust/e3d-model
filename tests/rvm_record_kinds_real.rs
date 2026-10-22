@@ -30,6 +30,7 @@ const APS_DIR: &str = r"D:\AVEVA\Projects\E3D3.1\AvevaPlantSample\aps000";
 const APS_STRUCTURAL_DB: &str = "aps250110_0001";
 const APS_SUPPORTS_DB: &str = "aps250104_0001";
 const APS_PIPING_DB: &str = "aps250124_0001";
+const APS_HVAC_DB: &str = "aps250142_0001";
 const TEMPLATE_DIR: &str = r"E:\reverse\e3d\shadow_e3d31_aps_all";
 const IJOINT1: &str = "23708/42148";
 const IJOINT1_NAME: &str = "/SUPPORT/FRAMES/BS/FT03H/9-V1/S1/IJOINT1";
@@ -486,6 +487,42 @@ fn sloped_tee_points_take_their_slodir_directions() {
             "缺 {want} 那根：{lengths:?}"
         );
     }
+
+    std::fs::remove_dir_all(&scratch).ok();
+}
+
+/// aps250142 风管 `/SUPPLY_WORKSHOP-001`（E3D TTY 导出 gen-model
+/// `verification/civil-tty-20261021/aps_survey_lv6_2013286686_2.rvm`）只有一根管身：BRCO `2013286686/56` 到
+/// 下一件的 144.7 mm 矩形管。分流片 SPLR `2013286686/18` 伸进下一件 25 mm，E3D 不拿它当端点，那里没有管。
+#[test]
+fn duct_splitters_do_not_end_a_duct() {
+    if !fixtures_present_in(APS_DIR, APS_HVAC_DB) {
+        return;
+    }
+    let scratch: PathBuf =
+        std::env::temp_dir().join(format!("e3d-model-rvm-splitter-aps-{}", std::process::id()));
+    let (rvm, _) = generate_in(APS_DIR, APS_HVAC_DB, "2013286686/4", "on", &scratch);
+    let tubes: Vec<&RvmMember> = rvm
+        .members
+        .iter()
+        .filter(|member| {
+            let name = member.name.trim();
+            name.starts_with("TUBI ") && name.ends_with(" of BRAN /SUPPLY_WORKSHOP-001")
+        })
+        .collect();
+    let [tube] = tubes.as_slice() else {
+        panic!("这条风管只有一根管身，实际 {} 根", tubes.len());
+    };
+    let [geometry] = tube.geometries.as_slice() else {
+        panic!("管身应是一条记录，实际 {} 条", tube.geometries.len());
+    };
+    let Primitive::Box(lengths) = geometry.primitive else {
+        panic!("管身应是 Box，实际 {}", geometry.primitive.name());
+    };
+    assert!(
+        lengths.iter().any(|length| (length - 144.7).abs() < 0.01),
+        "Box{lengths:?}"
+    );
 
     std::fs::remove_dir_all(&scratch).ok();
 }
