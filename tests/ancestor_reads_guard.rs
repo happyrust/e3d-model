@@ -256,6 +256,13 @@ const OWNER_WALK_SITES: &[Site] = &[
               STRU / FRMW 根 → 整棵重算）覆盖；ADR-080 单元级发布由 increment::implicit_frame_host_of 的板支覆盖——板自己或它的\
               PLOO / LOOP 改了，就把整棵板子树级联进计划，与 point_on_host 那条同型（gen-model issue #39），单元规划已经补上",
     },
+    Site {
+        file: "stair.rs",
+        func: "owning_flight",
+        climb: Climb::NounOnly,
+        reads: &[],
+        why: "TREAD → TREADS → STRFLT（最多上溯三层）只核 noun；拿到的梯段交给 tread_size / going 读（见 ANCESTOR_CONSUMERS）",
+    },
 ];
 
 /// 接过一个祖先元素去读它的函数：`(文件名, fn 名, 一共读到的属性名, 理由)`。
@@ -277,7 +284,7 @@ const ANCESTOR_CONSUMERS: &[(&str, &str, &[&str], &str)] = &[
         "rpath.rs",
         "first_rpath",
         &[],
-        "CWBRAN（桥架件的 owner²，同一路由单元）的第一个 RPATH 成员：只看成员 noun",
+        "CWBRAN（桥架件的 owner²，同一路由单元）与 STRFLT（踏步的属主梯段，见 stair.rs::going）的第一个 RPATH 成员：只看成员 noun",
     ),
     (
         "cable_tray.rs",
@@ -378,6 +385,20 @@ const ANCESTOR_CONSUMERS: &[(&str, &str, &[&str], &str)] = &[
         &["HEIG", "SJUS"],
         "板第一个环的 HEIG / SJUS 与板自己的 HEIG：经 loop_extent 被 panel_surface_z 用在 PFIT 单元之上（AboveUnit，理由见\
          panel_fitting_world）；loop_profile 给板自己出剖面也用它，那一侧在单元内",
+    ),
+    (
+        "stair.rs",
+        "tread_size",
+        &["TREADO", "TWIDTH"],
+        "楼梯踏步的 TWIDTH / TREADD 伪属性：读踏步自己的 TWIDTH（单元内）与属主梯段的 TWIDTH / TREADO（梯段在 TREAD \
+         单元之上）。根口径下（梯段或它的 RPATH 改了 → 祖先闭包命中梯段所在的根 → 整棵重算）覆盖；单元级规划由 \
+         increment::implicit_frame_host_of 的 STRFLT 支把整棵梯段子树级联进计划覆盖",
+    ),
+    (
+        "stair.rs",
+        "going",
+        &["OGOING", "POS", "RISE"],
+        "梯段的踏步宽：读梯段的 OGOING / RISE 与它 RPATH 首末 POINTR 的 POS，都在 TREAD 单元之上，覆盖口径同 tread_size",
     ),
 ];
 

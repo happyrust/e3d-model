@@ -1005,6 +1005,8 @@ const CABLE_TRAY_BRANCH_NOUN: &str = "CWBRAN";
 /// - 名下有 `PFIT` 的板（FLOOR / PANE / GWALL，`catalogue::panel_surface_z`）：板自己（第一个环上没有 `HEIG`
 ///   时的 `HEIG`）与它的 PLOO / LOOP（第一个环的 `HEIG` / `SJUS`）。PFIT 自成单元，贴在板 SJUS 指的那一面上；
 ///   板的顶点不在它的输入里（`profile::loop_extent` 不读顶点），改 PAVE / VERT 只上卷到板。
+/// - 名下有 `TREAD` 的楼梯梯段 STRFLT（`stair::tread_size`）：梯段自己（`TWIDTH` / `TREADO` / `OGOING` /
+///   `RISE`）与它的 RPATH 路径（首末 POINTR 的 POS）。踏步自成单元，宽、深随梯段现算。
 ///
 /// 从候选上溯只许穿过上面这些 noun；起点在这一端不存在也是 `None`。
 ///
@@ -1053,8 +1055,26 @@ fn implicit_frame_host_of(set: &Arc<DbSet>, refno: RefNo) -> Result<Option<RefNo
         }
         Ok(None)
     };
+    // 踏步挂在梯段下第几层不定死（`stair` 往上找最多三层），这边同样往下看三层。
+    let carries_treads = |flight: &DbElement| -> Result<Option<RefNo>, DbElementError> {
+        let mut level: Vec<DbElement> = flight.members()?.collect();
+        for depth in 0..3 {
+            let mut next = Vec::new();
+            for member in level {
+                if member.element_type()? == "TREAD" {
+                    return Ok(Some(flight.refno()));
+                }
+                if depth < 2 {
+                    next.extend(member.members()?);
+                }
+            }
+            level = next;
+        }
+        Ok(None)
+    };
     // POINSP → SPINE → GENSEC 与 PLDATU → JLDATU → GENSEC 都是两跳（WALL 同）；POINTR → RPATH → HANDRA、
-    // HRPOST → POSTSE → HANDRA、HRTERM → RAILSE → HANDRA、HRGATE → HRFEAT → HANDRA 也是。
+    // HRPOST → POSTSE → HANDRA、HRTERM → RAILSE → HANDRA、HRGATE → HRFEAT → HANDRA、POINTR → RPATH → STRFLT
+    // 也是。
     for _ in 0..3 {
         match current.element_type()?.as_str() {
             // WALL 与 GENSEC 同型：datum（JLDATU → PLDATU）挂在宿主名下，FIXING 的标架沿宿主 spine 现算。
@@ -1065,6 +1085,8 @@ fn implicit_frame_host_of(set: &Arc<DbSet>, refno: RefNo) -> Result<Option<RefNo
             "HANDRA" => return detailed_handrail(&current),
             // 板上配件 PFIT 贴在属主板 SJUS 指的那一面，吃板第一个环的 HEIG / SJUS。
             "FLOOR" | "PANE" | "GWALL" => return owns(&current, "PFIT"),
+            // 楼梯踏步的宽、深随属主梯段现算（梯段的 TWIDTH / TREADO / OGOING / RISE 与 RPATH 首末点）。
+            "STRFLT" => return carries_treads(&current),
             "SPINE" | "POINSP" | "CURVE" | "JLDATU" | "PLDATU" | "ENDATU" | "FITT" | "PLOO"
             | "LOOP" => {}
             "RPATH" | "POINTR" | "POSTSE" | "HRPNSE" | "RAILSE" | "HRFEAT" | "HRPOST"
@@ -1835,9 +1857,9 @@ pub fn plan_update_with(
                     }
                 }
 
-                // 现算标架级联：候选是宿主（GENSEC / WALL / SCTN / STWALL / 挂 PFIT 的板）、GENSEC / WALL 的
-                // SPINE 路径、JLDATU / PLDATU、FITT 或板的 PLOO / LOOP，挂在下面的件标架都可能变了
-                // （见 `implicit_frame_host_of`）。
+                // 现算标架级联：候选是宿主（GENSEC / WALL / SCTN / STWALL / 挂 PFIT 的板 / 挂 TREAD 的梯段）、
+                // GENSEC / WALL 的 SPINE 路径、JLDATU / PLDATU、FITT、板的 PLOO / LOOP 或梯段的 RPATH，
+                // 挂在下面的件标架（踏步是尺寸）都可能变了（见 `implicit_frame_host_of`）。
                 if resolved {
                     match cascade_implicit_frames(
                         target,
@@ -2481,6 +2503,42 @@ mod tests {
             "只有 RPATH 的布局式 HANDRA 自己就是单元，不级联"
         );
         assert_eq!(host_of(8601), None, "它的 POINTR 同样不算");
+    }
+
+    /// `implicit_frame_host_of` 的 STRFLT 支在 aps250110 真库上的形状（库或模板不在就跳过）：梯段
+    /// `/B01_LEVEL_03_ACCESS/SF_001` 自己、它的 RPATH 与 POINTR 都上溯到它；踏步与 TREADS 不算（踏步自成
+    /// 单元，改它上卷到它自己就够）；梯段名下布局式 HANDRA 的 RPATH 停在 HANDRA。
+    #[test]
+    fn stair_flight_inputs_climb_to_the_flight_carrying_treads() {
+        let db = Path::new(r"D:\AVEVA\Projects\E3D3.1\AvevaPlantSample\aps000\aps250110_0001");
+        let template = Path::new(r"E:\reverse\e3d\shadow_e3d31_aps_all");
+        if !db.exists() || !template.join("attlib.dat").exists() {
+            return;
+        }
+        let set = Arc::new(DbSet::with_attlib_file(&template.join("attlib.dat")).unwrap());
+        set.add_db(e3d_io::db_element::DbFilePin {
+            file: db.to_path_buf(),
+            template: e3d_io::db_element::template_file_for(template, "DESI").unwrap(),
+            db_type: Some("DESI".into()),
+            sesno: None,
+        })
+        .unwrap();
+        let host_of = |w1| implicit_frame_host_of(&set, RefNo::new(2013286654, w1)).unwrap();
+        let flight = Some(RefNo::new(2013286654, 8575));
+        assert_eq!(
+            host_of(8575),
+            flight,
+            "STRFLT /B01_LEVEL_03_ACCESS/SF_001 自己"
+        );
+        assert_eq!(host_of(8596), flight, "RPATH → STRFLT");
+        assert_eq!(host_of(8597), flight, "POINTR → RPATH → STRFLT");
+        assert_eq!(host_of(8586), None, "TREAD 自成单元，改它上卷到它自己");
+        assert_eq!(host_of(8585), None, "TREADS 不是踏步尺寸的输入");
+        assert_eq!(
+            host_of(8600),
+            None,
+            "梯段名下布局式 HANDRA 的 RPATH 停在 HANDRA"
+        );
     }
 
     /// `joint_consumer_of` 在 aps250110 / aps250108 真库上的形状（库或模板不在就跳过）：梁

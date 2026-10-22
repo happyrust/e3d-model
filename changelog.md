@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-22 梯段输入改了级联整棵梯段子树：楼梯踏步的尺寸随梯段现算，增量要跟上
+
+- `f21e7a1` 让 `stair::owning_flight` 沿 owner 链上溯到梯段，读它的 `TWIDTH` / `TREADO` / `OGOING` / `RISE` 与
+  `RPATH` 首末点，却没登记进祖先读护栏（`ancestor_reads_guard` 红；当时只跑了相关的几组测试）。踏步自成
+  单元、梯段在它之上：单元级规划只重建 `nearest_unit` 上卷到的单元，梯段改了，踏步会停在旧尺寸。
+- `increment::implicit_frame_host_of` 加 STRFLT 支：名下（三层内）有 `TREAD` 的梯段，它自己、它的 RPATH /
+  POINTR 改了就把整棵梯段子树级联进计划，与详图式扶手、挂 PFIT 的板同型。真库单测
+  `stair_flight_inputs_climb_to_the_flight_carrying_treads`（aps250110 `/B01_LEVEL_03_ACCESS/SF_001`）。
+- 护栏登记：`stair.rs::owning_flight`（只核 noun），消费者 `tread_size`（`TWIDTH` / `TREADO`）、`going`
+  （`OGOING` / `POS` / `RISE`）；`rpath::first_rpath` 的理由补上梯段。生成结果不变。
+
 ## 2026-10-22 楼梯踏步 TREAD 走目录构件求值，尺寸取随梯段现算的 TWIDTH / TREADD——aps250110 25 只全出、exact
 
 - aps250110 两段梯 `/B01_LEVEL_03_ACCESS/SF_001`、`SF_002` 的 25 只踏步此前整族落在 `Composite(Structural)`

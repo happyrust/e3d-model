@@ -12,6 +12,9 @@
 //! - `TREADD`：梯段踏步宽（going）+ 前伸 `TREADO`。going 是 `OGOING`（大于 0 时），否则梯段 `RPATH`
 //!   首末点的水平距离 ÷ 级数，级数 = 竖向距离 ÷ `RISE` 取整（两段梯 11 / 15 级）。这样算出 269.659 /
 //!   297.919，与 E3D 差 ±0.005 mm；E3D 的确切算式没有取证。
+//!
+//! 梯段在踏步的模型单元之上：增量靠 `increment::implicit_frame_host_of` 的 STRFLT 支，梯段或它的
+//! RPATH 改了就把整棵梯段子树级联重建。
 
 use e3d_io::db_element::{DbElement, DbElementError};
 use glam::DVec3;
