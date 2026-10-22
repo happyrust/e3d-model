@@ -421,6 +421,9 @@ pub fn classify(noun: &str) -> Category {
         // 同族的 `HRPOST` 不在这里：它的 SPRE 指向一只没有 CATR 的 GPART，是目录构件
         // 那条路（GMRF → 图元集），还欠着。
         "RAIL" | "KICKPL" => Catalog,
+        // 楼梯踏步：目录构件那条路（`SPRE → GPART --CATR--> SFIT` 的 GMRE，一只 SBOX），尺寸是随
+        // 梯段现算的 `TWIDTH` / `TREADD`（[`crate::stair`]）。E3D 的 RVM 每只踏步写一个 Box。
+        "TREAD" => Catalog,
 
         // ---- 属主几何的数据 ----
         // 后六个是多面体的 B-rep 内脏（顶点表/面/环/顶点引用），由 Polyhedron
@@ -531,7 +534,8 @@ pub fn is_model_unit(noun: &str) -> bool {
         // 的 RVM 里各自一组（aps250110：`FITTING n of STWALL m of CWALL /B01_LEV01_INT_WALLS`
         // 63 组，57 组有几何；ams7997：`FITTING 1 / 2 of SCTN /1TFA004MP-SUPP-01-V1`），
         // 别的属主下的没有标架、不成件。`PFIT`（板上配件）也走这条路，标架是自己的 POS / ORI
-        // 贴到属主板 SJUS 指的那一面（`catalogue::panel_fitting_world`），不挑属主。
+        // 贴到属主板 SJUS 指的那一面（`catalogue::panel_fitting_world`），不挑属主。`TREAD`（楼梯踏步）
+        // 同走目录构件求值，标架是自己的 POS / ORI（经 TREADS → STRFLT 折算），尺寸见 [`crate::stair`]。
         Category::Catalog => matches!(
             noun,
             "SBFI"
@@ -544,6 +548,7 @@ pub fn is_model_unit(noun: &str) -> bool {
                 | "FIXING"
                 | "FITT"
                 | "PFIT"
+                | "TREAD"
         ),
 
         // 路由成员的实体 = 目录 GMRE 程序求值（`crate::catalogue`），键正是
@@ -690,10 +695,14 @@ pub fn enters_catalogue_by_catref(noun: &str) -> bool {
 /// 同一只 SFIT `/W-HOLE`，目录链与求值器一字不差。标架是自己的 POS / ORI，只是 `POS.z` 换成属主板
 /// SJUS 那一面（`catalogue::panel_fitting_world`）。E3D TTY RVM 里 `PFITTING n of FLOOR …` 的 199 组
 /// 逐组对上，ams7999 PANE 上的 194 只同样对上（gen-model `verification/civil-tty-20261021/`）。
+///
+/// `TREAD`（aps250110 两段梯的 25 只踏步，2026-10-22）：`SPRE → GPART --CATR--> SFIT
+/// /Simple_Catalogued_Tread`，GMRE 一只 SBOX，`RPRO TWID / TDEP` 接设计侧的伪属性 `TWIDTH` / `TREADD`
+/// （[`crate::stair::tread_size`]，经 `catalogue_point::member_env` 交进求值环境）。
 pub fn builds_from_catalogue_component(noun: &str) -> bool {
     matches!(
         noun.trim().to_ascii_uppercase().as_str(),
-        "FIXING" | "FITT" | "PFIT"
+        "FIXING" | "FITT" | "PFIT" | "TREAD"
     )
 }
 

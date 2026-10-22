@@ -61,6 +61,7 @@ pub mod rvm_read;
 pub mod rvm_write;
 pub mod section;
 pub mod solid;
+pub mod stair;
 pub mod transform;
 pub mod udet;
 

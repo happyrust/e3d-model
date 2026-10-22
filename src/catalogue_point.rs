@@ -489,16 +489,22 @@ fn mixed(point: &DbElement, env: &DbElementParamEnv) -> Result<(DVec3, DVec3), P
 }
 
 /// 设计件 + 目录件的求值环境（窄口径，不带保温）。FIXING 另交 Core3D 按世界几何现算的
-/// `AANGXZ` / `AANGYZ`（[`crate::elmodl::attachment_angles`]）；算不出就不交，表达式照旧按未解报。
+/// `AANGXZ` / `AANGYZ`（[`crate::elmodl::attachment_angles`]），TREAD 另交随梯段现算的 `TWIDTH` /
+/// `TREADD`（[`crate::stair::tread_size`]）；算不出就不交，表达式照旧按未解报。
 pub(crate) fn member_env(member: &DbElement, component: &DbElement) -> DbElementParamEnv {
-    let env =
+    let mut env =
         DbElementParamEnv::new(Some(member.clone()), Some(component.clone())).without_insulation();
-    match crate::elmodl::attachment_angles(member) {
-        Ok(Some(angles)) => env
+    if let Ok(Some(angles)) = crate::elmodl::attachment_angles(member) {
+        env = env
             .with_derived("AANGXZ", angles.xz)
-            .with_derived("AANGYZ", angles.yz),
-        _ => env,
+            .with_derived("AANGYZ", angles.yz);
     }
+    if let Ok(Some(tread)) = crate::stair::tread_size(member) {
+        env = env
+            .with_derived("TWIDTH", tread.width)
+            .with_derived("TREADD", tread.depth);
+    }
+    env
 }
 
 /// `SPRE`（→ `CATR`）→ 目录件；`NOZZ` 那一族从 `CATR` 直接起跳，见

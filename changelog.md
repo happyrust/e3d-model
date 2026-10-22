@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-10-22 楼梯踏步 TREAD 走目录构件求值，尺寸取随梯段现算的 TWIDTH / TREADD——aps250110 25 只全出、exact
+
+- aps250110 两段梯 `/B01_LEVEL_03_ACCESS/SF_001`、`SF_002` 的 25 只踏步此前整族落在 `Composite(Structural)`
+  待建账上。链是 `SPRE → GPART /SLH_TREADS/Simple_Catalogued_Tread --CATR--> SFIT`，GMRE 一只 SBOX：
+  `PXLE / PYLE / PZLE = RPRO TWID / TDEP / THK`，中心 `(0, TDEP / 2, −THK / 2)`；DTSE 把 `TWID` 接到
+  `ATTRIB TWIDTH`、`TDEP` 接到 `ATTRIB TREADD`、`THK` 接到 `PARA[3]`（20）。
+- `TREAD` 归 `Catalog`、成件，走与 FIXING / FITT 同一个目录构件求值器。踏步自己的 `TWIDTH` 存 0、`TREADD`
+  不存：新模块 `stair` 按属主梯段现算——`TWIDTH` 取梯段的（800），`TREADD` = going + `TREADO`，going 是
+  `OGOING` 或梯段 `RPATH` 首末水平距离 ÷ 级数（竖向距离 ÷ `RISE` 取整），经 `member_env` 的伪属性交进求值
+  环境。算出 269.659 / 297.919，E3D 的盒深 269.654 / 297.924。
+- 读取集合 152 → 157（`TWIDTH` / `TREADD` / `TREADO` / `OGOING` / `RISE`，都不是 DCHC=0）。
+- aps250110：两侧都有 3350 → 3375，exact 3348 → 3373，只在 E3D 79 → 54。真库门
+  `aps250110_structures_real` 加两段梯各一只踏步的世界包围盒与伪属性。
+
 ## 2026-10-22 单 DESP 的圆弧墙按 SPRE 目录截面求值：aps250110 两堵外墙出件
 
 - `CWALL /B01_LEV01_EXT_WALLS`、`/B01_LEV02_EXT_WALLS` 的 WALL 用 `/100_thk_wall`：目录截面是

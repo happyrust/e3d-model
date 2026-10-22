@@ -14,6 +14,7 @@ use e3d_io::refno::RefNo;
 use e3d_model::category::classify;
 use e3d_model::db_discovery::DirectoryDbResolver;
 use e3d_model::elmodl::{Modeled, model_element};
+use e3d_model::stair::tread_size;
 
 const PLANT_DIR: &str = r"D:\AVEVA\Projects\E3D3.1\AvevaPlantSample\aps000";
 const ACP_DIR: &str = r"D:\AVEVA\Projects\E3D3.1\AvevaCatalogue\acp000";
@@ -83,6 +84,43 @@ fn assert_world_box(set: &Arc<DbSet>, noun: &str, cases: &[(u32, [f64; 6], &str)
             );
         }
     }
+}
+
+/// `STRFLT` 两段梯的踏步：目录 SBOX 的宽 / 深是随梯段现算的 `TWIDTH` / `TREADD`，厚是目录
+/// `PARA[3]` = 20。E3D 的盒深 269.654 / 297.924，我们按梯段 RPATH 算出的差 ±0.005。
+#[test]
+fn stair_treads_are_the_catalogue_box_sized_by_the_flight() {
+    if !fixtures_present() {
+        return;
+    }
+    let set = aps_set();
+    for (w1, depth) in [(8586, 269.654), (8618, 297.924)] {
+        let size = tread_size(&set.element(RefNo::new(2013286654, w1)))
+            .unwrap()
+            .expect("踏步在梯段里");
+        assert_eq!(size.width, 800.0, "{w1}");
+        assert!((size.depth - depth).abs() < 0.01, "{w1}: {}", size.depth);
+    }
+    assert_world_box(
+        &set,
+        "TREAD",
+        &[
+            (
+                8586,
+                [
+                    -302326.20, 319658.99, 108164.36, -302056.55, 320458.99, 108184.36,
+                ],
+                "TREAD 1 of TREADSET 1 of STRFLT /B01_LEVEL_03_ACCESS/SF_001",
+            ),
+            (
+                8618,
+                [
+                    -299729.62, 320645.96, 110008.00, -298929.62, 320943.88, 110028.00,
+                ],
+                "TREAD 1 of TREADSET 1 of STRFLT /B01_LEVEL_03_ACCESS/SF_002",
+            ),
+        ],
+    );
 }
 
 /// `CWALL` 名下的两堵圆弧外墙：SPRE 是 `/100_thk_wall`，厚在目录 `PARA`、DESP 只有高一项
