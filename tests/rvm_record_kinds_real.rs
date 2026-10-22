@@ -395,7 +395,6 @@ fn mitred_flat_bars_and_knuckled_dishes_follow_e3d_writers() {
     std::fs::remove_dir_all(&scratch).ok();
 }
 
-/// `elements.json` 里一件的世界包围盒对一组 E3D 值，逐分量不超过 `tol` mm。
 /// aps250104 支架库（E3D TTY 导出 gen-model `verification/civil-tty-20261021/aps_survey_lv6_2013286648_2.rvm`）：
 /// - 锚固件 `/PS-01-00122.1`（ANCI，目录 `/BT23-100`）扣过三把负体，E3D 只写一条布尔结果面片；目录里
 ///   `PDIA = DESP[11] = 0` 的那只 LCYL 没有体，不在布尔结果里，也不另写一条 `Cylinder`。
@@ -452,6 +451,7 @@ fn holed_anchors_drop_bodyless_cylinders_and_only_trunnions_grow_tubes() {
     std::fs::remove_dir_all(&scratch).ok();
 }
 
+/// `elements.json` 里一件的世界包围盒对一组 E3D 值，逐分量不超过 `tol` mm。
 fn assert_world_aabb(elements: &serde_json::Value, refno: &str, want: [f64; 6], tol: f64) {
     let element = elements
         .as_array()
