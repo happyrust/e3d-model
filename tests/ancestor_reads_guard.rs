@@ -267,6 +267,14 @@ const OWNER_WALK_SITES: &[Site] = &[
               PLOO / LOOP 改了，就把整棵板子树级联进计划，与 point_on_host 那条同型（gen-model issue #39），单元规划已经补上",
     },
     Site {
+        file: "pipeline.rs",
+        func: "mark_lines",
+        climb: Climb::NounOnly,
+        reads: &[],
+        why: "SNOD 的点标记只认 SCTN 属主：取 owner 只核 noun；标记点经 world_matrix 折 SNOD（SectionNode 现算），三轴取宿主的 \
+              world_matrix。标记只进 RVM（GenerationOutcome::marks），不进模型集、不进增量单元",
+    },
+    Site {
         file: "stair.rs",
         func: "owning_flight",
         climb: Climb::NounOnly,

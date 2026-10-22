@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-23 结构节点 SNOD 照 E3D 写点标记的三条线——aps7200 191 只节点补齐
+
+- E3D 把 SNOD 导成 RVM 是三条 `Line[5, 20]`（Core3D `gm_CreateMark`）：以 SNOD 的站位为中点，按 X / Y / Z 的顺序
+  沿宿主 SCTN 所在属主系的三轴——不随杆件轴，也不随 `BANG`。aps7200 TTY 导出的 191 只全是这样：SBFR 下的
+  竖柱、反向梁、斜撑一律沿世界三轴，转过 −15° 的 STRU `/C1101-PL3`、墙上 FITT 模板、转过 −90° 的楼梯结构里的
+  跟着属主系转。记录标架与阀杆线同一口径（`rvm_write::bodyless_line_geometry`）。此前一条都不写。
+- 点标记走新的只写记录的通道 `GenerationOutcome::marks`（`pipeline::MarkLines`）：`gen_ams` 把它们写进 RVM，
+  模型集（`elements`）、`elements.json` 与增量都不动——gen-model 的烘焙要实体，空体会把整根标成失败。
+  `Report::centreline_only` 的账照旧记（模型集里仍没有它）。STWALL 名下的 SNOD 标架没接，不出标记。
+- 真库门 `rvm_record_kinds_real` 加两只节点（世界三轴的 `/B-3-SNOD-7`、转过 −15° 的 `/WEST-KICKPLATE` 那只）。
+
 ## 2026-10-23 SCTN 名下 SNOD 里带目录正体的关节 SJOI 照目录件建、法兰端板切梁端——aps7200 34 只关节与 2 根梁对上
 
 - SJOI 没有 POS / ORI，标架由 E3D 现算（`transform::ImplicitFrame::SectionJoint` → `datum::section_joint_world`）：

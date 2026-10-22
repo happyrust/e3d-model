@@ -674,6 +674,67 @@ fn handrail_panels_and_panel_fittings_sit_where_e3d_draws_them() {
     std::fs::remove_dir_all(&scratch).ok();
 }
 
+/// 结构节点 SNOD 的点标记：E3D TTY 在 APS 项目副本上导出（gen-model
+/// `verification/civil-tty-20261021/aps7200-w7h/`）的 191 只各写三条 `Line[5, 20]`，过 SNOD 的站位、按 X / Y / Z
+/// 的顺序沿宿主 SCTN 所在属主系的三轴。`/B-3-SNOD-7`（`23584/6167`）在世界系里就是世界三轴；
+/// `/WEST-KICKPLATE` 名下的那只在转过 −15° 的 STRU `/C1101-PL3` 里，三条线跟着转。此前一条都不写。
+#[test]
+fn structural_nodes_write_e3d_mark_lines() {
+    if !fixtures_present_in(APS_DIR, APS_COPY_ONLY_DB) {
+        return;
+    }
+    let scratch: PathBuf =
+        std::env::temp_dir().join(format!("e3d-model-rvm-snode-aps-{}", std::process::id()));
+    let cases: [(&str, &str, [f64; 3], [[f64; 3]; 3]); 2] = [
+        (
+            "23584/6167",
+            "/B-3-SNOD-7",
+            [7785.0, 1990.0, 5775.5],
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        ),
+        (
+            "23584/8297",
+            "SNOD 1 of SCTN /WEST-KICKPLATE",
+            [3499.9, 8870.82, 21695.0],
+            [
+                [0.965926, -0.258819, 0.0],
+                [0.258819, 0.965926, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+        ),
+    ];
+    for (index, (root, name, origin, axes)) in cases.into_iter().enumerate() {
+        let (rvm, _) = generate_in(
+            APS_DIR,
+            APS_COPY_ONLY_DB,
+            root,
+            "on",
+            &scratch.join(index.to_string()),
+        );
+        let records = &member(&rvm, name).geometries;
+        assert_eq!(records.len(), 3, "{name}：{:?}", record_kinds(&rvm, name));
+        for (record, axis) in records.iter().zip(axes) {
+            let Primitive::Line([width, length]) = record.primitive else {
+                panic!("{name}：应是 Line，实际 {:?}", record.primitive.name());
+            };
+            assert_eq!((width, length), (5.0, 20.0), "{name}");
+            let z = glam::DVec3::new(record.matrix3[6], record.matrix3[7], record.matrix3[8])
+                .normalize();
+            assert!(
+                (z - glam::DVec3::from_array(axis)).abs().max_element() < 1e-4,
+                "{name}：线的方向 {z:.5}，E3D {axis:?}"
+            );
+            let at = glam::DVec3::from_array(record.translation_mm);
+            assert!(
+                (at - glam::DVec3::from_array(origin)).abs().max_element() < 0.01,
+                "{name}：标记点 {at:.3}，E3D {origin:?}"
+            );
+        }
+    }
+
+    std::fs::remove_dir_all(&scratch).ok();
+}
+
 /// MDS 的结构关节 ams7324 `/MDS/FT09/9-V1/S1/IJOINT1`（`23708/25783`，目录 `/HCS-VT41-68/2`）：连接梁
 /// `/MDS/FT09/9-BAR-1` 转了 180°（`BANG 180`），E3D 的关节 Z 与 `CUTP` 反向，两块角板落在梁那一侧。世界
 /// 包围盒取 TTY RVM（gen-model `test_data/rvm/SCTN-CPAR-SPRF-7324.rvm`）面片的；按 `CUTP` 同向放，整只翻到

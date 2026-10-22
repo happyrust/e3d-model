@@ -874,6 +874,8 @@ fn main() -> anyhow::Result<()> {
     let holes_on = e3d_model::catalogue::export_holes_on();
     // 目录图元退化成零尺寸、跟着 E3D 照写的空记录数。
     let mut rvm_zero_size = 0usize;
+    // 点标记（SNOD）照 E3D 写成三条线的件数。
+    let mut rvm_marks = 0usize;
     // 同一放置在 GMSE 里出现不止一次、跟着 E3D 多写的那几条记录数（体只有一块）。
     let mut rvm_repeated_records = 0usize;
     let obj_path = args.out.join("model.obj");
@@ -933,7 +935,10 @@ fn main() -> anyhow::Result<()> {
             generate_subtree_with_cache(set.element(root), &mut catalogue_mesh_cache);
         gen_nanos += gen_start.elapsed().as_nanos();
         let GenerationOutcome {
-            elements, report, ..
+            elements,
+            report,
+            marks,
+            ..
         } = generated_root?;
         if let Some((
             noun,
@@ -980,7 +985,9 @@ fn main() -> anyhow::Result<()> {
         }
         let owners = elements
             .iter()
-            .map(|generated| set.element(generated.refno).owner())
+            .map(|generated| generated.refno)
+            .chain(marks.iter().map(|mark| mark.refno))
+            .map(|refno| set.element(refno).owner())
             .collect::<Result<Vec<_>, _>>()?
             .into_iter()
             .flatten()
@@ -1435,6 +1442,28 @@ fn main() -> anyhow::Result<()> {
             index_offset = mesh.write_obj_object(&mut obj, &label, index_offset)?;
             obj_nanos += obj_start.elapsed().as_nanos();
         }
+        // 点标记（SNOD）：不出实体、不进 elements.json，RVM 里照 E3D 写过点的三条线。
+        if args.rvm {
+            for mark in &marks {
+                let (owner_desc, ordinal) = keys.get(&mark.refno).cloned().unwrap_or((None, 0));
+                let identity_noun = udets.display_noun(&set.element(mark.refno))?;
+                let name = rvm_display_name(
+                    mark.name.as_ref(),
+                    &identity_noun,
+                    owner_desc.as_ref(),
+                    ordinal,
+                );
+                rvm_marks += 1;
+                rvm_members.push(e3d_model::rvm_read::RvmMember {
+                    path: format!("/GENERATED/{name}"),
+                    name,
+                    parent: Some(0),
+                    translation_mm: mark.origin.to_array(),
+                    material: 1,
+                    geometries: e3d_model::rvm_write::mark_line_geometries(mark),
+                });
+            }
+        }
         merged.merge(report);
     }
     let loop_nanos = loop_start.elapsed().as_nanos();
@@ -1467,7 +1496,7 @@ fn main() -> anyhow::Result<()> {
         };
         file.write(&rvm_path)?;
         println!(
-            "RVM: {} 个成员（解析图元 {rvm_analytic} / 自校未过退回面片 {rvm_analytic_rejected} / 拉伸体 / 多面体照 E3D 写面片 {rvm_extrusion_facets} / 布尔结果写面片 {rvm_boolean_facets}（export holes {}） / 零尺寸空记录 {rvm_zero_size} / 重复放置补写 {rvm_repeated_records}）-> {}",
+            "RVM: {} 个成员（解析图元 {rvm_analytic} / 自校未过退回面片 {rvm_analytic_rejected} / 拉伸体 / 多面体照 E3D 写面片 {rvm_extrusion_facets} / 布尔结果写面片 {rvm_boolean_facets}（export holes {}） / 零尺寸空记录 {rvm_zero_size} / 点标记 {rvm_marks} / 重复放置补写 {rvm_repeated_records}）-> {}",
             file.members.len() - 1,
             if holes_on { "on" } else { "off" },
             rvm_path.display()

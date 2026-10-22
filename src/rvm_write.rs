@@ -1934,6 +1934,26 @@ pub fn bodyless_line_geometry(
     }
 }
 
+/// 点标记（[`crate::pipeline::MarkLines`]）的三条 `Line` 记录：过标记点、沿三根轴，各长
+/// [`crate::pipeline::MARK_LINE_LENGTH_MM`]，记录标架同 [`bodyless_line_geometry`]。算不出方向的轴不写。
+pub fn mark_line_geometries(
+    mark: &crate::pipeline::MarkLines,
+) -> Vec<crate::rvm_read::RvmGeometry> {
+    mark.axes
+        .iter()
+        .filter(|axis| axis.length_squared() > 0.5)
+        .map(|axis| {
+            let placed = glam::DMat4::from_translation(mark.origin)
+                * glam::DMat4::from_quat(glam::DQuat::from_rotation_arc(glam::DVec3::Z, *axis));
+            bodyless_line_geometry(
+                &placed,
+                &glam::DMat4::IDENTITY,
+                crate::pipeline::MARK_LINE_LENGTH_MM,
+            )
+        })
+        .collect()
+}
+
 /// 由 [`snout_from_local_mesh`] 认出来的圆台造一条 `Snout` 记录。
 ///
 /// RVM 的 `Snout`：轴向局部 **Z**、原点在两个面心的中点，`XOFF`/`YOFF` 是顶面中心相对

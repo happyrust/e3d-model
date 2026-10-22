@@ -254,7 +254,8 @@ pub struct Report {
     ///
     /// 第二路进账的不是型材：`SNOD` 判 [`Category::NonGraphic`]（那是对的，它不出实体），
     /// 可 E3D 给的点标记导成 RVM 就是三条 `Line`，同样是「画了线、我们不画」。
-    /// 见 [`exports_mark_as_lines`]——判据相同的 `PNOD` 为什么不在里面，那里写着。
+    /// 见 [`exports_mark_as_lines`]——判据相同的 `PNOD` 为什么不在里面，那里写着。SCTN 名下的 SNOD
+    /// 在 RVM 里已照 E3D 写线（[`GenerationOutcome::marks`]），模型集里仍没有它，账照旧记在这里。
     pub centreline_only: BTreeMap<String, usize>,
     /// [`Report::centreline_only`] 里走 [`SkipKind::CentrelineOnly`] 进账的逐件明细
     /// （`SNOD` 点标记不在这里，它没有建模理由可写）。
@@ -399,6 +400,9 @@ pub struct Report {
 pub struct GenerationOutcome {
     pub elements: Vec<GeneratedElement>,
     pub report: Report,
+    /// [`exports_mark_as_lines`] 那类点标记里算得出位置的（[`MarkLines`]），按遍历序。模型集（`elements`）
+    /// 里没有它们——不出实体，gen-model 的烘焙要实体；RVM 写出端（`gen_ams`）照它们写线。
+    pub marks: Vec<MarkLines>,
     /// DFS 访问到的每一个元素，**按遍历序**、含根、含没出几何的容器与记账项；
     /// 被属主消费掉的成员（剖面环 / 负体）不入栈，因此也不在这里——它们在
     /// [`Report::consumed`] 那本账上。`visited.len() == report.visited` 恒成立。
@@ -438,6 +442,7 @@ pub fn generate_subtree_with_cache(
     catalogue_mesh_cache: &mut CatalogueMeshCache,
 ) -> Result<GenerationOutcome, DbElementError> {
     let mut elements = Vec::new();
+    let mut marks = Vec::new();
     let mut report = Report::default();
     let mut visited = Vec::new();
     let cache_stats_before = catalogue_mesh_cache.stats();
@@ -476,6 +481,15 @@ pub fn generate_subtree_with_cache(
             Category::List => {}
             Category::NonGraphic if exports_mark_as_lines(&noun) => {
                 *report.centreline_only.entry(noun.clone()).or_insert(0) += 1;
+                match mark_lines(&el, &noun) {
+                    Ok(Some(mark)) => marks.push(mark),
+                    Ok(None) => {}
+                    Err(error) => report.notes.push(Incident {
+                        refno,
+                        noun,
+                        detail: format!("点标记的位置算不出，RVM 里不写：{error}"),
+                    }),
+                }
             }
             Category::NonGraphic => {
                 *report.proven_non_graphic.entry(noun.clone()).or_insert(0) += 1;
@@ -786,6 +800,7 @@ pub fn generate_subtree_with_cache(
     Ok(GenerationOutcome {
         elements,
         report,
+        marks,
         visited,
         catalogue_visited,
     })
@@ -845,6 +860,47 @@ fn catalogue_reads(
 /// 报告的哪一行。账上的数按本账口径是**件数**（`SNOD: 2`），不是那 6 条记录。
 fn exports_mark_as_lines(noun: &str) -> bool {
     matches!(noun, "SNOD")
+}
+
+/// E3D 点标记每条线的长度：aps7200 的 191 只 SNOD 在 TTY 导出里全是 `Line[5, 20]`，以标记点为中点。
+pub const MARK_LINE_LENGTH_MM: f64 = 20.0;
+
+/// [`exports_mark_as_lines`] 那类点标记的写出事实：过 `origin`、沿 `axes` 的三条线，各长 [`MARK_LINE_LENGTH_MM`]、
+/// 以 `origin` 为中点。
+#[derive(Debug, Clone, PartialEq)]
+pub struct MarkLines {
+    pub refno: RefNo,
+    pub noun: String,
+    pub name: Option<String>,
+    /// 标记点（世界系，mm）。
+    pub origin: glam::DVec3,
+    /// 三条线的世界方向，按 E3D 的写出顺序 X、Y、Z。
+    pub axes: [glam::DVec3; 3],
+}
+
+/// SCTN 名下 SNOD 的点标记：点是 SNOD 的站位（[`crate::transform::world_matrix`]，宿主轴上 `ZDIS` 处），
+/// 三条线沿宿主 SCTN 所在属主系的 X / Y / Z——不随杆件轴，也不随 `BANG`。aps7200 E3D TTY 导出
+/// （APS 项目副本）的 191 只 SNOD 全是这样：SBFR 下的竖柱、反向梁、斜撑一律沿世界三轴；转过 −15° 的
+/// STRU `/C1101-PL3` 下的 7 只跟着转；墙上 FITT 模板里的 7 只沿模板系；`/SSOP1`、`/SSOP2` 沿转了 −90°
+/// 的楼梯结构系。别的属主（STWALL 名下的 SNOD 按路径弧长站位，标架没接）不出标记，照旧只记账。
+fn mark_lines(el: &DbElement, noun: &str) -> Result<Option<MarkLines>, DbElementError> {
+    let Some(host) = el.owner()? else {
+        return Ok(None);
+    };
+    if host.element_type()? != "SCTN" {
+        return Ok(None);
+    }
+    let origin = crate::transform::world_matrix(el)?.w_axis.truncate();
+    let frame = crate::transform::world_matrix(&host)?;
+    let axes =
+        [frame.x_axis, frame.y_axis, frame.z_axis].map(|axis| axis.truncate().normalize_or_zero());
+    Ok(Some(MarkLines {
+        refno: el.refno(),
+        noun: noun.to_string(),
+        name: el.stored_name()?,
+        origin,
+        axes,
+    }))
 }
 
 /// 把一条「有依据地没出几何」按 [`SkipKind`] 记进对应的那本账。
