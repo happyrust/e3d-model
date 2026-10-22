@@ -15,14 +15,19 @@
 //!
 //! 1. **栏杆**：一个**固定 Ø40 的圆**（`sub_109F65B0`：四段 bulge = tan22.5° 的弧过
 //!    (±20,0)(0,±20)，常量在 `0x10B801C0..F0`，不读任何属性）沿路径扫，`RAILHE` 里每个高度
-//!    平移 (0,0,h) 各放一份。直段是圆柱，拐角在 `FRAD > 0` 时是一节圆环（`THRU` 弧），
+//!    一份：`RAILHE` 是栏杆**顶**高——路径抬起 (0,0,h) 是顶母线，截面圆挂在它下面（圆心沿截面「上」
+//!    向往下 20，见 [`section_up`]）。直段是圆柱、两端平头，拐角在 `FRAD > 0` 时是一节圆环（`THRU` 弧），
 //!    `FRAD = 0` 时两根圆柱各切一张斜接面（角平分面）。
 //! 2. **立柱**：`sub_109F60C0`，Ø30 圆柱，高 `maxRAILHE − 20 − POSTOF`（柱顶停在顶栏杆轴线
 //!    下 20，即 Ø40 栏杆的下缘），逐直段按 `TANGOF` / `EPOSTO` 退距、`POSTSP` 间距均分，
 //!    共线接头不重复放柱，弧段不放柱。
-//! 3. **门洞**（`HRGATE` 成员）与 **踢脚板**（`SHOWKP`）——本机语料里门一件都没有，踢脚板
-//!    有但它的默认剖面（`ASL_CSGDefaultKickplate` 的 vtbl+52）还没拉出来，**都没接**，
-//!    件数进 notes，不静默。
+//! 3. **门洞**（`HRGATE` 成员）与 **踢脚板**（`SHOWKP`）——本机语料里门一件都没有，只进 notes；
+//!    踢脚板照 E3D TTY 导出建：板厚 4、离路径 10 起高 100（截面「上」向），拐角与栏杆同样斜接。
+//!
+//! 取证（2026-10-22，修复计划 W7a）：aps250112 `/EQUIP_SUPPORT/SF_001` 名下的梯段扶手，平台段栏杆截面环中心在
+//! `RAILHE − 20`（105980 / 103550 / 103050）、顶在 `RAILHE`；aps250110 `/B01_LEVEL_03_ACCESS/SF_002` 斜段端环
+//! 垂直于轴、顶点正好在端点上方 `RAILHE` 处；踢脚板在两库的导出里都是 ±2 × [10, 110]。此前轴线放在 `RAILHE`、
+//! 斜段两端用水平切面补包围盒，平台段就高出 20 mm。
 //!
 //! **对拍**：`test_data/rvm/` 里没有任何一份含 HANDRA 的 E3D 导出，这个模块的几何
 //! 到 2026-09-06 为止只有自证（单测里的解析几何），没有与 E3D 逐件对过。
@@ -50,6 +55,10 @@ pub const POST_RADIUS: f64 = 15.0;
 pub const POST_TOP_CLEARANCE: f64 = 20.0;
 /// 段首 / 段尾余量不足这个数就不放端柱（`sub_109F60C0` 两处 `< 60.0`）。
 pub const POST_MIN_END_RUN: f64 = 60.0;
+/// 布局式踢脚板：板厚、离路径的起高与板高（截面「上」向，E3D TTY 导出）。
+const KICKPLATE_THICKNESS: f64 = 4.0;
+const KICKPLATE_LIFT: f64 = 10.0;
+const KICKPLATE_HEIGHT: f64 = 100.0;
 /// 相邻直段方向差在这个范围内算共线（`D3_Vector::equals(…, 0.01, 0.01)`），接头处退距归零。
 const COLLINEAR_TOL: f64 = 0.01;
 /// 拐角小于这个角度（弧度）当直线接，不切斜接面也不放弧。
@@ -198,8 +207,7 @@ pub fn handrail_local_solid(
     }
     if params.show_kickplate {
         for segment in &segments {
-            // The default kickplate is attached at the path elevation, not at
-            // either handrail height.
+            // 踢脚板挂在路径标高上，不随栏杆抬。
             parts.push(kickplate_segment_solid(segment)?);
         }
     }
@@ -238,7 +246,7 @@ pub fn handrail_local_solid(
         params.rail_heights.len(),
     ));
     if params.show_kickplate {
-        notes.push("SHOWKP=true：已生成默认 8 x 110 mm 踢脚板".to_string());
+        notes.push("SHOWKP=true：已生成默认踢脚板（板厚 4、离路径 10 起高 100）".to_string());
     }
     if gates > 0 {
         notes.push(format!(
@@ -468,7 +476,10 @@ pub fn path_layout(points: &[(DVec3, f64)], closed: bool, notes: &mut Vec<String
     }
 }
 
-/// 一段路径上 z=0 那根栏杆：直段是（切过斜接面的）圆柱，弧段是一节圆环。
+/// 一段路径上顶母线在 z=0 的那根栏杆：直段是（切过斜接面的）圆柱，弧段是一节圆环。
+///
+/// 截面圆心在路径下方 `RAIL_RADIUS`（沿 [`section_up`]），两端平头、端环垂直于轴。斜接面过顶母线上的拐点：
+/// 两段轴线各自垂直往下偏同一距离，交点仍在角平分面上。
 fn rail_segment_solid(segment: &PathSegment) -> Result<Manifold, ModelError> {
     match segment {
         PathSegment::Line {
@@ -478,33 +489,16 @@ fn rail_segment_solid(segment: &PathSegment) -> Result<Manifold, ModelError> {
             mitre_end,
         } => {
             let d = (*end - *start).normalize();
-            let sloped = (end.z - start.z).abs() > 1e-9;
-            let horizontal = (d.x * d.x + d.y * d.y).sqrt();
-            let slope_extension =
-                if sloped && horizontal > 1e-9 && mitre_start.is_none() && mitre_end.is_none() {
-                    RAIL_RADIUS * d.z.abs() / horizontal
-                } else {
-                    0.0
-                };
+            let down = -section_up(d) * RAIL_RADIUS;
+            // 斜接面把截面推出 |v|·tan(θ/2)，截面离顶母线最远 2·RAIL_RADIUS；圆柱先加长这么多，
+            // 再让切面把多出来的削掉。θ 由法向与轴向的夹角还原：法向 = unit(d_in + d_out)。
             let extension = |normal: &Option<DVec3>| -> f64 {
-                // 斜接面把圆柱端头切成椭圆，椭圆沿轴向探出 r·tan(θ/2)；圆柱先按这个量
-                // 加长，再让切面把多出来的削掉。θ 由法向与轴向的夹角还原：
-                // 法向 = unit(d_in + d_out)，它与轴向 d 的夹角正是 θ/2。
-                normal.map_or(0.0, |n| {
-                    let cos_half = n.dot(d).abs().clamp(0.0, 1.0);
-                    let sin_half = (1.0 - cos_half * cos_half).max(0.0).sqrt();
-                    let tan_half = if cos_half > 1e-9 {
-                        sin_half / cos_half
-                    } else {
-                        0.0
-                    };
-                    (RAIL_RADIUS * tan_half).clamp(0.0, RAIL_RADIUS * 20.0)
-                })
+                normal.map_or(0.0, |n| 2.0 * RAIL_RADIUS * mitre_tan_half(n, d))
             };
             let ext_start = extension(mitre_start);
             let ext_end = extension(mitre_end);
-            let origin = *start - d * (ext_start + if d.z < 0.0 { slope_extension } else { 0.0 });
-            let length = (*end - *start).length() + ext_start + ext_end + slope_extension;
+            let origin = *start + down - d * ext_start;
+            let length = (*end - *start).length() + ext_start + ext_end;
             let body = Manifold::cylinder(
                 length,
                 RAIL_RADIUS,
@@ -521,24 +515,6 @@ fn rail_segment_solid(segment: &PathSegment) -> Result<Manifold, ModelError> {
             if let Some(normal) = mitre_end {
                 solid = cut_by_plane(&solid, *end, -*normal);
             }
-            // Open layout paths use horizontal end planes. Without these
-            // caps an oblique rail keeps the circular section beyond the
-            // endpoint in Z, while E3D stops exactly at the rail height.
-            let keep_above = end.z >= start.z;
-            if sloped && mitre_start.is_none() {
-                solid = if keep_above {
-                    cut_by_plane(&solid, *start, DVec3::Z)
-                } else {
-                    cut_by_plane(&solid, *start, -DVec3::Z)
-                };
-            }
-            if sloped && mitre_end.is_none() {
-                solid = if keep_above {
-                    cut_by_plane(&solid, *end, -DVec3::Z)
-                } else {
-                    cut_by_plane(&solid, *end, DVec3::Z)
-                };
-            }
             if solid.is_empty() || solid.num_tri() == 0 {
                 return Err(ModelError::Solid(SolidError::EmptyManifold {
                     what: "handrail straight",
@@ -553,24 +529,43 @@ fn rail_segment_solid(segment: &PathSegment) -> Result<Manifold, ModelError> {
             axis,
             sweep,
         } => {
-            let torus = circ_torus_solid(
-                radius - RAIL_RADIUS,
-                radius + RAIL_RADIUS,
-                sweep.to_degrees(),
-            )?;
+            // 同一个挂法：截面圆心沿起点处的「上」向往下 RAIL_RADIUS，拆成径向与轴向两份——水平弧
+            // 整只下沉、竖直面里的弧改径向半径，扫的过程中这两份不变。
+            let down = -section_up(axis.cross(*start_dir)) * RAIL_RADIUS;
+            let tube = radius + down.dot(*start_dir);
+            let torus =
+                circ_torus_solid(tube - RAIL_RADIUS, tube + RAIL_RADIUS, sweep.to_degrees())?;
             let x = *start_dir;
             let z = *axis;
             let y = z.cross(x);
-            let frame =
-                DMat4::from_translation(*centre) * DMat4::from_mat3(DMat3::from_cols(x, y, z));
+            let frame = DMat4::from_translation(*centre + *axis * down.dot(*axis))
+                * DMat4::from_mat3(DMat3::from_cols(x, y, z));
             Ok(placed(&torus, frame))
         }
     }
 }
 
-/// 默认布局式踢脚板：8 mm 厚、110 mm 高，沿同一条路径扫掠。
-/// Core3D 的 `ASL_CSGDefaultKickplate` 使用这个固定截面；截面原点在板的
-/// 中心线处，故沿截面 +Y 平移半高后再复用栏杆段标架。
+/// 沿方向 `d` 的截面「上」向：路径所在竖直面里、垂直于路径、朝上（水平段就是 +Z）。竖直段无从谈起，取 +X。
+fn section_up(d: DVec3) -> DVec3 {
+    (DVec3::Z - d * d.z).try_normalize().unwrap_or(DVec3::X)
+}
+
+/// 斜接面（法向 `normal` = unit(d_in + d_out)）对轴向 `d` 的 tan(θ/2)：截面上离拐点每 1 mm 要多留的长度。
+fn mitre_tan_half(normal: DVec3, d: DVec3) -> f64 {
+    let cos_half = normal.dot(d).abs().clamp(0.0, 1.0);
+    let sin_half = (1.0 - cos_half * cos_half).max(0.0).sqrt();
+    if cos_half > 1e-9 {
+        (sin_half / cos_half).min(20.0)
+    } else {
+        0.0
+    }
+}
+
+/// 默认布局式踢脚板：板厚 4、离路径 10 起高 100，截面跟着路径的「上」向（斜段在竖直方向上是
+/// 10 / cosθ 起、高 100 / cosθ），拐角与栏杆同样加长后按角平分面切；开口路径的两端是过端点的竖直面
+/// （法向取路径的水平向），不是截面——斜段的板顶不往端点外俯出去。E3D TTY 导出：aps250112
+/// `/EQUIP_SUPPORT/SF_001` 平台段 ±2 × [10, 110]，斜段 [12.53, 137.74]（cosθ = 0.7986），平台与斜段的斜接在
+/// 顶边上退 110·tan(θ/2)；aps250110 `/B01_LEVEL_03_ACCESS/SF_001` 的单段斜扶手，板在两端立柱之外一点不露。
 fn kickplate_segment_solid(segment: &PathSegment) -> Result<Manifold, ModelError> {
     let PathSegment::Line {
         start,
@@ -585,28 +580,45 @@ fn kickplate_segment_solid(segment: &PathSegment) -> Result<Manifold, ModelError
         }));
     };
     let d = (*end - *start).normalize();
-    let horizontal = DVec3::new(d.x, d.y, 0.0)
-        .try_normalize()
-        .unwrap_or(DVec3::X);
-    let normal = DVec3::Z.cross(horizontal);
-    let half = normal * 4.0;
+    let up = section_up(d);
+    let half = d.cross(up) * (KICKPLATE_THICKNESS / 2.0);
+    let reach = KICKPLATE_LIFT + KICKPLATE_HEIGHT;
+    let horizontal = (d.x * d.x + d.y * d.y).sqrt();
+    let level = DVec3::new(d.x, d.y, 0.0).try_normalize();
+    // 斜接端加长到切得到角平分面；开口端加长到板顶也越过端点的竖直面（斜段板顶比板底水平靠后 reach·sinθ）。
+    let open_end = if horizontal > 1e-9 {
+        reach * d.z.abs() / horizontal
+    } else {
+        0.0
+    };
+    let extension = |normal: &Option<DVec3>| -> f64 {
+        normal.map_or(open_end, |n| reach * mitre_tan_half(n, d))
+    };
+    let first = *start - d * extension(mitre_start);
+    let last = *end + d * extension(mitre_end);
+    let low = up * KICKPLATE_LIFT;
+    let high = up * reach;
     let points = [
-        *start - half,
-        *start + half,
-        *start - half + DVec3::Z * 110.0,
-        *start + half + DVec3::Z * 110.0,
-        *end - half,
-        *end + half,
-        *end - half + DVec3::Z * 110.0,
-        *end + half + DVec3::Z * 110.0,
+        first - half + low,
+        first + half + low,
+        first - half + high,
+        first + half + high,
+        last - half + low,
+        last + half + low,
+        last - half + high,
+        last + half + high,
     ];
     let points = points.map(|point| point.to_array());
     let mut solid = Manifold::hull_pts(&points);
-    if let Some(normal) = mitre_start {
-        solid = cut_by_plane(&solid, *start, *normal);
+    match (mitre_start, level) {
+        (Some(normal), _) => solid = cut_by_plane(&solid, *start, *normal),
+        (None, Some(level)) => solid = cut_by_plane(&solid, *start, level),
+        (None, None) => {}
     }
-    if let Some(normal) = mitre_end {
-        solid = cut_by_plane(&solid, *end, -*normal);
+    match (mitre_end, level) {
+        (Some(normal), _) => solid = cut_by_plane(&solid, *end, -*normal),
+        (None, Some(level)) => solid = cut_by_plane(&solid, *end, -level),
+        (None, None) => {}
     }
     if solid.is_empty() || solid.num_tri() == 0 {
         return Err(ModelError::Solid(SolidError::EmptyManifold {

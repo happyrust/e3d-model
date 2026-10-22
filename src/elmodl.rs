@@ -854,7 +854,9 @@ pub fn model_element_with_cache(
     if noun == "FLOOR" {
         solid = cleanup_floor_boolean_components(solid, negatives_applied);
     }
-    if negatives_applied > 0 && !restored_joint_tips {
+    // 布局式扶手的各节栏杆、立柱、踢脚板在上面的布尔里才并成一只，相邻两节栏杆共用的斜接面留下零体积的皮
+    // （aps250112 `/EQUIP_SUPPORT/SF_001` 4 片），每片单写一条记录；E3D 整只一条面片。
+    if (negatives_applied > 0 && !restored_joint_tips) || noun == "HANDRA" {
         solid = drop_subresolution_films(solid);
     }
     drop(negatives_timing);

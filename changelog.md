@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-10-22 布局式扶手的 RAILHE 是栏杆顶高，踢脚板照 E3D 建——梯段上 10 只扶手全 exact
+
+- E3D TTY 导出（aps250112 `/EQUIP_SUPPORT/SF_001..003`、aps250110 `/B01_LEVEL_03_ACCESS/SF_001`、`SF_002` 的梯段扶手）：
+  平台段栏杆截面环中心在 `RAILHE − 20`、顶在 `RAILHE`；斜段端环垂直于轴、顶点正好在端点上方 `RAILHE` 处。
+  即 Ø40 的截面圆挂在抬起的路径下面（圆心沿截面「上」向往下 20），两端平头、拐角斜接。此前轴线放在
+  `RAILHE`，斜段两端靠水平切面把包围盒补齐，平台段就高出 20 mm（aps250112 6 只 off 20）。
+- 踢脚板：板厚 4、离路径 10 起高 100（截面「上」向），拐角斜接、开口端竖切（此前 8 × 110、从路径起）。
+- 相邻两节栏杆共用的斜接面在布尔并之后留下零体积的皮，每片单写一条记录；HANDRA 也走
+  `drop_subresolution_films`，与 E3D 一样整只一条面片。
+- aps250112：off 6 → 0、exact 761 → 767、种类不同 16 → 10（余 10 根带 `FRAD` 圆角的栏杆，E3D 逐段写）；
+  aps250110：chord 1 → 0、exact 3427 → 3428。真库门 `aps_handrail_real` 加两只梯段扶手的包围盒与记录条数。
+
 ## 2026-10-22 详图式栏杆按 SZDI / EZDI 截段、扫过 CURTYP THRU 圆弧——aps250112 10 根、aps250110 2 根全出、exact
 
 - `handrail::run_segments`：`STAREF` + `SZDI` → `ENDREF` + `EZDI` 两端与立柱 `ZDIS` 同一口径取站位，截口不切斜接面。

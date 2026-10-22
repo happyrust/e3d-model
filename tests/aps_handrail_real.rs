@@ -276,3 +276,43 @@ fn rails_take_their_szdi_cut_and_sweep_through_arcs() {
         "RAIL 1 of /BUILDING_01_LEVEL_03/HR_001（闭合路径，首段 THRU 弧）",
     );
 }
+
+/// 梯段上的布局式扶手：`RAILHE` 是栏杆顶高（截面圆挂在抬起的路径下面）、端头平头，踢脚板 ±2 × [10, 110]、开口端
+/// 竖切。aps250112 `/EQUIP_SUPPORT/SF_001`（平台–斜段–平台）此前高出 20 mm、另有 4 片斜接面留下的零体积皮；
+/// aps250110 `/B01_LEVEL_03_ACCESS/SF_001`（单段斜扶手）踢脚板不许探出端部立柱。
+#[test]
+fn stair_layout_handrails_hang_their_rails_below_railhe() {
+    if !fixtures_present(&APS250112) || !fixtures_present(&APS250110) {
+        return;
+    }
+    let set = aps_set(&APS250112);
+    assert_world_box(
+        &set,
+        &APS250112,
+        "HANDRA",
+        774,
+        [
+            -308377.64, 294240.22, 102470.00, -308337.64, 298314.87, 106000.00,
+        ],
+        "HANDRA 1 of STRFLT /EQUIP_SUPPORT/SF_001",
+    );
+    let handrail = set.element(RefNo::new(APS250112.word0, 774));
+    let Modeled::Solid(generated) = model_element(&handrail, classify("HANDRA")).unwrap() else {
+        panic!("HANDRA 1 of STRFLT /EQUIP_SUPPORT/SF_001 没出实体");
+    };
+    assert_eq!(
+        generated.components().len(),
+        1,
+        "E3D 整只一条面片，斜接面上不该留皮"
+    );
+    assert_world_box(
+        &aps_set(&APS250110),
+        &APS250110,
+        "HANDRA",
+        8599,
+        [
+            -302585.86, 320464.07, 108000.00, -299855.24, 320516.57, 111168.00,
+        ],
+        "HANDRA 1 of STRFLT /B01_LEVEL_03_ACCESS/SF_001",
+    );
+}
