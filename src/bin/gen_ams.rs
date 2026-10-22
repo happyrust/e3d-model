@@ -1335,7 +1335,17 @@ fn main() -> anyhow::Result<()> {
                 // 没有体的目录图元：没有网格可认，记录却照写——E3D 就是这么写的
                 // （见 [`e3d_model::elmodl::DegenerateCataloguePart`]）。它不过自校闸：
                 // 闸门比的是解析候选与网格的 AABB，而这一条两样都没有。
-                for part in &generated.degenerate_parts {
+                //
+                // 布尔结果除外：E3D 写的是扣完的那一只体，没有体的图元不在里面，也不另写。aps250104
+                // 23 只锚固件 ANCI（`/PS-01-00122.1` 等，目录 `/BT23-100` 里 `PDIA = DESP[11] = 0`、长 10 的
+                // LCYL）扣过三把负体，E3D 只写一条 FacetGroup；没扣负体的 zone 66457 阀门
+                // （`/1WCC216VN` 的零径 LCYL）照写 `Cylinder[0, 120]`。
+                let bodyless_parts = if boolean_result {
+                    &[][..]
+                } else {
+                    &generated.degenerate_parts[..]
+                };
+                for part in bodyless_parts {
                     rvm_zero_size += 1;
                     geometries.push(match part.shape {
                         e3d_model::elmodl::DegenerateCatalogueShape::Cylinder {

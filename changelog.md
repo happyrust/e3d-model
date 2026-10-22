@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-22 布尔结果整只一条面片时不另写无体的目录图元——aps250104 23 只锚固件记录种类与 E3D 一致
+
+- aps250104 的锚固件 ANCI（`/PS-01-00122.1` … `/PS-01-00147.1`，目录 `/BT23-100`）扣过三把负体，E3D 写
+  一条布尔结果 FacetGroup；目录里 `PDIA = DESP[11] = 0`、长 10 的 LCYL 没有体，不在布尔结果里，E3D 也不
+  另写。我们照「无体图元照写 DRCYL」多写一条 `Cylinder[0, 10]`，23 只记成种类不同。
+- 没扣负体的件照旧写：zone 66457 的 12 只阀门（`/1WCC216VN` 等）零径 LCYL 写 `Cylinder[0, 120]`、
+  aps250142 风管的零高圆柱，与 E3D 一致。对着回归门里全部带零尺寸圆柱、又配得上记录种类的 74 组：
+  走图元的 51 组 E3D 都写了，布尔结果的 23 组 E3D 都没写。
+- 真库门 `rvm_record_kinds_real` 加 aps250104：锚固件只写一条 FacetGroup、SUPC 名下不出 TUBI、
+  TRUNNI `/PS-01-00111/B1` 照出 `Cylinder[44.45, 524.56]`。
+
 ## 2026-10-22 SUPC 不补隐式管身——派生管身的路由容器只剩 GTTUBE 认的 BRAN / TRUNNI / LUG
 
 - `cachelib/GTTUBE` 硬编码的 noun 码只有 BRAN、TRUNNI、LUG 三个；SUPC 此前跟着「路由容器」一起进了

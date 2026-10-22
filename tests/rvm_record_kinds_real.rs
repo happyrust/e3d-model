@@ -28,6 +28,7 @@ const SSC_DB: &str = "ams7997_0001";
 const CABLE_EQUIP_DB: &str = "ams8000_0001";
 const APS_DIR: &str = r"D:\AVEVA\Projects\E3D3.1\AvevaPlantSample\aps000";
 const APS_STRUCTURAL_DB: &str = "aps250110_0001";
+const APS_SUPPORTS_DB: &str = "aps250104_0001";
 const TEMPLATE_DIR: &str = r"E:\reverse\e3d\shadow_e3d31_aps_all";
 const IJOINT1: &str = "23708/42148";
 const IJOINT1_NAME: &str = "/SUPPORT/FRAMES/BS/FT03H/9-V1/S1/IJOINT1";
@@ -395,6 +396,62 @@ fn mitred_flat_bars_and_knuckled_dishes_follow_e3d_writers() {
 }
 
 /// `elements.json` 里一件的世界包围盒对一组 E3D 值，逐分量不超过 `tol` mm。
+/// aps250104 支架库（E3D TTY 导出 gen-model `verification/civil-tty-20261021/aps_survey_lv6_2013286648_2.rvm`）：
+/// - 锚固件 `/PS-01-00122.1`（ANCI，目录 `/BT23-100`）扣过三把负体，E3D 只写一条布尔结果面片；目录里
+///   `PDIA = DESP[11] = 0` 的那只 LCYL 没有体，不在布尔结果里，也不另写一条 `Cylinder`。
+/// - 它的属主 `SUPC /PS-01-00122/B1` 名下 E3D 不补管身；`TRUNNI /PS-01-00111/B1` 照补一根，
+///   E3D 写在耳轴自己那一组里：`Cylinder[44.45, 524.56]`。
+#[test]
+fn holed_anchors_drop_bodyless_cylinders_and_only_trunnions_grow_tubes() {
+    if !fixtures_present_in(APS_DIR, APS_SUPPORTS_DB) {
+        return;
+    }
+    let scratch: PathBuf =
+        std::env::temp_dir().join(format!("e3d-model-rvm-supports-aps-{}", std::process::id()));
+    let (rvm, elements) = generate_in(
+        APS_DIR,
+        APS_SUPPORTS_DB,
+        "2013286648/559",
+        "on",
+        &scratch.join("supc"),
+    );
+    assert_eq!(record_kinds(&rvm, "/PS-01-00122.1"), ["FacetGroup"]);
+    let anchor = elements
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|element| element["refno"] == "2013286648/560")
+        .expect("锚固件 2013286648/560");
+    assert_eq!(anchor["negatives_applied"], 3, "{anchor}");
+    assert!(
+        rvm.members
+            .iter()
+            .all(|member| !member.name.trim().starts_with("TUBI")),
+        "SUPC 名下不补管身"
+    );
+
+    let (rvm, _) = generate_in(
+        APS_DIR,
+        APS_SUPPORTS_DB,
+        "2013286648/489",
+        "on",
+        &scratch.join("trunni"),
+    );
+    let tube = member(&rvm, "TUBI 1 of TRUNNI /PS-01-00111/B1");
+    let [geometry] = tube.geometries.as_slice() else {
+        panic!("耳轴管身应是一条记录，实际 {} 条", tube.geometries.len());
+    };
+    let Primitive::Cylinder([radius, height]) = geometry.primitive else {
+        panic!("耳轴管身应是 Cylinder，实际 {}", geometry.primitive.name());
+    };
+    assert!(
+        (radius - 44.45).abs() < 0.01 && (height - 524.56).abs() < 0.01,
+        "Cylinder[{radius}, {height}]"
+    );
+
+    std::fs::remove_dir_all(&scratch).ok();
+}
+
 fn assert_world_aabb(elements: &serde_json::Value, refno: &str, want: [f64; 6], tol: f64) {
     let element = elements
         .as_array()
