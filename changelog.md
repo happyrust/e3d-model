@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-22 单 DESP 的圆弧墙按 SPRE 目录截面求值：aps250110 两堵外墙出件
+
+- `CWALL /B01_LEV01_EXT_WALLS`、`/B01_LEV02_EXT_WALLS` 的 WALL 用 `/100_thk_wall`：目录截面是
+  `[0, CPAR[1]] × [0, DESP[1]]`，厚 100 在目录 `PARA`，DESP 只有高一项（4000 / 3800）。`wall_local_solid`
+  先前要求 DESP 至少两项，整件报「DESP length 1 < 2」。
+- 截面本来就从目录求（与 SCTN / GENSEC 同一条截面链），DESP 的「厚、高」只是链断时的退路矩形：
+  改为 DESP 满两项才有退路，目录求不出又没有退路时才报错。
+- aps250110：两堵墙对 E3D exact，failed 13 → 11。真库门 `aps250110_structures_real`（世界包围盒到 0.06 mm）。
+
 ## 2026-10-22 GENPRI 剖分照 SMLib `IwTess`：面细分树 + 等参边断开 + 曲线二分——aps250162 exact 451 → 461
 
 - 原来各面按节点区间一律画网格线：GENPRI 10 / 14 板边那段 R5 半圆（两段有理二次）在节点处多了一个采样，

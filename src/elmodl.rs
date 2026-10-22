@@ -1202,9 +1202,10 @@ fn section_body(el: &DbElement, notes: &mut Vec<String>) -> Result<SectionBody, 
 }
 
 /// Build a design WALL from its SPINE.  The wall profile is the SPRE catalogue
-/// rectangle sized by DESP, shifted by the JUSL p-line and mirrored by LMIRR
-/// ([`wall_section`]); the design SPINE supplies the path.  The first supported
-/// path is E3D's common three-point circular spine (`POINSP, CURVE THRU, POINSP`).
+/// section evaluated with the wall's DESP / the catalogue PARA, shifted by the JUSL
+/// p-line and mirrored by LMIRR ([`wall_section`]); the design SPINE supplies the
+/// path.  The first supported path is E3D's common three-point circular spine
+/// (`POINSP, CURVE THRU, POINSP`).
 fn wall_local_solid(el: &DbElement, notes: &mut Vec<String>) -> Result<Manifold, ModelError> {
     let desp = el
         .get_double_array("DESP")?
@@ -1214,22 +1215,14 @@ fn wall_local_solid(el: &DbElement, notes: &mut Vec<String>) -> Result<Manifold,
             name: "DESP",
             what: "WALL profile",
         })?;
-    if desp.len() < 2 {
-        return Err(ModelError::UnresolvedAttribute {
-            refno: el.refno().to_string(),
-            noun: "WALL".into(),
-            name: "DESP",
-            what: "WALL profile",
-            detail: format!("DESP length {} < 2", desp.len()),
-        });
-    }
-    let (thickness, height) = (desp[0], desp[1]);
-    if !(thickness > f64::EPSILON && height > f64::EPSILON) {
-        return Err(ModelError::Solid(SolidError::Degenerate {
-            what: "WALL profile",
-            detail: format!("thickness/height = {thickness}/{height}"),
-        }));
-    }
+    // DESP 给满「厚、高」两项才有退路矩形：`/100_thk_wall`（aps250110 两堵外墙）把厚写在目录
+    // `PARA`、DESP 只留高，截面照样从目录求。
+    let fallback = match desp[..] {
+        [thickness, height, ..] if thickness > f64::EPSILON && height > f64::EPSILON => {
+            Some([thickness, height])
+        }
+        _ => None,
+    };
 
     let spine = el
         .members()?
@@ -1295,7 +1288,7 @@ fn wall_local_solid(el: &DbElement, notes: &mut Vec<String>) -> Result<Manifold,
     }
     let (center, radius, a0, sweep) = circular_spine_geometry(&points)?;
     let travel = sweep.signum();
-    let section = wall_section(el, thickness, height, notes)?;
+    let section = wall_section(el, fallback, notes)?;
     let (inner, outer) = circular_wall_radii(radius, section.x, travel);
     let section_height = section.y[1] - section.y[0];
     if !(inner >= 0.0 && section_height > f64::EPSILON && sweep.abs() > 1e-9) {
@@ -1423,35 +1416,45 @@ impl WallSection {
 /// 圆弧墙的截面：与 SCTN / GENSEC 同一条截面链（[`evaluate_section_profile`]），SPRE 目录截面
 /// 减去 `JUSL` 那条 p-line 的 `(PX, PY)`，`LMIRR` 时再沿 x 镜像。
 ///
-/// 语料里 62 堵圆弧墙的 SPRE 都是 `/Single_leaf_wall` 或 `/Variable_thk_wall`：DESP 参数化的
-/// `[0, 厚] × [0, 高]` 矩形，`NA` 与 `OBOW` 在 x = 0，`IBOW` 在 x = 厚。没有 SPRE、链断或截面求不出
-/// 时按 DESP 矩形、原点对齐（仍认 `LMIRR`），记 note。
+/// ams 语料里 62 堵圆弧墙的 SPRE 都是 `/Single_leaf_wall` 或 `/Variable_thk_wall`：DESP 参数化的
+/// `[0, 厚] × [0, 高]` 矩形，`NA` 与 `OBOW` 在 x = 0，`IBOW` 在 x = 厚。aps250110 的 `/100_thk_wall`
+/// 是 `[0, CPAR[1]] × [0, DESP[1]]`：厚在目录 `PARA`，DESP 只有高一项。没有 SPRE、链断或截面求不出
+/// 时按 DESP `[厚, 高]` 矩形、原点对齐（仍认 `LMIRR`），记 note；DESP 不满两项就没有这条退路。
 fn wall_section(
     el: &DbElement,
-    thickness: f64,
-    height: f64,
+    fallback: Option<[f64; 2]>,
     notes: &mut Vec<String>,
 ) -> Result<WallSection, ModelError> {
-    let desp_rectangle = WallSection {
-        x: [0.0, thickness],
-        y: [0.0, height],
-    };
-    let fallback = if matches!(el.get_bool("LMIRR"), Ok(Some(true))) {
-        desp_rectangle.mirrored()
-    } else {
-        desp_rectangle
+    let mirrored = matches!(el.get_bool("LMIRR"), Ok(Some(true)));
+    let fallback = fallback.map(|[thickness, height]| {
+        let rectangle = WallSection {
+            x: [0.0, thickness],
+            y: [0.0, height],
+        };
+        if mirrored {
+            rectangle.mirrored()
+        } else {
+            rectangle
+        }
+    });
+    let fall_back = |why: String, notes: &mut Vec<String>| match fallback {
+        Some(section) => {
+            notes.push(format!("{why}；截面按 DESP 矩形、原点对齐"));
+            Ok(section)
+        }
+        None => Err(ModelError::UnresolvedAttribute {
+            refno: el.refno().to_string(),
+            noun: "WALL".into(),
+            name: "DESP",
+            what: "WALL profile",
+            detail: format!("{why}，DESP 又没给满厚、高两项"),
+        }),
     };
     let catalogue = match section_catalogue(el)? {
         SectionChain::Resolved(catalogue) => catalogue,
-        SectionChain::NoSpre => {
-            notes.push("WALL 无 SPRE：截面按 DESP 矩形、原点对齐".to_string());
-            return Ok(fallback);
-        }
+        SectionChain::NoSpre => return fall_back("WALL 无 SPRE".to_string(), notes),
         SectionChain::Broken { hop, at, why } => {
-            notes.push(format!(
-                "WALL SPRE 链第 {hop} 跳断在 {at}：{why}；截面按 DESP 矩形、原点对齐"
-            ));
-            return Ok(fallback);
+            return fall_back(format!("WALL SPRE 链第 {hop} 跳断在 {at}：{why}"), notes);
         }
     };
     let profile = evaluate_section_profile(el, &catalogue)?;
@@ -1471,10 +1474,7 @@ fn wall_section(
             }
             Ok(section)
         }
-        None => {
-            notes.push("WALL 目录截面没有顶点：截面按 DESP 矩形、原点对齐".to_string());
-            Ok(fallback)
-        }
+        None => fall_back("WALL 目录截面没有顶点".to_string(), notes),
     }
 }
 
