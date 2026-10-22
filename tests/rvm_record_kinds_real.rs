@@ -32,6 +32,8 @@ const APS_SUPPORTS_DB: &str = "aps250104_0001";
 const APS_PIPING_DB: &str = "aps250124_0001";
 const APS_HVAC_DB: &str = "aps250142_0001";
 const APS_VALVE_DB: &str = "aps250132_0001";
+/// 不在 APS 的 `/ALL` 里，E3D 只能在项目副本上导；设计库文件照样在 aps000。
+const APS_COPY_ONLY_DB: &str = "aps7200_0001";
 const TEMPLATE_DIR: &str = r"E:\reverse\e3d\shadow_e3d31_aps_all";
 const IJOINT1: &str = "23708/42148";
 const IJOINT1_NAME: &str = "/SUPPORT/FRAMES/BS/FT03H/9-V1/S1/IJOINT1";
@@ -565,6 +567,42 @@ fn valve_stem_lines_write_e3d_line_records() {
     for (got, want) in axes[0..3].iter().zip([-1.0, 0.0, 0.0]) {
         assert!((got - want).abs() < 1e-3, "X {axes:?}");
     }
+
+    std::fs::remove_dir_all(&scratch).ok();
+}
+
+/// aps7200 矩形风管弯头 `ELBOW 1 of BRANCH /HVAC/RECT/M1/B2`（`23584/7314`，目录 acp7021 `/DBS`；E3D TTY
+/// 在项目副本上导出 gen-model `verification/civil-tty-20261021/aps7200-w7h/aps7200_lv6_23584_7298.rvm`）：
+/// `P2` / `P6` 的轴是 `Y DESP 14 -Z`、`DESP[14] = 90`，E3D 把本体写成
+/// `RectangularTorus[100, 300, 400, 90°]`。此前那个角按 `PARAM 64` 读成 0，弯头是直的、本体整只没了。
+#[test]
+fn rectangular_duct_elbows_turn_by_their_design_angle() {
+    if !fixtures_present_in(APS_DIR, APS_COPY_ONLY_DB) {
+        return;
+    }
+    let scratch: PathBuf = std::env::temp_dir().join(format!(
+        "e3d-model-rvm-rect-elbow-aps-{}",
+        std::process::id()
+    ));
+    let (rvm, _) = generate_in(APS_DIR, APS_COPY_ONLY_DB, "23584/7314", "on", &scratch);
+    let tori: Vec<[f64; 4]> = member(&rvm, "ELBO 1 of BRAN /HVAC/RECT/M1/B2")
+        .geometries
+        .iter()
+        .filter_map(|geometry| match geometry.primitive {
+            Primitive::RectangularTorus(parameters) => Some(parameters),
+            _ => None,
+        })
+        .collect();
+    let [[inner, outer, height, angle]] = tori.as_slice() else {
+        panic!("弯头本体应是一条 RectangularTorus，实际 {tori:?}");
+    };
+    assert!(
+        (inner - 100.0).abs() < 0.01
+            && (outer - 300.0).abs() < 0.01
+            && (height - 400.0).abs() < 0.01
+            && (angle - std::f64::consts::FRAC_PI_2).abs() < 1e-4,
+        "RectangularTorus[{inner}, {outer}, {height}, {angle}]"
+    );
 
     std::fs::remove_dir_all(&scratch).ok();
 }
