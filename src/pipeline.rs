@@ -455,7 +455,8 @@ pub fn generate_subtree_with_cache(
         visited.push(el.refno());
         let noun = el.element_type()?;
         let noun_decision = decision(&noun);
-        let category = noun_decision.category;
+        // 带目录正体的关节 SJOI 在元素层改判目录件（`category::element_category`）。
+        let category = crate::category::element_category(&el, noun_decision.category)?;
         let refno = el.refno().to_string();
         report
             .noun_evidence

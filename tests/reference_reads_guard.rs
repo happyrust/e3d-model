@@ -55,16 +55,20 @@ const ACCEPTED_NO_TABLE_REFERENCES: &[(&str, &str)] = &[
          FIXING 在哪一端。aps250110 的会话目录里没有 JOIS 表。FIXING 这边要重建或删除时，\
          increment::joint_consumer_of 经 FIXING 的 CREF 回指找到梁、核对梁的 JOIS / JOIE 后一并重建\
          （aps250110 522 个关节 522 个回指对上）；梁这边要重建或删除时，increment::joint_fixings_of 顺 JOIS / \
-         JOIE 把回指它的 FIXING 一并重建。跨库关节（梁与 FIXING 不在同一库）单库窗管不到，记 note",
+         JOIE 把回指它的 FIXING 一并重建。跨库关节（梁与 FIXING 不在同一库）单库窗管不到，记 note。\
+         SCTN 同型（aps7200）：JOIS / JOIE 指柱上 SNOD 名下自成单元的 SJOI（带目录正体的那些），梁取走它目录 NGMR \
+         里的负体；joint_consumer_of / joint_fixings_of 同样两头接，SJOI 的 CREF 回指梁",
     ),
-    ("JOIE", "GENSEC 终点关节，理由同 JOIS"),
+    ("JOIE", "GENSEC / SCTN 终点关节，理由同 JOIS"),
     (
         "CREF",
         "FIXING 的连接回指：增量规划器用它从关节 FIXING 找回 JOIS / JOIE 指着它的梁（increment::joint_consumer_of / \
          joint_fixings_of），几何里 elmodl::attachment_angles 顺它找梁算 AANGXZ / AANGYZ（e3d-io 的 APAR / ADES 同样\
          顺它读梁的参数）。目标是另一根构件、跨单元；CREF 是 type-4/8 引用，没有反向表。梁要重建或删除时，\
          joint_fixings_of 顺梁的 JOIS / JOIE 找到回指它的 FIXING 一并重建——不靠反向表也覆盖；读到的梁都要用梁自己\
-         的 JOIS / JOIE 核对，陈旧的 CREF 只会漏认、不会错认",
+         的 JOIS / JOIE 核对，陈旧的 CREF 只会漏认、不会错认。SJOI 同型：标架原点沿柱轴落到 CREF 那根梁的 JLIN \
+         线上（datum::section_joint_world），目录件经 APAR 读梁的参数；梁要重建或删除时 joint_fixings_of 顺 SCTN 的 \
+         JOIS / JOIE 找到回指它的 SJOI 一并重建",
     ),
 ];
 

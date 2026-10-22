@@ -130,9 +130,11 @@ enum ImplicitFrame {
     /// 轴架现算（`section_axis_frame`，不含中性轴自旋：绕 Z 转不动沿 Z 的度量）。
     /// 只认 SCTN 属主；STWALL 名下 SNOD 的 ZDIS 是沿路径弧长，语义不同，不接。
     ///
-    /// SNOD 名下的关节元素（`SJOI` 等）没有自己的隐式标架——`GJTORI` / `GJTORG` 内部
-    /// 未翻，暂按普通 owner 链折进 SNOD 标架（它们的 `DELP` / `BANG` 在语料里全是 0）。
+    /// SNOD 名下的关节 `SJOI` 有自己的现算标架，见 [`ImplicitFrame::SectionJoint`]。
     SectionNode(DbElement),
+    /// SCTN 名下 SNOD 里的关节 `SJOI`：没有 POS / ORI，E3D 现算（`GJTORI` / `GJTORG`）——Z 取 `CUTP`，
+    /// 原点在宿主截面 `POSL` p-line 与连接梁 `JLIN` 线的交处（`datum::section_joint_world`）。
+    SectionJoint { node: DbElement, host: DbElement },
     /// Detailed handrail posts have no POS/ORI.  Core3D places the post at
     /// its `POSREF` path point and applies `ZDIS`; template children inherit
     /// that frame through their owner chain.  Infill panels (`HRPANE` under
@@ -163,6 +165,15 @@ fn implicit_frame(el: &DbElement) -> Result<Option<ImplicitFrame>, DbElementErro
             Some(cmpf) if cmpf.element_type()?.as_str() == "CMPF" => match cmpf.owner()? {
                 Some(panel) if panel.element_type()?.as_str() == "PANE" => {
                     Ok(Some(ImplicitFrame::PanelSubFitting { cmpf, panel }))
+                }
+                _ => Ok(None),
+            },
+            _ => Ok(None),
+        },
+        "SJOI" => match el.owner()? {
+            Some(node) if node.element_type()?.as_str() == "SNOD" => match node.owner()? {
+                Some(host) if host.element_type()?.as_str() == "SCTN" => {
+                    Ok(Some(ImplicitFrame::SectionJoint { node, host }))
                 }
                 _ => Ok(None),
             },
@@ -224,6 +235,11 @@ fn implicit_world(el: &DbElement) -> Result<Option<DMat4>, DbElementError> {
             Ok(Some(
                 world_matrix(&host)? * frame * DMat4::from_translation(DVec3::new(0.0, 0.0, zdis)),
             ))
+        }
+        ImplicitFrame::SectionJoint { node, host } => {
+            crate::datum::section_joint_world(el, &node, &host)
+                .map(Some)
+                .map_err(|error| pseudo_attribute(el, &noun, error))
         }
         ImplicitFrame::HandrailPost(post) => handrail_post_world(&post),
     }

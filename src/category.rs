@@ -619,6 +619,68 @@ pub fn is_model_unit(noun: &str) -> bool {
     }
 }
 
+/// SCTN 名下 SNOD 里、`SPRE` 走得到带 `GMRE` 的目录件（JOIN）的 `SJOI`：noun 层判「无三维表示」，
+/// 元素层按目录构件建（[`element_category`]）。
+///
+/// E3D 照目录几何画它：aps7200 zone `=23584/6100` 的 32 只螺栓连接角钢（`/4M16_bolted_web_cleats`）与 2 只法兰
+/// 端板（`/6M16_flange`）在 E3D TTY RVM 里各写 26 条。正体照常按表现级过滤：结构件停在级别 0，同一库里
+/// 62 只焊接托座的图元全是 `LEVE` 6–8 / 9–10，整只落 NoShape，E3D 同样不画。标架是
+/// `transform::ImplicitFrame::SectionJoint`，所以只认 SNOD 在 SCTN 名下、标架有样本的（[`section_joint_placeable`]）。
+/// 没有 `SPRE` 的 SJOI（同库 123 只）照旧记「无三维表示」。
+///
+/// 目录链读挂（目录库不在之类）也按目录件走：失败由建模那一步按目录链断记账，分类这一步既不吞掉它、
+/// 也不中断整棵子树。
+pub fn is_catalogue_joint(el: &DbElement) -> Result<bool, DbElementError> {
+    if !section_joint_placeable(el)? {
+        return Ok(false);
+    }
+    Ok(match crate::catalogue_point::catalogue_component(el) {
+        Ok(Some(component)) => {
+            crate::catalogue_point::has_positive_geometry(&component).unwrap_or(true)
+        }
+        Ok(None) => false,
+        Err(_) => true,
+    })
+}
+
+/// SCTN 名下 SNOD 里的 `SJOI`，且标架有样本（[`crate::datum::section_joint_cut_sign`] 给得出符号）。
+/// 没样本的关节不出正体，也不拿它的目录负体切梁端（`elmodl::collect_joint_negatives`）。
+pub(crate) fn section_joint_placeable(el: &DbElement) -> Result<bool, DbElementError> {
+    let Some(host) = section_node_host(el)? else {
+        return Ok(false);
+    };
+    Ok(crate::datum::section_joint_cut_sign(el, &host)?.is_some())
+}
+
+/// `SJOI` 挂在 SCTN 名下的 SNOD 里时，那只 SCTN（只看 noun）。
+fn section_node_host(el: &DbElement) -> Result<Option<DbElement>, DbElementError> {
+    if !el.element_type()?.trim().eq_ignore_ascii_case("SJOI") {
+        return Ok(None);
+    }
+    let Some(node) = el.owner()? else {
+        return Ok(None);
+    };
+    if node.element_type()? != "SNOD" {
+        return Ok(None);
+    }
+    match node.owner()? {
+        Some(host) if host.element_type()? == "SCTN" => Ok(Some(host)),
+        _ => Ok(None),
+    }
+}
+
+/// 元素层的类别：noun 层的判定（[`classify`]）之外，带目录正体的关节（[`is_catalogue_joint`]）按目录件建。
+/// 全量管线与增量重建都走它，免得两边各判一份（SBFI 同型缺口）。
+pub fn element_category(
+    el: &DbElement,
+    noun_category: Category,
+) -> Result<Category, DbElementError> {
+    if noun_category == Category::NonGraphic && is_catalogue_joint(el)? {
+        return Ok(Category::Catalog);
+    }
+    Ok(noun_category)
+}
+
 /// [`is_model_unit`] 落到**元素**上：noun 说「可以成件」之后，再问属主要不要把它吃掉。
 ///
 /// 属主规则是 `FITT` 的（[`fitting_stands_alone_under`]）：SCTN / STWALL 名下的
@@ -635,6 +697,9 @@ pub fn is_model_unit(noun: &str) -> bool {
 /// 少一处就是 SBFI 同型缺口——两边各写一份名单，被删的那些永远不出 Remove。
 pub fn is_model_unit_of(el: &DbElement) -> Result<bool, DbElementError> {
     let noun = el.element_type()?;
+    if noun.trim().eq_ignore_ascii_case("SJOI") {
+        return is_catalogue_joint(el);
+    }
     if !is_model_unit(&noun) {
         return Ok(false);
     }
@@ -726,10 +791,14 @@ pub fn enters_catalogue_by_catref(noun: &str) -> bool {
 /// `HRPOST` / `HRTERM`（aps250112 的 68 只立柱与 15 只端头，2026-10-22）：`SPRE → GPART --CATR--> SFIT`，
 /// `RPRO` 经 DTSE 接设计侧（立柱的 `LENG`、`ZOFF`）与目录 `PARA`；标架是属主 RPATH 上的站位
 /// （`transform::ImplicitFrame::HandrailPost`）。哪些算单元由 [`is_model_unit_of`] 定。
+///
+/// `SJOI`（aps7200 的螺栓连接角钢与法兰端板，2026-10-22）：`SPRE → SPCO --CATR--> JOIN --GMRE-->`，公式引用
+/// `APAR`（`CREF` 那根梁）、`OPAR`（属主 SCTN）、`CPAR`、`DESP`；noun 层仍判「无三维表示」，带目录正体的那些由
+/// [`element_category`] 改判，标架是 `transform::ImplicitFrame::SectionJoint`。
 pub fn builds_from_catalogue_component(noun: &str) -> bool {
     matches!(
         noun.trim().to_ascii_uppercase().as_str(),
-        "FIXING" | "FITT" | "PFIT" | "TREAD" | "HRPOST" | "HRTERM"
+        "FIXING" | "FITT" | "PFIT" | "TREAD" | "HRPOST" | "HRTERM" | "SJOI"
     )
 }
 

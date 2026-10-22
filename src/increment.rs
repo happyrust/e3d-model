@@ -1007,6 +1007,9 @@ const CABLE_TRAY_BRANCH_NOUN: &str = "CWBRAN";
 ///   板的顶点不在它的输入里（`profile::loop_extent` 不读顶点），改 PAVE / VERT 只上卷到板。
 /// - 名下有 `TREAD` 的楼梯梯段 STRFLT（`stair::tread_size`）：梯段自己（`TWIDTH` / `TREADO` / `OGOING` /
 ///   `RISE`）与它的 RPATH 路径（首末 POINTR 的 POS）。踏步自成单元，宽、深随梯段现算。
+/// - SNOD 里挂着带目录正体的关节 SJOI 的 SCTN（`datum::section_joint_world`）：宿主自己（POSS / POSE / BANG /
+///   JUSL / SPRE，SJOI 的目录件还经 `OPAR` 读它的型材参数）与 SNOD（ZDIS）。SJOI 自成单元，标架随宿主的轴、
+///   `POSL` p-line 与 SNOD 的站位现算；连接梁（`CREF`）那一侧走关节级联（[`joint_fixings_of`]）。
 ///
 /// 从候选上溯只许穿过上面这些 noun；起点在这一端不存在也是 `None`。
 ///
@@ -1072,6 +1075,20 @@ fn implicit_frame_host_of(set: &Arc<DbSet>, refno: RefNo) -> Result<Option<RefNo
         }
         Ok(None)
     };
+    // SCTN 名下 SNOD 里带目录正体的关节 SJOI（`category::is_catalogue_joint`）。
+    let carries_catalogue_joints = |host: &DbElement| -> Result<Option<RefNo>, DbElementError> {
+        for node in host.members()? {
+            if node.element_type()? != "SNOD" {
+                continue;
+            }
+            for joint in node.members()? {
+                if crate::category::is_catalogue_joint(&joint)? {
+                    return Ok(Some(host.refno()));
+                }
+            }
+        }
+        Ok(None)
+    };
     // POINSP → SPINE → GENSEC 与 PLDATU → JLDATU → GENSEC 都是两跳（WALL 同）；POINTR → RPATH → HANDRA、
     // HRPOST → POSTSE → HANDRA、HRTERM → RAILSE → HANDRA、HRGATE → HRFEAT → HANDRA、POINTR → RPATH → STRFLT
     // 也是。
@@ -1081,7 +1098,10 @@ fn implicit_frame_host_of(set: &Arc<DbSet>, refno: RefNo) -> Result<Option<RefNo
             // GENSEC 的端部 datum（ENDATU）不经 JLDATU，直接挂在宿主名下、同一条 spine 现算。
             "GENSEC" => return Ok(owns(&current, "JLDATU")?.or(owns(&current, "ENDATU")?)),
             "WALL" => return owns(&current, "JLDATU"),
-            "SCTN" | "STWALL" => return owns(&current, "FITT"),
+            "SCTN" => {
+                return Ok(owns(&current, "FITT")?.or(carries_catalogue_joints(&current)?));
+            }
+            "STWALL" => return owns(&current, "FITT"),
             "HANDRA" => return detailed_handrail(&current),
             // 板上配件 PFIT 贴在属主板 SJUS 指的那一面，吃板第一个环的 HEIG / SJUS；PANE 上 CMPF 名下的 SBFI
             // 同样贴板面（`transform::ImplicitFrame::PanelSubFitting`）。
@@ -1090,7 +1110,7 @@ fn implicit_frame_host_of(set: &Arc<DbSet>, refno: RefNo) -> Result<Option<RefNo
             // 楼梯踏步的宽、深随属主梯段现算（梯段的 TWIDTH / TREADO / OGOING / RISE 与 RPATH 首末点）。
             "STRFLT" => return carries_treads(&current),
             "SPINE" | "POINSP" | "CURVE" | "JLDATU" | "PLDATU" | "ENDATU" | "FITT" | "PLOO"
-            | "LOOP" => {}
+            | "LOOP" | "SNOD" => {}
             "RPATH" | "POINTR" | "POSTSE" | "HRPNSE" | "RAILSE" | "HRFEAT" | "HRPOST"
             | "HRPANE" | "HRTERM" | "HRGATE" => {}
             _ => return Ok(None),
@@ -1106,14 +1126,25 @@ fn implicit_frame_host_of(set: &Arc<DbSet>, refno: RefNo) -> Result<Option<RefNo
 /// [`joint_consumer_of`] 找到的那根梁。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum JointConsumer {
-    /// 同库的 GENSEC，这一端的 JOIS / JOIE 指着这只 FIXING。
+    /// 同库的梁（GENSEC / SCTN），这一端的 JOIS / JOIE 指着这只关节。
     Beam(RefNo),
     /// `CREF` 指到别的库：梁不在这个单库窗里，重建不了，只能点名。
     OtherDatabase(RefNo),
 }
 
-/// FIXING（在 `set` 这一端）是某根 GENSEC 的 `JOIS` / `JOIE` 关节时，那根梁。不是 FIXING、
-/// 这一端不存在、`CREF` 空、或 `CREF` 指的梁这一端的 JOIS / JOIE 不指回它 → `None`。
+/// 关节 noun → 吃它端头负体的梁 noun：GENSEC 的关节是 FIXING（TMPL 或目录 NGMR 里的负体，aps250110），
+/// SCTN 的是柱上 SNOD 名下的 SJOI（目录 NGMR 里的负体，aps7200 的法兰端板）。两种连接时都把 `CREF` 写成那根梁。
+fn joint_beam_noun(joint_noun: &str) -> Option<&'static str> {
+    match joint_noun {
+        "FIXING" => Some("GENSEC"),
+        "SJOI" => Some("SCTN"),
+        _ => None,
+    }
+}
+
+/// 关节（在 `set` 这一端）是某根梁的 `JOIS` / `JOIE` 时，那根梁：FIXING 对 GENSEC、SJOI 对 SCTN
+/// （[`joint_beam_noun`]）。不是关节、这一端不存在、`CREF` 空、或 `CREF` 指的梁这一端的 JOIS / JOIE
+/// 不指回它 → `None`。
 ///
 /// # 为什么关节要单独一条腿
 ///
@@ -1127,6 +1158,10 @@ enum JointConsumer {
 /// 反查走 E3D 自己维护的回指：连接时 FIXING 的 `CREF` 写成那根梁（aps250110 的 522 个关节，
 /// 522 个回指对上）。回指只当线索，认不认以梁这一端的 JOIS / JOIE 为准，陈旧的 CREF 只会漏认、
 /// 不会错认。
+///
+/// SCTN 同型（aps7200）：梁从 JOIS / JOIE 指的 SJOI 那里取走它目录 NGMR 里的负体（法兰端板
+/// `/6M16_flange` 的 NSBO 把梁端退一个板厚），SJOI 挂在**另一根** SCTN（柱）的 SNOD 下；连接时 SJOI 的
+/// `CREF` 同样写成那根梁。
 fn joint_consumer_of(
     set: &Arc<DbSet>,
     refno: RefNo,
@@ -1137,9 +1172,9 @@ fn joint_consumer_of(
         Ok(false) | Err(DbElementError::NotFound { .. }) => return Ok(None),
         Err(error) => return Err(error),
     }
-    if fixing.element_type()? != "FIXING" {
+    let Some(beam_noun) = joint_beam_noun(&fixing.element_type()?) else {
         return Ok(None);
-    }
+    };
     let Some(beam) = fixing.get_ref("CREF")? else {
         return Ok(None);
     };
@@ -1152,7 +1187,7 @@ fn joint_consumer_of(
         Ok(false) | Err(DbElementError::NotFound { .. }) => return Ok(None),
         Err(error) => return Err(error),
     }
-    if beam.element_type()? != "GENSEC" {
+    if beam.element_type()? != beam_noun {
         return Ok(None);
     }
     if beam.get_ref("JOIS")? == Some(refno) || beam.get_ref("JOIE")? == Some(refno) {
@@ -1161,15 +1196,17 @@ fn joint_consumer_of(
     Ok(None)
 }
 
-/// GENSEC（在 `set` 这一端）的 `JOIS` / `JOIE` 指着、`CREF` 又回指它的同库 FIXING——
-/// [`joint_consumer_of`] 的反方向。不是 GENSEC、这一端不存在、关节空或不回指 → 空。
+/// 梁（在 `set` 这一端）的 `JOIS` / `JOIE` 指着、`CREF` 又回指它的同库关节——[`joint_consumer_of`] 的
+/// 反方向：GENSEC 收 FIXING，SCTN 收带目录正体的 SJOI（`category::is_catalogue_joint`；别的 SJOI 不成
+/// 单元，进不了重建集）。不是梁、这一端不存在、关节空或不回指 → 空。
 ///
-/// # 为什么梁变了关节 FIXING 也要重建
+/// # 为什么梁变了关节也要重建
 ///
 /// FIXING 的目录件求值经 `CREF` 读这根梁：`APAR` / `ADES`（梁的型材参数，e3d-io 参数环境）与
 /// `AANGXZ` / `AANGYZ`（梁在关节那一端的轴向，`elmodl::attachment_angles`）。檐口加腋节点的刀与加腋板
 /// 都吃它们。FIXING 挂在**柱**的 datum 下，不在梁的子树里：梁换了型材、SPINE 改了坡，
-/// `nearest_unit` 上卷到梁为止，FIXING 与柱上按它扣的孔都停在旧处。
+/// `nearest_unit` 上卷到梁为止，FIXING 与柱上按它扣的孔都停在旧处。SJOI 同型：目录件经 `APAR` 读梁的
+/// 型材参数，标架的原点沿柱轴落到梁 `JLIN` 那条线上（`datum::section_joint_world`）。
 fn joint_fixings_of(set: &Arc<DbSet>, refno: RefNo) -> Result<Vec<RefNo>, DbElementError> {
     let beam = set.element(refno);
     match beam.exists() {
@@ -1177,7 +1214,8 @@ fn joint_fixings_of(set: &Arc<DbSet>, refno: RefNo) -> Result<Vec<RefNo>, DbElem
         Ok(false) | Err(DbElementError::NotFound { .. }) => return Ok(Vec::new()),
         Err(error) => return Err(error),
     }
-    if beam.element_type()? != "GENSEC" {
+    let beam_noun = beam.element_type()?;
+    if !matches!(beam_noun.as_str(), "GENSEC" | "SCTN") {
         return Ok(Vec::new());
     }
     let mut fixings = Vec::new();
@@ -1194,9 +1232,16 @@ fn joint_fixings_of(set: &Arc<DbSet>, refno: RefNo) -> Result<Vec<RefNo>, DbElem
             Ok(false) | Err(DbElementError::NotFound { .. }) => continue,
             Err(error) => return Err(error),
         }
-        if fixing.element_type()? == "FIXING" && fixing.get_ref("CREF")? == Some(refno) {
-            fixings.push(joint);
+        let noun = fixing.element_type()?;
+        if joint_beam_noun(&noun) != Some(beam_noun.as_str())
+            || fixing.get_ref("CREF")? != Some(refno)
+        {
+            continue;
         }
+        if noun == "SJOI" && !crate::category::is_catalogue_joint(&fixing)? {
+            continue;
+        }
+        fixings.push(joint);
     }
     Ok(fixings)
 }
@@ -1908,10 +1953,15 @@ pub fn plan_update_with(
             regenerate.insert(key(unit));
         }
     }
-    // 反向关节级联（见 [`joint_fixings_of`]）：本窗要重建或删除的梁，它 JOIS / JOIE 指着的 FIXING
-    // 经 CREF 读它，一并重建。放在下面两条之前：这里补进来的 FIXING 还要再带出它挂的柱；而由
-    // FIXING 带出来的梁只是被扣的刀变了、属性没动，不必再回头重建它另一端的 FIXING。两端各问一次：
-    // 梁被删了只有 base 认得它的关节。
+    // 反向关节级联（见 [`joint_fixings_of`]）：本窗要重建或删除的梁，它 JOIS / JOIE 指着的关节
+    // （GENSEC 的 FIXING、SCTN 的 SJOI）经 CREF 读它，一并重建。放在下面两条之前：这里补进来的 FIXING
+    // 还要再带出它挂的柱；而由关节带出来的梁只是被扣的刀变了、属性没动，不必再回头重建它另一端的关节。
+    // 两端各问一次：梁被删了只有 base 认得它的关节。
+    let noun_of = |set: &Arc<DbSet>, refno: RefNo| -> String {
+        set.element(refno)
+            .element_type()
+            .unwrap_or_else(|_| "?".into())
+    };
     let beam_sources: Vec<(u32, u32)> = regenerate.iter().chain(remove.iter()).copied().collect();
     for unit in beam_sources {
         let beam = refno_of(unit);
@@ -1921,8 +1971,8 @@ pub fn plan_update_with(
                 Err(error) => {
                     report.notes.push(incident(
                         beam,
-                        "GENSEC",
-                        format!("反向关节级联读挂，关节 FIXING 可能停在旧几何：{error}"),
+                        noun_of(side, beam),
+                        format!("反向关节级联读挂，关节 FIXING / SJOI 可能停在旧几何：{error}"),
                     ));
                     continue;
                 }
@@ -1934,9 +1984,9 @@ pub fn plan_update_with(
                     Err(error) => {
                         report.notes.push(incident(
                             fixing,
-                            "FIXING",
+                            noun_of(side, fixing),
                             format!(
-                                "梁 {beam} 要重建或已删除，它的关节 FIXING 在 target 端读不出，\
+                                "梁 {beam} 要重建或已删除，它的这只关节在 target 端读不出，\
                                  可能停在旧几何：{error}"
                             ),
                         ));
@@ -1948,19 +1998,20 @@ pub fn plan_update_with(
                 }
                 report.cascades.push(incident(
                     beam,
-                    "GENSEC",
+                    noun_of(side, beam),
                     format!(
-                        "关节 FIXING {fixing} 经 CREF 读这根梁（APAR / AANGYZ），梁要重建或已删除，它一并重建"
+                        "关节 {fixing} 经 CREF 读这根梁（FIXING 读 APAR / AANGYZ，SJOI 读 APAR、标架落在梁的 \
+                         JLIN 线上），梁要重建或已删除，它一并重建"
                     ),
                 ));
                 report.cascade_hits += 1;
             }
         }
     }
-    // 关节级联（见 [`joint_consumer_of`]）：本窗要重建或删除的 FIXING 若是某根 GENSEC 的
-    // JOIS / JOIE 关节，那根梁扣的端头负体跟着变。放在计划集收齐之后做，FIXING 从哪条腿进来
-    // （自己改了、TMPL 里的负体改了、宿主 GENSEC 的现算标架级联）都一样接得住。两端各问一次：
-    // 删掉的 FIXING 只有 base 认得，改接到别的梁时新旧两根都要重建。
+    // 关节级联（见 [`joint_consumer_of`]）：本窗要重建或删除的关节（FIXING / SJOI）若是某根梁的
+    // JOIS / JOIE 关节，那根梁扣的端头负体跟着变。放在计划集收齐之后做，关节从哪条腿进来
+    // （自己改了、TMPL 里的负体改了、宿主 GENSEC / 柱的现算标架级联）都一样接得住。两端各问一次：
+    // 删掉的关节只有 base 认得，改接到别的梁时新旧两根都要重建。
     let joint_sources: Vec<(u32, u32)> = regenerate.iter().chain(remove.iter()).copied().collect();
     let mut joint_beams: BTreeSet<(u32, u32)> = BTreeSet::new();
     let mut joint_notes: BTreeSet<((u32, u32), (u32, u32))> = BTreeSet::new();
@@ -1977,9 +2028,9 @@ pub fn plan_update_with(
                         Err(error) => {
                             report.notes.push(incident(
                                 beam,
-                                "GENSEC",
+                                noun_of(side, beam),
                                 format!(
-                                    "关节 FIXING {fixing} 要重建或已删除，这根梁在 target 端读不出，\
+                                    "关节 {fixing} 要重建或已删除，这根梁在 target 端读不出，\
                                      端头负体可能停在旧刀口：{error}"
                                 ),
                             ));
@@ -1992,9 +2043,9 @@ pub fn plan_update_with(
                     regenerate.insert(key(beam));
                     report.cascades.push(incident(
                         fixing,
-                        "FIXING",
+                        noun_of(side, fixing),
                         format!(
-                            "关节负体的来源 FIXING 要重建或已删除，JOIS / JOIE 指着它的 GENSEC {beam} 一并重建"
+                            "关节负体的来源要重建或已删除，JOIS / JOIE 指着它的梁 {beam} 一并重建"
                         ),
                     ));
                     report.cascade_hits += 1;
@@ -2003,9 +2054,9 @@ pub fn plan_update_with(
                     if joint_notes.insert((unit, key(beam))) {
                         report.notes.push(incident(
                             fixing,
-                            "FIXING",
+                            noun_of(side, fixing),
                             format!(
-                                "关节 FIXING 的 CREF 指到别的库（{beam}），单库窗重建不了那根梁，\
+                                "关节的 CREF 指到别的库（{beam}），单库窗重建不了那根梁，\
                                  它的端头负体可能停在旧刀口"
                             ),
                         ));
@@ -2013,7 +2064,7 @@ pub fn plan_update_with(
                 }
                 Err(error) => report.notes.push(incident(
                     fixing,
-                    "FIXING",
+                    noun_of(side, fixing),
                     format!("关节级联读挂，JOIS / JOIE 指着它的梁可能停在旧刀口：{error}"),
                 )),
             }
@@ -2186,7 +2237,16 @@ pub fn execute_plan(target: &Arc<DbSet>, plan: UpdatePlan) -> IncrementOutcome {
                 continue;
             }
         };
-        let category = classify(&noun);
+        let category = match crate::category::element_category(&el, classify(&noun)) {
+            Ok(category) => category,
+            Err(error) => {
+                removals.insert(element_id(unit));
+                report
+                    .regen_failed
+                    .push(incident(refno, noun, format!("读不出目录链：{error}")));
+                continue;
+            }
+        };
         let is_unit = match is_model_unit_of(&el) {
             Ok(is_unit) => is_unit,
             Err(error) => {
@@ -2611,6 +2671,84 @@ mod tests {
         assert_eq!(fixings_of(2209), refnos(&[2232]), "檐口斜梁终点");
         assert!(fixings_of(2223).is_empty(), "柱的关节空");
         assert!(fixings_of(2232).is_empty(), "FIXING 不是梁");
+    }
+
+    /// aps7200 的结构关节（库、目录或模板不在就跳过）：带目录正体的 SJOI 都经 `CREF` 回指到 JOIS / JOIE
+    /// 指着它的 SCTN——法兰端板 `/6M16_flange`（`23584/6168`）↔ 梁 `/B-BC-1A`（`23584/6319`）；柱上 SNOD
+    /// 挂着它们，柱自己与 SNOD 都上溯到柱，关节自己不在这条腿上（它改了，上卷到它自己）。
+    #[test]
+    fn section_joints_cascade_with_their_beams_and_columns() {
+        let plant = Path::new(r"D:\AVEVA\Projects\E3D3.1\AvevaPlantSample\aps000");
+        let acp = Path::new(r"D:\AVEVA\Projects\E3D3.1\AvevaCatalogue\acp000");
+        let template = Path::new(r"E:\reverse\e3d\shadow_e3d31_aps_all");
+        let db = plant.join("aps7200_0001");
+        if !db.exists() || !acp.exists() || !template.join("attlib.dat").exists() {
+            return;
+        }
+        let resolver = crate::db_discovery::DirectoryDbResolver::scan(
+            &[plant.to_path_buf(), acp.to_path_buf()],
+            template,
+        )
+        .unwrap();
+        let set = Arc::new(
+            DbSet::with_attlib_file_and_resolver(&template.join("attlib.dat"), Box::new(resolver))
+                .unwrap(),
+        );
+        set.add_db(e3d_io::db_element::DbFilePin {
+            file: db.clone(),
+            template: e3d_io::db_element::template_file_for(template, "DESI").unwrap(),
+            db_type: Some("DESI".into()),
+            sesno: None,
+        })
+        .unwrap();
+        let flange = RefNo::new(23584, 6168);
+        let beam = RefNo::new(23584, 6319);
+        assert_eq!(
+            joint_consumer_of(&set, flange).unwrap(),
+            Some(JointConsumer::Beam(beam)),
+            "法兰端板 SJOI → 梁"
+        );
+        assert_eq!(
+            joint_fixings_of(&set, beam).unwrap(),
+            vec![flange],
+            "梁 → 法兰端板 SJOI"
+        );
+        let node = set.element(flange).owner().unwrap().expect("SJOI 的属主");
+        let column = node.owner().unwrap().expect("SNOD 的属主");
+        assert_eq!(node.element_type().unwrap(), "SNOD");
+        assert_eq!(column.element_type().unwrap(), "SCTN");
+        let host = Some(column.refno());
+        let host_of = |refno| implicit_frame_host_of(&set, refno).unwrap();
+        assert_eq!(host_of(column.refno()), host, "SNOD 里挂着目录关节的柱自己");
+        assert_eq!(host_of(node.refno()), host, "SNOD → 柱");
+        assert_eq!(host_of(flange), None, "SJOI 自成单元，改它上卷到它自己");
+
+        let mut engine = e3d_io::engine::ReadOnlyEngine::open(&db).unwrap();
+        let mut joints = 0;
+        let mut unmatched = Vec::new();
+        for scanned in engine
+            .scan_elements(e3d_io::engine::ScanTier::Header)
+            .unwrap()
+        {
+            let joint = set.element(scanned.unwrap().refno);
+            if !crate::category::is_catalogue_joint(&joint).unwrap() {
+                continue;
+            }
+            joints += 1;
+            match joint_consumer_of(&set, joint.refno()).unwrap() {
+                Some(JointConsumer::Beam(beam))
+                    if joint_fixings_of(&set, beam)
+                        .unwrap()
+                        .contains(&joint.refno()) => {}
+                other => unmatched.push((joint.refno(), other)),
+            }
+        }
+        eprintln!("aps7200：{joints} 只带目录正体的 SJOI");
+        assert!(joints > 0, "aps7200 里该有带目录正体的 SJOI");
+        assert!(
+            unmatched.is_empty(),
+            "{joints} 只带目录正体的 SJOI 里这些没有两头对上的梁：{unmatched:?}"
+        );
     }
 
     /// `datum_fixing_host_of` 在 aps250110 真库上的形状（库或模板不在就跳过）：柱 GENSEC 1 of

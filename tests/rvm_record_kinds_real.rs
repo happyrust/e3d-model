@@ -673,3 +673,90 @@ fn handrail_panels_and_panel_fittings_sit_where_e3d_draws_them() {
 
     std::fs::remove_dir_all(&scratch).ok();
 }
+
+/// MDS 的结构关节 ams7324 `/MDS/FT09/9-V1/S1/IJOINT1`（`23708/25783`，目录 `/HCS-VT41-68/2`）：连接梁
+/// `/MDS/FT09/9-BAR-1` 转了 180°（`BANG 180`），E3D 的关节 Z 与 `CUTP` 反向，两块角板落在梁那一侧。世界
+/// 包围盒取 TTY RVM（gen-model `test_data/rvm/SCTN-CPAR-SPRF-7324.rvm`）面片的；按 `CUTP` 同向放，整只翻到
+/// 柱的另一侧、差 62 mm。
+#[test]
+fn mds_section_joints_turn_with_their_rolled_beam() {
+    if !fixtures_present(MDS_DB) {
+        return;
+    }
+    let scratch: PathBuf =
+        std::env::temp_dir().join(format!("e3d-model-rvm-mds-sjoint-{}", std::process::id()));
+    let (_, elements) = generate(MDS_DB, "23708/25783", "on", &scratch);
+    assert_world_aabb(
+        &elements,
+        "23708/25783",
+        [10020.8, 1829.5, 0.0, 10061.8, 1870.5, 41.0],
+        0.05,
+    );
+
+    std::fs::remove_dir_all(&scratch).ok();
+}
+
+/// aps7200 柱上 SNOD `/B-3-SNOD-7`（`23584/6167`）名下的法兰端板 `SJOI 1`（`23584/6168`，目录
+/// `/6M16_flange`）：E3D TTY 在项目副本上导出（gen-model
+/// `verification/civil-tty-20261021/aps7200-w7h/aps7200_lv6_23584_6100.rvm`）写 1 条 `Box[206.4, 206.8, 12]`
+/// （端板）、13 条 `Cylinder` 与 12 条面片。它 NGMS 里的 NSBO（`NAPP -1`）把梁 `/B-BC-1A`（`23584/6319`，`JOIE`
+/// 就指这只关节）的端头退到端板内侧面，梁比不切短 11.95 mm；世界包围盒取 E3D 面片的。此前关节记「无三维
+/// 表示」、梁端没切。
+#[test]
+fn section_joint_flanges_draw_and_cut_their_beam() {
+    if !fixtures_present_in(APS_DIR, APS_COPY_ONLY_DB) {
+        return;
+    }
+    let scratch: PathBuf =
+        std::env::temp_dir().join(format!("e3d-model-rvm-sjoint-aps-{}", std::process::id()));
+    let (rvm, _) = generate_in(
+        APS_DIR,
+        APS_COPY_ONLY_DB,
+        "23584/6167",
+        "on",
+        &scratch.join("joint"),
+    );
+    let name = "SJOI 1 of SNOD /B-3-SNOD-7";
+    let kinds = record_kinds(&rvm, name);
+    let count = |kind: &str| kinds.iter().filter(|got| **got == kind).count();
+    assert_eq!(
+        (
+            count("Box"),
+            count("Cylinder"),
+            count("FacetGroup"),
+            kinds.len()
+        ),
+        (1, 13, 12, 26),
+        "{kinds:?}"
+    );
+    let boxes: Vec<[f64; 3]> = member(&rvm, name)
+        .geometries
+        .iter()
+        .filter_map(|geometry| match geometry.primitive {
+            Primitive::Box(parameters) => Some(parameters),
+            _ => None,
+        })
+        .collect();
+    let [[x, y, z]] = boxes.as_slice() else {
+        panic!("端板应是一条 Box，实际 {boxes:?}");
+    };
+    assert!(
+        (x - 206.4).abs() < 0.01 && (y - 206.8).abs() < 0.01 && (z - 12.0).abs() < 0.01,
+        "Box[{x}, {y}, {z}]"
+    );
+    let (_, elements) = generate_in(
+        APS_DIR,
+        APS_COPY_ONLY_DB,
+        "23584/6319",
+        "on",
+        &scratch.join("beam"),
+    );
+    assert_world_aabb(
+        &elements,
+        "23584/6319",
+        [6686.0, 1923.05, 5672.1, 7665.1, 2056.95, 5878.9],
+        0.05,
+    );
+
+    std::fs::remove_dir_all(&scratch).ok();
+}

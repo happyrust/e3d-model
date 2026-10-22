@@ -88,7 +88,17 @@ const OWNER_WALK_SITES: &[Site] = &[
         climb: Climb::NounOnly,
         reads: &[],
         why: "FITT 是不是自己一件：只看 owner 的 noun 是不是 SCTN / STWALL（别的属主下没有现算标架，不成件）。\
-              改挂本身是索引级候选，两端属主都上卷（nearest_unit），不靠属性闭包",
+              改挂本身是索引级候选，两端属主都上卷（nearest_unit），不靠属性闭包。SJOI 转给 category::is_catalogue_joint \
+              （属主核对在 section_node_host 那一条）",
+    },
+    Site {
+        file: "category.rs",
+        func: "section_node_host",
+        climb: Climb::NounOnly,
+        reads: &[],
+        why: "SJOI 是不是挂在 SCTN 名下的 SNOD 里：连取两次 owner，只核 noun，把那只 SCTN 交给 \
+              datum::section_joint_cut_sign 比 refno（见 ANCESTOR_CONSUMERS）。之后 is_catalogue_joint 再走关节自己的目录链\
+              （SPRE → … → GMRE），读的是关节与目录，不是祖先",
     },
     Site {
         file: "handrail.rs",
@@ -173,7 +183,8 @@ const OWNER_WALK_SITES: &[Site] = &[
         climb: Climb::NounOnly,
         reads: &[],
         why: "现算标架的输入上溯到宿主（GENSEC / WALL / SCTN / STWALL / 详图式 HANDRA / FLOOR·PANE·GWALL）：只看 noun，\
-              再看宿主名下有没有 JLDATU / FITT / POSTSE·HRPNSE·HRFEAT·带 HRTERM 的 RAILSE / PFIT",
+              再看宿主名下有没有 JLDATU / FITT / POSTSE·HRPNSE·HRFEAT·带 HRTERM 的 RAILSE / PFIT；SCTN 还看名下 SNOD 里有没有\
+              带目录正体的 SJOI（category::is_catalogue_joint，读的是关节自己的目录链）",
     },
     Site {
         file: "increment.rs",
@@ -188,7 +199,8 @@ const OWNER_WALK_SITES: &[Site] = &[
         climb: Climb::NounOnly,
         reads: &[],
         why: "判一个元素的标架是不是由属主现算：FITT 取 owner 只核 noun 是不是 SCTN / STWALL；拿到的宿主交给 \
-              section_fitting_placement 读（见 ANCESTOR_CONSUMERS）。JLDATU / PLDATU / ENDATU 那支转给 datum::host_and_joint",
+              section_fitting_placement 读（见 ANCESTOR_CONSUMERS）。JLDATU / PLDATU / ENDATU 那支转给 datum::host_and_joint；\
+              SJOI 取 owner（SNOD）与 owner²（SCTN）只核 noun，交给 datum::section_joint_world 读（见 ANCESTOR_CONSUMERS）",
     },
     Site {
         file: "datum.rs",
@@ -340,8 +352,31 @@ const ANCESTOR_CONSUMERS: &[(&str, &str, &[&str], &str)] = &[
         "datum.rs",
         "section_pline",
         &[],
-        "宿主（GENSEC / WALL）截面里某条 p-line：只走宿主的 SPRE 目录链（section_catalogue）与目录侧的 PLIN，\
-         PX / PY 表达式按宿主的设计参数求值；覆盖口径与调用方（wall_pline_datum）相同",
+        "宿主（GENSEC / WALL / SCTN）截面里某条 p-line：只走宿主的 SPRE 目录链（section_catalogue）与目录侧的 PLIN，\
+         PX / PY 表达式按宿主的设计参数求值；覆盖口径与调用方（wall_pline_datum、section_joint_world）相同",
+    ),
+    (
+        "datum.rs",
+        "section_joint_world",
+        &["BANG", "CREF", "CUTP", "DELP", "JLIN", "POSL"],
+        "SCTN 名下 SNOD 里关节 SJOI 的现算标架：读关节自己的 CUTP / BANG / POSL / JLIN / DELP / CREF（单元内），经 world_matrix \
+         折 SNOD 与宿主 SCTN 的标架、经 section_pline / justification_key 读宿主的 p-line，再顺 CREF 读连接梁的标架与 p-line。\
+         SNOD 与宿主在 SJOI 单元之上：根口径下整棵重算覆盖；单元级规划由 increment::implicit_frame_host_of 的 SCTN 支（名下 SNOD \
+         挂着带目录正体的 SJOI，且允许穿过 SNOD 上溯）把整棵宿主子树级联进计划覆盖；连接梁走 increment::joint_fixings_of（梁的 \
+         JOIS / JOIE 指着、CREF 又回指它的 SJOI 一并重建）",
+    ),
+    (
+        "datum.rs",
+        "section_joint_cut_sign",
+        &["BANG", "CREF"],
+        "关节 Z 取 CUTP 的哪一向：读关节自己的 CREF、连接梁的 BANG；宿主 SCTN 只比 refno（连的是不是它自己）。\
+         连接梁走 increment::joint_fixings_of，覆盖口径见 section_joint_world 那一条",
+    ),
+    (
+        "datum.rs",
+        "justification_key",
+        &["JUSL"],
+        "构件的 JUSL：section_joint_world 拿它读宿主 SCTN 与连接梁的对正线，覆盖口径见那一条",
     ),
     (
         "handrail.rs",

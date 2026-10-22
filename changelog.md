@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-10-23 SCTN 名下 SNOD 里带目录正体的关节 SJOI 照目录件建、法兰端板切梁端——aps7200 34 只关节与 2 根梁对上
+
+- SJOI 没有 POS / ORI，标架由 E3D 现算（`transform::ImplicitFrame::SectionJoint` → `datum::section_joint_world`）：
+  Z 取 `CUTP`（属主系）；Y₀ 取宿主 SCTN 的轴去掉沿 Z 的分量，X₀ = Y₀ × Z，再绕 Z 转关节自己的 `BANG`。原点从
+  SNOD 的站位沿宿主截面挪到 `POSL` 那条 p-line（减宿主 `JUSL`），再沿宿主轴挪到连接梁（`CREF`）`JLIN` 那条线上。
+  APS 项目副本上只读导出的 34 只 TTY 世界位姿逐只对上（≤ 0.01 mm）。
+- Z 的符号跟连接梁的滚转走（`datum::section_joint_cut_sign`）：aps7200 的连接梁全是 `BANG` 0，Z = `CUTP`；MDS 的
+  4 只样本（ams7324 `/MDS/FT09` 的两只 `IJOINT1`、ams7330 PowerClick 的两只 `J1`）连接梁是 `BANG` 180，E3D 的 Z 与
+  `CUTP` 反向，角板落在梁那一侧。连接梁转 ±90°、连接的就是宿主自己的关节没有样本：不出正体、不切梁端，标架
+  仍沿 SNOD，与以前一样。第一版只按 `CUTP` 放，回归门拦下了 ams7324 的两只（翻到柱的另一侧，差 62 mm）与
+  ams7330 那只自连关节（差 235 mm）。
+- `SPRE` 走得到带 `GMRE` 的目录件（JOIN）的 SJOI 在元素层改判目录件（`category::element_category`，全量管线
+  与增量重建同一个判据）；目录链读挂时照样按目录件走，失败记在建模那一步。正体照常按表现级过滤：aps7200 的
+  32 只螺栓连接角钢与 2 只法兰端板各 26 条记录，种类、参数与 TTY RVM 一致；62 只焊接托座的图元全在 `LEVE`
+  6–10，整只 NoShape，E3D 同样不画。没有 `SPRE` 的 SJOI（MDS 的全部）照旧记「无三维表示」。
+- 目录 NAPP 门在 mode 2（SCTN 端关节）放行 `-1`：法兰端板 NGMS 里的 NSBO 把 `/B-BC-1A`、`/C-BC-1A` 的梁端退到
+  端板内侧面，梁比不切短 11.95 mm，与 TTY 一致（此前 off 11.95）。
+- 增量：关节级联从 FIXING ↔ GENSEC 推广到 SJOI ↔ SCTN（`increment::joint_consumer_of` / `joint_fixings_of`：
+  SJOI 的 `CREF` 回指梁、梁的 `JOIS` / `JOIE` 指回它）；SNOD 里挂着目录关节的 SCTN 进现算标架级联
+  （`implicit_frame_host_of`，可穿过 SNOD 上溯），柱或 SNOD 改了整棵柱子树重建。级联记账的 noun 改按库里读。
+- aps7200 对拍：2297 对 / 2286 exact / off 8 / 只在 E3D 55 → 2331 / 2322 / 6 / 21。读取集合多 `CUTP`、`JLIN`（163）。
+- 真库门：`aps7200_frames_real` 加 5 只 SJOI 的世界位姿；`rvm_record_kinds_real` 加法兰端板的记录种类与梁端
+  包围盒、MDS `IJOINT1` 的世界包围盒；`increment` 单测钉 aps7200 关节的两头回指与柱的级联。
+
 ## 2026-10-22 PANE 上组合配件 CMPF 名下的 SBFI 贴板面——aps7200 `/FLR-PLT1` 的套管对上
 
 - 板上 PFIT 的目录实例贴在 `SJUS` 指的那一面；PANE 上 CMPF 名下的 SBFI 同一口径，按 CMPF 自己的 `SJUS`

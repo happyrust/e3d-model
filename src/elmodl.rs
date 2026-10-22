@@ -2599,6 +2599,23 @@ fn collect_joint_negatives(
         if !accepted {
             continue;
         }
+        // 标架没有样本的 SJOI（`datum::section_joint_cut_sign`）不拿它的目录负体切梁端：放不准的刀比不切更难发现。
+        if joint_noun == "SJOI"
+            && matches!(
+                crate::catalogue_point::catalogue_component(&joint),
+                Ok(Some(_))
+            )
+            && !crate::category::section_joint_placeable(&joint)?
+        {
+            skipped.push(SkippedNegative {
+                refno: joint.refno(),
+                noun: joint_noun,
+                reason: format!(
+                    "{attr} 关节的标架没有样本（连接梁转了 ±90°，或连接的就是宿主自己），目录负体没扣"
+                ),
+            });
+            continue;
+        }
         match fixing_negatives(&joint, joint_mode, negatives, catalogue_cuts, notes, cache) {
             Ok(tally) if tally.rejected > 0 => {
                 notes.push(format!(
@@ -3124,14 +3141,19 @@ fn design_napp_admits(mode: u32, napp: Option<i32>) -> bool {
     }
 }
 
-/// `sub_1072A790`（目录图元）的 NAPP 门：与设计那道只差 `-1` 在 mode 9 不放行。
+/// `sub_1072A790`（目录图元）的 NAPP 门：与设计那道差在 `-1`——mode 9 不放行、mode 2 放行。
+///
+/// mode 2 放 `-1` 是真值定的，不是反编译：aps7200 `/B-BC-1A`、`/C-BC-1A` 的 `JOIE` 是带 `SPRE` 的 SJOI
+/// `/6M16_flange`，它 NGMS 里的 NSBO（`NAPP -1`，厚 `DESP[3]` = 12）把梁端退到端板内侧面，E3D TTY RVM 的梁比不切
+/// 短 11.95 mm。此前 SCTN 端关节在语料里都没有几何源，这是这条路径上第一批目录刀。标架没有样本的 SJOI
+/// 到不了这道门（`collect_joint_negatives` 先把它们记进 skipped）。
 pub(crate) fn catalogue_napp_admits(mode: u32, napp: Option<i32>) -> bool {
     if std::env::var_os("E3D_MODEL_NAPP_OPEN").is_some() {
         return true;
     }
     match napp {
         None => true,
-        Some(-1) => matches!(mode, 0 | 3 | 4 | 5 | 6),
+        Some(-1) => matches!(mode, 0 | 2 | 3 | 4 | 5 | 6),
         Some(value) => value & napp_mask(mode) != 0,
     }
 }
@@ -3599,10 +3621,10 @@ mod tests {
                 "NAPP={napp}"
             );
         }
-        // 目录件一侧同一道门（与 mode 9 的那点差与这里无关）。
+        // 目录件一侧同一道门，只是 `-1` 放行：aps7200 法兰 SJOI 的 NSBO 切梁端（见 `catalogue_napp_admits`）。
         assert!(catalogue_napp_admits(SCTN_JOINT_MODE, Some(2)));
         assert!(!catalogue_napp_admits(SCTN_JOINT_MODE, Some(1)));
-        assert!(!catalogue_napp_admits(SCTN_JOINT_MODE, Some(-1)));
+        assert!(catalogue_napp_admits(SCTN_JOINT_MODE, Some(-1)));
     }
 
     /// `sub_10721600(mode 3)` 的成员链扫描表（recheck-2 §2.3）：`FITT`/`CMFI` 直接成

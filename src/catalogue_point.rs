@@ -543,6 +543,15 @@ pub(crate) fn member_env(member: &DbElement, component: &DbElement) -> DbElement
     env
 }
 
+/// 目录件有没有正体集（`GMRE`）。只有负体集的也是目录件（MDS 内部关节的 `JOIN`），但不出正体。
+pub(crate) fn has_positive_geometry(component: &DbElement) -> Result<bool, DbElementError> {
+    match component.get_element("GMRE") {
+        Ok(set) => Ok(set.is_some()),
+        Err(DbElementError::UnknownAttribute { .. }) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
 /// `SPRE`（→ `CATR`）→ 目录件；`NOZZ` 那一族从 `CATR` 直接起跳，见
 /// [`catalogue_entry_attribute`]。
 pub(crate) fn catalogue_component(member: &DbElement) -> Result<Option<DbElement>, DbElementError> {

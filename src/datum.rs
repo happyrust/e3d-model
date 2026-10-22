@@ -306,6 +306,139 @@ pub(crate) fn section_pline(
     })
 }
 
+/// SCTN 名下 SNOD 里的关节 `SJOI` 的世界标架（E3D 现算，`GJTORI` / `GJTORG`）。
+///
+/// - Z = `CUTP`（属主系里的方向），连接梁转了 180° 时反向（[`section_joint_cut_sign`]）；Y₀ = 宿主 SCTN 的轴
+///   （`POSS → POSE`）去掉沿 Z 的分量，X₀ = Y₀ × Z，再绕 Z 转关节自己的 `BANG`
+///   （X = X₀ cos + Y₀ sin，Y = Y₀ cos − X₀ sin）。
+/// - 原点：从 SNOD 的站位沿宿主截面平面挪到 `POSL` 那条 p-line（减宿主 `JUSL` 那条），再沿宿主轴挪到
+///   连接梁（`CREF`）`JLIN` 那条线的位置。SNOD 比梁的 NA 高出一截时，关节照样落在 NA 上。
+/// - `DELP` 按关节系平移（语料里全是 0，未验）。
+///
+/// E3D TTY 真值（APS 项目副本，aps7200 zone `=23584/6100` 带 `SPRE` 的 34 只 SJOI，gen-model
+/// `verification/civil-tty-20261021/aps7200-w7k-truth/`）逐只对上：宿主是 UC 203x203x71 的竖柱，
+/// `NAR` / `NAL` 落在腹板面 ±5、`TOS` / `BOS` 落在翼缘面 ±107.9；梁 `/C4C5-1` 的 `JUSL` 是 `TOS`，关节比梁线
+/// 低 155.5（半个梁高）。缺 `CUTP` 或它与宿主轴共线时沿 SNOD 的标架；标架没有样本的关节
+/// （[`section_joint_cut_sign`] 给 `None`）同样沿 SNOD 的标架，与接上这套标架之前一致。
+pub(crate) fn section_joint_world(
+    joint: &DbElement,
+    node: &DbElement,
+    host: &DbElement,
+) -> Result<DMat4, ModelError> {
+    let node_world = crate::transform::world_matrix(node)?;
+    let Some(sign) = section_joint_cut_sign(joint, host)? else {
+        return Ok(node_world);
+    };
+    let axis = node_world.z_axis.truncate().normalize_or_zero();
+    let mut origin = node_world.transform_point3(DVec3::ZERO);
+    let host_jusl = justification_key(host)?;
+    let posl = joint
+        .get_string("POSL")?
+        .map(|text| text.trim().to_ascii_uppercase())
+        .filter(|text| !text.is_empty());
+    if let Some(posl) = posl
+        && let (Some(at), Some(from)) = (
+            section_pline(host, &posl)?,
+            section_pline(host, &host_jusl)?,
+        )
+    {
+        origin += node_world.x_axis.truncate() * (at.offset[0] - from.offset[0])
+            + node_world.y_axis.truncate() * (at.offset[1] - from.offset[1]);
+    }
+    if let Some(beam) = joint.get_element("CREF")?
+        && beam.element_type()? == "SCTN"
+    {
+        let beam_frame = crate::transform::world_matrix(&beam)?
+            * crate::section::section_axis_frame(&beam).map_err(ModelError::from)?;
+        let jlin = joint
+            .get_string("JLIN")?
+            .map(|text| text.trim().to_ascii_uppercase())
+            .filter(|text| !text.is_empty())
+            .unwrap_or_else(|| DEFAULT_JUSTIFICATION_LINE.into());
+        let beam_jusl = justification_key(&beam)?;
+        let offset = match (
+            section_pline(&beam, &jlin)?,
+            section_pline(&beam, &beam_jusl)?,
+        ) {
+            (Some(at), Some(from)) => {
+                [at.offset[0] - from.offset[0], at.offset[1] - from.offset[1]]
+            }
+            _ => [0.0, 0.0],
+        };
+        let on_line = beam_frame.transform_point3(DVec3::new(offset[0], offset[1], 0.0));
+        origin += axis * (on_line - origin).dot(axis);
+    }
+    let owner_rotation = DMat3::from_mat4(crate::transform::world_matrix(host)?);
+    let cutp = joint
+        .get_direction("CUTP")?
+        .map(DVec3::from_array)
+        .unwrap_or(DVec3::ZERO);
+    let z = (owner_rotation * cutp * sign).normalize_or_zero();
+    let y0 = (axis - z * axis.dot(z)).normalize_or_zero();
+    if z.length_squared() < 0.5 || y0.length_squared() < 0.5 {
+        return Ok(node_world);
+    }
+    let x0 = y0.cross(z);
+    let (sin, cos) = joint
+        .get_double("BANG")?
+        .unwrap_or(0.0)
+        .to_radians()
+        .sin_cos();
+    let x = x0 * cos + y0 * sin;
+    let y = y0 * cos - x0 * sin;
+    let rotation = DMat3::from_cols(x, y, z);
+    if let Some(delp) = joint.get_double_array("DELP")?
+        && let [dx, dy, dz, ..] = delp.as_slice()
+    {
+        origin += rotation * DVec3::new(*dx, *dy, *dz);
+    }
+    Ok(DMat4::from_cols(
+        x.extend(0.0),
+        y.extend(0.0),
+        z.extend(0.0),
+        origin.extend(1.0),
+    ))
+}
+
+/// 关节 Z 取 `CUTP` 的哪一向：连接梁（`CREF`，SCTN）不转（`BANG` 0）取 `+1`，转 180° 取 `-1`。别的情形
+/// 没有样本，`None`——连接梁转了 ±90°、连接的就是宿主自己（ams7330 `/MDS/SPECIALS/PIPE/5-BAR-2/S1/J1`：E3D 把它
+/// 画在宿主中点、Z 朝下）、`CREF` 不是 SCTN；这样的关节不出正体，也不拿它的目录负体切梁端。
+///
+/// 样本：aps7200 的 34 只（连接梁全是 `BANG` 0）对 E3D TTY 世界位姿，Z 与 `CUTP` 同向；MDS 的 4 只
+/// （ams7324 `/MDS/FT09/9-V1`、`9-V2` 的 `IJOINT1`，ams7330 `/MDS/SPECIALS/PIPE/3-BAR-2`、`4-BAR-2` 的 `J1`，连接梁
+/// 全是 `BANG` 180）对 E3D TTY RVM 的记录标架与面片，Z 与 `CUTP` 反向，目录正体落在梁那一侧。`CUTP` 在
+/// 两组里都指向梁身；合起来是「关节的 X₀ 与连接梁截面的 X 反向」——梁转 180° 截面 X 反过来，Z 跟着反。
+pub(crate) fn section_joint_cut_sign(
+    joint: &DbElement,
+    host: &DbElement,
+) -> Result<Option<f64>, e3d_io::db_element::DbElementError> {
+    let Some(beam) = joint.get_element("CREF")? else {
+        return Ok(None);
+    };
+    if beam.element_type()? != "SCTN" || beam.refno() == host.refno() {
+        return Ok(None);
+    }
+    let roll = beam.get_double("BANG")?.unwrap_or(0.0).to_radians().cos();
+    Ok(if roll > 1.0 - 1e-9 {
+        Some(1.0)
+    } else if roll < -1.0 + 1e-9 {
+        Some(-1.0)
+    } else {
+        None
+    })
+}
+
+/// 构件的 `JUSL`；未设按 [`DEFAULT_JUSTIFICATION_LINE`]。
+fn justification_key(section: &DbElement) -> Result<String, ModelError> {
+    Ok(section
+        .get_string("JUSL")
+        .ok()
+        .flatten()
+        .map(|text| text.trim().to_ascii_uppercase())
+        .filter(|text| !text.is_empty())
+        .unwrap_or_else(|| DEFAULT_JUSTIFICATION_LINE.into()))
+}
+
 fn find_pline(sprf: &DbElement, key: &str) -> Result<Option<DbElement>, ModelError> {
     let Some(ptss) = sprf.get_element("PSTR")? else {
         return Ok(None);

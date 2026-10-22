@@ -5,6 +5,7 @@
 //! - `/INNER-KICKPLATE` 的 `CURVE`（`CURTYP CENT`）两端落在 `RADI` 圆内（`section::centre_arc_through`），
 //!   它的 JLDATU 是 `ZDIS = 1531`。
 //! - `PANE` 上 `CMPF` 名下的 `SBFI` 贴在 CMPF `SJUS` 指的板面（`transform::ImplicitFrame::PanelSubFitting`）。
+//! - SCTN 名下 SNOD 里的关节 `SJOI`（`transform::ImplicitFrame::SectionJoint`）。
 //!
 //! 真值是 E3D TTY 只读宏在 APS 项目副本上逐件打出的 `POS/ORI WRT WORLD`（gen-model
 //! `verification/civil-tty-20261021/aps7200-w7k-truth/aps7200_w7k_truth.psv`）。aps7200 不在 APS 的
@@ -200,6 +201,68 @@ fn a_sub_fitting_of_a_panel_compound_fitting_sits_on_its_surface() {
             0.01,
             1e-6,
             "SBFITTING 1 of CMPFITTING 1 of PANEL 1 of FRMWORK /FLR-PLT1",
+        ),
+    ]);
+}
+
+/// SCTN 名下 SNOD 里带 `SPRE` 的关节（`datum::section_joint_world`）：Z = `CUTP`、X / Y 按宿主轴与关节 `BANG`，
+/// 原点在宿主 `POSL` p-line 与连接梁 `JLIN` 线的交处。五只覆盖腹板面（`NAR`）、翼缘面（`TOS`，宿主 `BANG`
+/// 0 / 90）、`JUSL TOS` 的梁（关节低半个梁高 155.5）与 SNOD 高出梁 NA 103.4 的节点。
+#[test]
+fn section_joints_sit_where_e3d_puts_them() {
+    if !fixtures_present() {
+        return;
+    }
+    check(&[
+        (
+            6130,
+            [7790.0, -1510.0, 12396.6],
+            [0.0, 0.0, -1.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            0.01,
+            1e-6,
+            "SJOINT 1 of SNODE /A-3-SNOD-2（POSL NAR，BANG -90）",
+        ),
+        (
+            6131,
+            [7785.0, -1402.1, 12396.6],
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            0.01,
+            1e-6,
+            "SJOINT 2 of SNODE /A-3-SNOD-2（POSL TOS，BANG 90）",
+        ),
+        (
+            6168,
+            [7677.1, 1990.0, 5775.5],
+            [0.0, -1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [-1.0, 0.0, 0.0],
+            0.01,
+            1e-6,
+            "SJOINT 1 of SNODE /B-3-SNOD-7（法兰，宿主 BANG 90）",
+        ),
+        (
+            6221,
+            [13777.1, 4530.0, 5724.5],
+            [0.0, 0.0, -1.0],
+            [0.0, -1.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            0.01,
+            1e-6,
+            "SJOINT 1 of SNODE /C-5-SNOD-1（梁 JUSL TOS）",
+        ),
+        (
+            6232,
+            [7892.9, 7400.0, 8826.6],
+            [0.0, 0.0, 1.0],
+            [0.0, -1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            0.01,
+            1e-6,
+            "SJOINT 2 of SNODE /D-3-SNOD-4（SNOD 高出梁 NA 103.4）",
         ),
     ]);
 }
