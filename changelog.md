@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-22 详图式栏杆按 SZDI / EZDI 截段、扫过 CURTYP THRU 圆弧——aps250112 10 根、aps250110 2 根全出、exact
+
+- `handrail::run_segments`：`STAREF` + `SZDI` → `ENDREF` + `EZDI` 两端与立柱 `ZDIS` 同一口径取站位，截口不切斜接面。
+  aps250112 `/EL(+)104880_TOS*/HR_00x` 的 10 根 `STAREF == ENDREF`、`SZDI 450 → EZDI 2196.4` 之类，此前判成「取不出
+  一段」。距离都是 0 的走原来那串边，结果不变。
+- `CURTYP THRU` 的 `CURVE` 把那条边换成过三点的圆弧（`swap_in_through_arc`），两邻直段的斜接面改用弧的切向，
+  弧两端的斜接面经 `DRNS` / `DRNE` 交给 `spine_swept_solid`。aps250110 `/BUILDING_01_LEVEL_03/HR_001`（闭合路径
+  首段 R ≈ 14828 的弧）的 `RAIL 1` / `RAIL 2` 此前整根不画；拐点带 `FRAD` 的弧本期不认，照旧整根不画。
+- 读取集合 +2（`SZDI` / `EZDI`，159）。aps250112：两侧都有 678 → 771、exact 564 → 761、只在 E3D 93 → 0
+  （含上两条）；aps250110：两侧都有 3427 → 3429、exact 3425 → 3427、只在 E3D 2 → 0。
+
 ## 2026-10-22 目录构件式立柱 / 端头 HRPOST / HRTERM 走 SFIT 求值——aps250112 68 根立柱、15 只端头全出、exact
 
 - `HRPOST` / `HRTERM` 归 `Catalog`，与 FIXING / FITT / TREAD 同一个目录构件求值器（`SPRE → GPART --CATR--> SFIT` 的

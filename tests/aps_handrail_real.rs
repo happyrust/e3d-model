@@ -1,7 +1,8 @@
-//! 真库门：APS 详图式扶手（修复计划 W7a），立柱 / 端头的标架与目录件的世界包围盒对 E3D TTY 导出。
+//! 真库门：APS 详图式扶手（修复计划 W7a），立柱 / 端头的标架与目录件、栏杆的世界包围盒对 E3D TTY 导出。
 //!
-//! 真值是 gen-model `verification/civil-tty-20261021/aps_survey_lv6_2013286656_2.rvm`（aps250112，E3D 3.1 只读
-//! 导出）：模板件的每个图元与我们同名图元的刚体差（`output/rvm_frame_delta.py`）归零。
+//! 真值是 gen-model `verification/civil-tty-20261021/` 下 aps250112（`aps_survey_lv6_2013286656_2.rvm`）与
+//! aps250110（`aps250110_lv6_2013286654_2.rvm`）的 E3D 3.1 只读导出：模板件的每个图元与我们同名图元的
+//! 刚体差（`output/rvm_frame_delta.py`）归零，目录件与栏杆的世界包围盒（`output/rvm_prim_dump.py`）逐分量对上。
 //!
 //! 缺 E3D 安装或影子资产默认红（与 `increment_real.rs` 同一口径）；无语料环境显式设
 //! `E3D_SKIP_REAL_GATES=1` 换回跳过。
@@ -26,6 +27,10 @@ struct Design {
     word0: u32,
 }
 
+const APS250110: Design = Design {
+    file: "aps250110_0001",
+    word0: 2013286654,
+};
 const APS250112: Design = Design {
     file: "aps250112_0001",
     word0: 2013286656,
@@ -240,5 +245,34 @@ fn catalogue_posts_and_terminals_build_from_their_sfit_on_the_same_rule() {
         [-310651.59, 301156.61, 104900.00],
         [1.0, 0.0, 0.0],
         "HRTERM 2 of /EL(+)104880_TOS_PLATE/HR_001（Pads 起点，RIGH）",
+    );
+}
+
+/// 栏杆：`STAREF == ENDREF` 带 `SZDI` / `EZDI` 的是参照点出发那条边上的一截（aps250112，此前判成「取不出一段」）；
+/// 闭合路径上夹着 `CURTYP THRU` 圆弧的那根绕过弧到门洞（aps250110，此前整根不画）。
+#[test]
+fn rails_take_their_szdi_cut_and_sweep_through_arcs() {
+    if !fixtures_present(&APS250112) || !fixtures_present(&APS250110) {
+        return;
+    }
+    assert_world_box(
+        &aps_set(&APS250112),
+        &APS250112,
+        "RAIL",
+        669,
+        [
+            -310716.25, 296091.80, 105983.15, -310682.55, 297838.20, 106016.85,
+        ],
+        "RAIL 1 of /EL(+)104880_TOS/HR_001（SZDI 450 → EZDI 2196.4，XOFF 216）",
+    );
+    assert_world_box(
+        &aps_set(&APS250110),
+        &APS250110,
+        "RAIL",
+        3387,
+        [
+            -312703.74, 316430.35, 109200.85, -298296.24, 326709.39, 109249.15,
+        ],
+        "RAIL 1 of /BUILDING_01_LEVEL_03/HR_001（闭合路径，首段 THRU 弧）",
     );
 }

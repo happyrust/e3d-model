@@ -734,7 +734,8 @@ pub enum RailBuild {
 /// 1. ctor 连取两次 owner 拿属主 HANDRA（`sub_105A9420` 第 33–35 行）：路径与 `CLOSEF`
 ///    读的都是它的，成员自己只带端点引用与偏移。
 /// 2. `downloadDataFromDB`（`sub_105AB2C0` 第 101–148 行）把 `STAREF` / `ENDREF` 换成
-///    路径曲线的起止下标，取其中一串**连续**的曲线，闭合路径允许绕回去（[`curve_run`]）。
+///    路径曲线的起止下标，取其中一串**连续**的曲线，闭合路径允许绕回去（[`curve_run`]）；两端带
+///    `SZDI` / `EZDI` 时从参照点量进去截一截（[`run_segments`]）。
 /// 3. `getProfile`（vtbl+52 `sub_105B9C50` = `DB_RoutingBranch::getProfile`）走
 ///    `SPRE → GSTR → GMSS`、逐成员按 `LEVE` 过显示筛——与 SCTN 逐句同形，
 ///    [`crate::section::section_catalogue`] 原样可用。
@@ -793,26 +794,41 @@ pub fn detailed_item_local_solid(
             "STAREF / ENDREF 不在属主 RPATH 的点串上，定不出要扫哪一段".to_string(),
         ));
     };
-    let run = curve_run(start, end, layout.edge_count, layout.closed);
+    let start_dist = el.get_double("SZDI")?.unwrap_or(0.0);
+    let end_dist = el.get_double("EZDI")?.unwrap_or(0.0);
+    let run = run_segments(&layout, start, start_dist, end, end_dist);
     if run.is_empty() {
         return Ok(RailBuild::CentrelineOnly(format!(
-            "STAREF 点 {start} → ENDREF 点 {end} 在 {} 条曲线（{}）上取不出一段，E3D 同样一段不画",
+            "STAREF 点 {start}（SZDI {start_dist}）→ ENDREF 点 {end}（EZDI {end_dist}）在 {} 条曲线（{}）上取不出一段，E3D 同样一段不画",
             layout.edge_count,
             if layout.closed { "闭合" } else { "开口" }
         )));
     }
-    // 要扫的这一串边里，有没有一条是本期不认的路径段（`CURVE`/`RSECT`/`EXTGEO`）。
-    // 有就整根不画——照直段画出来的是一根形状不对的杆，而它会顶着这只 RAIL 的 refno
-    // 进 `elements.json`，比缺一件更难发现。与 GENSEC 带弧交 `CentrelineOnly` 同口径。
+    let mut run = run;
+    let mut edges: Vec<usize> = run.iter().map(|(edge, _)| *edge).collect();
+    edges.dedup();
+    // 要扫的这一串边里夹着别的路径段（`CURVE`/`RSECT`/`EXTGEO`）：`CURTYP THRU` 的圆弧换掉那条边的直段
+    // （[`swap_in_through_arc`]）；其余本期不认，整根不画——照直段画出来的是一根形状不对的杆，而它会
+    // 顶着这只 RAIL 的 refno 进 `elements.json`，比缺一件更难发现。与 GENSEC 带弧交 `CentrelineOnly` 同口径。
+    let mut arc_mitres: Vec<(usize, DVec3, DVec3)> = Vec::new();
     for (original, why) in &raw.unwired {
         let Some(edge) = layout.kept.iter().position(|kept| kept == original) else {
             continue;
         };
-        if run.contains(&edge) {
+        if !edges.contains(&edge) {
+            continue;
+        }
+        let swapped = if arc_mitres.iter().any(|(arc_edge, _, _)| *arc_edge == edge) {
+            None
+        } else {
+            swap_in_through_arc(&rpath, &raw, &layout, edge, &mut run)?
+        };
+        let Some((start_mitre, end_mitre)) = swapped else {
             return Ok(RailBuild::CentrelineOnly(format!(
                 "要扫的第 {edge} 段上有本期不认的路径段：{why}"
             )));
-        }
+        };
+        arc_mitres.push((edge, start_mitre, end_mitre));
     }
 
     let mut profile = match section_catalogue(el)? {
@@ -863,52 +879,57 @@ pub fn detailed_item_local_solid(
     }
 
     let mut pieces: Vec<Manifold> = Vec::new();
-    for index in &run {
-        for (_, segment) in layout.segments.iter().filter(|(edge, _)| edge == index) {
-            let PathSegment::Line {
-                start,
-                end,
-                mitre_start,
-                mitre_end,
-            } = segment
-            else {
-                // `FRAD` 圆角弧：与 GENSEC 的 SPINE 弧同一件事——截面绕弧心回转。
-                // 借 `spine_swept_solid` 单段跑一趟，省得把回转那段再抄一遍；
-                // 弧与两邻边相切，不需要斜接面。
-                match spine_swept_solid(&profile, &arc_as_spine(segment), bang_deg, notes)? {
-                    Some(body) => pieces.push(body),
-                    None => notes.push(format!("路径第 {index} 段（圆角弧）扫不出实体")),
-                }
-                continue;
-            };
-            let placement = match placement_between(&refno, &noun, *start, *end, bang_deg, &profile)
+    for (index, segment) in &run {
+        let PathSegment::Line {
+            start,
+            end,
+            mitre_start,
+            mitre_end,
+        } = segment
+        else {
+            // `FRAD` 圆角弧：与 GENSEC 的 SPINE 弧同一件事——截面绕弧心回转。
+            // 借 `spine_swept_solid` 单段跑一趟，省得把回转那段再抄一遍；
+            // 弧与两邻边相切，不需要斜接面。`CURTYP THRU` 的弧与邻边成角，两端的斜接面交给
+            // `DRNS` / `DRNE`（过端点、法向 = 两侧切向之和，与直段的斜接面是同一张）。
+            let mut spine = arc_as_spine(segment);
+            if let Some((_, start_mitre, end_mitre)) =
+                arc_mitres.iter().find(|(arc_edge, _, _)| arc_edge == index)
             {
-                Ok(placement) => placement,
-                Err(error) => {
-                    notes.push(format!("路径第 {index} 段放置求不出，跳过该段：{error}"));
-                    continue;
-                }
-            };
-            // 斜接面的法向在 HANDRA 局部系里，`cut_plane_normal` 逆旋进段局部系并
-            // 规约成朝段内（起点端 +Z、终点端 −Z）；没有斜接面时给零向量，
-            // 它会被规约成轴向 `(0,0,1)`，`SectionCutPlane::is_axial` 于是跳过这一刀。
-            let to_local = DMat3::from_mat4(placement.local).transpose();
-            let cuts = SectionCuts {
-                start: SectionCutPlane {
-                    point: DVec3::ZERO,
-                    normal: cut_plane_normal(to_local, mitre_start.unwrap_or(DVec3::ZERO), 1.0),
-                },
-                end: SectionCutPlane {
-                    point: DVec3::new(0.0, 0.0, placement.length),
-                    normal: cut_plane_normal(to_local, mitre_end.unwrap_or(DVec3::ZERO), -1.0),
-                },
-            };
-            match section_local_solid(&profile, &placement, &cuts, notes)? {
-                // 详图式扶手一段一块并列，RVM 那边也没有按 GMSS 成员分条的取证，
-                // 逐成员那几块这里用不上。
-                Some(built) => pieces.push(placed(&built.body, placement.local)),
-                None => notes.push(format!("路径第 {index} 段扫不出实体")),
+                spine.drns = *start_mitre;
+                spine.drne = *end_mitre;
             }
+            match spine_swept_solid(&profile, &spine, bang_deg, notes)? {
+                Some(body) => pieces.push(body),
+                None => notes.push(format!("路径第 {index} 段（圆角弧）扫不出实体")),
+            }
+            continue;
+        };
+        let placement = match placement_between(&refno, &noun, *start, *end, bang_deg, &profile) {
+            Ok(placement) => placement,
+            Err(error) => {
+                notes.push(format!("路径第 {index} 段放置求不出，跳过该段：{error}"));
+                continue;
+            }
+        };
+        // 斜接面的法向在 HANDRA 局部系里，`cut_plane_normal` 逆旋进段局部系并
+        // 规约成朝段内（起点端 +Z、终点端 −Z）；没有斜接面时给零向量，
+        // 它会被规约成轴向 `(0,0,1)`，`SectionCutPlane::is_axial` 于是跳过这一刀。
+        let to_local = DMat3::from_mat4(placement.local).transpose();
+        let cuts = SectionCuts {
+            start: SectionCutPlane {
+                point: DVec3::ZERO,
+                normal: cut_plane_normal(to_local, mitre_start.unwrap_or(DVec3::ZERO), 1.0),
+            },
+            end: SectionCutPlane {
+                point: DVec3::new(0.0, 0.0, placement.length),
+                normal: cut_plane_normal(to_local, mitre_end.unwrap_or(DVec3::ZERO), -1.0),
+            },
+        };
+        match section_local_solid(&profile, &placement, &cuts, notes)? {
+            // 详图式扶手一段一块并列，RVM 那边也没有按 GMSS 成员分条的取证，
+            // 逐成员那几块这里用不上。
+            Some(built) => pieces.push(placed(&built.body, placement.local)),
+            None => notes.push(format!("路径第 {index} 段扫不出实体")),
         }
     }
     let solid = match pieces.as_slice() {
@@ -924,7 +945,7 @@ pub fn detailed_item_local_solid(
     };
     notes.push(format!(
         "详图式{noun}：沿属主 RPATH 第 {:?} 段扫 {} 节，ZOFF={z_offset} JUSL={}",
-        run,
+        edges,
         pieces.len(),
         profile.justification_line
     ));
@@ -1144,6 +1165,91 @@ fn through_arc(
     }))
 }
 
+/// 一条夹着 `CURTYP THRU` 的 `CURVE` 的边：把 [`path_layout`] 当直段排的那一段换成过三点的圆弧，
+/// 两邻直段在公共拐点上的斜接面改用弧的切向。交回弧两端的斜接面法向（不切的是零向量）。
+///
+/// 拐点上带 `FRAD` 圆角、或这条边被 `SZDI` / `EZDI` 截过时交 `None`（本期不认）：aps250110
+/// `/BUILDING_01_LEVEL_03/HR_001` 闭合路径首段那段弧（R ≈ 14828）两端都是尖角，E3D TTY 导出的
+/// `RAIL 1` / `RAIL 2` 绕过它一圈到门洞。
+fn swap_in_through_arc(
+    rpath: &DbElement,
+    raw: &RawPath,
+    layout: &PathLayout,
+    edge: usize,
+    run: &mut [(usize, PathSegment)],
+) -> Result<Option<(DVec3, DVec3)>, ModelError> {
+    let count = layout.kept.len();
+    let vertex = |i: usize| raw.points[layout.kept[i % count]].1;
+    let (a, b) = (vertex(edge), vertex(edge + 1));
+    let Some(arc) = through_arc(rpath, layout.kept[edge], a, b)? else {
+        return Ok(None);
+    };
+    let Some(slot) = run.iter().position(|(e, segment)| {
+        *e == edge
+            && matches!(segment, PathSegment::Line { start, end, .. }
+                if (*start - a).length() <= 1e-6 && (*end - b).length() <= 1e-6)
+    }) else {
+        return Ok(None);
+    };
+    let radial = a - arc.centre;
+    let start_tangent = arc.axis.cross(radial).normalize();
+    let end_tangent = arc.axis.cross(b - arc.centre).normalize();
+    // 拐点两侧的行进切向 → 斜接面法向；直通、近乎折返、开口端点都不切。
+    let mitre = |d_in: DVec3, d_out: DVec3| -> Option<DVec3> {
+        let turn = d_in.dot(d_out).clamp(-1.0, 1.0).acos();
+        if turn <= STRAIGHT_JOINT_RAD || turn >= MAX_MITRE_RAD {
+            return None;
+        }
+        (d_in + d_out).try_normalize()
+    };
+    let has_previous = layout.closed || edge > 0;
+    let has_next = layout.closed || edge + 1 < layout.edge_count;
+    let start_mitre = if has_previous {
+        (a - vertex(edge + count - 1))
+            .try_normalize()
+            .and_then(|d_in| mitre(d_in, start_tangent))
+    } else {
+        None
+    };
+    let end_mitre = if has_next {
+        (vertex(edge + 2) - b)
+            .try_normalize()
+            .and_then(|d_out| mitre(end_tangent, d_out))
+    } else {
+        None
+    };
+    let previous = (edge + layout.edge_count - 1) % layout.edge_count;
+    let next = (edge + 1) % layout.edge_count;
+    for (e, segment) in run.iter_mut() {
+        if let PathSegment::Line {
+            start,
+            end,
+            mitre_start,
+            mitre_end,
+        } = segment
+        {
+            if has_previous && *e == previous && (*end - a).length() <= 1e-6 {
+                *mitre_end = start_mitre;
+            }
+            if has_next && *e == next && (*start - b).length() <= 1e-6 {
+                *mitre_start = end_mitre;
+            }
+        }
+    }
+    let sweep = arc.length / arc.radius;
+    run[slot].1 = PathSegment::Arc {
+        centre: arc.centre,
+        radius: arc.radius,
+        start_dir: radial / arc.radius,
+        axis: arc.axis,
+        sweep,
+    };
+    Ok(Some((
+        start_mitre.unwrap_or(DVec3::ZERO),
+        end_mitre.unwrap_or(DVec3::ZERO),
+    )))
+}
+
 /// `RAIL → RAILSE → HANDRA`（`KICKPL → HRKPSE → HANDRA`）：`sub_105A9420` 第 33–35 行
 /// 连取两次 owner，取到的不是 HANDRA 就没有路径可用。
 fn owning_handrail(el: &DbElement) -> Result<Option<DbElement>, ModelError> {
@@ -1237,6 +1343,93 @@ pub fn curve_run(start: usize, end: usize, edge_count: usize, closed: bool) -> V
         return Vec::new();
     }
     (0..run).map(|step| (start + step) % edge_count).collect()
+}
+
+/// `STAREF` + `SZDI` → `ENDREF` + `EZDI` 之间要扫的段，按路径顺序。
+///
+/// 两端的距离与立柱的 `ZDIS` 同一口径（[`member_station`]）：从参照点那条边直段的起点量。都是 0 时就是
+/// [`curve_run`] 那串边的全部段（圆角弧随它所在边的尾部）；有距离时首段直段从 `SZDI` 处截起、
+/// 尾部补上 `ENDREF` 那条边的直段到 `EZDI` 处，截口不切斜接面。`STAREF == ENDREF` 是参照点出发那条边
+/// 上的一截：aps250112 `/EL(+)104880_TOS*/HR_00x` 的 10 根栏杆（`SZDI 450 → EZDI 2196.4` 之类），E3D TTY
+/// 导出的杆长正是两者之差。
+pub fn run_segments(
+    layout: &PathLayout,
+    start: usize,
+    start_dist: f64,
+    end: usize,
+    end_dist: f64,
+) -> Vec<(usize, PathSegment)> {
+    let line_of = |edge: usize| {
+        layout
+            .segments
+            .iter()
+            .find_map(|(e, segment)| match segment {
+                PathSegment::Line { start, end, .. } if *e == edge => Some((*start, *end, segment)),
+                _ => None,
+            })
+    };
+    // 一条边的直段从起点量 `from..to` 那一截；截到的端口不切斜接面。
+    let cut = |edge: usize, from: f64, to: Option<f64>| -> Option<PathSegment> {
+        let (a, b, segment) = line_of(edge)?;
+        let PathSegment::Line {
+            mitre_start,
+            mitre_end,
+            ..
+        } = segment
+        else {
+            return None;
+        };
+        let length = (b - a).length();
+        let direction = (b - a).try_normalize()?;
+        let from = from.clamp(0.0, length);
+        let to = to.map_or(length, |to| to.clamp(0.0, length));
+        if to - from <= 1e-6 {
+            return None;
+        }
+        Some(PathSegment::Line {
+            start: a + direction * from,
+            end: a + direction * to,
+            mitre_start: if from > 0.0 { None } else { *mitre_start },
+            mitre_end: if to < length { None } else { *mitre_end },
+        })
+    };
+    if start_dist == 0.0 && end_dist == 0.0 {
+        return curve_run(start, end, layout.edge_count, layout.closed)
+            .into_iter()
+            .flat_map(|edge| {
+                layout
+                    .segments
+                    .iter()
+                    .filter(move |(e, _)| *e == edge)
+                    .cloned()
+            })
+            .collect();
+    }
+    if start == end {
+        return cut(start, start_dist, Some(end_dist))
+            .map(|segment| vec![(start, segment)])
+            .unwrap_or_default();
+    }
+    let run = curve_run(start, end, layout.edge_count, layout.closed);
+    let mut out = Vec::new();
+    for (step, edge) in run.iter().enumerate() {
+        for (e, segment) in layout.segments.iter().filter(|(e, _)| e == edge) {
+            if step == 0 && start_dist > 0.0 && matches!(segment, PathSegment::Line { .. }) {
+                if let Some(first) = cut(*edge, start_dist, None) {
+                    out.push((*e, first));
+                }
+                continue;
+            }
+            out.push((*e, segment.clone()));
+        }
+    }
+    if !run.is_empty()
+        && end_dist > 0.0
+        && let Some(last) = cut(end, 0.0, Some(end_dist))
+    {
+        out.push((end, last));
+    }
+    out
 }
 
 #[cfg(test)]
