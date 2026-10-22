@@ -27,6 +27,9 @@
 //!   `/M-OR-1R323-A` 画的两根叫 TUBE 2 / 5），所以同一属主下的 TUBI 按世界 AABB 中心最近
 //!   配对（[`pair_tubes_by_centre`]），序号只用来分组与显示；两侧序号不同时 `pairs[].key`
 //!   写成 `TUBI 2 /X ↔ TUBI 1 /X`。
+//! - **写在容器那一组里的管身**：不开「隐式管导成单独容器」的导出（APS 普查）里 E3D 把隐式管
+//!   直接写在容器自己那一组里，组名就是容器名；我们同一容器名下的 `TUBI n` 并成一件按容器名
+//!   配对（[`merge_container_tubes`]，RVM ↔ RVM 才并）。
 //!
 //! ## 判据
 //!
@@ -340,6 +343,9 @@ struct CompareReport {
     pairs: Vec<Pair>,
     only_baseline: Vec<String>,
     only_generated: Vec<String>,
+    /// 并成一件去同名配对的路由容器数：E3D 把隐式管写在容器自己那一组里，见
+    /// [`merge_container_tubes`]。
+    container_tube_groups: usize,
 }
 
 /// 基准侧一条待配记录：成员本身、面片（缺面片的走 snapshot AABB）、世界 AABB、AABB 来源标记。
@@ -542,6 +548,79 @@ fn load_rvm_side(path: &std::path::Path, want_facets: bool) -> anyhow::Result<Rv
     Ok((members, facets, generated))
 }
 
+/// E3D 导出不开「隐式管导成单独容器」时（APS 那批 TTY 普查就是），路由容器的隐式管直接写在
+/// 容器自己那一组里，组名就是容器名：aps250104 `/PS-01-00111/B1`（TRUNNI）一条 `Cylinder`，
+/// aps250110 `/KIOSK_PUMP_01_DISCHARGE-B1`（BRAN）两条。`gen_ams` 照「单独容器」的口径写成
+/// `TUBI n of <容器>` 那几组，于是两边各成孤儿：基准那组没有同名生成元素、发不出主键，
+/// 我们那几根落进只在生成侧。
+///
+/// 这里把同一容器名下的那几根并成一件，名字就是容器名，交给同名配对：世界 AABB 取并、
+/// 记录种类按记录拼起来；局部帧不给，几根管各有各的轴，判档走世界帧。只并基准里**确有**
+/// 同名、带几何、又不是 `NOUN n of …` 形态的成员，且生成侧没有同名元素的容器——开了「单独
+/// 容器」的导出里容器那一组没有几何，一根都不会被并。返回并过的容器数。
+fn merge_container_tubes(baseline: &[SnapshotMember], generated: &mut Vec<Generated>) -> usize {
+    let named: std::collections::BTreeSet<String> = generated
+        .iter()
+        .filter_map(|element| element.name.as_deref())
+        .map(|name| name.trim().to_string())
+        .collect();
+    let containers: std::collections::BTreeSet<String> = baseline
+        .iter()
+        .filter(|member| member.noun.is_none() && !member.geometries.is_empty())
+        .filter_map(|member| member.name.as_deref())
+        .map(|name| name.trim().to_string())
+        .filter(|name| name.starts_with('/') && !named.contains(name))
+        .collect();
+    let mut merged: BTreeMap<String, Generated> = BTreeMap::new();
+    let mut kept = Vec::with_capacity(generated.len());
+    for element in generated.drain(..) {
+        let container = (element.noun == "TUBI")
+            .then_some(element.owner_desc.as_deref())
+            .flatten()
+            .and_then(|desc| desc.trim().split_once(' '))
+            .map(|(noun, name)| (noun.to_string(), name.trim().to_string()))
+            .filter(|(_, name)| containers.contains(name));
+        let Some((noun, name)) = container else {
+            kept.push(element);
+            continue;
+        };
+        if let Some(whole) = merged.get_mut(&name) {
+            for axis in 0..3 {
+                whole.aabb_min[axis] = whole.aabb_min[axis].min(element.aabb_min[axis]);
+                whole.aabb_max[axis] = whole.aabb_max[axis].max(element.aabb_max[axis]);
+            }
+            whole.volume_mm3 += element.volume_mm3;
+            whole.kinds.extend(element.kinds);
+            continue;
+        }
+        merged.insert(
+            name.clone(),
+            Generated {
+                refno: format!("{noun} {name} 名下的隐式管"),
+                noun,
+                name: Some(name),
+                owner_desc: None,
+                ordinal: 0,
+                volume_mm3: element.volume_mm3,
+                aabb_min: element.aabb_min,
+                aabb_max: element.aabb_max,
+                local_aabb_min: None,
+                local_aabb_max: None,
+                world: None,
+                components: Vec::new(),
+                kinds: element.kinds,
+                genus: 0,
+                negatives_applied: 0,
+                negatives_skipped: 0,
+            },
+        );
+    }
+    let count = merged.len();
+    kept.extend(merged.into_values());
+    *generated = kept;
+    count
+}
+
 fn main() -> anyhow::Result<()> {
     let (baseline_path, elements_path, facets_path, out_path, noun_filter, generated_rvm) =
         parse_args()?;
@@ -580,13 +659,18 @@ fn main() -> anyhow::Result<()> {
         )
         .context("解析 RVM 快照 JSON")?,
     };
-    let generated: Vec<Generated> = match generated {
+    let mut generated: Vec<Generated> = match generated {
         Some(generated) => generated,
         None => serde_json::from_slice(
             &std::fs::read(&elements_path)
                 .with_context(|| format!("读生成物 {}", elements_path.display()))?,
         )
         .context("解析 elements.json")?,
+    };
+    let container_tube_groups = if generated_rvm.is_some() {
+        merge_container_tubes(&snapshot.members, &mut generated)
+    } else {
+        0
     };
 
     // ---- 面片实算 AABB（可信基准，见模块文档） ----
@@ -1102,6 +1186,7 @@ fn main() -> anyhow::Result<()> {
         pairs,
         only_baseline,
         only_generated,
+        container_tube_groups,
     };
 
     println!(
@@ -1130,6 +1215,12 @@ fn main() -> anyhow::Result<()> {
             "发不出主键：生成侧 {}，基准侧 {}",
             report.unkeyable_generated.len(),
             report.unkeyable_baseline.len()
+        );
+    }
+    if report.container_tube_groups > 0 {
+        println!(
+            "隐式管写在容器那一组里：{} 只容器的管身并成一件按容器名配对",
+            report.container_tube_groups
         );
     }
     if !report.centreline_only_baseline.is_empty() {
@@ -1815,6 +1906,72 @@ mod tests {
         assert_eq!(
             pair_tubes_by_centre(&[(&b, long(0.0))], &[(&far, long(600.0))]).len(),
             0
+        );
+    }
+
+    /// 不开「隐式管导成单独容器」的导出（APS 普查）：E3D 的隐式管就在容器那一组里，我们的
+    /// `TUBI n of <容器>` 并成一件、按容器名配对；容器组没几何或基准里没有那只容器的不并。
+    #[test]
+    fn implied_tubes_merge_into_the_container_group_e3d_wrote_them_in() {
+        let baseline_member = |name: &str, geometries: usize| SnapshotMember {
+            name: Some(name.to_string()),
+            noun: None,
+            owner_desc: None,
+            ordinal: None,
+            aabb_world_mm: Some([0.0; 6]),
+            geometries: vec![serde_json::Value::String("Cylinder".into()); geometries],
+        };
+        let tube = |owner: &str, ordinal: usize, x: f64| Generated {
+            refno: format!("/GENERATED/TUBI {ordinal} of {owner}"),
+            noun: "TUBI".to_string(),
+            name: None,
+            owner_desc: Some(owner.to_string()),
+            ordinal,
+            volume_mm3: 1.0,
+            aabb_min: [x, 0.0, 0.0],
+            aabb_max: [x + 10.0, 5.0, 5.0],
+            local_aabb_min: Some([0.0; 3]),
+            local_aabb_max: Some([10.0, 5.0, 5.0]),
+            world: Some([
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [x, 0.0, 0.0],
+            ]),
+            components: Vec::new(),
+            kinds: vec!["Cylinder".to_string()],
+            genus: 0,
+            negatives_applied: 0,
+            negatives_skipped: 0,
+        };
+        let baseline = vec![
+            baseline_member("/KIOSK-B1", 2),
+            baseline_member("/SEPARATE-B1", 0),
+        ];
+        let mut generated = vec![
+            tube("BRAN /KIOSK-B1", 1, 0.0),
+            tube("BRAN /KIOSK-B1", 2, 100.0),
+            tube("BRAN /SEPARATE-B1", 1, 0.0),
+            tube("SUPC /ELSEWHERE-B1", 1, 0.0),
+        ];
+        assert_eq!(merge_container_tubes(&baseline, &mut generated), 1);
+        assert_eq!(generated.len(), 3);
+        let whole = generated
+            .iter()
+            .find(|element| element.name.as_deref() == Some("/KIOSK-B1"))
+            .expect("并成一件的容器");
+        assert_eq!(whole.noun, "BRAN");
+        assert_eq!(whole.aabb_min, [0.0, 0.0, 0.0]);
+        assert_eq!(whole.aabb_max, [110.0, 5.0, 5.0]);
+        assert_eq!(whole.kinds, ["Cylinder", "Cylinder"]);
+        assert!(whole.world.is_none(), "几根管各有各的轴，判档走世界帧");
+        assert_eq!(
+            generated
+                .iter()
+                .filter(|element| element.noun == "TUBI")
+                .count(),
+            2,
+            "容器组没几何、或基准里没有那只容器的，照旧按管身配"
         );
     }
 
