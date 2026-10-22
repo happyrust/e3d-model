@@ -7,11 +7,12 @@
 //! 与 BRAN 逐点同构，走法上**不要**为 HANG 另起分支（`task_plan.md` §2.6）。
 //!
 //! 但「槽位上补不补管身」不归这里管，归
-//! [`crate::category::derives_implied_tubes`]：E3D 只为 BRAN/LUG/SUPC/TRUNNI 四族
-//! （[`crate::category::DERIVED_ROUTE_CONTAINER_NOUNS`]）在成员间补管，**HANG 不补**
-//! （RVM 24381/177986 只导出 PCLAMP 与 HELEMENT 两组几何；把两个独立支撑件当管路串
-//! 起来会凭空得到一根 33.8m 的假管）。管线与增量都按那一个谓词收口：HANG 不进本模块，
-//! 它的成员照常由通用遍历下钻、按目录件建模。
+//! [`crate::category::derives_implied_tubes`]：E3D 只为 BRAN/LUG/TRUNNI 三族
+//! （[`crate::category::DERIVED_ROUTE_CONTAINER_NOUNS`]，就是 `GTTUBE` 硬编码的三个 noun 码）
+//! 在成员间补管，**HANG、SUPC 不补**（RVM 24381/177986 只导出 PCLAMP 与 HELEMENT 两组几何，
+//! 把两个独立支撑件当管路串起来会凭空得到一根 33.8m 的假管；aps250104 的 TTY 导出里 16 只
+//! TRUNNI 都有管身，7 只 SUPC 一根都没有）。管线与增量都按那一个谓词收口：HANG、SUPC 不进
+//! 本模块，它们的成员照常由通用遍历下钻、按目录件建模。
 //!
 //! **属主是 HVAC 的风管 BRAN 也补**——2026-09-02 到 2026-09-18 之间它被关在门外，依据是
 //! 唯一一份 RVM 参照（24381/30598）里没有 TUBE；2026-09-18 把 ams7997 的 216 条风管 BRAN 全对了

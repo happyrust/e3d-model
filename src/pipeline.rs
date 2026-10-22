@@ -269,7 +269,7 @@ pub struct Report {
     /// 索引里，是数据或 `--catalogue` 配置问题，要能顺着 refno 查下去；一个计数查不动。
     pub catalogue_chain_broken: Vec<Incident>,
     /// 路由容器记账：noun → 数量。BRAN/HANG/LUG/SUPC/TRUNNI 五族**都记**——
-    /// HANG 与风管 BRAN（属主 HVAC）也在账上，只是不派生管身
+    /// HANG 与 SUPC 也在账上，只是不派生管身
     /// （[`crate::category::derives_implied_tubes`]）。
     pub route_containers: BTreeMap<String, usize>,
     /// 图元容器记账：noun → 数量。[`Category::PrimitiveContainer`]，目前只有 `TMPL`。
@@ -574,7 +574,7 @@ pub fn generate_subtree_with_cache(
             }
             Category::RouteContainer => {
                 *report.route_containers.entry(noun.clone()).or_insert(0) += 1;
-                // HANG 只下钻成员、不补管身，见谓词文档；管道与风管的 BRAN 都补，
+                // HANG、SUPC 只下钻成员、不补管身，见谓词文档；管道与风管的 BRAN 都补，
                 // 学科差异（ATTA 穿过、矩形断面）在 `walk_route` / `build_route_tubes` 里面。
                 if !derives_implied_tubes(&el)? {
                     // 不派生管身是**谓词给的结论**，不是 builder 没写：几何全在成员上。

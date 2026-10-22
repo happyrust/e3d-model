@@ -492,7 +492,7 @@ pub fn classify(noun: &str) -> Category {
 /// 单元、永远不出 Remove**。真库门上的形状是「ams1112 721→722 全量说消失 3398 件，
 /// 增量只移除 3356 件」——而两边各自的账都是平的，没有任何等式判据会因此变红。
 ///
-/// **路由容器不在内，但那不等于增量管不着它。** 路由容器里 RVM 坐实会补管的四族
+/// **路由容器不在内，但那不等于增量管不着它。** 路由容器里 RVM 坐实会补管的三族
 /// （[`DERIVED_ROUTE_CONTAINER_NOUNS`]）确实会让管线产出几何，可产出的是**挂在
 /// 容器名下的 N 根隐式管身**，不是「一件挂在容器自己 refno 上的实体」——这个
 /// 函数问的恰恰是后者，所以答案就该是否。
@@ -757,13 +757,17 @@ pub fn builds_from_catalogue_component(noun: &str) -> bool {
 /// `BRAN` 一个 noun 两个学科共用：管道分支属主是 `PIPE`，风管分支属主是 `HVAC`。两个学科
 /// **都派生隐式管身**（风管那一支 2026-09-18 对着 E3D 逐条钉过，见 [`route_discipline`]），
 /// 但链怎么走、断面从哪儿读两边不同，所以派生门只看 noun，学科单独问。
-/// Route containers for which E3D actually synthesizes inter-member tube bodies.
+/// Route containers for which E3D actually synthesizes inter-member tube bodies: the three
+/// noun codes `cachelib/GTTUBE` hard-codes (BRAN, TRUNNI, LUG).
 ///
 /// HANG deliberately stays a [`Category::RouteContainer`] so its PCLA/HELE members are
 /// traversed and modeled, but it is absent here: E3D RVM 24381/177986 exports only the
 /// PCLAMP and HELEMENT groups. Treating those two support members as a pipe route creates
 /// a spurious 33.8m cylinder between otherwise independent catalogue instances.
-pub const DERIVED_ROUTE_CONTAINER_NOUNS: [&str; 4] = ["BRAN", "LUG", "SUPC", "TRUNNI"];
+///
+/// SUPC is absent for the same reason. In the aps250104 TTY export every TRUNNI carries its
+/// tube (16) and no SUPC does (7: `/PS-01-00117/B1`, `/PS-01-00122/B1`, ...).
+pub const DERIVED_ROUTE_CONTAINER_NOUNS: [&str; 3] = ["BRAN", "LUG", "TRUNNI"];
 
 /// 路由容器属于哪个学科：决定链怎么走（[`crate::route::station_verdict`]）与隐式管身的
 /// 断面从哪儿读（[`crate::hvac_tube`]）。
@@ -1759,6 +1763,11 @@ mod tests {
         assert!(
             !is_derived_unit("HANG"),
             "HANG 只下钻并生成 PCLA/HELE；E3D RVM 不在二者之间补管身"
+        );
+        assert!(!is_model_unit("SUPC"));
+        assert!(
+            !is_derived_unit("SUPC"),
+            "SUPC 只下钻并生成成员；aps250104 的 7 只 SUPC E3D 一根管身都没补"
         );
     }
 

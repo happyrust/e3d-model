@@ -1272,7 +1272,7 @@ fn probe_chain_for_cascade() {
 /// 而是把 base 端 `route_slot_keys` 收来的全部旧管身键发 Remove（`derived_retired`）。
 /// 与 [`probe_chain_for_cascade`] 同款只做 `collect_window` + `plan_update`，一件几何都
 /// 不建；命中就把被删容器、它名下被删的路由成员数、以及计划里的 `derived` 数打出来。
-/// `PROBE_CONTAINER_NOUN`（默认 `BRAN`）可换成 LUG/SUPC/TRUNNI。
+/// `PROBE_CONTAINER_NOUN`（默认 `BRAN`）可换成 LUG/TRUNNI。
 #[test]
 #[ignore = "逐环扫会话链，找删整条路由容器（BRAN）的窗口；run with --ignored --nocapture"]
 fn probe_chain_for_branch_delete() {

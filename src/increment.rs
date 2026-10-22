@@ -96,8 +96,8 @@
 //! ## 派生单元：隐式管身的增量走另一条腿
 //!
 //! 路由容器不是模型单元——它自己 refno 上没有「一件」几何。其中 RVM 坐实会补管
-//! 的四族（[`crate::category::DERIVED_ROUTE_CONTAINER_NOUNS`]，HANG 除外：E3D
-//! 不在 HANG 成员间补管；属主是 HVAC 的风管 BRAN 也除外：风管没有隐式管身，
+//! 的三族（[`crate::category::DERIVED_ROUTE_CONTAINER_NOUNS`]，HANG、SUPC 除外：E3D
+//! 不在 HANG、SUPC 成员间补管；属主是 HVAC 的风管 BRAN 也除外：风管没有隐式管身，
 //! 判据 [`derives_implied_tubes`] 与全量管线同一份）名下派生出 N 根按
 //! [`crate::elmodl::GeometryId::ImpliedTube`]（两端站点 + 同站点对内出现序）
 //! 索引的管身。它们的增量动作因此与模型单元不同：
@@ -490,7 +490,7 @@ pub struct UpdatePlan {
     pub regenerate: BTreeSet<(u32, u32)>,
     pub remove: BTreeSet<(u32, u32)>,
     /// 需要重算名下派生几何的容器（[`derives_implied_tubes`]，今天只有会补管身的
-    /// 那四族路由容器，HANG 与风管 BRAN 不在内）。
+    /// 那三族路由容器，HANG、SUPC 与风管 BRAN 不在内）。
     ///
     /// 与 `regenerate` 分开，因为**执行动作不同**：模型单元是「按 refno 删一件画
     /// 一件」，这些是「两端各算一遍链上的槽位键，新的 upsert、旧键里没被接住的

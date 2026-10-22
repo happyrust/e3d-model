@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-22 SUPC 不补隐式管身——派生管身的路由容器只剩 GTTUBE 认的 BRAN / TRUNNI / LUG
+
+- `cachelib/GTTUBE` 硬编码的 noun 码只有 BRAN、TRUNNI、LUG 三个；SUPC 此前跟着「路由容器」一起进了
+  `DERIVED_ROUTE_CONTAINER_NOUNS`，没有 E3D 依据。aps250104 的 TTY 导出（gen-model
+  `verification/civil-tty-20261021/aps_survey_lv6_2013286648_2.rvm`）里 16 只 TRUNNI 都有管身，7 只 SUPC
+  （`/PS-01-00117/B1`、`/PS-01-00122/B1` 等）一根都没有，我们多出 7 根。
+- SUPC 与 HANG 同路：只下钻成员、按目录件建模，不派生管身；增量的派生腿随同一个谓词收口。
+  已部署的库里旧的 SUPC 管身要靠一次整库重生成清掉。
+
 ## 2026-10-22 布局式扶手的 RAILHE 是栏杆顶高，踢脚板照 E3D 建——梯段上 10 只扶手全 exact
 
 - E3D TTY 导出（aps250112 `/EQUIP_SUPPORT/SF_001..003`、aps250110 `/B01_LEVEL_03_ACCESS/SF_001`、`SF_002` 的梯段扶手）：
