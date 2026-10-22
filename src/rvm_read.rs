@@ -393,6 +393,17 @@ impl Primitive {
     /// 普查 2026-10-21 盘上 349 份 E3D 3.1 导出物里的 330 条 `Pyramid`：113 条偏心的逐条命中这条
     /// 公式（残差 0），其中 103 条与真几何不同、无一条只对得上真几何。差到顶穿容差的那些让整份
     /// 文件判帧塌掉（FT48B 那份 ZONE、ams7997 `/SSC测试` 整站），`rvm_compare` 拒判。
+    ///
+    /// **深于半球的 `SphericalDish`**（h > r）。E3D 写的盒只到底圆半径，不管球冠在球心那一圈比底圆更宽：
+    ///
+    /// ```text
+    /// 盒 = [−r, −r, 0] .. [r, r, h]          真几何的半宽是 R = (r² + h²) / 2h > r
+    /// ```
+    ///
+    /// aps250128 管道车间 `/100-FW-201` 等 6 只阀门的阀帽（r 44.1 / h 80.6）真几何 x、y ∈ ±52.365，
+    /// E3D 写 ±44.1，差 8.265 mm 刚好顶穿判帧容差（8.056），整份文件拒判。普查 2026-10-22 盘上 546 份
+    /// E3D 3.1 导出物里的 107 条 `SphericalDish`：逐条与这只盒相同（残差 0），其中 24 条 h > r——除了
+    /// 那 6 条，aps250132 的 18 条（r 17.358 / h 26）此前只是靠容差混过去。h ≤ r 时它就是真几何，不另给。
     pub fn declared_box_mm(&self) -> Option<[f64; 6]> {
         match self {
             Self::Snout([rb, rt, h, ox, oy, bsx, bsy, tsx, tsy])
@@ -413,6 +424,7 @@ impl Primitive {
                 let hy = (by / 2.0 - oy / 2.0).max(ty / 2.0 + oy / 2.0);
                 Some([-hx, -hy, -h / 2.0, hx, hy, h / 2.0])
             }
+            Self::SphericalDish([r, h]) if h > r => Some([-r, -r, 0.0, *r, *r, *h]),
             _ => None,
         }
     }
@@ -849,7 +861,7 @@ fn detect_bbox_frame(geometry: &RvmGeometry) -> BboxFrame {
             .fold(0.0f64, |acc, (x, y)| acc.max((x - y).abs()))
     };
     // 两套点云各判一次，取更贴的那一档：真几何，以及 E3D 写 bbox 时另算的那只盒
-    // （见 `Primitive::declared_box_mm`，只有偏心 / 斜切 `Snout` 与偏心 `Pyramid` 有）。
+    // （见 `Primitive::declared_box_mm`，只有偏心 / 斜切 `Snout`、偏心 `Pyramid` 与深于半球的 `SphericalDish` 有）。
     // E3D 哪天把那条公式补齐了，真几何这一套自己就会重新贴上，这里不用回来改。
     let mut best: Option<(f64, BboxFrame)> = None;
     let hulls = std::iter::once(points).chain(
@@ -1447,6 +1459,35 @@ mod tests {
             level: None,
         };
         assert_eq!(detect_bbox_frame(&geometry), BboxFrame::Local);
+    }
+
+    /// aps250128 `/100-FW-201` 等 6 只阀门的阀帽：r 44.1 / h 80.6 的 `SphericalDish` 深于半球，真几何宽到
+    /// R = 52.365，E3D 的记录盒只写到底圆半径 44.1。
+    #[test]
+    fn deep_spherical_dish_frames_by_the_base_radius_box() {
+        let primitive = Primitive::SphericalDish([44.1, 80.6]);
+        assert_close(
+            &primitive.local_aabb_mm().unwrap(),
+            &[-52.365, -52.365, 0.0, 52.365, 52.365, 80.6],
+            0.01,
+        );
+        let record_bbox = [-44.1, -44.1, 0.0, 44.1, 44.1, 80.6];
+        assert_close(&primitive.declared_box_mm().unwrap(), &record_bbox, 1e-9);
+        let geometry = RvmGeometry {
+            tag: "PRIM".to_string(),
+            flags: 1,
+            primitive,
+            matrix3: [0.0, 0.001, 0.0, 0.0, 0.0, -0.001, -0.001, 0.0, 0.0],
+            translation_mm: [0.0; 3],
+            record_bbox,
+            bbox_frame: BboxFrame::Unknown,
+            level: None,
+        };
+        assert_eq!(detect_bbox_frame(&geometry), BboxFrame::Local);
+        assert_eq!(
+            Primitive::SphericalDish([44.1, 30.0]).declared_box_mm(),
+            None
+        );
     }
 
     #[test]

@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-10-22 深于半球的 `SphericalDish` 按 E3D 声明盒判帧：aps250128 不再整份拒判，190 对全 exact
+
+- aps250128（APS 管道 AREA02 车间）的 E3D TTY 导出里，`/100-FW-201` 等 6 只阀门的阀帽是 r 44.1 / h 80.6 的
+  `SphericalDish`：深于半球，真几何在球心那一圈宽到 R = (r² + h²) / 2h = 52.365；E3D 写进记录的盒却只到
+  底圆半径 `[−44.1, −44.1, 0] .. [44.1, 44.1, 80.6]`。差 8.265 mm 顶穿判帧容差（8.056），`rvm_compare` 整份拒判。
+- `Primitive::declared_box_mm`：h > r 的 `SphericalDish` 给声明盒 `[−r, −r, 0] .. [r, r, h]`，判帧多一个候选；
+  h ≤ r 时它就是真几何，不另给。空间判定照旧只认真几何，写出端不变。
+- 普查盘上 546 份 E3D 3.1 导出物（gen-model `output/rvm_dish_census.py`）：107 条 `SphericalDish` 逐条与这只盒
+  相同（残差 0），其中 24 条 h > r；除上面 6 条，aps250132 的 18 条（r 17.358 / h 26）此前只是靠容差混过去。
+  改后 546 份判帧 unknown 0 条。
+- aps250128 第一次能对拍：190 对全 exact，记录种类全部一致。土建、S1、MDS 四套框、`/SSC测试`、FIXING / datum、
+  ams8000、APS 其余逐件不变。
+- 单测 `deep_spherical_dish_frames_by_the_base_radius_box`。
+
 ## 2026-10-22 圆管圆周 p-line（`PX` / `PY` 空程序）落在管外圆上：GENSEC datum 真值 3588 → 3678 / 3678
 
 - MDS 支架 FT44 斜撑（ams7324 / 7329 / 7350 各 30 个）的 PLDATU，`POSL` 是 CTUB p-line 集 `/GTYPE_CTUB_PTSS` 里的圆周线
