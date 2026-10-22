@@ -5,7 +5,9 @@
 //! 附近。E3D 现算（`pllib/GPLDOP@0x103ADC48` 沿路径定站位，`pllib/GPLDAT@0x103AD778`
 //! 定 p-line 标架）：
 //!
-//! - JLDATU：从 `HPREF` 指的 POINSP（未设 = SPINE 起点）沿路径走 `ZDIS`，落在两端之外
+//! - JLDATU：从 `HPREF` 指的 POINSP（未设 = SPINE 起点）沿路径走 `ZDIS + PKDI × 路径全长`
+//!   （`PKDI` 是按全长的比例：aps7200 `/EAST-KICKPLATE` 的 JLDATU `PKDI = 0.5`、梁长 1020，E3D 的
+//!   FIXING 落在 510 mm 处；`/OUTER-KICKPLATE` 的落在 165° 圆弧的弧长中点），落在两端之外
 //!   时沿端切向直线外推。站位标架 = 该处的截面标架（X = Ydir × 切向，Y = 沿路径传递到
 //!   此处的 SPINE Ydir，Z = 切向），与 [`crate::section::spine_swept_solid`] 同一口径。
 //! - PLDATU：原点 = 站位 + 截面平面内 `POSL` 那条 p-line 的位置（减 JUSL 对齐、`LMIRR`
@@ -154,7 +156,7 @@ pub fn solve(datum: &DbElement) -> Result<Option<DatumSolve>, ModelError> {
     } else if at_end {
         station(&path, path_length - zdis, &mut notes)
     } else {
-        station(&path, hpref_s + zdis, &mut notes)
+        station(&path, hpref_s + zdis + pkdi * path_length, &mut notes)
     };
 
     let mut spin = if stationless {

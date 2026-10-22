@@ -1576,6 +1576,7 @@ fn curve_segments(
         // 沿切线切入 / 切出（`draw_me` 的 implied straight），切点按行进方向唯一确定：
         // 入点在「圆心→前点」方向逆时针转 acos(r/d)，出点在「圆心→后点」方向顺时针转同一角。
         // 实测 `2013287727/138`（db 251183）两段 CENT 的 `CPOS` 都落在按此算出的弧中点上。
+        // 端点落在圆内就没有切线，见 [`centre_arc_through`]。
         "CENT" => {
             let centre = *pos;
             let mut axis = *zdir;
@@ -1611,8 +1612,10 @@ fn curve_segments(
             let (start, end) = match (tangent_point(p, true), tangent_point(q, false)) {
                 (Ok(start), Ok(end)) => (start, end),
                 (Err(why), _) | (_, Err(why)) => {
-                    problems.push(format!("CURVE {refno}（CENT）{why}，退成直段"));
-                    push_straight(segments, p, q);
+                    if !centre_arc_through(segments, p, q, centre, axis) {
+                        problems.push(format!("CURVE {refno}（CENT）{why}，退成直段"));
+                        push_straight(segments, p, q);
+                    }
                     return;
                 }
             };
@@ -1636,6 +1639,54 @@ fn curve_segments(
             push_straight(segments, p, q);
         }
     }
+}
+
+/// `CENT` 的端点落在 `RADI` 圆内、切不进去时 E3D 画的弧：圆心仍是 `POS`，半径取**终点**到圆心的距离
+/// （`RADI` 不用），从起点所在的方向走劣弧到终点。
+///
+/// aps7200 `/INNER-KICKPLATE` 的 CURVE `23584/8314`：`RADI` 1050，两端距圆心 850.06 / 849.67。E3D 的梁身
+/// 是顺时针 166° 的弧（包围盒 y 到 −914.5）；TTY 取的名下 JLDATU（`ZDIS 1531`）世界位置与「半径
+/// 849.67、从起点方向量弧长」差 0.02 mm，换成起点半径差 0.75 mm。按切线构造这里只能退成直段。
+/// 方向只有这一例，取劣弧。弧前已有路径时，起点到弧起点的径向小差补一段直段，路径不断；弧就是路径
+/// 的第一段时不补（E3D 的 `ZDIS` 不含这段）。
+///
+/// 圆心与两端重合、或两端同向时构不出弧，返回 `false`。
+fn centre_arc_through(
+    segments: &mut Vec<SpineSegment>,
+    p: DVec3,
+    q: DVec3,
+    centre: DVec3,
+    axis: DVec3,
+) -> bool {
+    let centre = centre + axis * (q - centre).dot(axis);
+    let from = p - centre;
+    let from = from - axis * from.dot(axis);
+    let to = q - centre;
+    let radius = to.length();
+    if from.length() <= SPINE_POINT_TOL || radius <= SPINE_POINT_TOL {
+        return false;
+    }
+    let ccw = ccw_angle(from, to, axis);
+    let (axis, sweep) = if ccw <= PI {
+        (axis, ccw)
+    } else {
+        (-axis, 2.0 * PI - ccw)
+    };
+    if sweep <= 1e-9 {
+        return false;
+    }
+    let start = centre + from.normalize() * radius;
+    if !segments.is_empty() {
+        push_straight(segments, p, start);
+    }
+    segments.push(SpineSegment::Arc {
+        start,
+        end: q,
+        centre,
+        axis,
+        sweep,
+    });
+    true
 }
 
 /// 三点外心（三维）。调用方已排除共线。

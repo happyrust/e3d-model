@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-22 踢脚板的 datum 按 PKDI 比例站位、圆心式弧端点在圆内照样成弧——aps7200 3 只 FIXING 对上
+
+- JLDATU 的站位 = `HPREF` 起点 + `ZDIS` + `PKDI × 路径全长`。`PKDI` 此前读了没用：aps7200
+  `/EAST-KICKPLATE`（直梁 1020 mm，`PKDI = 0.5`）与 `/OUTER-KICKPLATE`（165° 三点圆弧）的 FIXING 偏 510 /
+  1885 mm，现与 E3D TTY 真值差 ≤ 0.01 mm。AMS 的 3678 只 datum 真值对拍不变。
+- GENSEC SPINE 的 `CURVE`（`CURTYP CENT`）两端都落在 `RADI` 圆内时没有切线，此前退成直段；E3D 沿以
+  `POS` 为圆心、半径取终点距离的劣弧走（`/INNER-KICKPLATE`：`RADI` 1050，两端距圆心约 850）。改后它的
+  JLDATU（`ZDIS 1531`）与 TTY 真值差 < 0.05 mm、FIXING exact；梁身还差 5.6 mm，是圆弧切分点数不同。
+- 真库门 `aps7200_frames_real`（新）：三只 JLDATU 对 TTY 世界位姿（APS 项目副本上只读导出）。
+
 ## 2026-10-22 矩形风管弯头按设计角转——aps7200 11 只弯头的本体补齐（修在 e3d-io）
 
 - 根因在 e3d-io `ca949ef`：命名角轴 `[26, 64]` 的角度字 64 落在 51..=100 段，是 `DESP 14`（acp7021 矩形
