@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-10-22 GENPRI 剖分照 SMLib `IwTess`：面细分树 + 等参边断开 + 曲线二分——aps250162 exact 451 → 461
+
+- 原来各面按节点区间一律画网格线：GENPRI 10 / 14 板边那段 R5 半圆（两段有理二次）在节点处多了一个采样，
+  正落在半圆顶上，包围盒比 E3D 高 0.33 mm；E3D 的面树对 2 mm 宽的窄面根本不分。
+- 改照 TbAg.dll（E3D 2.10）反编译的 `IwTess`：
+  - 面：`BuildTreeWithSubdivision` 从曲面整个参数域起建树。节点控制网厚度（插节点截出）超弦高就沿弯的那向
+    分；否则尺寸向量（`ComputeSizeTolerances`：u / v 向各三条等参线的最大长度，平面用四角弦长）超最大
+    边长就沿长的那向分。分点取中点，四分之一宽内有节点值就吸到节点上；内部点取叶子角点。
+  - 边：等参边在相邻面叶子边界处断开（`IsoEdgeSubdivide`）；UV 里比所压叶子宽 1.1 倍的段从中点断开
+    （`SplitFaceEdgesToUVSize`）；每段再按 `IwCurve::TessellateByBisection` 二分（Hermite 内侧 Bézier 点的弦高，
+    超容差减半、不到一半加倍，C1 断点复验，闭合曲线整段不收）。闭合边另在节点处断开：E3D 把整圈的
+    细圆柱切成参数 16 等分，出处还没找到，按节点断开留住象限点。
+- 对拍 aps250162：exact 451 → 461，chord 15 → 5，off 0。只剩 GENPRI 13（0.49 mm）：E3D 在 76 mm 长的条上把
+  R5 圆弧切得更细，来自 `BuildTree` 之后的边界植入（`ImplantUVSegment`）或面剖分，未反编译。其余库没有
+  GENPRI，只动 `genpri`。
+- 单测 +3（GENPRI 10 包围盒到 0.06 mm、曲线解析导数、两种圆弧的二分步数）；真库门局部包围盒加 GENPRI 10。
+
 ## 2026-10-22 通用图元 GENPRI 建体：解码归档里的 SMLib B-rep，UV 约束剖分——aps250162 75 只全出，60 exact / 15 chord
 
 - GENPRI 的几何不在属性里，在 `GENPRI → ARCHIV → ATTDAT.ELDATA`：E3D 外壳（归档版本 2、字节数、UUID、

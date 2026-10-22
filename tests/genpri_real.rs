@@ -99,15 +99,15 @@ fn every_genpri_of_aps250162_closes_into_a_solid() {
     assert_eq!(built, 75);
 }
 
-/// 局部包围盒逐分量对 E3D（取到 0.01 mm）：斜放的短管 GENPRI 1 与细圆柱 GENPRI 6 是 exact，
-/// 端面圆弧交叉的 GENPRI 13 在弦高档。
+/// 局部包围盒逐分量对 E3D（取到 0.01 mm）：斜放的短管 GENPRI 1、细圆柱 GENPRI 6、板边 R5 半圆不切的
+/// GENPRI 10 是 exact，端面圆弧交叉的 GENPRI 13 在弦高档。
 #[test]
 fn genpri_local_boxes_match_the_e3d_export() {
     if !fixtures_present() {
         return;
     }
     let set = aps_set();
-    let cases: [(u32, [f64; 6], f64, &str); 3] = [
+    let cases: [(u32, [f64; 6], f64, &str); 4] = [
         (
             1039,
             [252.75, 60.37, 154.07, 342.75, 143.45, 198.01],
@@ -119,6 +119,12 @@ fn genpri_local_boxes_match_the_e3d_export() {
             [257.75, 60.17, 242.85, 337.75, 66.07, 248.75],
             0.06,
             "GENPRI 6 of /MEI-JCAN01",
+        ),
+        (
+            1092,
+            [335.75, 55.03, 184.79, 337.75, 119.28, 253.62],
+            0.06,
+            "GENPRI 10 of /MEI-JCAN01",
         ),
         (
             1103,

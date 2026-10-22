@@ -65,8 +65,13 @@ const BSPLINE_CURVE: i32 = 14_033;
 const BSPLINE_SURFACE: i32 = 15_002;
 const SMLIB_VERSION: i32 = 32;
 const MAX_DEGREE: usize = 7;
-/// 每个节点区间最多切这么多段：坏数据（零长节点、NaN）不至于把三角化拖进死循环。
-const MAX_SEGMENTS_PER_SPAN: usize = 64;
+/// 细分树最深这么多层、一条边的二分最多走这么多步：坏数据（零长节点、NaN）不至于把三角化拖进死循环。
+const MAX_TREE_DEPTH: usize = 16;
+const MAX_BISECTION_STEPS: usize = 4096;
+/// 一条边按 UV 尺寸最多再断这么多次（`IwTess::CheckAgainstSurfaceCache` 的段数上限）。
+const MAX_UV_SPLITS: usize = 100;
+/// 量等参线长度时每条取这么多段折线。
+const ISO_LENGTH_SAMPLES: usize = 16;
 /// 顶点按这个格距（mm）合并：退化边（球极）的各采样点、相邻边在顶点处的端点都落到同一个索引。
 const WELD_MM: f64 = 1e-6;
 
@@ -122,6 +127,65 @@ impl BSplineCurve {
         }
         uv
     }
+
+    /// 等参线（控制点某一分量全同）：那一分量是 u（0）还是 v（1）、值多少。两个分量都不变（退化成点）
+    /// 不算。
+    fn iso_axis(&self) -> Option<(usize, f64)> {
+        let constant = |axis: usize| {
+            let first = self.control[0][axis] / self.control[0][3];
+            self.control
+                .iter()
+                .all(|c| c[axis] / c[3] == first)
+                .then_some(first)
+        };
+        match (constant(0), constant(1)) {
+            (Some(u), None) => Some((0, u)),
+            (None, Some(v)) => Some((1, v)),
+            _ => None,
+        }
+    }
+
+    /// 一阶导：齐次曲线按基函数导数（Piegl & Tiller 式 2.9）求导，再按商法则除回 w。
+    fn derivative(&self, t: f64) -> DVec3 {
+        let p = self.degree;
+        let span = find_span(&self.knots, p, self.control.len(), t);
+        let mut value = [0.0; MAX_DEGREE + 1];
+        basis(&self.knots, p, span, t, &mut value);
+        let mut slope = [0.0; MAX_DEGREE + 1];
+        if p > 0 {
+            let mut lower = [0.0; MAX_DEGREE + 1];
+            basis(&self.knots, p - 1, span, t, &mut lower);
+            let over = |n: f64, i: usize, j: usize| {
+                let d = self.knots[j] - self.knots[i];
+                if d == 0.0 { 0.0 } else { n / d }
+            };
+            for (k, s) in slope[..=p].iter_mut().enumerate() {
+                let i = span - p + k;
+                let left = if k > 0 {
+                    over(lower[k - 1], i, i + p)
+                } else {
+                    0.0
+                };
+                let right = if k < p {
+                    over(lower[k], i + 1, i + p + 1)
+                } else {
+                    0.0
+                };
+                *s = p as f64 * (left - right);
+            }
+        }
+        let mut a = [0.0; 4];
+        let mut da = [0.0; 4];
+        for (k, cp) in self.control[span - p..=span].iter().enumerate() {
+            for ((sum, dsum), x) in a.iter_mut().zip(da.iter_mut()).zip(cp) {
+                *sum += value[k] * x;
+                *dsum += slope[k] * x;
+            }
+        }
+        let point = DVec3::new(a[0], a[1], a[2]);
+        let speed = DVec3::new(da[0], da[1], da[2]);
+        (speed * a[3] - point * da[3]) / (a[3] * a[3])
+    }
 }
 
 /// 非均匀有理 B 样条曲面，控制点下标 `i·count[1] + j`（v 变化最快）。
@@ -154,35 +218,6 @@ impl BSplineSurface {
             }
         }
         DVec3::new(acc[0], acc[1], acc[2]) / acc[3]
-    }
-
-    /// 控制点全在一张平面上（有理曲面的控制点也在，因为是齐次坐标除回去比的）。
-    fn is_planar(&self) -> bool {
-        let points: Vec<DVec3> = self
-            .control
-            .iter()
-            .map(|c| DVec3::new(c[0], c[1], c[2]) / c[3])
-            .collect();
-        let lo = points.iter().fold(DVec3::INFINITY, |m, p| m.min(*p));
-        let hi = points.iter().fold(DVec3::NEG_INFINITY, |m, p| m.max(*p));
-        let scale = (hi - lo).length().max(1.0);
-        let origin = points[0];
-        let mut normal = DVec3::ZERO;
-        for a in &points[1..] {
-            for b in &points[1..] {
-                let n = (*a - origin).cross(*b - origin);
-                if n.length() > normal.length() {
-                    normal = n;
-                }
-            }
-        }
-        if normal.length() <= 1e-12 * scale * scale {
-            return true;
-        }
-        let normal = normal.normalize();
-        points
-            .iter()
-            .all(|p| (*p - origin).dot(normal).abs() <= 1e-9 * scale)
     }
 }
 
@@ -752,40 +787,6 @@ impl Points {
     }
 }
 
-/// 一条线在 [a, b] 上等分成几段才够：每段弦长 ≤ `max_edge`、弦中点到线的偏差 ≤ `chord`
-/// （`chord` 为 `None` 不看弦高）。`line(k, t)` 给出第 k 条要量的线在 t 处的点。
-fn segments_needed(
-    a: f64,
-    b: f64,
-    lines: usize,
-    line: &dyn Fn(usize, f64) -> DVec3,
-    chord: Option<f64>,
-    max_edge: f64,
-) -> usize {
-    let mut n = 1;
-    while n < MAX_SEGMENTS_PER_SPAN {
-        let fits = (0..lines).all(|k| {
-            (0..n).all(|s| {
-                let t0 = a + (b - a) * s as f64 / n as f64;
-                let t1 = a + (b - a) * (s + 1) as f64 / n as f64;
-                let (p0, p1) = (line(k, t0), line(k, t1));
-                if p0.distance(p1) > max_edge {
-                    return false;
-                }
-                chord.is_none_or(|chord| {
-                    let mid = line(k, 0.5 * (t0 + t1));
-                    distance_to_segment(mid, p0, p1) <= chord
-                })
-            })
-        });
-        if fits {
-            break;
-        }
-        n *= 2;
-    }
-    n
-}
-
 fn distance_to_segment(p: DVec3, a: DVec3, b: DVec3) -> f64 {
     let ab = b - a;
     let len2 = ab.length_squared();
@@ -821,44 +822,425 @@ fn split_by_spans(
     out
 }
 
-/// 一张面的网格线（两向参数，含 UV 范围两端）。
-struct Grid {
-    lines: [Vec<f64>; 2],
+/// 一张面的细分树叶子 `[u0, u1, v0, v1]`（SMLib `IwTessSrfCache::BuildTreeWithSubdivision` →
+/// `IwSurfaceCache::SubdivideToTolerances`，节点判据 `TestAgainstTolerances`）。根是曲面的整个参数域。
+struct FaceTree {
+    leaves: Vec<[f64; 4]>,
 }
 
-fn face_grid(face: &Face, surface: &BSplineSurface, tess: &Tessellation) -> Grid {
-    let [u0, u1, v0, v1] = face.uv_box;
-    let planar = surface.is_planar();
-    let ranges = [(u0, u1), (v0, v1)];
-    let mut lines: [Vec<f64>; 2] = [Vec::new(), Vec::new()];
-    for dir in 0..2 {
-        let (lo, hi) = ranges[dir];
-        let (olo, ohi) = ranges[1 - dir];
-        // 另一向在哪几处量：断点与各区间中点。
-        let mut across = vec![olo];
-        across.extend(interior_knots(&surface.knots[1 - dir], olo, ohi));
-        across.push(ohi);
-        let mids: Vec<f64> = across.windows(2).map(|w| 0.5 * (w[0] + w[1])).collect();
-        across.extend(mids);
-        let point = |k: usize, t: f64| {
-            let w = across[k];
-            if dir == 0 {
-                surface.point(t, w)
-            } else {
-                surface.point(w, t)
-            }
+fn face_tree(surface: &BSplineSurface, tess: &Tessellation) -> FaceTree {
+    let [du, dv] = surface.degree;
+    let [nu, nv] = surface.count;
+    let root = [
+        surface.knots[0][du],
+        surface.knots[0][nu],
+        surface.knots[1][dv],
+        surface.knots[1][nv],
+    ];
+    let mut leaves = Vec::new();
+    let mut stack = vec![(root, 0usize)];
+    while let Some((node, depth)) = stack.pop() {
+        let dir = if depth < MAX_TREE_DEPTH {
+            split_direction(surface, node, root, tess)
+        } else {
+            None
         };
-        let chord = (!planar).then_some(tess.chord);
-        lines[dir] = split_by_spans(&surface.knots[dir], lo, hi, |a, b| {
-            segments_needed(a, b, across.len(), &point, chord, tess.max_edge)
-        });
+        let Some(dir) = dir else {
+            leaves.push(node);
+            continue;
+        };
+        let at = split_param(&surface.knots[dir], node[2 * dir], node[2 * dir + 1]);
+        let (mut low, mut high) = (node, node);
+        low[2 * dir + 1] = at;
+        high[2 * dir] = at;
+        stack.push((high, depth + 1));
+        stack.push((low, depth + 1));
     }
-    Grid { lines }
+    FaceTree { leaves }
 }
 
-/// 参数曲线在 [t0, t1] 上穿过网格线（第 `axis` 个分量 = `values` 里某值）的参数。
-/// 沿网格线走的那一段不算穿过。
-fn grid_crossings(
+/// 节点要不要分、沿哪向分（0 = u，1 = v）：控制网厚度（`IwPseudoBox` 的第三个区间）超弦高，就沿控制网
+/// 弯得多的那向分；否则尺寸向量（[`size_vector`]）的模超最大边长，就沿长的那向分。要分的那向已不到
+/// 整个参数域的千分之一就不分，另一向还宽过百分之一就改分另一向。
+fn split_direction(
+    surface: &BSplineSurface,
+    node: [f64; 4],
+    root: [f64; 4],
+    tess: &Tessellation,
+) -> Option<usize> {
+    let net = sub_net(surface, node);
+    let thickness = net_thickness(&net);
+    let dir = if thickness > tess.chord {
+        let bend_u = (0..net[0].len())
+            .map(|j| polyline_deviation(&net.iter().map(|row| row[j]).collect::<Vec<_>>()))
+            .fold(0.0, f64::max);
+        let bend_v = net
+            .iter()
+            .map(|row| polyline_deviation(row))
+            .fold(0.0, f64::max);
+        usize::from(bend_v > bend_u)
+    } else {
+        let planar = thickness <= 1e-9 * tess.max_edge.max(1.0);
+        let size = size_vector(surface, node, planar);
+        if size.length() <= tess.max_edge {
+            return None;
+        }
+        usize::from(size.y >= size.x)
+    };
+    let width = |d: usize, b: [f64; 4]| b[2 * d + 1] - b[2 * d];
+    if 0.001 * width(dir, root) <= width(dir, node) {
+        Some(dir)
+    } else if width(1 - dir, root) / 100.0 < width(1 - dir, node) {
+        Some(1 - dir)
+    } else {
+        None
+    }
+}
+
+/// 节点在 [lo, hi] 的中点分；离中点四分之一宽以内有节点值（knot）就分在离中点最近的那个上
+/// （`IwSurfaceCache::SubdivideNode`）。
+fn split_param(knots: &[f64], lo: f64, hi: f64) -> f64 {
+    let mid = 0.5 * (lo + hi);
+    interior_knots(knots, lo, hi)
+        .into_iter()
+        .filter(|k| (k - mid).abs() <= 0.25 * (hi - lo))
+        .min_by(|a, b| (a - mid).abs().total_cmp(&(b - mid).abs()))
+        .unwrap_or(mid)
+}
+
+/// 节点那块曲面的控制网（插节点截出来、除回 w）：`net[i][j]`，i 沿 u、j 沿 v。
+fn sub_net(surface: &BSplineSurface, node: [f64; 4]) -> Vec<Vec<DVec3>> {
+    let [nu, nv] = surface.count;
+    let columns: Vec<Vec<[f64; 4]>> = (0..nv)
+        .map(|j| (0..nu).map(|i| surface.control[i * nv + j]).collect())
+        .collect();
+    let columns = clip_polygons(
+        &surface.knots[0],
+        surface.degree[0],
+        columns,
+        node[0],
+        node[1],
+    );
+    let rows: Vec<Vec<[f64; 4]>> = (0..columns[0].len())
+        .map(|i| columns.iter().map(|column| column[i]).collect())
+        .collect();
+    clip_polygons(&surface.knots[1], surface.degree[1], rows, node[2], node[3])
+        .into_iter()
+        .map(|row| {
+            row.into_iter()
+                .map(|c| DVec3::new(c[0], c[1], c[2]) / c[3])
+                .collect()
+        })
+        .collect()
+}
+
+/// 共用 `knots` 的几条齐次控制多边形：在 a、b 处插节点（Boehm）到 `degree` 重，截出 [a, b] 那一段。
+fn clip_polygons(
+    knots: &[f64],
+    degree: usize,
+    mut polygons: Vec<Vec<[f64; 4]>>,
+    a: f64,
+    b: f64,
+) -> Vec<Vec<[f64; 4]>> {
+    let mut knots = knots.to_vec();
+    for t in [a, b] {
+        if t <= knots[degree] || t >= knots[knots.len() - degree - 1] {
+            continue;
+        }
+        while knots.iter().filter(|&&k| k == t).count() < degree {
+            let n = polygons[0].len();
+            let span = find_span(&knots, degree, n, t);
+            for polygon in &mut polygons {
+                let refined: Vec<[f64; 4]> = (0..=n)
+                    .map(|i| {
+                        if i + degree <= span {
+                            polygon[i]
+                        } else if i > span {
+                            polygon[i - 1]
+                        } else {
+                            let d = knots[i + degree] - knots[i];
+                            let s = if d == 0.0 { 0.0 } else { (t - knots[i]) / d };
+                            std::array::from_fn(|c| {
+                                (1.0 - s) * polygon[i - 1][c] + s * polygon[i][c]
+                            })
+                        }
+                    })
+                    .collect();
+                *polygon = refined;
+            }
+            knots.insert(span + 1, t);
+        }
+    }
+    let first = knots
+        .iter()
+        .rposition(|&k| k <= a)
+        .unwrap_or(degree)
+        .saturating_sub(degree);
+    let last = knots
+        .iter()
+        .position(|&k| k >= b)
+        .unwrap_or(knots.len() - degree - 1)
+        .saturating_sub(1);
+    polygons
+        .into_iter()
+        .map(|p| {
+            let last = last.min(p.len() - 1);
+            p[first.min(last)..=last].to_vec()
+        })
+        .collect()
+}
+
+/// 控制网沿法向的厚度（`IwPseudoBox` 的第三个区间）：法向取两向角点差之和的叉积。有一向的角点重合
+/// （整圈闭合面、极点）时取包围盒最短边。
+fn net_thickness(net: &[Vec<DVec3>]) -> f64 {
+    let (last_i, last_j) = (net.len() - 1, net[0].len() - 1);
+    let (c00, c10) = (net[0][0], net[last_i][0]);
+    let (c01, c11) = (net[0][last_j], net[last_i][last_j]);
+    let along_u = (c10 - c00) + (c11 - c01);
+    let along_v = (c01 - c00) + (c11 - c10);
+    let points = net.iter().flatten();
+    if along_u.length() < 1e-9 || along_v.length() < 1e-9 {
+        let lo = points.clone().fold(DVec3::INFINITY, |m, p| m.min(*p));
+        let hi = points.fold(DVec3::NEG_INFINITY, |m, p| m.max(*p));
+        return (hi - lo).min_element();
+    }
+    let normal = along_u.cross(along_v);
+    if normal.length() < 1e-12 {
+        return 0.0;
+    }
+    let normal = normal.normalize();
+    let (lo, hi) = points.fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| {
+        let d = (*p - c00).dot(normal);
+        (lo.min(d), hi.max(d))
+    });
+    hi - lo
+}
+
+/// 点列离首尾连线的最大距离。
+fn polyline_deviation(points: &[DVec3]) -> f64 {
+    let (a, b) = (points[0], points[points.len() - 1]);
+    points
+        .iter()
+        .map(|p| distance_to_segment(*p, a, b))
+        .fold(0.0, f64::max)
+}
+
+/// `IwSurfaceCache::ComputeSizeTolerances`：u 向等参线在 v = 起 / 中 / 止三条的最大长度、v 向在
+/// u = 起 / 中 / 止三条的最大长度；平的节点用四角弦长。
+fn size_vector(surface: &BSplineSurface, node: [f64; 4], planar: bool) -> DVec2 {
+    let [u0, u1, v0, v1] = node;
+    if planar {
+        let (p00, p10) = (surface.point(u0, v0), surface.point(u1, v0));
+        let (p01, p11) = (surface.point(u0, v1), surface.point(u1, v1));
+        return DVec2::new(
+            p00.distance(p10).max(p01.distance(p11)),
+            p00.distance(p01).max(p10.distance(p11)),
+        );
+    }
+    let length = |at: &dyn Fn(f64) -> DVec3, lo: f64, hi: f64| {
+        let mut previous = at(lo);
+        (1..=ISO_LENGTH_SAMPLES)
+            .map(|k| {
+                let p = at(lo + (hi - lo) * k as f64 / ISO_LENGTH_SAMPLES as f64);
+                let d = p.distance(previous);
+                previous = p;
+                d
+            })
+            .sum::<f64>()
+    };
+    let ends_and_middle = |lo: f64, hi: f64| [lo, 0.5 * (lo + hi), hi];
+    let along_u = ends_and_middle(v0, v1)
+        .into_iter()
+        .map(|v| length(&|u| surface.point(u, v), u0, u1))
+        .fold(0.0, f64::max);
+    let along_v = ends_and_middle(u0, u1)
+        .into_iter()
+        .map(|u| length(&|v| surface.point(u, v), v0, v1))
+        .fold(0.0, f64::max);
+    DVec2::new(along_u, along_v)
+}
+
+/// `IwCurve::TessellateByBisection` 一步 [t, t + h] 的判定（TbAg.dll 2.10 `sub_1045DA70`）。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Step {
+    Reject,
+    Accept,
+    /// 接受，且弦高不到容差一半：同一步里把步长加倍再试。
+    Grow,
+}
+
+/// 弦高取 Hermite 三次（两端点与切向）内侧两个 Bézier 点 `P0 + D0·h/3`、`P1 − D1·h/3` 到弦的较大距离
+/// （`IwHermiteCurve::ComputeChordHeight`）；两端重合（整圈）时取控制多边形长度。
+fn step_verdict(p0: DVec3, d0: DVec3, p1: DVec3, d1: DVec3, h: f64, chord: f64) -> Step {
+    let b1 = p0 + d0 * (h / 3.0);
+    let b2 = p1 - d1 * (h / 3.0);
+    let height = if p0.distance_squared(p1) >= 1e-24 {
+        distance_to_segment(b1, p0, p1).max(distance_to_segment(b2, p0, p1))
+    } else {
+        p0.distance(b1) + b1.distance(b2) + b2.distance(p1)
+    };
+    if height > chord {
+        Step::Reject
+    } else if height < 0.5 * chord {
+        Step::Grow
+    } else {
+        Step::Accept
+    }
+}
+
+/// 曲线在 (lo, hi) 内的 C1 断点：重数 ≥ 次数的节点值。
+fn c1_breaks(curve: &BSplineCurve, lo: f64, hi: f64) -> Vec<f64> {
+    curve
+        .knots
+        .chunk_by(|a, b| a == b)
+        .filter(|run| run.len() >= curve.degree && run[0] > lo + 1e-12 && run[0] < hi - 1e-12)
+        .map(|run| run[0])
+        .collect()
+}
+
+/// SMLib `IwCurve::TessellateByBisection`（E3D 的曲线驱动：弦高 = `chord`，角度 0，长度不限）在
+/// [t0, t1] 上的参数（含两端）。每步从上一步的步长起试：弦高超容差就减半；不到一半就加倍再试，
+/// 加倍后超了退回上一个好步长；跨过 C1 断点的步还要以断点为终点再验一次；闭合曲线整段一步不收。
+/// aps250162 的 793 条边，弦高 5.5–8 mm 时 727 条与 E3D 的段数相同、1 条多一段，其余是 E3D 另有
+/// 面侧的分点。
+fn bisection_params(curve: &BSplineCurve, t0: f64, t1: f64, chord: f64) -> Vec<f64> {
+    let total = t1 - t0;
+    if total.is_nan() || total <= 0.0 {
+        return vec![t0, t1];
+    }
+    let min_step = total / 100_000.0;
+    let tol = (t0.abs().max(t1.abs()) + 1.0) * 1e-12;
+    let breaks = c1_breaks(curve, t0, t1);
+    let at = |t: f64| (curve.point(t), curve.derivative(t));
+    let mut params = vec![t0];
+    let (mut t, mut h) = (t0, total);
+    let (mut p0, mut d0) = at(t0);
+    while t1 - t > tol && params.len() < MAX_BISECTION_STEPS {
+        let mut grown: Option<f64> = None;
+        for _ in 0..=100 {
+            if t + h > t1 {
+                h = t1 - t;
+            }
+            if t1 - tol > t + h && 2.0 * h + t > tol + t1 {
+                h = t1 - t;
+            }
+            if h <= min_step - 1e-12 {
+                break;
+            }
+            let (p1, d1) = at(t + h);
+            let mut step = step_verdict(p0, d0, p1, d1, h, chord);
+            if step != Step::Reject
+                && breaks.iter().any(|&b| {
+                    t < b && b < t + h && {
+                        let (pb, db) = at(b);
+                        step_verdict(p0, d0, pb, db, b - t, chord) == Step::Reject
+                    }
+                })
+            {
+                step = Step::Reject;
+            }
+            if step == Step::Grow
+                && t == t0
+                && (h - total).abs() <= tol
+                && p0.distance(p1) < (p0.abs().max_element() + 1.0) * 1e-12
+            {
+                step = Step::Reject;
+            }
+            match step {
+                Step::Accept => break,
+                Step::Grow => {
+                    grown = Some(h);
+                    if t1 - tol < t + h {
+                        h = t1 - t;
+                        break;
+                    }
+                    h = (2.0 * h).min(t1 - t);
+                }
+                Step::Reject => {
+                    if let Some(good) = grown {
+                        h = good;
+                        break;
+                    }
+                    h *= 0.5;
+                    if h < min_step {
+                        h = min_step;
+                        break;
+                    }
+                }
+            }
+        }
+        t += h;
+        params.push(t);
+        (p0, d0) = at(t);
+        h = h.min(t1 - t);
+    }
+    if params.len() == 1 || t1 - t > tol {
+        params.push(t1);
+    } else if let Some(last) = params.last_mut() {
+        *last = t1;
+    }
+    params
+}
+
+/// 升序、去重（相对 1e-10），两端钉回 t0、t1。
+fn tidy(mut ts: Vec<f64>, t0: f64, t1: f64) -> Vec<f64> {
+    ts.sort_by(f64::total_cmp);
+    let eps = 1e-10 * (t1 - t0).abs().max(1e-300);
+    ts.dedup_by(|b, a| (*b - *a).abs() <= eps);
+    if ts.len() < 2 {
+        return vec![t0, t1];
+    }
+    let n = ts.len();
+    ts[0] = t0;
+    ts[n - 1] = t1;
+    ts
+}
+
+/// `IwTess::SplitFaceEdgesToUVSize` → `CheckAgainstSurfaceCache(…, 1.1, …)`：边用的一段，端点连线在 UV
+/// 里（两头各去 1%）的包围盒比它压到的任一叶子宽出 1.1 倍，就从参数中点断开、两半再查；三维长度
+/// 不到 `min_length` 的不断。
+fn split_to_leaf_size(
+    pc: &BSplineCurve,
+    curve: &BSplineCurve,
+    tree: &FaceTree,
+    min_length: f64,
+    ts: &mut Vec<f64>,
+) {
+    let mut pending: Vec<(f64, f64)> = ts.windows(2).map(|w| (w[0], w[1])).collect();
+    let mut splits = 0;
+    while let Some((a, b)) = pending.pop() {
+        if splits >= MAX_UV_SPLITS {
+            break;
+        }
+        let (pa, pb) = (pc.uv(a), pc.uv(b));
+        let (qa, qb) = (pa.lerp(pb, 0.01), pa.lerp(pb, 0.99));
+        let (lo, hi) = (qa.min(qb), qa.max(qb));
+        let size = hi - lo;
+        let too_wide = tree.leaves.iter().any(|leaf| {
+            leaf[0] <= hi.x
+                && lo.x <= leaf[1]
+                && leaf[2] <= hi.y
+                && lo.y <= leaf[3]
+                && (size.x > 1.1 * (leaf[1] - leaf[0]) || size.y > 1.1 * (leaf[3] - leaf[2]))
+        });
+        if !too_wide {
+            continue;
+        }
+        let m = 0.5 * (a + b);
+        let (ca, cm, cb) = (curve.point(a), curve.point(m), curve.point(b));
+        if ca.distance(cb) < min_length && ca.distance(cm) + cm.distance(cb) < min_length {
+            continue;
+        }
+        insert_sorted(ts, m);
+        splits += 1;
+        pending.push((a, m));
+        pending.push((m, b));
+    }
+}
+
+/// 参数曲线在 [t0, t1] 上穿过等参线（第 `axis` 个分量 = `values` 里某值）的参数。
+/// 沿等参线走的那一段不算穿过。
+fn iso_crossings(
     pc: &BSplineCurve,
     t0: f64,
     t1: f64,
@@ -1049,9 +1431,11 @@ fn uv_scale(surface: &BSplineSurface, uv_box: [f64; 4]) -> DVec2 {
 
 /// B-rep → 三角网格。包围盒小到 E3D 不三角化时 `None`。
 ///
-/// 顺序与 `IwTess` 同形：先定各面的网格线，再定边的采样（自身弦高 / 边长 + 相邻面网格线的穿越点），
-/// 修剪环在 UV 里自交就把相交的那几段二分重来（粗采样的窄槽两岸会交叉），最后逐面剖分。
-/// 边的采样两侧面共用，故水密。
+/// 顺序照 `IwTess`：先给各面建细分树（[`face_tree`]），再定边的采样——等参边在相邻面叶子的边界处断开
+/// （`IsoEdgeSubdivide`），比所压叶子宽的段从中点断开（[`split_to_leaf_size`]），每段再按
+/// `TessellateByBisection` 二分（[`bisection_params`]）；修剪环在 UV 里自交就把相交的那几段二分重来
+/// （粗采样的窄槽两岸会交叉），最后逐面剖分。边的采样两侧面共用，故水密。没照搬的是 `BuildTree`
+/// 之后的边界植入（`ImplantUVSegment`）与 `IwTess` 自己的剖分，顶点集与 E3D 并不全同。
 pub fn tessellate(
     brep: &Brep,
     notes: &mut Vec<String>,
@@ -1060,10 +1444,10 @@ pub fn tessellate(
     let Some(tess) = Tessellation::for_extent(hi - lo, E3D_EXPORT_CHORD_MM) else {
         return Ok(None);
     };
-    let grids: Vec<Grid> = brep
+    let trees: Vec<FaceTree> = brep
         .faces
         .iter()
-        .map(|f| face_grid(f, &brep.surfaces[f.surface], &tess))
+        .map(|f| face_tree(&brep.surfaces[f.surface], &tess))
         .collect();
     let scales: Vec<DVec2> = brep
         .faces
@@ -1084,40 +1468,58 @@ pub fn tessellate(
         uses_of_edge[u.edge].push(ui);
     }
 
+    // 闭合边（整圈）另在曲线节点处断开：E3D 把整圈的细圆柱切成参数 16 等分，这条规则在 `IwTess` 里
+    // 还没找到出处；按节点断开至少留住象限点。
     let mut params: Vec<Vec<f64>> = Vec::with_capacity(brep.edges.len());
     for (ei, e) in brep.edges.iter().enumerate() {
         let curve = &brep.curves[e.curve];
         let [t0, t1] = e.range;
-        let mut ts = split_by_spans(&curve.knots, t0, t1, |a, b| {
-            segments_needed(
-                a,
-                b,
-                1,
-                &|_, t| curve.point(t),
-                Some(tess.chord),
-                tess.max_edge,
-            )
-        });
+        let mut ts = vec![t0, t1];
+        if curve.point(t0).distance(curve.point(t1)) <= WELD_MM {
+            ts.extend(interior_knots(&curve.knots, t0, t1));
+        }
         for &ui in &uses_of_edge[ei] {
             let fi = face_of_use[ui];
             if fi == usize::MAX {
                 continue;
             }
             let pc = &brep.pcurves[brep.uses[ui].pcurve];
-            for (axis, values) in grids[fi].lines.iter().enumerate() {
-                grid_crossings(pc, t0, t1, axis, values, &mut ts);
+            if let Some((axis, value)) = pc.iso_axis() {
+                let across = 1 - axis;
+                let mut bounds: Vec<f64> = trees[fi]
+                    .leaves
+                    .iter()
+                    .filter(|leaf| leaf[2 * axis] <= value && value <= leaf[2 * axis + 1])
+                    .flat_map(|leaf| [leaf[2 * across], leaf[2 * across + 1]])
+                    .collect();
+                bounds.sort_by(f64::total_cmp);
+                bounds.dedup();
+                iso_crossings(pc, t0, t1, across, &bounds, &mut ts);
             }
         }
-        ts.sort_by(f64::total_cmp);
-        let eps = 1e-10 * (t1 - t0).abs().max(1e-300);
-        ts.dedup_by(|b, a| (*b - *a).abs() <= eps);
-        if let Some(first) = ts.first_mut() {
-            *first = t0;
+        params.push(tidy(ts, t0, t1));
+    }
+    for (fi, face) in brep.faces.iter().enumerate() {
+        for l in &brep.loops[face.loops.clone()] {
+            for u in &brep.uses[l.uses.clone()] {
+                split_to_leaf_size(
+                    &brep.pcurves[u.pcurve],
+                    &brep.curves[brep.edges[u.edge].curve],
+                    &trees[fi],
+                    20.0 * brep.tolerance,
+                    &mut params[u.edge],
+                );
+            }
         }
-        if let Some(last) = ts.last_mut() {
-            *last = t1;
+    }
+    for (e, ts) in brep.edges.iter().zip(params.iter_mut()) {
+        let curve = &brep.curves[e.curve];
+        let pieces = std::mem::take(ts);
+        let mut all = Vec::with_capacity(pieces.len());
+        for pair in pieces.windows(2) {
+            all.extend(bisection_params(curve, pair[0], pair[1], tess.chord));
         }
-        params.push(ts);
+        *ts = tidy(all, e.range[0], e.range[1]);
     }
 
     let mut pinches: Vec<Pinch> = Vec::new();
@@ -1193,7 +1595,7 @@ pub fn tessellate(
             brep,
             face,
             scales[fi],
-            &grids[fi],
+            &trees[fi],
             &edges,
             &pinches,
             &mut points,
@@ -1235,13 +1637,13 @@ fn extent(brep: &Brep) -> (DVec3, DVec3) {
     (lo, hi)
 }
 
-/// 一张面：边界取各边的采样（点号共享，故水密），内部补网格点，UV 里约束 Delaunay 剖分，
+/// 一张面：边界取各边的采样（点号共享，故水密），内部补细分树叶子的角点，UV 里约束 Delaunay 剖分，
 /// 只留修剪区域内的三角形；三角形在 UV 里逆时针（法向 = ∂u × ∂v）。
 fn triangulate_face(
     brep: &Brep,
     face: &Face,
     scale: DVec2,
-    grid: &Grid,
+    tree: &FaceTree,
     edges: &[EdgeSamples],
     pinches: &[Pinch],
     points: &mut Points,
@@ -1293,12 +1695,24 @@ fn triangulate_face(
         .collect();
     let span = (DVec2::new(u1 - u0, v1 - v0) * scale).length().max(1e-9);
     let margin = 1e-6 * span;
-    for &u in &grid.lines[0] {
-        for &v in &grid.lines[1] {
-            let uv = DVec2::new(u, v) * scale;
-            if inside(&polygons, uv) && distance_to_rings(&polygons, uv) > margin {
-                insert(&mut cdt, uv, None)?;
-            }
+    let mut corners: Vec<DVec2> = tree
+        .leaves
+        .iter()
+        .flat_map(|l| {
+            [
+                DVec2::new(l[0], l[2]),
+                DVec2::new(l[1], l[2]),
+                DVec2::new(l[0], l[3]),
+                DVec2::new(l[1], l[3]),
+            ]
+        })
+        .collect();
+    corners.sort_by(|a, b| a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y)));
+    corners.dedup();
+    for corner in corners {
+        let uv = corner * scale;
+        if inside(&polygons, uv) && distance_to_rings(&polygons, uv) > margin {
+            insert(&mut cdt, uv, None)?;
         }
     }
 
@@ -1495,7 +1909,7 @@ pub fn mesh_solid(mesh: &TriangleMesh) -> Result<Manifold, GenpriError> {
 mod tests {
     use super::*;
 
-    /// aps250162 `/MEI-JCAN01` 名下三只 GENPRI 的整块 `ELDATA`（`tests/fixtures/genpri/`，十六进制字）。
+    /// aps250162 `/MEI-JCAN01` 名下四只 GENPRI 的整块 `ELDATA`（`tests/fixtures/genpri/`，十六进制字）。
     fn fixture(name: &str) -> Vec<u32> {
         let text = match name {
             "genpri2" => {
@@ -1503,6 +1917,9 @@ mod tests {
             }
             "genpri6" => {
                 include_str!("../tests/fixtures/genpri/aps250162-2013286706-1078-genpri6.eldata")
+            }
+            "genpri10" => {
+                include_str!("../tests/fixtures/genpri/aps250162-2013286706-1092-genpri10.eldata")
             }
             "genpri13" => {
                 include_str!("../tests/fixtures/genpri/aps250162-2013286706-1103-genpri13.eldata")
@@ -1547,6 +1964,35 @@ mod tests {
         }
     }
 
+    /// 控制点全在一张平面上（有理曲面的控制点也在，因为是齐次坐标除回去比的）。
+    fn is_planar(surface: &BSplineSurface) -> bool {
+        let points: Vec<DVec3> = surface
+            .control
+            .iter()
+            .map(|c| DVec3::new(c[0], c[1], c[2]) / c[3])
+            .collect();
+        let lo = points.iter().fold(DVec3::INFINITY, |m, p| m.min(*p));
+        let hi = points.iter().fold(DVec3::NEG_INFINITY, |m, p| m.max(*p));
+        let scale = (hi - lo).length().max(1.0);
+        let origin = points[0];
+        let mut normal = DVec3::ZERO;
+        for a in &points[1..] {
+            for b in &points[1..] {
+                let n = (*a - origin).cross(*b - origin);
+                if n.length() > normal.length() {
+                    normal = n;
+                }
+            }
+        }
+        if normal.length() <= 1e-12 * scale * scale {
+            return true;
+        }
+        let normal = normal.normalize();
+        points
+            .iter()
+            .all(|p| (*p - origin).dot(normal).abs() <= 1e-9 * scale)
+    }
+
     #[test]
     fn decodes_the_cylinder_brep_word_for_word() {
         let brep = decode(&fixture("genpri6")).unwrap();
@@ -1572,9 +2018,9 @@ mod tests {
         assert!(
             brep.faces[1..]
                 .iter()
-                .all(|f| brep.surfaces[f.surface].is_planar())
+                .all(|f| is_planar(&brep.surfaces[f.surface]))
         );
-        assert!(!side.is_planar());
+        assert!(!is_planar(side));
         // 两个顶点是接缝线的两端，圆柱轴沿 X、长 80。
         let [a, b] = [brep.vertices[0], brep.vertices[1]];
         assert!(
@@ -1639,6 +2085,74 @@ mod tests {
             [259.75, 54.80, 214.26, 335.75, 83.82, 254.11],
             0.5,
             "GENPRI 13",
+        );
+    }
+
+    /// 2 mm 厚的板边上一段 R5 半圆：E3D 的细分树对这条窄面不分，二分在 6 mm 弦高下也一步走完，最高点
+    /// 只到半圆两端（y 119.28），不是半圆顶（119.61）。
+    #[test]
+    fn narrow_half_circle_strip_stays_as_coarse_as_e3d() {
+        let mesh = mesh_of("genpri10");
+        assert!(mesh_solid(&mesh).is_ok());
+        assert_box(
+            mesh_box(&mesh),
+            [335.75, 55.03, 184.79, 337.75, 119.28, 253.62],
+            0.06,
+            "GENPRI 10",
+        );
+    }
+
+    /// 圆心在原点、半径 r 的有理二次圆弧：从 +X 起逆时针 `quarters` 个四分之一圆，参数 [0, 1] 均分。
+    fn arc(r: f64, quarters: usize) -> BSplineCurve {
+        let w = std::f64::consts::FRAC_1_SQRT_2;
+        let mut control = vec![[r, 0.0, 0.0, 1.0]];
+        for k in 0..quarters {
+            let (s, c) = (k as f64 * std::f64::consts::FRAC_PI_2).sin_cos();
+            control.push([r * (c - s) * w, r * (s + c) * w, 0.0, w]);
+            control.push([-r * s, r * c, 0.0, 1.0]);
+        }
+        let mut knots = vec![0.0; 3];
+        for k in 1..quarters {
+            let t = k as f64 / quarters as f64;
+            knots.extend([t, t]);
+        }
+        knots.extend([1.0; 3]);
+        BSplineCurve {
+            degree: 2,
+            rational: true,
+            dim: 3,
+            control,
+            knots,
+        }
+    }
+
+    #[test]
+    fn curve_derivative_matches_finite_differences() {
+        for curve in [arc(25.0, 1), arc(5.0, 2)] {
+            for t in [0.0f64, 0.3, 0.5, 0.9, 1.0] {
+                let h = 1e-7;
+                let (a, b) = ((t - h).max(0.0), (t + h).min(1.0));
+                let numeric = (curve.point(b) - curve.point(a)) / (b - a);
+                let analytic = curve.derivative(t);
+                assert!(
+                    (analytic - numeric).length() < 1e-4 * numeric.length(),
+                    "t {t}: {analytic} vs {numeric}"
+                );
+            }
+        }
+    }
+
+    /// 导出容差的两个锚：R5 半圆一步接受（Hermite 弦高 4.7 ≤ 6），R25 的四分之一圆整段 8.3 被拒、
+    /// 半段 2.25 接受，拆成两步——E3D 对这两种弧的分段正是这样。
+    #[test]
+    fn bisection_takes_the_e3d_steps_on_circular_arcs() {
+        assert_eq!(
+            bisection_params(&arc(5.0, 2), 0.0, 1.0, 6.0),
+            vec![0.0, 1.0]
+        );
+        assert_eq!(
+            bisection_params(&arc(25.0, 1), 0.0, 1.0, 6.0),
+            vec![0.0, 0.5, 1.0]
         );
     }
 
