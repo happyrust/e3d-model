@@ -44,6 +44,7 @@ pub mod discretise;
 pub mod element_diff;
 pub mod elmodl;
 pub mod extrusion_reuse;
+pub mod genpri;
 pub mod handrail;
 pub mod hvac_tube;
 pub mod increment;

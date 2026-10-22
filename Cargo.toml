@@ -16,6 +16,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # 面片带孔三角剖分（POLYHE B-rep 建体用）：与 gen-model `append_planar_face` 同算法同版本。
 earcutr = "0.4.3"
+# GENPRI B-rep 面在 UV 里的约束 Delaunay 剖分（内部网格点 + 修剪环）；与 rvm-rs / gen-model 里的 geo 同一版。
+spade = "2.13"
 
 [dev-dependencies]
 # RVM 对拍取证（examples 用）：与 gen-model rvm_verify 同一解析器、同一 rev（命中本机 git 缓存）。

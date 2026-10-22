@@ -442,9 +442,13 @@ fn rvm_component_geometry(
 /// 表现级 0 的 80 根里一只 POHE 都不画（全 sweep 336 只被跳过，LEVE 在 [2,4] / [4,5] / [5,7]），
 /// 所以此前不在账上。
 ///
+/// **通用图元**（GENPRI，SMLib B-rep，[`e3d_model::genpri`]）也一样：Core3D 把它交给
+/// `GeoTessellationFunnel`，由 SMLib `IwTess` 三角化成面片集再进 libgm。aps250162 的 TTY 导出里
+/// 75 只全是 `FacetGroup`；我们分段粗的圆柱会被认成 `Pyramid`。
+///
 /// 名单 = 设计侧环拉伸（[`e3d_model::category::Category::LoopExtrusion`]：PANE / FLOOR / EXTR /
 /// AEXTR / SCREED / GWALL）+ 型材扫掠（SCTN / GENSEC / STWALL / WALL / RAIL / KICKPL）+
-/// 多面体（[`e3d_model::category::Category::Polyhedron`]：POHE / POLYHE）。
+/// 多面体（[`e3d_model::category::Category::Polyhedron`]：POHE / POLYHE）+ 通用图元 GENPRI。
 /// 目录构件（FITT / FIXING / SBFI / PCOM…）**不在**名单里：它们由 GMSE 图元拼成，E3D 走
 /// DRBOX / DRCYL 等图元写出器——`:SDS_Entity 3` 那块底板就是 E3D 自己写的 `Pyramid`。
 ///
@@ -456,7 +460,7 @@ fn e3d_exports_facets_only(noun: &str) -> bool {
         e3d_model::category::Category::LoopExtrusion | e3d_model::category::Category::Polyhedron
     ) || matches!(
         noun,
-        "SCTN" | "GENSEC" | "STWALL" | "WALL" | "RAIL" | "KICKPL"
+        "SCTN" | "GENSEC" | "STWALL" | "WALL" | "RAIL" | "KICKPL" | "GENPRI"
     )
 }
 

@@ -65,6 +65,8 @@ pub enum ModelError {
     Polyhedron(#[from] PolyhedronError),
     #[error(transparent)]
     Solid(#[from] SolidError),
+    #[error(transparent)]
+    Genpri(#[from] crate::genpri::GenpriError),
     #[error("{refno}（{noun}）外环折线化后退化，建不出剖面")]
     OuterRingCollapsed { refno: String, noun: String },
     #[error("{refno}（{noun}）缺属性 {name}，建不出 {what}")]
@@ -630,6 +632,19 @@ pub fn model_element_with_cache(
                         } else {
                             format!("{reason}; {}", notes.join("; "))
                         },
+                    });
+                }
+            }
+        }
+        // 通用图元：归档里的 SMLib B-rep 解码、三角化（`crate::genpri`）。判据在
+        // `category::is_model_unit` 的 `Composite(Equipment) => GENPRI`。
+        Category::Composite(CompositeFamily::Equipment) if noun == "GENPRI" => {
+            match crate::genpri::generic_primitive_local_solid(el, &mut notes)? {
+                crate::genpri::GenpriBuild::Solid(solid) => (solid, None),
+                crate::genpri::GenpriBuild::NoShape(reason) => {
+                    return Ok(Modeled::Skipped {
+                        kind: SkipKind::NoShape,
+                        reason,
                     });
                 }
             }

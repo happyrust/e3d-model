@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-10-22 通用图元 GENPRI 建体：解码归档里的 SMLib B-rep，UV 约束剖分——aps250162 75 只全出，60 exact / 15 chord
+
+- GENPRI 的几何不在属性里，在 `GENPRI → ARCHIV → ATTDAT.ELDATA`：E3D 外壳（归档版本 2、字节数、UUID、
+  `GeoTransf3d` 类型）+ SMLib 原生 B-rep（`IwBrepData`，数据版本 32），曲线、曲面全是 B 样条（类码 14033 /
+  15002）。XBaseDll 3.1 坐实读取链 `GeoIwBrepGen::ReadFrom → GeoIwBrep::ReadFrom → IwBrepData::ReadFromDB`；
+  aps250162 的 15 种 75 件逐字解完，布局表写在模块文档里。
+- 新模块 `genpri`：解码、NURBS 求值、三角化。E3D 这一步是 `GeoIwBrepImpl::Tessellate` → SMLib `IwTess`：
+  最大边长 = 0.4 × B-rep 包围盒对角线；次长边 < 1 mm 且最长边 < 20 mm 不出；细长件收弦高。
+  各面先定网格线，边的采样（自身弦高 / 边长 + 相邻面网格线的穿越点）两侧面共用，水密；面在 UV 里按三维长度
+  拉伸后做约束 Delaunay（新依赖 `spade`，与 rvm-rs 同版），按约束边奇偶漫水取修剪区域；修剪环自交先二分
+  加密，曲线真相交就在交点捏合（GENPRI 13 端面两段圆弧交叉 0.003 mm，E3D 在那里同样多出一个顶点）；
+  绕向按三角形传播、按分量体积翻正。导出弦高暂取 6 mm（E3D 分段反推）。
+- 分类：GENPRI 仍走 `Composite(Equipment)`（字典 IECOMP 位），`is_model_unit` 认它；ARCHIV / ATTDAT 是属主
+  消费的成员。`gen_ams` 对 GENPRI 只写 `FacetGroup`（E3D 75 只全是；我们分段粗的圆柱会被认成 `Pyramid`）。
+- 读取集合加 `ELDATA`（字典 DCHC = 0：归档变了几何就变，不许当元数据放行）。
+- 对拍 aps250162：两侧都有 391 → 466，exact 391 → 451，chord 15（GENPRI 10 / 14 包围盒差 0.33 mm、
+  GENPRI 13 差 0.49 mm），off 0，只在 E3D 75 → 0。土建、S1、MDS 四套框、`/SSC测试`、FIXING / datum 逐件不变。
+- 单测 7 条（`tests/fixtures/genpri/` 三块真 `ELDATA`）；真库门 `genpri_real`（75 只全成封闭实体、三只局部包围盒
+  对 E3D）。
+
 ## 2026-10-22 深于半球的 `SphericalDish` 按 E3D 声明盒判帧：aps250128 不再整份拒判，190 对全 exact
 
 - aps250128（APS 管道 AREA02 车间）的 E3D TTY 导出里，`/100-FW-201` 等 6 只阀门的阀帽是 r 44.1 / h 80.6 的

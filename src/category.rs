@@ -580,6 +580,12 @@ pub fn is_model_unit(noun: &str) -> bool {
         // （[`enters_catalogue_by_catref`]）。同族的 EQUCOM 还没有语料，留在待建账上。
         Category::Composite(CompositeFamily::CoreClass28) => enters_catalogue_by_catref(noun),
 
+        // 通用图元：几何是归档里的一份 SMLib B-rep（`crate::genpri`），一件挂在 GENPRI 自己的
+        // refno 上。同族（IECOMP）的 GENCUR 是曲线，还没有 builder。
+        Category::Composite(CompositeFamily::Equipment) => {
+            noun.trim().eq_ignore_ascii_case("GENPRI")
+        }
+
         // 以下都不产出挂在自己 refno 上的实体。逐条列而不是一个 `_ => false`：
         // 见上面那段——通配符会把「新变体默认不是单元」这个危险假设变成沉默的默认值。
         Category::List
