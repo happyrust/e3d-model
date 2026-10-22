@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-10-22 设了坡度方向（SLODIR）的 P 点按实际方向判共轴——aps250124 放坡 TEE 两侧的管身补齐
+
+- E3D 的坡度工具（E3D 2.1 `PMLLIB/design/objects/pipeSlopeComponent.pmlobj`：`PSLDIR $!componentRef.leave …`、
+  `psldir 3 …`）给目录里带偏差容差的 P 点另设实际方向，存在设计构件的 `SLODIR` 里：第 n 个
+  三元组是 Pn，全零是没设；P 点位置不动。管身两端判共轴看的是这个方向。
+- aps250124 `/100-LAYOUT300-307/B1` 按 1:75 放坡：两只弯头转了坡度角，中间那只 TEE（`2013286668/683`）
+  没转，`SLODIR` 把 P1 / P2 各压低 0.7639°。按目录方向判，TEE 两侧的槽位各偏 0.764°、不建；E3D
+  两根都画了（1042.81、711.16 mm）。现在这条支管 10 根管身与 E3D 一致。
+- 方向按属主系解（与 `POS` / `ORI` / `HDIR` 同口径）。全语料只有这一只 TEE 设了 `SLODIR`，它的
+  `ORI` 为零，属主系与构件系分不出来。
+- 读取集合多一个 `SLODIR`（159 → 160），gen-model 的两份产物一起重生成。真库门
+  `rvm_record_kinds_real` 加 aps250124 这条支管。
+
 ## 2026-10-22 rvm_compare：E3D 写在容器那一组里的隐式管并成一件、按容器名配对
 
 - APS 那批 TTY 普查（`aps_survey_lv6.mac`）与 ams8000 / `/SSC测试` 的导出都没开「隐式管导成单独容器」：E3D 把

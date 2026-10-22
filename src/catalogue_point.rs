@@ -20,6 +20,9 @@
 //! （[`crate::transform::world_matrix`]，`POS`/`ORI` 沿属主链折叠）。方向只过
 //! 旋转部分，不吃平移。
 //!
+//! 管身端点的方向有一处例外：设计构件给这个 P 点设了坡度方向（`SLODIR`），就取它、
+//! 不取目录的（[`slope_direction`]）。
+//!
 //! ## 两种 P 点，方向各有各的家
 //!
 //! `PTAX` 是「轴 + 距离」：方向来自 `PAXI`（[`axis_spec`]），位置是方向乘 `PDIS`。
@@ -54,7 +57,7 @@ use e3d_io::record::descriptor::DescriptorValue;
 use e3d_io::record::direction_spec;
 
 use crate::route::{PPointResolver, RoutePoint};
-use crate::transform::world_matrix;
+use crate::transform::{local_matrix, world_matrix};
 
 /// 设计构件指向规格件（多半是 `SPCO`，偶尔直接是 `SCOM`）。
 const SPEC_REF: &str = "SPRE";
@@ -66,6 +69,8 @@ const PART_REF: &str = "PRTREF";
 const POINT_SET_REF: &str = "PTRE";
 /// 直接给三个坐标的那种 P 点；其余（`PTAX`）是「轴 + 距离」。
 const CARTESIAN_POINT: &str = "PTCA";
+/// 设计构件上逐 P 点的坡度方向（[`slope_direction`]）。
+const SLOPE_DIRECTIONS: &str = "SLODIR";
 
 /// 方向向量短到这个长度以下就当没方向。
 ///
@@ -151,7 +156,8 @@ enum PointPart {
 /// **local** frame (mm; direction normalised). World coordinates are
 /// `world_matrix(member)` applied on top — position with the translation,
 /// direction with the rotation only — exactly as [`resolve`] does for the
-/// route endpoints.
+/// route endpoints, unless the member gives that point a slope direction
+/// ([`slope_direction`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct CataloguePoint {
     /// The point's own `NUMB` (`P1`, `P2`, …).
@@ -279,7 +285,11 @@ fn resolve(member: &DbElement, ppoint: Option<u32>) -> Result<Option<RoutePoint>
     };
 
     let world = world_matrix(member)?;
-    let dir = world.transform_vector3(local.dir);
+    let dir = match slope_direction(member, number)? {
+        // 属主系：构件的世界矩阵退掉它自己那一级 POS / ORI。
+        Some(slope) => (world * local_matrix(member)?.inverse()).transform_vector3(slope),
+        None => world.transform_vector3(local.dir),
+    };
     if !(dir.length() > DIRECTION_TOL) || !dir.is_finite() {
         return Ok(None);
     }
@@ -303,6 +313,32 @@ fn resolve(member: &DbElement, ppoint: Option<u32>) -> Result<Option<RoutePoint>
         dir: dir.normalize(),
         bore: local.bore,
     }))
+}
+
+/// 坡度方向：E3D 的坡度工具给目录里带偏差容差（`PPOFFTOL`）的 P 点另设一个实际方向
+/// （E3D 2.1 `PMLLIB/design/objects/pipeSlopeComponent.pmlobj`：`PSLDIR $!componentRef.leave …`、
+/// `psldir 3 …`），存在设计构件的 `SLODIR` 里：第 n 个三元组是 Pn，全零是没设。P 点位置不动，
+/// 管身两端判共轴看的是这个方向（`PACTDIR`）。
+///
+/// 方向在属主系里，与 `POS` / `ORI` / `HDIR` 同口径。全语料只有 aps250124 一只 TEE
+/// （`2013286668/683`，`ORI` 为零）设了它，属主系与构件系在那里分不出来。
+fn slope_direction(member: &DbElement, number: u32) -> Result<Option<DVec3>, DbElementError> {
+    let values = match member.get_double_array(SLOPE_DIRECTIONS) {
+        Ok(values) => values,
+        Err(DbElementError::UnknownAttribute { .. }) => None,
+        Err(error) => return Err(error),
+    };
+    let Some(start) = (number as usize).checked_sub(1).map(|index| index * 3) else {
+        return Ok(None);
+    };
+    let Some(&[x, y, z]) = values
+        .as_deref()
+        .and_then(|values| values.get(start..start + 3))
+    else {
+        return Ok(None);
+    };
+    let dir = DVec3::new(x, y, z);
+    Ok((dir.length() > DIRECTION_TOL && dir.is_finite()).then_some(dir))
 }
 
 /// 斜接弯头判定，抄 `FAB_PipePieceManager::IsMitredBend`（Core3D `0x105773d0`）：

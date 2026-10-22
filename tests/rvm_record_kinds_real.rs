@@ -29,6 +29,7 @@ const CABLE_EQUIP_DB: &str = "ams8000_0001";
 const APS_DIR: &str = r"D:\AVEVA\Projects\E3D3.1\AvevaPlantSample\aps000";
 const APS_STRUCTURAL_DB: &str = "aps250110_0001";
 const APS_SUPPORTS_DB: &str = "aps250104_0001";
+const APS_PIPING_DB: &str = "aps250124_0001";
 const TEMPLATE_DIR: &str = r"E:\reverse\e3d\shadow_e3d31_aps_all";
 const IJOINT1: &str = "23708/42148";
 const IJOINT1_NAME: &str = "/SUPPORT/FRAMES/BS/FT03H/9-V1/S1/IJOINT1";
@@ -447,6 +448,44 @@ fn holed_anchors_drop_bodyless_cylinders_and_only_trunnions_grow_tubes() {
         (radius - 44.45).abs() < 0.01 && (height - 524.56).abs() < 0.01,
         "Cylinder[{radius}, {height}]"
     );
+
+    std::fs::remove_dir_all(&scratch).ok();
+}
+
+/// aps250124 管道库 `/100-LAYOUT300-307/B1`（E3D TTY 导出 gen-model
+/// `verification/civil-tty-20261021/aps_survey_lv6_2013286668_54.rvm`）有一段按 1:75 放坡：两只弯头转了
+/// 坡度角，中间那只 TEE（`2013286668/683`）没转，靠 `SLODIR` 把 P1 / P2 各压低 0.7639°。按目录方向判，
+/// TEE 两侧的槽位各偏 0.764°、不建；E3D 两根都画了（`Cylinder[57.15, 1042.81]`、`[57.15, 711.16]`），
+/// 这条支管一共 10 根管身。
+#[test]
+fn sloped_tee_points_take_their_slodir_directions() {
+    if !fixtures_present_in(APS_DIR, APS_PIPING_DB) {
+        return;
+    }
+    let scratch: PathBuf =
+        std::env::temp_dir().join(format!("e3d-model-rvm-slope-aps-{}", std::process::id()));
+    let (rvm, _) = generate_in(APS_DIR, APS_PIPING_DB, "2013286668/141", "on", &scratch);
+    let mut lengths: Vec<f64> = rvm
+        .members
+        .iter()
+        .filter(|member| {
+            let name = member.name.trim();
+            name.starts_with("TUBI ") && name.ends_with(" of BRAN /100-LAYOUT300-307/B1")
+        })
+        .flat_map(|member| &member.geometries)
+        .filter_map(|geometry| match geometry.primitive {
+            Primitive::Cylinder([_, height]) => Some(height),
+            _ => None,
+        })
+        .collect();
+    lengths.sort_by(f64::total_cmp);
+    assert_eq!(lengths.len(), 10, "{lengths:?}");
+    for want in [711.16, 1042.81] {
+        assert!(
+            lengths.iter().any(|length| (length - want).abs() < 0.01),
+            "缺 {want} 那根：{lengths:?}"
+        );
+    }
 
     std::fs::remove_dir_all(&scratch).ok();
 }
