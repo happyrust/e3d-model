@@ -29,7 +29,10 @@
 //!   写成 `TUBI 2 /X ↔ TUBI 1 /X`。
 //! - **写在容器那一组里的管身**：不开「隐式管导成单独容器」的导出（APS 普查）里 E3D 把隐式管
 //!   直接写在容器自己那一组里，组名就是容器名；我们同一容器名下的 `TUBI n` 并成一件按容器名
-//!   配对（[`merge_container_tubes`]，RVM ↔ RVM 才并）。
+//!   配对（[`merge_container_tubes`]，RVM ↔ RVM 才并）。并成一件只解决「配得上」；组内再把每一根
+//!   与 E3D 那一组的记录逐根配对、逐根判档（[`pair_container_tubes`]）——并集包围盒会把「一根
+//!   位置错」「中间少一根」整个盖住；逐根账里有任何一根 off 或配不上，这只容器就记 `off`，
+//!   逐根明细在 `pairs[].container_tubes`。
 //!
 //! ## 判据
 //!
@@ -137,6 +140,10 @@ struct SnapshotMember {
     aabb_world_mm: Option<[f64; 6]>,
     #[serde(default)]
     geometries: Vec<serde_json::Value>,
+    /// 每条几何记录自己的世界 AABB，与 `geometries` 一一对应（中心线为 `None`）。只有 RVM ↔ RVM
+    /// 这条路填得出来，快照 JSON 里没有；为空就不做容器组内的逐根配对（[`pair_container_tubes`]）。
+    #[serde(default)]
+    geometry_aabbs_world_mm: Vec<Option<[f64; 6]>>,
 }
 
 /// `rvm_facets_dump` 产物里本工具要吃的那几格。
@@ -163,6 +170,15 @@ struct GeneratedComponent {
     local_aabb_max: [f64; 3],
 }
 
+/// 并进容器那一件里的一根管身（[`merge_container_tubes`]），留着自己的世界 AABB 给组内逐根配对用。
+#[derive(Clone, Deserialize)]
+struct ContainerTube {
+    refno: String,
+    ordinal: usize,
+    aabb_world_mm: [f64; 6],
+    kinds: Vec<String>,
+}
+
 #[derive(Clone, Deserialize)]
 struct Generated {
     refno: String,
@@ -186,6 +202,9 @@ struct Generated {
     /// （`elements.json` 里没有这个概念），走老路时是空的，kind 一致率随之标为「不适用」。
     #[serde(default)]
     kinds: Vec<String>,
+    /// 只有 [`merge_container_tubes`] 并出来的那件才有：并进来的每一根管身。
+    #[serde(default)]
+    container_tubes: Vec<ContainerTube>,
     genus: i32,
     negatives_applied: usize,
     negatives_skipped: usize,
@@ -292,6 +311,8 @@ struct Pair {
     kind_match: Option<bool>,
     baseline_kinds: Vec<String>,
     generated_kinds: Vec<String>,
+    /// 只有并成一件的容器才写：组内逐根的配对与判档（[`pair_container_tubes`]）。
+    container_tubes: Option<ContainerTubeReport>,
     delta_min_mm: [f64; 3],
     delta_max_mm: [f64; 3],
     baseline_aabb: [f64; 6],
@@ -302,6 +323,50 @@ struct Pair {
     genus: i32,
     negatives_applied: usize,
     negatives_skipped: usize,
+}
+
+/// 容器组内逐根账的一行：我们的一根管身对 E3D 那一组里的若干条记录。
+#[derive(Serialize, Clone)]
+struct ContainerTubePair {
+    /// 我们那根的 `refno`；`only_baseline` 的行没有。
+    generated: Option<String>,
+    /// 配给它的基准记录在容器组 `geometries` 里的下标（一根管身可以对多条记录）。
+    baseline_records: Vec<usize>,
+    /// 配上的行才写：认领到的记录取并集盒与这根管身的逐轴最大差（mm）。
+    max_axis_delta_mm: Option<f64>,
+    /// exact / chord / off / only_baseline（E3D 多画的记录）/ only_generated（我们多画的管身）。
+    verdict: &'static str,
+}
+
+#[derive(Serialize, Clone, Default)]
+struct ContainerTubeTally {
+    exact: usize,
+    chord: usize,
+    off: usize,
+    only_baseline: usize,
+    only_generated: usize,
+}
+
+impl ContainerTubeTally {
+    fn add(&mut self, other: &Self) {
+        self.exact += other.exact;
+        self.chord += other.chord;
+        self.off += other.off;
+        self.only_baseline += other.only_baseline;
+        self.only_generated += other.only_generated;
+    }
+
+    /// 有一根 off、或哪一侧多画了，这只容器就不能靠并集盒过关。
+    fn has_problem(&self) -> bool {
+        self.off + self.only_baseline + self.only_generated > 0
+    }
+}
+
+/// 一只容器的组内逐根账。
+#[derive(Serialize, Clone, Default)]
+struct ContainerTubeReport {
+    tally: ContainerTubeTally,
+    rows: Vec<ContainerTubePair>,
 }
 
 #[derive(Serialize, Default)]
@@ -346,6 +411,9 @@ struct CompareReport {
     /// 并成一件去同名配对的路由容器数：E3D 把隐式管写在容器自己那一组里，见
     /// [`merge_container_tubes`]。
     container_tube_groups: usize,
+    /// 那些容器组内逐根账的合计（[`pair_container_tubes`]）：配上的按档计，`only_baseline` 是 E3D
+    /// 多画的记录数、`only_generated` 是我们多画的管身数。
+    container_tubes: ContainerTubeTally,
 }
 
 /// 基准侧一条待配记录：成员本身、面片（缺面片的走 snapshot AABB）、世界 AABB、AABB 来源标记。
@@ -440,6 +508,11 @@ fn load_rvm_side(path: &std::path::Path, want_facets: bool) -> anyhow::Result<Rv
                 .geometries
                 .iter()
                 .map(|g| serde_json::Value::String(g.primitive.name().to_string()))
+                .collect(),
+            geometry_aabbs_world_mm: member
+                .geometries
+                .iter()
+                .map(|g| g.world_aabb_mm())
                 .collect(),
         });
 
@@ -539,6 +612,7 @@ fn load_rvm_side(path: &std::path::Path, want_facets: bool) -> anyhow::Result<Rv
                 .iter()
                 .map(|g| g.primitive.name().to_string())
                 .collect(),
+            container_tubes: Vec::new(),
             genus: 0,
             negatives_applied: 0,
             negatives_skipped: 0,
@@ -584,6 +658,19 @@ fn merge_container_tubes(baseline: &[SnapshotMember], generated: &mut Vec<Genera
             kept.push(element);
             continue;
         };
+        let tube = ContainerTube {
+            refno: element.refno.clone(),
+            ordinal: element.ordinal,
+            aabb_world_mm: [
+                element.aabb_min[0],
+                element.aabb_min[1],
+                element.aabb_min[2],
+                element.aabb_max[0],
+                element.aabb_max[1],
+                element.aabb_max[2],
+            ],
+            kinds: element.kinds.clone(),
+        };
         if let Some(whole) = merged.get_mut(&name) {
             for axis in 0..3 {
                 whole.aabb_min[axis] = whole.aabb_min[axis].min(element.aabb_min[axis]);
@@ -591,6 +678,7 @@ fn merge_container_tubes(baseline: &[SnapshotMember], generated: &mut Vec<Genera
             }
             whole.volume_mm3 += element.volume_mm3;
             whole.kinds.extend(element.kinds);
+            whole.container_tubes.push(tube);
             continue;
         }
         merged.insert(
@@ -609,6 +697,7 @@ fn merge_container_tubes(baseline: &[SnapshotMember], generated: &mut Vec<Genera
                 world: None,
                 components: Vec::new(),
                 kinds: element.kinds,
+                container_tubes: vec![tube],
                 genus: 0,
                 negatives_applied: 0,
                 negatives_skipped: 0,
@@ -894,6 +983,7 @@ fn main() -> anyhow::Result<()> {
     let mut only_baseline = Vec::new();
     let mut only_generated = Vec::new();
     let mut film_candidates = Vec::new();
+    let mut container_tube_totals = ContainerTubeTally::default();
 
     for (key, (member, facets, baseline_world_aabb, aabb_source)) in &base {
         let tally = by_noun.entry(key.noun().to_string()).or_default();
@@ -946,7 +1036,7 @@ fn main() -> anyhow::Result<()> {
         let mut significant_baseline_aabb = None;
         let mut significant_generated_aabb = None;
         let mut significant_max_axis_delta_mm = None;
-        let verdict = if max_axis_delta_mm <= EXACT_MM {
+        let mut verdict = if max_axis_delta_mm <= EXACT_MM {
             tally.exact += 1;
             "exact"
         } else if max_axis_delta_mm <= tolerance {
@@ -1053,6 +1143,31 @@ fn main() -> anyhow::Result<()> {
             }
         });
 
+        // 并成一件的容器只比并集盒，会把一根位置错、中间少一根整个盖住：组内再逐根配对判档，
+        // 有一根 off 或哪一侧多画了，这只容器就记 off（见模块文档「主键」）。
+        let container_tubes = (!element.container_tubes.is_empty()
+            && !member.geometry_aabbs_world_mm.is_empty())
+        .then(|| {
+            pair_container_tubes(
+                &member.geometry_aabbs_world_mm,
+                &element.container_tubes,
+                tolerance,
+            )
+        });
+        if let Some(tubes) = &container_tubes {
+            container_tube_totals.add(&tubes.tally);
+            if tubes.tally.has_problem() && verdict != "off" {
+                match verdict {
+                    "exact" => tally.exact -= 1,
+                    "chord" => tally.chord -= 1,
+                    "reference_artifact" => tally.reference_artifact -= 1,
+                    _ => {}
+                }
+                tally.off += 1;
+                verdict = "off";
+            }
+        }
+
         pairs.push(Pair {
             key: if ours_key == key {
                 key.display()
@@ -1073,6 +1188,7 @@ fn main() -> anyhow::Result<()> {
             kind_match,
             baseline_kinds,
             generated_kinds,
+            container_tubes,
             delta_min_mm,
             delta_max_mm,
             baseline_aabb,
@@ -1187,6 +1303,7 @@ fn main() -> anyhow::Result<()> {
         only_baseline,
         only_generated,
         container_tube_groups,
+        container_tubes: container_tube_totals,
     };
 
     println!(
@@ -1219,8 +1336,14 @@ fn main() -> anyhow::Result<()> {
     }
     if report.container_tube_groups > 0 {
         println!(
-            "隐式管写在容器那一组里：{} 只容器的管身并成一件按容器名配对",
-            report.container_tube_groups
+            "隐式管写在容器那一组里：{} 只容器的管身并成一件按容器名配对；组内逐根 exact {} / chord {} / off {}，\
+             E3D 多画 {} 条记录、我们多画 {} 根",
+            report.container_tube_groups,
+            report.container_tubes.exact,
+            report.container_tubes.chord,
+            report.container_tubes.off,
+            report.container_tubes.only_baseline,
+            report.container_tubes.only_generated,
         );
     }
     if !report.centreline_only_baseline.is_empty() {
@@ -1324,6 +1447,159 @@ fn pair_tubes_by_centre<'a>(
         pairs.insert(base[i].0, ours[j].0);
     }
     pairs
+}
+
+/// 容器组内的逐根账：并进容器那件里的每根管身（[`ContainerTube`]）对 E3D 写在容器那一组里的记录
+/// （[`SnapshotMember::geometry_aabbs_world_mm`]）。
+///
+/// 先按「记录中心落在哪根管身的世界 AABB（放宽一个弦高）里」认领——一根管身可以认领多条记录
+/// （扁圆风管 E3D 写一条 `Box` 四条 `Cylinder`），认领到的记录取并集盒与这根管身比；没被认领的记录和
+/// 一条都没认领到的管身再按中心最近配一轮（与 [`pair_tubes_by_centre`] 同一口径：中心距不超过较长那根的
+/// 半对角线），配上的多半是位置错了的那根；还剩下的就是 E3D 多画 / 我们多画的。中心线（`None`）不进账。
+fn pair_container_tubes(
+    baseline: &[Option<[f64; 6]>],
+    ours: &[ContainerTube],
+    tolerance: f64,
+) -> ContainerTubeReport {
+    fn centre(aabb: &[f64; 6]) -> [f64; 3] {
+        std::array::from_fn(|i| (aabb[i] + aabb[3 + i]) / 2.0)
+    }
+    fn half_diagonal(aabb: &[f64; 6]) -> f64 {
+        (0..3)
+            .map(|i| (aabb[3 + i] - aabb[i]).powi(2))
+            .sum::<f64>()
+            .sqrt()
+            / 2.0
+    }
+    fn distance(a: [f64; 3], b: [f64; 3]) -> f64 {
+        (0..3).map(|i| (a[i] - b[i]).powi(2)).sum::<f64>().sqrt()
+    }
+    fn contains(aabb: &[f64; 6], point: [f64; 3], slack: f64) -> bool {
+        (0..3).all(|i| point[i] >= aabb[i] - slack && point[i] <= aabb[3 + i] + slack)
+    }
+    fn union(mut aabbs: impl Iterator<Item = [f64; 6]>) -> Option<[f64; 6]> {
+        let first = aabbs.next()?;
+        Some(aabbs.fold(first, |acc, next| {
+            std::array::from_fn(|i| {
+                if i < 3 {
+                    acc[i].min(next[i])
+                } else {
+                    acc[i].max(next[i])
+                }
+            })
+        }))
+    }
+    fn verdict_of(delta: f64, tolerance: f64) -> &'static str {
+        if delta <= EXACT_MM {
+            "exact"
+        } else if delta <= tolerance {
+            "chord"
+        } else {
+            "off"
+        }
+    }
+
+    // 第一轮：记录按中心落在哪根管身的盒里认领，落在几根里就给中心最近的。
+    let mut claims: Vec<Vec<usize>> = vec![Vec::new(); ours.len()];
+    let mut loose_records = Vec::new();
+    for (i, record) in baseline.iter().enumerate() {
+        let Some(record) = record else {
+            continue;
+        };
+        let point = centre(record);
+        let claimant = ours
+            .iter()
+            .enumerate()
+            .filter(|(_, tube)| contains(&tube.aabb_world_mm, point, tolerance))
+            .map(|(j, tube)| (distance(centre(&tube.aabb_world_mm), point), j))
+            .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        match claimant {
+            Some((_, j)) => claims[j].push(i),
+            None => loose_records.push(i),
+        }
+    }
+    let mut rows = Vec::new();
+    let mut loose_tubes = Vec::new();
+    for (j, tube) in ours.iter().enumerate() {
+        if claims[j].is_empty() {
+            loose_tubes.push(j);
+            continue;
+        }
+        let joined = union(claims[j].iter().filter_map(|&i| baseline[i]))
+            .expect("claimed records carry boxes");
+        let delta = aabb_delta(joined, tube.aabb_world_mm);
+        rows.push(ContainerTubePair {
+            generated: Some(tube.refno.clone()),
+            baseline_records: claims[j].clone(),
+            max_axis_delta_mm: Some(delta),
+            verdict: verdict_of(delta, tolerance),
+        });
+    }
+
+    // 第二轮：两边剩下的按中心最近贪心配，一条记录最多配一根。
+    let mut candidates: Vec<(f64, usize, usize)> = Vec::new();
+    for &i in &loose_records {
+        let Some(record) = baseline[i] else {
+            continue;
+        };
+        for &j in &loose_tubes {
+            let tube = &ours[j].aabb_world_mm;
+            let gap = distance(centre(&record), centre(tube));
+            if gap <= half_diagonal(&record).max(half_diagonal(tube)) {
+                candidates.push((gap, i, j));
+            }
+        }
+    }
+    candidates.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+    let mut taken_records = std::collections::BTreeSet::new();
+    let mut taken_tubes = std::collections::BTreeSet::new();
+    for (_, i, j) in candidates {
+        if taken_records.contains(&i) || taken_tubes.contains(&j) {
+            continue;
+        }
+        taken_records.insert(i);
+        taken_tubes.insert(j);
+        let record = baseline[i].expect("loose records carry boxes");
+        let delta = aabb_delta(record, ours[j].aabb_world_mm);
+        rows.push(ContainerTubePair {
+            generated: Some(ours[j].refno.clone()),
+            baseline_records: vec![i],
+            max_axis_delta_mm: Some(delta),
+            verdict: verdict_of(delta, tolerance),
+        });
+    }
+    for &i in &loose_records {
+        if !taken_records.contains(&i) {
+            rows.push(ContainerTubePair {
+                generated: None,
+                baseline_records: vec![i],
+                max_axis_delta_mm: None,
+                verdict: "only_baseline",
+            });
+        }
+    }
+    for &j in &loose_tubes {
+        if !taken_tubes.contains(&j) {
+            rows.push(ContainerTubePair {
+                generated: Some(ours[j].refno.clone()),
+                baseline_records: Vec::new(),
+                max_axis_delta_mm: None,
+                verdict: "only_generated",
+            });
+        }
+    }
+
+    let mut tally = ContainerTubeTally::default();
+    for row in &rows {
+        match row.verdict {
+            "exact" => tally.exact += 1,
+            "chord" => tally.chord += 1,
+            "off" => tally.off += 1,
+            "only_baseline" => tally.only_baseline += 1,
+            _ => tally.only_generated += 1,
+        }
+    }
+    ContainerTubeReport { tally, rows }
 }
 
 fn world_matrix(columns: [[f64; 3]; 4]) -> glam::DMat4 {
@@ -1920,6 +2196,7 @@ mod tests {
             ordinal: None,
             aabb_world_mm: Some([0.0; 6]),
             geometries: vec![serde_json::Value::String("Cylinder".into()); geometries],
+            geometry_aabbs_world_mm: Vec::new(),
         };
         let tube = |owner: &str, ordinal: usize, x: f64| Generated {
             refno: format!("/GENERATED/TUBI {ordinal} of {owner}"),
@@ -1940,6 +2217,7 @@ mod tests {
             ]),
             components: Vec::new(),
             kinds: vec!["Cylinder".to_string()],
+            container_tubes: Vec::new(),
             genus: 0,
             negatives_applied: 0,
             negatives_skipped: 0,
@@ -1966,6 +2244,15 @@ mod tests {
         assert_eq!(whole.kinds, ["Cylinder", "Cylinder"]);
         assert!(whole.world.is_none(), "几根管各有各的轴，判档走世界帧");
         assert_eq!(
+            whole
+                .container_tubes
+                .iter()
+                .map(|tube| (tube.ordinal, tube.aabb_world_mm[0]))
+                .collect::<Vec<_>>(),
+            [(1, 0.0), (2, 100.0)],
+            "并进来的每一根都留着自己的盒，组内逐根配对要用"
+        );
+        assert_eq!(
             generated
                 .iter()
                 .filter(|element| element.noun == "TUBI")
@@ -1973,6 +2260,73 @@ mod tests {
             2,
             "容器组没几何、或基准里没有那只容器的，照旧按管身配"
         );
+    }
+
+    /// 容器组内逐根：并集盒相同也要逐根对得上——中间那根挪了位置，两边各剩一根配不上；
+    /// 偏得少的按中心配上记 off 并带差值；一根管身可以认领多条记录（扁圆风管 E3D 一条 Box 几条 Cylinder）。
+    #[test]
+    fn container_tubes_are_judged_record_by_record_inside_the_group() {
+        let along_x = |lo: f64, hi: f64| [lo, -2.5, -2.5, hi, 2.5, 2.5];
+        let tube = |ordinal: usize, lo: f64, hi: f64| ContainerTube {
+            refno: format!("TUBI {ordinal} of BRAN /B1"),
+            ordinal,
+            aabb_world_mm: along_x(lo, hi),
+            kinds: vec!["Cylinder".to_string()],
+        };
+        // E3D 三条记录外加一条中心线；我们三根，中间那根挪了 20 mm，并集盒与 E3D 一样是 [0, 110]。
+        let baseline = vec![
+            Some(along_x(0.0, 10.0)),
+            Some(along_x(50.0, 60.0)),
+            Some(along_x(100.0, 110.0)),
+            None,
+        ];
+        let moved = vec![tube(1, 0.0, 10.0), tube(2, 30.0, 40.0), tube(3, 100.0, 110.0)];
+        let report = pair_container_tubes(&baseline, &moved, 0.5);
+        assert_eq!((report.tally.exact, report.tally.chord, report.tally.off), (2, 0, 0));
+        assert_eq!(
+            (report.tally.only_baseline, report.tally.only_generated),
+            (1, 1),
+            "挪了 20 mm：半对角线 6.1 够不着，两边各剩一根"
+        );
+        assert!(report.tally.has_problem());
+
+        // 只偏 3 mm：记录中心还在这根的盒里，认领后记 off，差值就是那 3 mm。
+        let shifted = vec![tube(1, 0.0, 10.0), tube(2, 53.0, 63.0), tube(3, 100.0, 110.0)];
+        let report = pair_container_tubes(&baseline, &shifted, 0.5);
+        assert_eq!(
+            (
+                report.tally.exact,
+                report.tally.off,
+                report.tally.only_baseline,
+                report.tally.only_generated
+            ),
+            (2, 1, 0, 0)
+        );
+        let off = report
+            .rows
+            .iter()
+            .find(|row| row.verdict == "off")
+            .expect("偏了的那根");
+        assert_eq!(off.baseline_records, [1]);
+        assert!((off.max_axis_delta_mm.expect("配上了就有差值") - 3.0).abs() < 1e-9);
+
+        // 扁圆风管：E3D 一条 Box 两条 Cylinder，我们一根；三条记录都被这一根认领，并集盒与它比。
+        let flat_oval = vec![
+            Some([0.0, -25.0, -10.0, 100.0, 25.0, 10.0]),
+            Some([0.0, -25.0, -10.0, 100.0, -5.0, 10.0]),
+            Some([0.0, 5.0, -10.0, 100.0, 25.0, 10.0]),
+        ];
+        let one = vec![ContainerTube {
+            refno: "TUBI 1 of HVAC /D1".to_string(),
+            ordinal: 1,
+            aabb_world_mm: [0.0, -25.0, -10.0, 100.0, 25.0, 10.0],
+            kinds: vec!["Cylinder".to_string()],
+        }];
+        let report = pair_container_tubes(&flat_oval, &one, 0.5);
+        assert_eq!(report.rows.len(), 1);
+        assert_eq!(report.rows[0].baseline_records, [0, 1, 2]);
+        assert_eq!(report.rows[0].verdict, "exact");
+        assert!(!report.tally.has_problem());
     }
 
     #[test]
