@@ -38,7 +38,8 @@ use crate::catalogue::{
 use crate::catalogue_point::{CataloguePoints, tube_outer_diameter_from_stub};
 use crate::category::{
     BuildDisposition, Category, CompositeFamily, RouteDiscipline, decision, derives_implied_tubes,
-    enters_catalogue_by_catref, graphics_ignored_below, is_model_unit, is_model_unit_of,
+    enters_catalogue_by_catref, graphics_ignored_below, is_handrail_member, is_model_unit,
+    is_model_unit_of,
 };
 use crate::elmodl::{GeneratedElement, GeometryId, Modeled, SkipKind, model_element_with_cache};
 use crate::extrusion_reuse::ExtrusionReuseStats;
@@ -565,6 +566,9 @@ pub fn generate_subtree_with_cache(
                     }),
                 }
             }
+            // 模板式的扶手立柱 / 端头（目录 GPART 没有 CATR）：几何在设计侧 TMPL 成员上，下面照常遍历，
+            // 这一件不欠目录几何。
+            Category::Catalog if is_handrail_member(&noun) => {}
             Category::Catalog => {
                 *report.catalog_pending.entry(noun.clone()).or_insert(0) += 1;
             }

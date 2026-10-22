@@ -418,9 +418,11 @@ pub fn classify(noun: &str) -> Category {
         // 归 HANDRA 那一族：`DB_RoutingBranch::getProfile@0x105B9C50` 走的是
         // `SPRE → GSTR → GMSS` 逐成员按 LEVE 过筛，与 SCTN 那条截面链**逐句同形**，
         // 分类要说的正是这件事（画法的差别只在「沿属主 RPATH 扫」而不是 POSS→POSE）。
-        // 同族的 `HRPOST` 不在这里：它的 SPRE 指向一只没有 CATR 的 GPART，是目录构件
-        // 那条路（GMRF → 图元集），还欠着。
         "RAIL" | "KICKPL" => Catalog,
+        // 同族的立柱与端头走目录构件那条路：`SPRE → GPART --CATR--> SFIT` 的 GMRE 求值（aps250112 的
+        // `/Lionweld_Kennedy_Solid/...` 立柱 68 只、`.../Return`、`.../Pads` 端头 15 只）。GPART 没有 CATR 的是
+        // 模板件，几何在设计侧的 TMPL 成员上（aps250110 全部 130 只），不自己成件：[`is_model_unit_of`]。
+        "HRPOST" | "HRTERM" => Catalog,
         // 楼梯踏步：目录构件那条路（`SPRE → GPART --CATR--> SFIT` 的 GMRE，一只 SBOX），尺寸是随
         // 梯段现算的 `TWIDTH` / `TREADD`（[`crate::stair`]）。E3D 的 RVM 每只踏步写一个 Box。
         "TREAD" => Catalog,
@@ -536,6 +538,8 @@ pub fn is_model_unit(noun: &str) -> bool {
         // 别的属主下的没有标架、不成件。`PFIT`（板上配件）也走这条路，标架是自己的 POS / ORI
         // 贴到属主板 SJUS 指的那一面（`catalogue::panel_fitting_world`），不挑属主。`TREAD`（楼梯踏步）
         // 同走目录构件求值，标架是自己的 POS / ORI（经 TREADS → STRFLT 折算），尺寸见 [`crate::stair`]。
+        // 详图式扶手的 `HRPOST` / `HRTERM` 也走这条，标架是属主 RPATH 上的站位
+        // （`transform::ImplicitFrame::HandrailPost`）；只有目录链走得到构件的那些才成件（[`is_model_unit_of`]）。
         Category::Catalog => matches!(
             noun,
             "SBFI"
@@ -549,6 +553,8 @@ pub fn is_model_unit(noun: &str) -> bool {
                 | "FITT"
                 | "PFIT"
                 | "TREAD"
+                | "HRPOST"
+                | "HRTERM"
         ),
 
         // 路由成员的实体 = 目录 GMRE 程序求值（`crate::catalogue`），键正是
@@ -615,10 +621,14 @@ pub fn is_model_unit(noun: &str) -> bool {
 
 /// [`is_model_unit`] 落到**元素**上：noun 说「可以成件」之后，再问属主要不要把它吃掉。
 ///
-/// 今天只有一条属主规则——`FITT` 的（[`fitting_stands_alone_under`]）：SCTN / STWALL 名下的
+/// 属主规则是 `FITT` 的（[`fitting_stands_alone_under`]）：SCTN / STWALL 名下的
 /// FITT 自己成件（E3D 的 RVM 给每只各开一组：aps250110 `FITTING n of STWALL m of CWALL /…`、
 /// ams7997 `FITTING n of SCTN /1TFA004MP-SUPP-01-V1`）；别的属主下的 FITT（CMPF 里的那些）
 /// 没有现算标架可用，照旧不成件、留在 `catalog_pending`。
+///
+/// 另一条看目录：详图式扶手的 `HRPOST` / `HRTERM` 只有 `SPRE` 走得到目录构件（`GPART --CATR--> SFIT`）
+/// 时自己成件——E3D 的 RVM 把图元直接写在 `HRPOST n of POSTSE 1 of HANDRA …` 组里。走不到的是模板件：
+/// GPART 没有 CATR，几何在设计侧的 TMPL 成员上，各自成件（`… of TMPLATE 1 of HRPOST n …`）。
 ///
 /// 全量管线（`pipeline` 的 `Category::Catalog` 臂）、增量的上卷（`increment::nearest_unit`）、
 /// 子树收集（`increment::collect_unit_subtree`）与重建（`increment::execute`）都走这一个；
@@ -634,7 +644,18 @@ pub fn is_model_unit_of(el: &DbElement) -> Result<bool, DbElementError> {
             None => false,
         });
     }
+    if is_handrail_member(&noun) {
+        return Ok(crate::catalogue_point::catalogue_component(el)?.is_some());
+    }
     Ok(true)
+}
+
+/// 详图式扶手里可能走目录构件、也可能是模板件的两个 noun（[`is_model_unit_of`]）。
+pub fn is_handrail_member(noun: &str) -> bool {
+    matches!(
+        noun.trim().to_ascii_uppercase().as_str(),
+        "HRPOST" | "HRTERM"
+    )
 }
 
 /// 这个属主名下的 `FITT` **自己成件**：`SCTN` 与 `STWALL`，正是 `transform::ImplicitFrame::
@@ -701,10 +722,14 @@ pub fn enters_catalogue_by_catref(noun: &str) -> bool {
 /// `TREAD`（aps250110 两段梯的 25 只踏步，2026-10-22）：`SPRE → GPART --CATR--> SFIT
 /// /Simple_Catalogued_Tread`，GMRE 一只 SBOX，`RPRO TWID / TDEP` 接设计侧的伪属性 `TWIDTH` / `TREADD`
 /// （[`crate::stair::tread_size`]，经 `catalogue_point::member_env` 交进求值环境）。
+///
+/// `HRPOST` / `HRTERM`（aps250112 的 68 只立柱与 15 只端头，2026-10-22）：`SPRE → GPART --CATR--> SFIT`，
+/// `RPRO` 经 DTSE 接设计侧（立柱的 `LENG`、`ZOFF`）与目录 `PARA`；标架是属主 RPATH 上的站位
+/// （`transform::ImplicitFrame::HandrailPost`）。哪些算单元由 [`is_model_unit_of`] 定。
 pub fn builds_from_catalogue_component(noun: &str) -> bool {
     matches!(
         noun.trim().to_ascii_uppercase().as_str(),
-        "FIXING" | "FITT" | "PFIT" | "TREAD"
+        "FIXING" | "FITT" | "PFIT" | "TREAD" | "HRPOST" | "HRTERM"
     )
 }
 
@@ -1648,13 +1673,20 @@ mod tests {
         assert!(is_model_unit("FIXING"));
         assert!(builds_from_catalogue_component("FIXING"));
         // HANDRA（recheck-4 W4-1）：布局式扶手的栏杆与立柱挂在 HANDRA 自己的 refno 上；
-        // 同族的 HRPOST/STRFLT 还没有 builder，不能顺手一起认成单元。
+        // 同族的 STRFLT 还没有 builder，不能顺手一起认成单元。
         assert_eq!(
             classify("HANDRA"),
             Category::Composite(CompositeFamily::Structural)
         );
         assert!(is_model_unit("HANDRA"));
-        for noun in ["HRPOST", "STRFLT", "RLADDR"] {
+        // 详图式扶手的立柱 / 端头：目录件，走目录构件求值；模板件与否由元素层定。
+        for noun in ["HRPOST", "HRTERM"] {
+            assert_eq!(classify(noun), Category::Catalog, "{noun}");
+            assert!(is_model_unit(noun), "{noun}");
+            assert!(builds_from_catalogue_component(noun), "{noun}");
+            assert!(is_handrail_member(noun), "{noun}");
+        }
+        for noun in ["STRFLT", "RLADDR"] {
             assert_eq!(
                 classify(noun),
                 Category::Composite(CompositeFamily::Structural),

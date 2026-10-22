@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-22 目录构件式立柱 / 端头 HRPOST / HRTERM 走 SFIT 求值——aps250112 68 根立柱、15 只端头全出、exact
+
+- `HRPOST` / `HRTERM` 归 `Catalog`，与 FIXING / FITT / TREAD 同一个目录构件求值器（`SPRE → GPART --CATR--> SFIT` 的
+  GMRE；`RPRO` 经 DTSE 接设计侧的 `LENG` / `ZOFF` 与目录 `PARA`），标架用上一条的规则。GPART 有 CATR 的
+  才自己成件（`category::is_model_unit_of`）；没有 CATR 的是模板件，几何在设计侧 TMPL 成员上，照旧由成员
+  各自成件，也不记 `catalog_pending`。
+- aps250112：`/Lionweld_Kennedy_Solid/...` 立柱 68 根、`.../Return` 回环 10 只、`.../Pads` 5 只此前一件不出，
+  现在全出、exact。`Return` 回环起点 `LEFT`、末点 `RIGH`，两只都朝扶手里——「端头朝路径外」那种读法在这里就转反了。
+  aps250110 的 130 只模板件不变。
+
 ## 2026-10-22 详图式扶手成员按一条规则站位、转向——ZDIS 从圆角切点量，端头与立柱同按 HRJUSL
 
 - 立柱 `HRPOST`、端头 `HRTERM`、面板 `HRPANE`、门 `HRGATE` 没有 POS / ORI，标架现算（`transform::handrail_post_world`）。

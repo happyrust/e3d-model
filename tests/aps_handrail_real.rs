@@ -1,4 +1,4 @@
-//! 真库门：APS 详图式扶手（修复计划 W7a），立柱 / 端头的标架对 E3D TTY 导出。
+//! 真库门：APS 详图式扶手（修复计划 W7a），立柱 / 端头的标架与目录件的世界包围盒对 E3D TTY 导出。
 //!
 //! 真值是 gen-model `verification/civil-tty-20261021/aps_survey_lv6_2013286656_2.rvm`（aps250112，E3D 3.1 只读
 //! 导出）：模板件的每个图元与我们同名图元的刚体差（`output/rvm_frame_delta.py`）归零。
@@ -11,7 +11,9 @@ use std::sync::Arc;
 
 use e3d_io::db_element::{DbFilePin, DbSet, template_file_for};
 use e3d_io::refno::RefNo;
+use e3d_model::category::{classify, is_model_unit_of};
 use e3d_model::db_discovery::DirectoryDbResolver;
+use e3d_model::elmodl::{Modeled, model_element};
 use e3d_model::transform::world_matrix;
 
 const PLANT_DIR: &str = r"D:\AVEVA\Projects\E3D3.1\AvevaPlantSample\aps000";
@@ -91,6 +93,31 @@ fn assert_frame(set: &Arc<DbSet>, w1: u32, origin: [f64; 3], x_axis: [f64; 3], w
     }
 }
 
+/// 按 noun 建一件，世界包围盒逐分量对 E3D。
+fn assert_world_box(
+    set: &Arc<DbSet>,
+    design: &Design,
+    noun: &str,
+    w1: u32,
+    e3d: [f64; 6],
+    what: &str,
+) {
+    let el = set.element(RefNo::new(design.word0, w1));
+    let generated = match model_element(&el, classify(noun)).unwrap() {
+        Modeled::Solid(generated) => generated,
+        Modeled::Skipped { reason, .. } => panic!("{what} 没出实体：{reason}"),
+    };
+    let bb = generated.solid.bounding_box().expect("非空");
+    let (lo, hi) = (bb.min(), bb.max());
+    let got = [lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]];
+    for (axis, (g, e)) in got.iter().zip(e3d).enumerate() {
+        assert!(
+            (g - e).abs() <= 0.06,
+            "{what}：世界包围盒第 {axis} 分量 {g:.3}，E3D {e:.2}（全部 {got:?}）"
+        );
+    }
+}
+
 /// `/EL(+)100000` 两只扶手的模板件：立柱挂在 `FRAD 100` 的直角拐点上，`ZDIS` 从圆角切点量（比从拐点量远 100）；
 /// 端头与立柱同一条朝向规则（`LEFT` 顺路径、`RIGH` 逆路径，开口末点的路径方向取进入段）——此前按目录号
 /// 36004 特判，两只转反 180°。
@@ -148,5 +175,70 @@ fn template_members_stand_past_the_fillet_and_turn_by_their_justification() {
         [-306723.67, 298400.00, 100000.00],
         [-1.0, 0.0, 0.0],
         "HRTERM 2 of /EL(+)100000/HR_002（起点，RIGH）",
+    );
+}
+
+/// 目录构件式的立柱与端头（`SPRE → GPART --CATR--> SFIT`）：自己成件，标架与模板件同一条规则——
+/// `Return` 回环起点 `LEFT`、末点 `RIGH`，两只都朝扶手里；`Pads` 两端都是 `RIGH`。`XOFF` 偏在路径右侧
+/// （`XOFF 260` 的立柱、`XOFF 216` / `−40` 的端头）。模板件（GPART 没有 CATR）不自己成件。
+#[test]
+fn catalogue_posts_and_terminals_build_from_their_sfit_on_the_same_rule() {
+    if !fixtures_present(&APS250112) {
+        return;
+    }
+    let set = aps_set(&APS250112);
+    let word0 = APS250112.word0;
+    assert!(
+        is_model_unit_of(&set.element(RefNo::new(word0, 665))).unwrap(),
+        "目录构件式立柱自己成件"
+    );
+    assert!(
+        !is_model_unit_of(&set.element(RefNo::new(word0, 1093))).unwrap(),
+        "模板式立柱的几何在 TMPL 成员上"
+    );
+    assert_world_box(
+        &set,
+        &APS250112,
+        "HRPOST",
+        665,
+        [
+            -310743.41, 297763.20, 104900.00, -310643.41, 297913.20, 106031.50,
+        ],
+        "HRPOST 1 of /EL(+)104880_TOS/HR_001",
+    );
+    assert_frame(
+        &set,
+        665,
+        [-310743.39, 297838.21, 104900.00],
+        [0.0, -1.0, 0.0],
+        "HRPOST 1 of /EL(+)104880_TOS/HR_001（LEFT，XOFF 260）",
+    );
+    assert_frame(
+        &set,
+        671,
+        [-310699.39, 298288.21, 104900.00],
+        [0.0, -1.0, 0.0],
+        "HRTERM 1 of /EL(+)104880_TOS/HR_001（Return 起点，LEFT，XOFF 216）",
+    );
+    assert_frame(
+        &set,
+        672,
+        [-310699.39, 295641.81, 104900.00],
+        [0.0, 1.0, 0.0],
+        "HRTERM 2 of /EL(+)104880_TOS/HR_001（Return 末点，RIGH，XOFF 216）",
+    );
+    assert_frame(
+        &set,
+        596,
+        [-314088.39, 301156.61, 104900.00],
+        [1.0, 0.0, 0.0],
+        "HRTERM 1 of /EL(+)104880_TOS_PLATE/HR_001（Pads 末点，RIGH，XOFF −40）",
+    );
+    assert_frame(
+        &set,
+        597,
+        [-310651.59, 301156.61, 104900.00],
+        [1.0, 0.0, 0.0],
+        "HRTERM 2 of /EL(+)104880_TOS_PLATE/HR_001（Pads 起点，RIGH）",
     );
 }
