@@ -117,6 +117,14 @@ enum ImplicitFrame {
     /// 旋转见 [`sub_fitting_rotation`]（Z 取 `ZDIR`、Y 取母件 Y 去掉沿 Z 的分量、再绕 Z 转 `BANG`），
     /// 母件在 STWALL 上还是 SCTN 上都是这一条。
     SubFitting { cmfi: DbElement },
+    /// `PANE` 上 `CMPF` 名下的 `SBFI`：母件原点按 CMPF 自己的 `SJUS` 贴到板面，与板上 PFIT 的目录实例
+    /// 同一口径（`catalogue::panel_surface_z`），旋转同 [`ImplicitFrame::SubFitting`]。CMPF 自己的标架不动。
+    /// E3D TTY 真值（APS 项目副本，aps7200 `/FLR-PLT1`）：30 mm 楼板上 `SJUS UTOP` 的 CMPF `23584/6547` 在
+    /// 板底 z 5880，它名下的 SBFI `23584/6548` 在板顶 z 5910。
+    ///
+    /// 只认 PANE。ams1112 / ams7997 的 149 只 CMPF 都在 GWALL 上（`SJUS DBOT`），`POS.z` 是套管沿墙高的位置，
+    /// E3D 的 SBFI 就在 CMPF 原点；把它换成板面会把套管挑开几米。FLOOR 上还没有语料。
+    PanelSubFitting { cmpf: DbElement, panel: DbElement },
     /// SCTN 名下的 `SNOD`：结构节点，`ZDIS` 是沿梁轴（POSS→POSE）的距离。
     /// `world(属主 SCTN) * section_axis_frame(属主) * T(0,0,ZDIS)`——SCTN 自己没有 POS/ORI，
     /// 轴架现算（`section_axis_frame`，不含中性轴自旋：绕 Z 转不动沿 Z 的度量）。
@@ -149,6 +157,12 @@ fn implicit_frame(el: &DbElement) -> Result<Option<ImplicitFrame>, DbElementErro
             Some(cmfi) if cmfi.element_type()?.as_str() == "CMFI" => match cmfi.owner()? {
                 Some(host) if matches!(host.element_type()?.as_str(), "SCTN" | "STWALL") => {
                     Ok(Some(ImplicitFrame::SubFitting { cmfi }))
+                }
+                _ => Ok(None),
+            },
+            Some(cmpf) if cmpf.element_type()?.as_str() == "CMPF" => match cmpf.owner()? {
+                Some(panel) if panel.element_type()?.as_str() == "PANE" => {
+                    Ok(Some(ImplicitFrame::PanelSubFitting { cmpf, panel }))
                 }
                 _ => Ok(None),
             },
@@ -187,20 +201,20 @@ fn implicit_world(el: &DbElement) -> Result<Option<DMat4>, DbElementError> {
             Ok(Some(world_matrix(&host)? * placement))
         }
         ImplicitFrame::SubFitting { cmfi } => {
-            let parent = world_matrix(&cmfi)?;
-            let origin = parent.transform_point3(DVec3::ZERO);
-            let zdir = el.get_direction("ZDIR")?.unwrap_or([0.0, 0.0, 1.0]);
-            let bang = el.get_double("BANG")?.unwrap_or(0.0);
-            Ok(Some(match sub_fitting_rotation(&parent, zdir, bang) {
-                Some(rotation) => DMat4::from_cols(
-                    rotation.x_axis.extend(0.0),
-                    rotation.y_axis.extend(0.0),
-                    rotation.z_axis.extend(0.0),
-                    origin.extend(1.0),
-                ),
-                // ZDIR 退化或与母件 Y 共线，投不出参考向：沿母件标架。
-                None => parent,
-            }))
+            Ok(Some(sub_fitting_world(&world_matrix(&cmfi)?, el)?))
+        }
+        ImplicitFrame::PanelSubFitting { cmpf, panel } => {
+            let surface = crate::catalogue::panel_surface_z(&panel, &cmpf)
+                .map_err(|error| pseudo_attribute(el, &noun, error))?;
+            let local = local_matrix(&cmpf)?;
+            let on_panel = DMat4::from_cols(
+                local.x_axis,
+                local.y_axis,
+                local.z_axis,
+                DVec3::new(local.w_axis.x, local.w_axis.y, surface).extend(1.0),
+            );
+            let parent = world_matrix(&cmpf)? * local.inverse() * on_panel;
+            Ok(Some(sub_fitting_world(&parent, el)?))
         }
         ImplicitFrame::SectionNode(host) => {
             let frame = crate::section::section_axis_frame(&host).map_err(|error| {
@@ -213,6 +227,23 @@ fn implicit_world(el: &DbElement) -> Result<Option<DMat4>, DbElementError> {
         }
         ImplicitFrame::HandrailPost(post) => handrail_post_world(&post),
     }
+}
+
+/// 嵌套背板配件 SBFI 的世界标架：原点沿用母件原点，旋转见 [`sub_fitting_rotation`]。
+fn sub_fitting_world(parent: &DMat4, el: &DbElement) -> Result<DMat4, DbElementError> {
+    let origin = parent.transform_point3(DVec3::ZERO);
+    let zdir = el.get_direction("ZDIR")?.unwrap_or([0.0, 0.0, 1.0]);
+    let bang = el.get_double("BANG")?.unwrap_or(0.0);
+    Ok(match sub_fitting_rotation(parent, zdir, bang) {
+        Some(rotation) => DMat4::from_cols(
+            rotation.x_axis.extend(0.0),
+            rotation.y_axis.extend(0.0),
+            rotation.z_axis.extend(0.0),
+            origin.extend(1.0),
+        ),
+        // ZDIR 退化或与母件 Y 共线，投不出参考向：沿母件标架。
+        None => *parent,
+    })
 }
 
 /// CMFI 名下 SBFI 的旋转（[`ImplicitFrame::SubFitting`]）：

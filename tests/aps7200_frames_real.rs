@@ -4,6 +4,7 @@
 //!   `/OUTER-KICKPLATE` 是 165° 的三点圆弧，两只都是 `PKDI = 0.5`、`ZDIS = 0`。
 //! - `/INNER-KICKPLATE` 的 `CURVE`（`CURTYP CENT`）两端落在 `RADI` 圆内（`section::centre_arc_through`），
 //!   它的 JLDATU 是 `ZDIS = 1531`。
+//! - `PANE` 上 `CMPF` 名下的 `SBFI` 贴在 CMPF `SJUS` 指的板面（`transform::ImplicitFrame::PanelSubFitting`）。
 //!
 //! 真值是 E3D TTY 只读宏在 APS 项目副本上逐件打出的 `POS/ORI WRT WORLD`（gen-model
 //! `verification/civil-tty-20261021/aps7200-w7k-truth/aps7200_w7k_truth.psv`）。aps7200 不在 APS 的
@@ -171,4 +172,34 @@ fn a_centre_curve_with_its_ends_inside_radi_runs_through_its_ends() {
         1e-4,
         "JLDATUM 1 of GENSEC /INNER-KICKPLATE（CENT，ZDIS 1531）",
     )]);
+}
+
+/// 30 mm 楼板上 `SJUS UTOP` 的 CMPF 在板底，它名下的 SBFI 在板顶。
+#[test]
+fn a_sub_fitting_of_a_panel_compound_fitting_sits_on_its_surface() {
+    if !fixtures_present() {
+        return;
+    }
+    check(&[
+        (
+            6547,
+            [9630.0017, 8855.8016, 5880.0],
+            [-0.000192021, 0.999999982, 0.0],
+            [-0.999999982, -0.000192021, 0.0],
+            [0.0, 0.0, 1.0],
+            0.01,
+            1e-6,
+            "CMPFITTING 1 of PANEL 1 of FRMWORK /FLR-PLT1",
+        ),
+        (
+            6548,
+            [9630.0017, 8855.8016, 5910.0],
+            [-0.000192021, 0.999999982, 0.0],
+            [-0.999999982, -0.000192021, 0.0],
+            [0.0, 0.0, 1.0],
+            0.01,
+            1e-6,
+            "SBFITTING 1 of CMPFITTING 1 of PANEL 1 of FRMWORK /FLR-PLT1",
+        ),
+    ]);
 }

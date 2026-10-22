@@ -1906,7 +1906,7 @@ fn panel_fitting_world(member: &DbElement) -> Result<DMat4, ModelError> {
 /// PFIT 的 `SJUS` 按 [`crate::profile::sjus_drop`] 同一张表分族：TOP 族取顶面、CEN 族取中面、其余（含未设）
 /// 取底面。真值覆盖了 TOP 族（FLOOR 上的 PFIT 全是 UTOP，UTOP 板与 DBOT 板都有）与未设（ams7999 PANE 上的
 /// 194 只，板厚 16–30 mm，落在底面）；CEN 族还没有语料。属主名下没有环时按局部 z = 0。
-fn panel_surface_z(panel: &DbElement, member: &DbElement) -> Result<f64, ModelError> {
+pub(crate) fn panel_surface_z(panel: &DbElement, member: &DbElement) -> Result<f64, ModelError> {
     let Some(extent) = crate::profile::loop_extent(panel)? else {
         return Ok(0.0);
     };

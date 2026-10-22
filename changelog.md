@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-22 PANE 上组合配件 CMPF 名下的 SBFI 贴板面——aps7200 `/FLR-PLT1` 的套管对上
+
+- 板上 PFIT 的目录实例贴在 `SJUS` 指的那一面；PANE 上 CMPF 名下的 SBFI 同一口径，按 CMPF 自己的 `SJUS`
+  定板面，CMPF 的标架不动。aps7200 `/FLR-PLT1`（30 mm 楼板，CMPF `SJUS UTOP`）的 SBFI 此前在板底、off 30 mm，
+  现与 TTY 真值一致。
+- 只认 PANE：ams1112 / ams7997 的 149 只 CMPF 都在 GWALL 上（`SJUS DBOT`），`POS.z` 是套管沿墙高的位置，
+  按板面摆会把套管挑开几米（第一版就是这样被回归门拦下的），照旧沿 CMPF 原点。增量侧 PANE 的环与厚度
+  改动级联到名下 CMPF。
+- 真库门 `aps7200_frames_real` 加 CMPF / SBFI 一条。
+
 ## 2026-10-22 踢脚板的 datum 按 PKDI 比例站位、圆心式弧端点在圆内照样成弧——aps7200 3 只 FIXING 对上
 
 - JLDATU 的站位 = `HPREF` 起点 + `ZDIS` + `PKDI × 路径全长`。`PKDI` 此前读了没用：aps7200

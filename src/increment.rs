@@ -1083,8 +1083,10 @@ fn implicit_frame_host_of(set: &Arc<DbSet>, refno: RefNo) -> Result<Option<RefNo
             "WALL" => return owns(&current, "JLDATU"),
             "SCTN" | "STWALL" => return owns(&current, "FITT"),
             "HANDRA" => return detailed_handrail(&current),
-            // 板上配件 PFIT 贴在属主板 SJUS 指的那一面，吃板第一个环的 HEIG / SJUS。
-            "FLOOR" | "PANE" | "GWALL" => return owns(&current, "PFIT"),
+            // 板上配件 PFIT 贴在属主板 SJUS 指的那一面，吃板第一个环的 HEIG / SJUS；PANE 上 CMPF 名下的 SBFI
+            // 同样贴板面（`transform::ImplicitFrame::PanelSubFitting`）。
+            "PANE" => return Ok(owns(&current, "PFIT")?.or(owns(&current, "CMPF")?)),
+            "FLOOR" | "GWALL" => return owns(&current, "PFIT"),
             // 楼梯踏步的宽、深随属主梯段现算（梯段的 TWIDTH / TREADO / OGOING / RISE 与 RPATH 首末点）。
             "STRFLT" => return carries_treads(&current),
             "SPINE" | "POINSP" | "CURVE" | "JLDATU" | "PLDATU" | "ENDATU" | "FITT" | "PLOO"
