@@ -213,13 +213,11 @@ const OWNER_WALK_SITES: &[Site] = &[
         file: "transform.rs",
         func: "handrail_post_world",
         climb: Climb::AboveUnit,
-        reads: &[
-            "HRJUSL", "POS", "POSREF", "SPRE", "WIDT", "XOFF", "ZDIS", "ZOFF",
-        ],
+        reads: &["HRJUSL", "POSREF", "WIDT", "XOFF", "ZDIS", "ZOFF"],
         why: "详图式扶手的 HRPOST / HRTERM / HRGATE 与面板 HRPANE 没有 POS / ORI，标架按 Core3D 现算（transform::ImplicitFrame::HandrailPost）：\
-              读立柱 / 面板自己的 POSREF / ZDIS / HRJUSL / SPRE / WIDT / XOFF / ZOFF，取 owner²=HANDRA 只核 noun、经 world_matrix 折它的位姿，再把 HANDRA \
-              交给 handrail_path_tangent / handrail_straight_run_distance / handrail_curve_station 读它 RPATH 下 POINTR / CURVE 的 \
-              POS / CURTYP（见 ANCESTOR_CONSUMERS）；POSREF 指的 POINTR 的 POS 也在那棵 RPATH 下。读者是立柱 TMPL 里自成单元的 \
+              读立柱 / 面板自己的 POSREF / ZDIS / HRJUSL / WIDT / XOFF / ZOFF，取 owner²=HANDRA 只核 noun、经 world_matrix 折它的位姿，再把 HANDRA \
+              交给 handrail::member_station 读它的 CLOSEF 与 RPATH 下 POINTR 的 POS / FRAD、CURVE 的 POS / CURTYP（见 ANCESTOR_CONSUMERS）；\
+              POSREF 指的 POINTR 也在那棵 RPATH 下。读者是立柱 TMPL 里自成单元的 \
               EXTR / CYLI / GENSEC / PANE 件（aps250110 栏杆 ~1780 件），立柱与 HANDRA 的 RPATH 都在它们的单元之上。整棵子树重算的\
               根口径下（POINTR / ZDIS 改了 → 祖先闭包命中 HANDRA 所在的 STRU 根 → 整棵重算）覆盖；ADR-080 单元级发布只重建 \
               plan_update 点名的单元，RPATH 与立柱都不在模板件的子树里 → 不点名；ADR-080 单元级发布下由 increment::implicit_frame_host_of \
@@ -346,24 +344,17 @@ const ANCESTOR_CONSUMERS: &[(&str, &str, &[&str], &str)] = &[
          PX / PY 表达式按宿主的设计参数求值；覆盖口径与调用方（wall_pline_datum）相同",
     ),
     (
-        "transform.rs",
-        "handrail_path_tangent",
-        &["POS"],
-        "HANDRA（立柱的 owner²）名下 RPATH 的 POINTR 位置：立柱在这一站的路径切向（端点回看进入段；起点带 CURVE 时转 \
-         handrail_curve_station 取圆弧切向）。RPATH 在立柱模板件的单元之上，覆盖口径见 OWNER_WALK_SITES 的 handrail_post_world",
+        "handrail.rs",
+        "member_station",
+        &["CLOSEF"],
+        "HANDRA（立柱 / 端头 / 面板 / 门的 owner²）的 CLOSEF，路径点串交 first_rpath / path_points、边上的圆弧交 through_arc 读：\
+         成员在这一站的位置与路径走向。RPATH 在立柱模板件的单元之上，覆盖口径见 OWNER_WALK_SITES 的 handrail_post_world",
     ),
     (
-        "transform.rs",
-        "handrail_straight_run_distance",
-        &["POS"],
-        "HANDRA 名下 RPATH 相邻 POINTR 的位置：纯直段路径上把越过端点的 ZDIS 夹回端点（Core3D 的做法）。RPATH 在立柱模板件的\
-         单元之上，覆盖口径同 handrail_post_world",
-    ),
-    (
-        "transform.rs",
-        "handrail_curve_station",
+        "handrail.rs",
+        "through_arc",
         &["CURTYP", "POS"],
-        "HANDRA 名下 RPATH 的首两只 POINTR 与 CURVE（CURTYP == THRU）的位置：THRU 圆弧上按 ZDIS 走出的实际站位。RPATH 在\
+        "HANDRA 名下 RPATH 里夹在两只 POINTR 之间的 CURVE（CURTYP == THRU）的位置：这条边换成过三点的圆弧。RPATH 在\
          立柱模板件的单元之上，覆盖口径同 handrail_post_world",
     ),
     (

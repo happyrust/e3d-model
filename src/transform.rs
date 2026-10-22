@@ -250,11 +250,19 @@ fn sub_fitting_rotation(parent: &DMat4, zdir: [f64; 3], bang_deg: f64) -> Option
     ))
 }
 
-/// World frame for a detailed handrail post (`POSTSE -> HANDRA`) or infill
-/// panel (`HRPNSE -> HANDRA`).  `HRPOST` / `HRPANE` deliberately have no `POS`/`ORI`; its placement is the referenced RPATH
-/// point plus the scalar distance along the selected path run.  Keeping
-/// this as an implicit frame also makes every nested TMPL/primitive inherit
-/// the same placement via the ordinary owner-chain fold.
+/// World frame for a detailed handrail member: `HRPOST` / `HRTERM` / `HRGATE` under their sets, `HRPANE` under
+/// `HRPNSE`.  None of them stores `POS` / `ORI`; the station is `ZDIS` along the owner HANDRA's RPATH from the
+/// `POSREF` point ([`crate::handrail::member_station`]), and every nested TMPL / primitive inherits the frame through
+/// the ordinary owner-chain fold.
+///
+/// - Local +X runs with the path (`HRJUSL LEFT`), against it (`RIGH` and the rest) or along its horizontal normal
+///   `path x Z` (`FORW`), terminals included: with the path direction at an open end taken from the entering edge,
+///   the one rule covers aps250110's six template terminals, aps250112's four and its fifteen catalogue ones (the
+///   `Return` loops turn inward, `LEFT` at the start and `RIGH` at the end).  The 36004 / `LEFT` exceptions it
+///   replaces had been compensating a wrong end-point direction and turned two of them 180 degrees.
+/// - `XOFF` shifts to the right of the path (`path x Z`), `ZOFF` up: aps250110's panels (`XOFF 69 / ZOFF -170`),
+///   aps250112's catalogue posts (`XOFF 260`) and its terminals (`XOFF 216` at either end of the same run).
+/// - Gates keep the unrotated station frame, turned and centred over their `WIDT` opening.
 fn handrail_post_world(post: &DbElement) -> Result<Option<DMat4>, DbElementError> {
     let Some(post_set) = post.owner()? else {
         return Ok(None);
@@ -268,276 +276,39 @@ fn handrail_post_world(post: &DbElement) -> Result<Option<DMat4>, DbElementError
     let Some(point) = post.get_element("POSREF")? else {
         return Ok(None);
     };
-    let Some(position) = point.get_position("POS")? else {
+    let kind = post.element_type()?;
+    let zdis = post.get_double("ZDIS")?.unwrap_or(0.0);
+    let Some(station) = crate::handrail::member_station(&handrail, &point, zdis)
+        .map_err(|error| pseudo_attribute(post, &kind, error))?
+    else {
         return Ok(None);
     };
-    let zdis = post.get_double("ZDIS")?.unwrap_or(0.0);
-    // `ZDIS` is the distance along the handrail path (despite the legacy
-    // name), not a world-Z elevation.  Use the adjacent RPATH point to get
-    // the local tangent; this is what places repeated posts between corners.
-    let tangent = handrail_path_tangent(&handrail, &point, zdis)?;
-    let path_tangent = tangent.unwrap_or(DVec3::Z);
-    let distance = handrail_straight_run_distance(&handrail, &point, zdis)?;
-    let path_position = handrail_curve_station(&handrail, &point, zdis)?
-        .unwrap_or_else(|| DVec3::from_array(position) + path_tangent * distance);
-    // HRPOST catalogue templates use their local +X axis back along the
-    // handrail run.  The station itself is measured in the forward path
-    // direction, but the template's profile origin is oriented by the
-    // opposite tangent (verified on the +X and +Y straight runs in the live
-    // APS sample).  Keeping this orientation on the implicit frame also
-    // rotates every nested template primitive consistently.
-    let post_kind = post.element_type()?;
-    let justification = post.get_string("HRJUSL")?;
-    let terminal_template = post.get_ref("SPRE")?;
-    // The 36004 terminal catalogue is the transverse LEFT variant.  Other
-    // LEFT terminals in the sample use the ordinary unrotated frame.
-    let orient_term = post_kind == "HRTERM"
-        && (justification.as_deref() != Some("LEFT")
-            || terminal_template.is_some_and(|reference| reference.word1 == 36004));
-    let local = if (post_kind == "HRPOST" || post_kind == "HRPANE" || orient_term)
-        && let Some(run) = tangent.and_then(|value| value.try_normalize())
-    {
-        // LEFT and RIGH are mirror placements of the same catalogue post.
-        // Their local +X axis points respectively with or against the path
-        // tangent; treating both as RIGH mirrors an entire handrail run.
-        let x_axis = match justification.as_deref() {
-            // LEFT terminal templates are transverse to the path; their
-            // catalogue +X axis follows the horizontal normal.
-            Some("LEFT")
-                if post_kind == "HRTERM"
-                    && terminal_template.is_some_and(|reference| reference.word1 == 36004) =>
-            {
-                run.cross(DVec3::Z).normalize()
-            }
-            Some("LEFT") => run,
-            // FORW posts use the path's left-hand horizontal normal rather
-            // than the run axis (the 36007 catalogue in the live sample).
-            Some("FORW") => run.cross(DVec3::Z).normalize(),
-            _ => -run,
-        };
-        let y_axis = DVec3::Z.cross(x_axis).normalize();
-        DMat4::from_cols(
-            x_axis.extend(0.0),
-            y_axis.extend(0.0),
-            DVec3::Z.extend(0.0),
-            path_position.extend(1.0),
-        )
-    } else {
-        DMat4::from_translation(path_position)
-    };
-    if post_kind == "HRPANE" {
-        // Infill panels sit at the same station, shifted by `ZOFF` up and by
-        // `XOFF` along the station frame's -Y (the right-hand side of the run
-        // for LEFT): aps250110 `/B01_LEVEL_03_ACCESS/HR_001`, both panels
-        // (`XOFF 69 / ZOFF -170`) against the E3D TTY export.
-        let xoff = post.get_double("XOFF")?.unwrap_or(0.0);
-        let zoff = post.get_double("ZOFF")?.unwrap_or(0.0);
-        let offset = DMat4::from_translation(DVec3::new(0.0, -xoff, zoff));
-        return Ok(Some(world_matrix(&handrail)? * local * offset));
-    }
-    if post.element_type()?.as_str() == "HRGATE" {
+    if kind == "HRGATE" {
         let width = post.get_double("WIDT")?.unwrap_or(0.0);
         let gate_frame = DMat4::from_translation(DVec3::new(0.0, width * 0.5, 0.0))
             * DMat4::from_rotation_z(-std::f64::consts::FRAC_PI_2);
-        return Ok(Some(world_matrix(&handrail)? * local * gate_frame));
+        return Ok(Some(
+            world_matrix(&handrail)? * DMat4::from_translation(station.position) * gate_frame,
+        ));
     }
-    Ok(Some(world_matrix(&handrail)? * local))
-}
-
-/// Resolve a detailed post on the first point of a THRU RPATH curve to the
-/// actual circular station.  Core3D places these posts on the arc itself;
-/// using the through-point chord as a constant tangent loses the lateral
-/// displacement that becomes large near the end of the arc.
-fn handrail_curve_station(
-    handrail: &DbElement,
-    point: &DbElement,
-    zdis: f64,
-) -> Result<Option<DVec3>, DbElementError> {
-    if zdis < 0.0 {
-        return Ok(None);
-    }
-    let Some(rpath) = handrail
-        .members()?
-        .find(|member| member.element_type().is_ok_and(|noun| noun == "RPATH"))
-    else {
-        return Ok(None);
+    let along = DVec3::new(station.travel.x, station.travel.y, 0.0).try_normalize();
+    let x_axis = match along {
+        None => None,
+        Some(along) => Some(match post.get_string("HRJUSL")?.as_deref() {
+            Some("LEFT") => along,
+            Some("FORW") => along.cross(DVec3::Z),
+            _ => -along,
+        }),
     };
-    let points: Vec<DbElement> = rpath
-        .members()?
-        .filter(|member| member.element_type().is_ok_and(|noun| noun == "POINTR"))
-        .collect();
-    if points.first().map(|candidate| candidate.refno()) != Some(point.refno()) {
-        return Ok(None);
-    }
-    let Some(next) = points.get(1) else {
-        return Ok(None);
-    };
-    let Some(start_pos) = point.get_position("POS")? else {
-        return Ok(None);
-    };
-    let Some(end_pos) = next.get_position("POS")? else {
-        return Ok(None);
-    };
-    let Some(curve) = rpath
-        .members()?
-        .find(|member| member.element_type().is_ok_and(|noun| noun == "CURVE"))
-    else {
-        return Ok(None);
-    };
-    if curve.get_string("CURTYP")?.as_deref() != Some("THRU") {
-        return Ok(None);
-    }
-    let Some(through_pos) = curve.get_position("POS")? else {
-        return Ok(None);
-    };
-    let start = DVec3::from_array(start_pos);
-    let through = DVec3::from_array(through_pos);
-    let end = DVec3::from_array(end_pos);
-    let normal = (through - start).cross(end - through);
-    if normal.length_squared() <= 1e-12 {
-        return Ok(None);
-    }
-    let centre = circumcentre(start, through, end, normal);
-    let radius_vector = start - centre;
-    let radius = radius_vector.length();
-    if radius <= 1e-9 {
-        return Ok(None);
-    }
-    let axis = normal.normalize();
-    let mut sweep = axis
-        .dot(radius_vector.cross(end - centre))
-        .atan2(radius_vector.dot(end - centre));
-    if sweep < 0.0 {
-        sweep += std::f64::consts::TAU;
-    }
-    let arc_length = radius * sweep;
-    if zdis > arc_length + 1e-6 {
-        return Ok(None);
-    }
+    let rotation = x_axis.map_or(DMat4::IDENTITY, |x| {
+        DMat4::from_mat3(DMat3::from_cols(x, DVec3::Z.cross(x), DVec3::Z))
+    });
+    let right = along.map_or(DVec3::ZERO, |along| along.cross(DVec3::Z));
+    let offset = right * post.get_double("XOFF")?.unwrap_or(0.0)
+        + DVec3::Z * post.get_double("ZOFF")?.unwrap_or(0.0);
     Ok(Some(
-        centre + crate::section::rotate_about(radius_vector, axis, zdis / radius),
+        world_matrix(&handrail)? * DMat4::from_translation(station.position + offset) * rotation,
     ))
-}
-
-fn circumcentre(a: DVec3, b: DVec3, c: DVec3, normal: DVec3) -> DVec3 {
-    let ab = b - a;
-    let ac = c - a;
-    let denom = 2.0 * normal.length_squared();
-    a + (normal.cross(ab) * ac.length_squared() + ac.cross(normal) * ab.length_squared()) / denom
-}
-
-/// A detailed post anchored just past a straight path endpoint is clamped to
-/// that endpoint by Core3D.  Keep the rule narrow: CURVE/RSECT paths have a
-/// separate stationing model and must not be clamped using chord lengths.
-fn handrail_straight_run_distance(
-    handrail: &DbElement,
-    point: &DbElement,
-    zdis: f64,
-) -> Result<f64, DbElementError> {
-    let Some(rpath) = handrail
-        .members()?
-        .find(|member| member.element_type().is_ok_and(|noun| noun == "RPATH"))
-    else {
-        return Ok(zdis);
-    };
-    if rpath
-        .members()?
-        .any(|member| member.element_type().is_ok_and(|noun| noun != "POINTR"))
-    {
-        return Ok(zdis);
-    }
-    let points: Vec<DbElement> = rpath
-        .members()?
-        .filter(|member| member.element_type().is_ok_and(|noun| noun == "POINTR"))
-        .collect();
-    let Some(index) = points
-        .iter()
-        .position(|candidate| candidate.refno() == point.refno())
-    else {
-        return Ok(zdis);
-    };
-    let (a, b) = if let Some(next) = points.get(index + 1) {
-        (point, next)
-    } else if let Some(previous) = index.checked_sub(1).and_then(|i| points.get(i)) {
-        // The terminal post's tangent looks back along the entering run,
-        // but its station clamp is measured from that entering point to the
-        // terminal point itself.
-        (previous, point)
-    } else {
-        return Ok(zdis);
-    };
-    let (Some(a), Some(b)) = (a.get_position("POS")?, b.get_position("POS")?) else {
-        return Ok(zdis);
-    };
-    Ok(zdis.min((DVec3::from_array(b) - DVec3::from_array(a)).length()))
-}
-
-fn handrail_path_tangent(
-    handrail: &DbElement,
-    point: &DbElement,
-    zdis: f64,
-) -> Result<Option<DVec3>, DbElementError> {
-    let Some(rpath) = handrail
-        .members()?
-        .find(|member| member.element_type().is_ok_and(|noun| noun == "RPATH"))
-    else {
-        return Ok(None);
-    };
-    let points: Vec<DbElement> = rpath
-        .members()?
-        .filter(|member| member.element_type().is_ok_and(|noun| noun == "POINTR"))
-        .collect();
-    let Some(index) = points
-        .iter()
-        .position(|candidate| candidate.refno() == point.refno())
-    else {
-        return Ok(None);
-    };
-    // E3D measures an end-point post's ZDIS back along the entering run.  The
-    // last POINTR can be a corner extension, so using `point -> previous`
-    // would turn the post onto the wrong leg (the 8 m displacement is a useful
-    // real-world example).  Interior and start points use the following run.
-    let (from, to) = if index + 1 < points.len() {
-        (point.clone(), points[index + 1].clone())
-    } else if index >= 2 {
-        (points[index - 1].clone(), points[index - 2].clone())
-    } else if index == 1 {
-        (point.clone(), points[0].clone())
-    } else {
-        return Ok(None);
-    };
-    let Some(from_pos) = from.get_position("POS")? else {
-        return Ok(None);
-    };
-    let Some(to_pos) = to.get_position("POS")? else {
-        return Ok(None);
-    };
-    // A CURVE member replaces the first straight edge.  Use the tangent of
-    // the actual circular station, rather than the chord to its control point
-    // (which is only correct at the start of the arc).
-    if index == 0 {
-        if handrail_curve_station(handrail, point, zdis)?.is_some() {
-            let step = 0.1;
-            let current = handrail_curve_station(handrail, point, zdis)?;
-            let next = handrail_curve_station(handrail, point, zdis + step)?;
-            let previous = handrail_curve_station(handrail, point, (zdis - step).max(0.0))?;
-            let tangent = match (next, previous) {
-                (Some(next), Some(previous)) => (next - previous).try_normalize(),
-                // At an arc endpoint the forward probe is outside the arc.  A
-                // one-sided derivative keeps the terminal post on the arc
-                // tangent instead of falling back to the control-point chord.
-                (None, Some(previous)) => {
-                    current.and_then(|current| (current - previous).try_normalize())
-                }
-                (Some(next), None) => current.and_then(|current| (next - current).try_normalize()),
-                (None, None) => None,
-            };
-            if tangent.is_some() {
-                return Ok(tangent);
-            }
-        }
-    }
-    Ok((DVec3::from_array(to_pos) - DVec3::from_array(from_pos)).try_normalize())
 }
 
 fn pseudo_attribute(

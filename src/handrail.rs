@@ -973,6 +973,177 @@ fn arc_as_spine(segment: &PathSegment) -> SpinePath {
     }
 }
 
+/// 详图式扶手成员（立柱 `HRPOST`、端头 `HRTERM`、门 `HRGATE`、面板 `HRPANE`）在属主 RPATH 上的站位，
+/// HANDRA 局部系（[`member_station`]）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PathStation {
+    pub position: DVec3,
+    /// 站点处路径按点序的走向，单位向量。
+    pub travel: DVec3,
+    /// `POSREF` 是开口路径的末点：`ZDIS` 沿进入段往回量。
+    pub at_open_end: bool,
+}
+
+/// 从 `POSREF` 点出发、沿离开它的那条边走 `ZDIS` 得到的站位。
+///
+/// - 起量点是这条边直段的起点：拐点上 `FRAD` 圆角的切长（[`path_layout`] 的 `FRAD·tan(θ/2)`）先让掉。aps250112
+///   `/EL(+)100000/HR_001`、`HR_002` 的 5 根立柱挂在 `FRAD 100` 的直角拐点上，E3D TTY 导出的站位比从拐点量远
+///   100 mm；aps250110 拐点的 `FRAD` 全是 0，两种量法一样。
+/// - 闭合路径（`CLOSEF`）末点那条边绕回首点：aps250110 `/BUILDING_01_LEVEL_03/HR_001` 挂在末点的 9 根立柱落在
+///   末点到首点那 8385 mm 上。开口路径的末点没有离开的边，沿进入段往回量。
+/// - 边上夹着 `CURTYP THRU` 的 `CURVE` 时站位在过三点的圆弧上、按弧长量（同一只扶手起点那段弧上的 16 根）。
+/// - 越过直段（或圆弧）终点的 `ZDIS` 夹在终点上。
+pub(crate) fn member_station(
+    handrail: &DbElement,
+    point: &DbElement,
+    zdis: f64,
+) -> Result<Option<PathStation>, ModelError> {
+    let Some(rpath) = first_rpath(handrail)? else {
+        return Ok(None);
+    };
+    let raw = path_points(&rpath)?;
+    let target = point.refno().to_string();
+    let Some(original) = raw.points.iter().position(|(refno, _, _)| *refno == target) else {
+        return Ok(None);
+    };
+    let closed = handrail.get_bool("CLOSEF")?.unwrap_or(false);
+    let mut notes = Vec::new();
+    let layout = path_layout(
+        &raw.points
+            .iter()
+            .map(|(_, pos, fillet)| (*pos, *fillet))
+            .collect::<Vec<_>>(),
+        closed,
+        &mut notes,
+    );
+    if layout.edge_count == 0 {
+        return Ok(None);
+    }
+    // 与前一点重合、去重时被丢掉的点，站在它前面那个保留点上。
+    let Some(index) = layout.kept.iter().rposition(|kept| *kept <= original) else {
+        return Ok(None);
+    };
+    let (edge, at_open_end) = if index < layout.edge_count {
+        (index, false)
+    } else {
+        (index - 1, true)
+    };
+    let count = layout.kept.len();
+    let vertex = |i: usize| raw.points[layout.kept[i % count]].1;
+    let (a, b) = (vertex(edge), vertex(edge + 1));
+    if let Some(arc) = through_arc(&rpath, layout.kept[edge], a, b)? {
+        let along = if at_open_end { arc.length - zdis } else { zdis };
+        let (position, travel) = arc.at(along.clamp(0.0, arc.length));
+        return Ok(Some(PathStation {
+            position,
+            travel,
+            at_open_end,
+        }));
+    }
+    let Some(travel) = (b - a).try_normalize() else {
+        return Ok(None);
+    };
+    let (start, end) = layout
+        .segments
+        .iter()
+        .find_map(|(e, segment)| match segment {
+            PathSegment::Line { start, end, .. } if *e == edge => Some((*start, *end)),
+            _ => None,
+        })
+        .unwrap_or((a, b));
+    let run = zdis.min((end - start).length());
+    Ok(Some(PathStation {
+        position: if at_open_end {
+            end - travel * run
+        } else {
+            start + travel * run
+        },
+        travel,
+        at_open_end,
+    }))
+}
+
+/// 一条边上 `CURTYP THRU` 的圆弧：过边的两端与 `CURVE` 的 `POS`。
+struct ThroughArc {
+    centre: DVec3,
+    radius: f64,
+    /// 起点绕它正转到终点。
+    axis: DVec3,
+    start: DVec3,
+    length: f64,
+}
+
+impl ThroughArc {
+    /// 从起点沿弧走 `distance`：站点与该处切向。
+    fn at(&self, distance: f64) -> (DVec3, DVec3) {
+        let radial = crate::section::rotate_about(
+            self.start - self.centre,
+            self.axis,
+            distance / self.radius,
+        );
+        (self.centre + radial, self.axis.cross(radial).normalize())
+    }
+}
+
+/// 夹在第 `after` 个 `POINTR`（原始下标）与下一个之间的 `CURVE`，`CURTYP THRU` 时给出 `a → b` 那段圆弧；
+/// 没有、类型不同或三点共线都是 `None`（照直段算）。
+fn through_arc(
+    rpath: &DbElement,
+    after: usize,
+    a: DVec3,
+    b: DVec3,
+) -> Result<Option<ThroughArc>, ModelError> {
+    let mut seen = 0usize;
+    let mut curve = None;
+    for member in rpath.members()? {
+        match member.element_type()?.as_str() {
+            "POINTR" => seen += 1,
+            "CURVE" if seen == after + 1 => {
+                curve = Some(member);
+                break;
+            }
+            _ => {}
+        }
+    }
+    let Some(curve) = curve else {
+        return Ok(None);
+    };
+    if curve.get_string("CURTYP")?.as_deref() != Some("THRU") {
+        return Ok(None);
+    }
+    let Some(through) = curve.get_position("POS")?.map(DVec3::from_array) else {
+        return Ok(None);
+    };
+    let normal = (through - a).cross(b - through);
+    if normal.length_squared() <= 1e-12 {
+        return Ok(None);
+    }
+    let ab = through - a;
+    let ac = b - a;
+    let centre = a
+        + (normal.cross(ab) * ac.length_squared() + ac.cross(normal) * ab.length_squared())
+            / (2.0 * normal.length_squared());
+    let radial = a - centre;
+    let radius = radial.length();
+    if radius <= 1e-9 {
+        return Ok(None);
+    }
+    let axis = normal.normalize();
+    let mut sweep = axis
+        .dot(radial.cross(b - centre))
+        .atan2(radial.dot(b - centre));
+    if sweep < 0.0 {
+        sweep += std::f64::consts::TAU;
+    }
+    Ok(Some(ThroughArc {
+        centre,
+        radius,
+        axis,
+        start: a,
+        length: radius * sweep,
+    }))
+}
+
 /// `RAIL → RAILSE → HANDRA`（`KICKPL → HRKPSE → HANDRA`）：`sub_105A9420` 第 33–35 行
 /// 连取两次 owner，取到的不是 HANDRA 就没有路径可用。
 fn owning_handrail(el: &DbElement) -> Result<Option<DbElement>, ModelError> {

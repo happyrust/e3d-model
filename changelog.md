@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-10-22 详图式扶手成员按一条规则站位、转向——ZDIS 从圆角切点量，端头与立柱同按 HRJUSL
+
+- 立柱 `HRPOST`、端头 `HRTERM`、面板 `HRPANE`、门 `HRGATE` 没有 POS / ORI，标架现算（`transform::handrail_post_world`）。
+  站位改由 `handrail::member_station` 给：从 `POSREF` 点出发、沿离开它的那条边走 `ZDIS`，起量点是这条边直段的起点
+  ——拐点上 `FRAD` 圆角的切长（`FRAD·tan(θ/2)`，与栏杆的段表同一份 `path_layout`）先让掉；闭合路径末点那条边
+  绕回首点；开口路径末点沿进入段往回量；边上夹着 `CURTYP THRU` 的 `CURVE` 时站位在过三点的圆弧上；越过终点的
+  夹在终点。
+- 朝向一条规则：局部 +X 顺路径（`HRJUSL LEFT`）、逆路径（`RIGH` 与其余）或取 `路径 × Z`（`FORW`），端头也一样。
+  此前末点的路径方向取「倒数第二条边反向」，再靠 36004 / `LEFT` 两条特例补，aps250112 两只端头转反 180°。`XOFF`
+  偏在路径右侧（`路径 × Z`）、`ZOFF` 向上，立柱 / 端头 / 面板同一口径。门照旧不转。
+- aps250112 `/EL(+)100000/HR_001`、`HR_002`：5 根挂在 `FRAD 100` 直角拐点上的立柱（差 100 mm）与 2 只端头，模板件
+  共 102 件 off 归零；aps250110 3425 件 exact 不变。新真库门 `aps_handrail_real`。
+- 祖先读护栏：`handrail_post_world` 不再读 `POS` / `SPRE`，消费者换成 `handrail::member_station`（`CLOSEF`）
+  与 `through_arc`（`CURTYP` / `POS`）。读取集合不变。
+
 ## 2026-10-22 折弯板 BPANEL 沿 RPATH 中线建体，没开孔的逐段一条 FacetGroup——aps250110 52 只全出、exact
 
 - aps250110 的 52 只折弯板（`/AREA02_WS_CLADDING*` 墙板 40 只、`/AREA02_WS_ROOFING` 屋面板 12 只）此前整族
