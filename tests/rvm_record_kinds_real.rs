@@ -843,3 +843,67 @@ fn a_jointed_arc_wall_keeps_its_radial_ends() {
 
     std::fs::remove_dir_all(&scratch).ok();
 }
+
+/// aps7200 圆转方风管变径 `TRNS /HVAC2-B1/ITEM8`（`23584/7410`，目录 acp7002 `/FORD`）：本体的两只偏心 `Snout`
+/// 把偏心方向 `PBAX` 取自 P7 / P8，它们的 `PTCD` 是 `AXIS -Y ( ATANT ( ±DESP[10] - (DESP[4] - DESP[5]) / 2 , 0 - DESP[11] ) ) ∓X`。
+/// E3D TTY（gen-model `verification/civil-tty-20261021/aps7200-w7h/aps7200_lv6_23584_7298.rvm`）里两只 Snout 的记录
+/// X 轴（偏心方向）是世界 −Y（偏 450）与 +Y（偏 50），原点 y 17555 / 17805；此前 `ATANT` 求值被拒、方向回到模板
+/// 缺省 +Y（世界 +Z），对拍 off 375 mm。
+#[test]
+fn a_round_to_rectangular_transition_leans_its_snouts_the_way_e3d_does() {
+    if !fixtures_present_in(APS_DIR, APS_COPY_ONLY_DB) {
+        return;
+    }
+    let scratch: PathBuf =
+        std::env::temp_dir().join(format!("e3d-model-rvm-trns-aps-{}", std::process::id()));
+    let (rvm, _) = generate_in(APS_DIR, APS_COPY_ONLY_DB, "23584/7410", "on", &scratch);
+    let name = "/HVAC2-B1/ITEM8";
+    let kinds = record_kinds(&rvm, name);
+    assert_eq!(
+        kinds.iter().filter(|kind| **kind == "Snout").count(),
+        2,
+        "{kinds:?}"
+    );
+    let mut snouts: Vec<([f64; 9], [f64; 3], [f64; 3])> = member(&rvm, name)
+        .geometries
+        .iter()
+        .filter_map(|geometry| match geometry.primitive {
+            Primitive::Snout(parameters) => Some((
+                parameters,
+                [
+                    geometry.matrix3[0] * 1000.0,
+                    geometry.matrix3[1] * 1000.0,
+                    geometry.matrix3[2] * 1000.0,
+                ],
+                geometry.translation_mm,
+            )),
+            _ => None,
+        })
+        .collect();
+    snouts.sort_by(|a, b| b.0[3].partial_cmp(&a.0[3]).unwrap());
+    let want = [
+        (450.0, [0.0, -1.0, 0.0], [4902.5, 17555.0, 4650.0]),
+        (50.0, [0.0, 1.0, 0.0], [4902.5, 17805.0, 4650.0]),
+    ];
+    for ((parameters, x_axis, origin), (offset, want_axis, want_origin)) in snouts.iter().zip(want) {
+        assert!(
+            [200.0, 150.0, 525.0, offset]
+                .iter()
+                .zip(parameters)
+                .all(|(want, got)| (want - got).abs() < 1e-3),
+            "{name}: {parameters:?}"
+        );
+        for axis in 0..3 {
+            assert!(
+                (x_axis[axis] - want_axis[axis]).abs() < 1e-6,
+                "{name} 偏 {offset}：记录 X 轴 {x_axis:?}，E3D {want_axis:?}"
+            );
+            assert!(
+                (origin[axis] - want_origin[axis]).abs() < 0.05,
+                "{name} 偏 {offset}：原点 {origin:?}，E3D {want_origin:?}"
+            );
+        }
+    }
+
+    std::fs::remove_dir_all(&scratch).ok();
+}

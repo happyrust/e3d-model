@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-23 圆转方风管变径的偏心 Snout 按 E3D 的方向偏——aps7200 `/HVAC2-B1/ITEM8` 对上（修在 e3d-io）
+
+- acp7002 `/FORD`（圆转方风管变径）本体的两只 LSNO 把偏心方向 `PBAX` 取自 P7 / P8，它们的 `PTCD` 是
+  `AXIS -Y ( ATANT ( ±DESP[10] - (DESP[4] - DESP[5]) / 2 , 0 - DESP[11] ) ) ∓X`。e3d-io 的 PML 求值器此前对 `ATANT`
+  一律拒答（两个参数谁是纵坐标没有对过 E3D），方向回到模板缺省 +Y，`TRNS /HVAC2-B1/ITEM8`（`23584/7410`）的两只 Snout
+  往世界 +Z 偏 450 / 50 mm，E3D 往 −Y / +Y，对拍 off 375 mm。现在 `ATANT ( a , b )` = `atan2(a, b)`（度，纵坐标在前，保象限），
+  按 E3D TTY 导出钉的：另一种次序给 180°、两只都留在 −Y。这样读，两条链对任意偏移都指向跑道形两个半圆心
+  `(DESP[10] ± (DESP[4] - DESP[5]) / 2, DESP[11])`，正是目录作者写它的用意。
+- 真库门 `rvm_record_kinds_real` 加这只变径：两只 Snout 的偏心量、记录 X 轴（偏心方向）与原点对 E3D 记录。
+  aps7200 对拍 off 5 → 4、exact 2323 → 2324；其余语料里没有任何 `ATANT` 被求值（生成 ams8000 全库时追过）。
+
 ## 2026-10-23 挂着关节的弧墙两端不按 SPINE 端向斜切——aps7200 `/C1101-BASE` 的 165° 弧墙对上
 
 - WALL 的一端挂着 PJOI（`JOIS` / `JOIE`，关节的 `CREF` 回指墙自己）时，端部归关节管，E3D 不按 SPINE 的 `DRNS` / `DRNE`
