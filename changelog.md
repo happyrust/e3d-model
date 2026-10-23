@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-23 桥架分支的路径点照 E3D 写 10 mm 记号——aps7200 8 条空分支的 20 个 POINTR 对上
+
+- E3D 给 `CWBRAN` 的 RPATH 每个 `POINTR` 写一只 10 × 10 × 10、沿世界轴、以点为中心的 `Box`（Core3D
+  `CAB_CSGRoutePoint::getCSGTree`）：aps7200 zone `=23584/10278` 的 8 条没有托盘构件的分支、共 20 点，TTY 导出全是这样；
+  我们把 POINTR 当路径数据，一条不写。记号不是实物，走只写 RVM 的通道 `GenerationOutcome::bodyless`（`rpath::route_point_marks`，
+  新增 `DegenerateCatalogueShape::Box` 与 `rvm_write::bodyless_box_geometry`）：模型集、`elements.json` 与增量都不动。
+- 口径：有 RPATH 就画。语料里只有这 8 条空分支有 CWBRAN 导出（ams8000 的桥架是 BRAN + FTUB，APS 其余 10 本没有 CWBRAN），
+  挂着托盘件的分支 E3D 画不画记号没有样本，碰到反例再收窄；路径里的 CURVE / EXTGEO 成员不是点，跳过。
+- 真库门 `rvm_record_kinds_real` 加这个 zone：20 只 `Box[10, 10, 10]`，名字、原点与三轴对 E3D，`elements.json` 里没有它们。
+  aps7200 对拍只在 E3D 20 → 0、exact 2326 → 2346（2352 对）。
+
 ## 2026-10-23 管道容器下的矩形 TUBI 目录件照矩形画——aps7200 `/HVAC/RECT/M1/B2` 的支管管身对上
 
 - 路由容器的学科按属主 noun 定（`PIPE` → 管道、`HVAC` → 风管），管道学科的隐式管身只读离开侧 stub 目录件的

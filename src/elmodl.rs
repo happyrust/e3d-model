@@ -238,6 +238,11 @@ pub enum DegenerateCatalogueShape {
     Line {
         length_mm: f64,
     },
+    /// 一只按记录标架三轴的 `Box`，只用于设计侧的空记录（[`crate::rpath::route_point_marks`]：桥架路径点的 10 mm 记号）；
+    /// 目录图元没有这一支。
+    Box {
+        lengths_mm: [f64; 3],
+    },
 }
 
 pub struct DegenerateCataloguePart {

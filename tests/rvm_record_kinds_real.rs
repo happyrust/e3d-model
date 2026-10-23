@@ -1031,3 +1031,80 @@ fn a_boxed_tube_catalogue_under_a_pipe_still_draws_the_rectangle() {
 
     std::fs::remove_dir_all(&scratch).ok();
 }
+
+/// aps7200 zone `=23584/10278`：8 条没有托盘构件的桥架分支（`CWBRAN /Elec-cableway1_*`），E3D TTY
+/// （gen-model `verification/civil-tty-20261021/aps7200-w7h/aps7200_lv6_23584_10278.rvm`）给 RPATH 的 20 个 `POINTR` 各写一只
+/// 10 × 10 × 10、沿世界轴、以点为中心的 `Box`（`POINTR 1 of RPATH 1 of CWBRAN /Elec-cableway1_B1` 在 (14377, 3400, 2800)）。
+/// 记号只进 RVM，`elements.json` 里没有它们。
+#[test]
+fn empty_cableway_branches_mark_their_route_points_like_e3d() {
+    if !fixtures_present_in(APS_DIR, APS_COPY_ONLY_DB) {
+        return;
+    }
+    let scratch: PathBuf =
+        std::env::temp_dir().join(format!("e3d-model-rvm-pointr-aps-{}", std::process::id()));
+    let (rvm, elements) = generate_in(APS_DIR, APS_COPY_ONLY_DB, "23584/10278", "on", &scratch);
+    assert!(
+        !elements
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|element| element["noun"] == "POINTR"),
+        "路径点记号不该进模型集"
+    );
+    let marks: Vec<&RvmMember> = rvm
+        .members
+        .iter()
+        .filter(|member| member.name.trim().starts_with("POINTR "))
+        .collect();
+    assert_eq!(
+        marks.len(),
+        20,
+        "{:?}",
+        marks.iter().map(|member| member.name.trim()).collect::<Vec<_>>()
+    );
+    for member in &marks {
+        assert_eq!(member.geometries.len(), 1, "{}", member.name);
+        assert_eq!(
+            member.geometries[0].primitive,
+            Primitive::Box([10.0, 10.0, 10.0]),
+            "{}",
+            member.name
+        );
+    }
+    let first = marks
+        .iter()
+        .find(|member| member.name.trim() == "POINTR 1 of RPATH 1 of CWBRAN /Elec-cableway1_B1")
+        .unwrap_or_else(|| {
+            panic!(
+                "没有 B1 的第一点：{:?}",
+                marks.iter().map(|member| member.name.trim()).collect::<Vec<_>>()
+            )
+        });
+    let geometry = &first.geometries[0];
+    let want_origin = [14377.0, 3400.0, 2800.0];
+    for component in 0..3 {
+        assert!(
+            (geometry.translation_mm[component] - want_origin[component]).abs() < 0.05,
+            "记号原点 {:?}，E3D {want_origin:?}",
+            geometry.translation_mm
+        );
+    }
+    let axes = [
+        [geometry.matrix3[0], geometry.matrix3[1], geometry.matrix3[2]],
+        [geometry.matrix3[3], geometry.matrix3[4], geometry.matrix3[5]],
+        [geometry.matrix3[6], geometry.matrix3[7], geometry.matrix3[8]],
+    ]
+    .map(|axis| axis.map(|value| value * 1000.0));
+    let want_axes = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    for (axis, want) in axes.iter().zip(want_axes) {
+        for component in 0..3 {
+            assert!(
+                (axis[component] - want[component]).abs() < 1e-6,
+                "记号三轴 {axes:?}，E3D 沿世界轴"
+            );
+        }
+    }
+
+    std::fs::remove_dir_all(&scratch).ok();
+}

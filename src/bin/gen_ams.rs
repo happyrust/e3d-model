@@ -1393,6 +1393,13 @@ fn main() -> anyhow::Result<()> {
                                 length_mm,
                             )
                         }
+                        e3d_model::elmodl::DegenerateCatalogueShape::Box { lengths_mm } => {
+                            e3d_model::rvm_write::bodyless_box_geometry(
+                                &generated.world,
+                                &part.local_transform,
+                                lengths_mm,
+                            )
+                        }
                     });
                 }
                 let name = rvm_display_name(
@@ -1465,8 +1472,9 @@ fn main() -> anyhow::Result<()> {
                     geometries: e3d_model::rvm_write::mark_line_geometries(mark),
                 });
             }
-            // 零尺寸的设计基本体：不出实体、不进 elements.json，RVM 里照 E3D 写一条空记录
-            // （见 [`e3d_model::elmodl::bodyless_design_record`]）。记录矩阵就是元素的世界标架。
+            // 设计侧的空记录：不出实体、不进 elements.json，RVM 里照 E3D 写——零尺寸的设计 CYLI
+            // （[`e3d_model::elmodl::bodyless_design_record`]）与桥架路径点的 10 mm 记号（[`e3d_model::rpath::route_point_marks`]）。
+            // 记录矩阵就是记录自带的世界标架。
             for record in &bodyless {
                 let geometry = match record.shape {
                     e3d_model::elmodl::DegenerateCatalogueShape::Cylinder {
@@ -1478,6 +1486,13 @@ fn main() -> anyhow::Result<()> {
                         radius_mm,
                         height_mm,
                     ),
+                    e3d_model::elmodl::DegenerateCatalogueShape::Box { lengths_mm } => {
+                        e3d_model::rvm_write::bodyless_box_geometry(
+                            &record.world,
+                            &glam::DMat4::IDENTITY,
+                            lengths_mm,
+                        )
+                    }
                     _ => continue,
                 };
                 let (owner_desc, ordinal) = keys.get(&record.refno).cloned().unwrap_or((None, 0));

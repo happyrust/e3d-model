@@ -403,9 +403,9 @@ pub struct GenerationOutcome {
     /// [`exports_mark_as_lines`] 那类点标记里算得出位置的（[`MarkLines`]），按遍历序。模型集（`elements`）
     /// 里没有它们——不出实体，gen-model 的烘焙要实体；RVM 写出端（`gen_ams`）照它们写线。
     pub marks: Vec<MarkLines>,
-    /// 零尺寸的设计基本体（[`crate::elmodl::bodyless_design_record`]），按遍历序：按 [`SkipKind::NoShape`] 跳过、
-    /// 账照记在 [`Report::skipped`]，E3D 的 RVM 驱动却照样落一条 `Cylinder[0, 0]`。与 [`Self::marks`] 同一条只写 RVM 的
-    /// 通道：模型集里没有它。
+    /// 设计侧的空记录，按遍历序：零尺寸的设计基本体（[`crate::elmodl::bodyless_design_record`]，按 [`SkipKind::NoShape`]
+    /// 跳过、账照记在 [`Report::skipped`]，E3D 的 RVM 驱动却照样落一条 `Cylinder[0, 0]`）与桥架分支路径点的 10 mm 记号
+    /// （[`crate::rpath::route_point_marks`]）。与 [`Self::marks`] 同一条只写 RVM 的通道：模型集里没有它们。
     pub bodyless: Vec<crate::elmodl::BodylessDesignRecord>,
     /// DFS 访问到的每一个元素，**按遍历序**、含根、含没出几何的容器与记账项；
     /// 被属主消费掉的成员（剖面环 / 负体）不入栈，因此也不在这里——它们在
@@ -737,6 +737,19 @@ pub fn generate_subtree_with_cache(
                         refno,
                         noun,
                         detail: error.to_string(),
+                    }),
+                }
+            }
+            // 桥架分支的路径点记号：E3D 给 CWBRAN 的 RPATH 每个 POINTR 写一只 10 mm 世界轴 Box，不是实物
+            // （[`crate::rpath::route_point_marks`]）。只进 RVM（[`GenerationOutcome::bodyless`]），模型集不动；
+            // 容器本身照旧只记账（与下面 `Composite(_)` 那臂一样什么都不建）。
+            Category::Composite(CompositeFamily::CableTray) if noun == "CWBRAN" => {
+                match crate::rpath::route_point_marks(&el) {
+                    Ok(marks) => bodyless.extend(marks),
+                    Err(error) => report.notes.push(Incident {
+                        refno: refno.clone(),
+                        noun: noun.clone(),
+                        detail: format!("桥架路径点记号算不出，RVM 里不写：{error}"),
                     }),
                 }
             }

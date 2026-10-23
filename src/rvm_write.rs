@@ -1806,6 +1806,31 @@ pub fn bodyless_cylinder_geometry(
     }
 }
 
+/// 给一只**没有体**的盒子造一条 `Box` 记录：设计侧的记号（桥架路径点 `POINTR` 的 10 mm 立方体，
+/// [`crate::rpath::route_point_marks`]）。记录矩阵 = `world * local`，三边沿记录标架的三轴、以原点为中心。
+pub fn bodyless_box_geometry(
+    world: &glam::DMat4,
+    local: &glam::DMat4,
+    lengths_mm: [f64; 3],
+) -> crate::rvm_read::RvmGeometry {
+    let cols = (*world * *local).to_cols_array();
+    let matrix3 = [
+        cols[0], cols[1], cols[2], cols[4], cols[5], cols[6], cols[8], cols[9], cols[10],
+    ]
+    .map(|value| value / M_TO_MM);
+    let [x, y, z] = lengths_mm;
+    RvmGeometry {
+        tag: "PRIM".to_string(),
+        flags: 1,
+        primitive: Primitive::Box(lengths_mm),
+        matrix3,
+        translation_mm: [cols[12], cols[13], cols[14]],
+        record_bbox: [-x / 2.0, -y / 2.0, -z / 2.0, x / 2.0, y / 2.0, z / 2.0],
+        bbox_frame: crate::rvm_read::BboxFrame::Local,
+        level: None,
+    }
+}
+
 /// 给一只**没有体**的目录圆台造一条 `Snout` 记录。
 ///
 /// `/1WCC188VN` 的两只法兰盘：`PBDI = PTDI = 0`、直径 168.3。Core 不出体，E3D 的 DRSNO

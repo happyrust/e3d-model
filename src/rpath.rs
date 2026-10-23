@@ -332,6 +332,43 @@ pub(crate) fn first_rpath(container: &DbElement) -> Result<Option<DbElement>, Db
     Ok(None)
 }
 
+/// E3D 给桥架分支路径点写的记号的边长：Core3D `CAB_CSGRoutePoint::getCSGTree` 在每个 `POINTR` 处落一只
+/// 沿世界轴的 10 × 10 × 10 `Box`（aps7200 zone `=23584/10278` 的 8 条空分支、共 20 点，TTY 导出全是这样）。
+pub const ROUTE_POINT_MARK_MM: f64 = 10.0;
+
+/// `CWBRAN` 路径点的记号：`RPATH` 里每个 `POINTR` 一只 [`ROUTE_POINT_MARK_MM`] 的世界轴立方体，中心在点上。
+///
+/// 记号不是实物，只进 RVM（[`crate::pipeline::GenerationOutcome::bodyless`]，与 SNOD 点标记、零尺寸 CYLI 同一条通道），
+/// 模型集不动。语料里只有 aps7200 那 8 条**没有托盘构件**的分支有 CWBRAN 导出（ams8000 的桥架是 BRAN + FTUB，
+/// APS 其余 10 本没有 CWBRAN），挂着托盘件的分支 E3D 画不画记号没有样本：这里按「有 RPATH 就画」，碰到反例再收窄。
+/// 路径里的 `CURVE` / `EXTGEO` 成员不是点，跳过。
+pub(crate) fn route_point_marks(
+    cwbran: &DbElement,
+) -> Result<Vec<crate::elmodl::BodylessDesignRecord>, DbElementError> {
+    let Some(rpath) = first_rpath(cwbran)? else {
+        return Ok(Vec::new());
+    };
+    let world = crate::transform::world_matrix(cwbran)?;
+    let mut marks = Vec::new();
+    for member in rpath.members()? {
+        let noun = member.element_type()?;
+        if noun != "POINTR" {
+            continue;
+        }
+        let origin = world.transform_point3(vector(&member, "POS")?.unwrap_or(DVec3::ZERO));
+        marks.push(crate::elmodl::BodylessDesignRecord {
+            refno: member.refno(),
+            noun,
+            name: member.stored_name()?,
+            world: glam::DMat4::from_translation(origin),
+            shape: crate::elmodl::DegenerateCatalogueShape::Box {
+                lengths_mm: [ROUTE_POINT_MARK_MM; 3],
+            },
+        });
+    }
+    Ok(marks)
+}
+
 /// [`straight_point`] 的结果。
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct StraightPoint {
