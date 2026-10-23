@@ -22,8 +22,10 @@
 //!
 //! ## 记录变了却说不出哪里变了，不许当没变
 //!
-//! 属性表只覆盖模板声明的属性。纯 UDA、以及本 crate 尚未解码的存储形态，
-//! 都可能让记录字节不同而属性表逐项相等。那种情况记 [`ElementDiff::opaque`]，
+//! 属性表只覆盖模板声明的属性与字典认得的 UDA。显式流里连名字都没有的
+//! 条目按 `#%08X` 伪名点名进 `attributes`（它们变了是事实；生成器按名读、
+//! 伪名不在读取集合里，影响与否交给下游门裁）。剩下连存储条目都指不出的
+//! 差异——隐式区载荷、尚未解码的存储形态——记 [`ElementDiff::opaque`]，
 //! 由调用方按「变了」处置——把它折算成「没变」就是静默缺件。
 //!
 //! ## 唯一的例外：`TUBI` 有一道 core 硬编码的门
@@ -227,7 +229,10 @@ pub fn diff_element(
     let record_identical = before.noun_hash == after.noun_hash
         && before.owner == after.owner
         && before.members == after.members
-        && before.implicit_data == after.implicit_data
+        && implicit_data_equal_ignoring_block_addresses(
+            &before.implicit_data,
+            &after.implicit_data,
+        )
         && before.explicit_attributes == after.explicit_attributes;
     if record_identical {
         return Ok(ElementDiff::unchanged(refno, noun));
@@ -280,6 +285,33 @@ pub fn diff_element(
     })
 }
 
+/// 隐式区相等：忽略已证明的纯搬迁地址字。
+///
+/// 这不是本夹具的写入器巧合，而是 e3d-io 在读侧强制的记录格式不变式
+/// （`e3d_io::record::mod.rs` 的十一字头文档与 `header_at`）：字 6/7 =
+/// explicit 块地址（`EXPLICIT_SLOT = 24`），字 8/9 = 成员块地址
+/// （`MEMBERS_SLOT = 32`），各为「页号 + 打包偏移」8 字节；任何记录
+/// `implicit_words < 11` 直接拒读，所以字 6..=9 对**每个 noun 的每条记录**
+/// 都是块地址、永远落在头内，属性载荷从字 11（字节 44）才开始。
+/// `parse_as` 存的是 `raw[prefix..impl_end]`（prefix 只跳过填充字），字节
+/// 24..40 精确对应字 6..=9。
+///
+/// 安全性：成员增删由 `members` 门覆盖，显式内容由 `explicit_attributes` 门
+/// 覆盖；其余字节（含长度字、格式字 10 与块大小字段）仍逐字节比，UDA/未解码
+/// 变化照样落 `opaque`。TUBI 门与下游三门不受影响。
+fn implicit_data_equal_ignoring_block_addresses(before: &[u8], after: &[u8]) -> bool {
+    if before.len() != after.len() {
+        return false;
+    }
+    // 字 6..=9（`ParsedElement::parse_as` 存的是从字 0 起的全隐式区字节）。
+    const ADDR_BYTES: std::ops::Range<usize> = 24..40;
+    before
+        .iter()
+        .zip(after.iter())
+        .enumerate()
+        .all(|(i, (a, b))| ADDR_BYTES.contains(&i) || a == b)
+}
+
 fn member_delta(before: &[RefNo], after: &[RefNo]) -> Option<MemberDelta> {
     if before == after {
         return None;
@@ -312,6 +344,12 @@ fn member_delta(before: &[RefNo], after: &[RefNo]) -> Option<MemberDelta> {
 ///
 /// 按属性 hash 配对而不是按下标：两端的模板理论上同源同序，但靠下标对齐会把
 /// 「模板换了一版」变成整表错位，而错位的表现是一大片属性同时报变。
+///
+/// 名字表覆盖不到的显式条目按 `#%08X` 伪名上报。模板没声明、项目字典也没有
+/// （`by_key` 连 `OLDKEY` 都不认）的属性真实存在于显式流里——ams8000 普查
+/// 37 条 opaque 全是这种应用私有存储（type 40 文本）。它们变了是事实，生成器
+/// 又按名读而它们没名，所以点名成伪名给下游读取集合门去裁，比整块落 opaque
+/// 精确：`placement_input_changed` 不再因说不出名字而保守级联。
 fn changed_attributes(
     base_el: &DbElement,
     target_el: &DbElement,
@@ -339,6 +377,41 @@ fn changed_attributes(
     for attribute in &before.attributes {
         if !present.contains(&attribute.hash) && is_set(&attribute.value) {
             changed.push(attribute.name.clone());
+        }
+    }
+
+    // 显式流里名字表之外的条目：模板没声明、字典（含 OLDKEY）答不出的键。
+    // 值按存储原样比（`ExplicitValue` 的 PartialEq 是逐位语义），比抽取层的
+    // NaN==NaN 更严——无名属性的罕见 NaN 抖动宁可多报。
+    let (before_parsed, after_parsed) = (base_el.parsed()?, target_el.parsed()?);
+    let mut known: BTreeSet<u32> = before.attributes.iter().map(|a| a.hash).collect();
+    known.extend(after.attributes.iter().map(|a| a.hash));
+    let catalog = base_el.uda_catalog();
+    let anonymous = |hash: u32| {
+        !known.contains(&hash) && !catalog.is_some_and(|catalog| catalog.by_key(hash).is_some())
+    };
+    fn by_hash<'a>(
+        parsed: &'a e3d_io::record::element::ParsedElement,
+    ) -> BTreeMap<u32, &'a e3d_io::record::explicit::ExplicitAttribute> {
+        parsed
+            .explicit_attributes
+            .iter()
+            .map(|attribute| (attribute.hash, attribute))
+            .collect()
+    }
+    let (before_exp, after_exp) = (by_hash(&before_parsed), by_hash(&after_parsed));
+    for (hash, attribute) in &after_exp {
+        if anonymous(*hash)
+            && before_exp
+                .get(hash)
+                .is_none_or(|old| old.value != attribute.value)
+        {
+            changed.push(format!("#{hash:08X}"));
+        }
+    }
+    for hash in before_exp.keys() {
+        if anonymous(*hash) && !after_exp.contains_key(hash) {
+            changed.push(format!("#{hash:08X}"));
         }
     }
 
@@ -623,5 +696,43 @@ mod tests {
         // 门只长在 TUBI 上：别的 noun 一个属性都不吞。
         assert!(attribute_diff_passes_noun_gate("PANE", &["NAME".into()]));
         assert!(attribute_diff_passes_noun_gate("PANE", &[]));
+    }
+
+    /// 块地址字（6..=9，字节 24..40）随记录搬迁而变：纯搬迁不算记录变化。
+    ///
+    /// 对标红测：同值保存仅成员块页号/打包偏移变化时，`record_identical` 仍应成立，
+    /// 不能落进 `opaque`。
+    #[test]
+    fn relocated_block_addresses_do_not_break_record_identity() {
+        let before = vec![0u8; 64];
+        let mut after = before.clone();
+        // 字 6/7（explicit 块地址）与字 8/9（成员块地址）：16 字节全变。
+        after[24..40].copy_from_slice(&[7u8; 16]);
+        assert!(implicit_data_equal_ignoring_block_addresses(
+            &before, &after
+        ));
+        // 长度不同仍是不等：短一截不是搬迁。
+        assert!(!implicit_data_equal_ignoring_block_addresses(
+            &before,
+            &before[..60]
+        ));
+    }
+
+    /// 地址字之外的隐式字节变了，哨兵必须还亮：UDA/未解码变化不能被归一化吞掉。
+    #[test]
+    fn non_address_implicit_change_still_counts() {
+        let before = vec![0u8; 64];
+        // 字 11（字节 44）：真实负载。
+        let mut payload = before.clone();
+        payload[44] = 1;
+        assert!(!implicit_data_equal_ignoring_block_addresses(
+            &before, &payload
+        ));
+        // 字 0（字节 0..4）：隐式区长度字。
+        let mut len_word = before.clone();
+        len_word[0] = 1;
+        assert!(!implicit_data_equal_ignoring_block_addresses(
+            &before, &len_word
+        ));
     }
 }
