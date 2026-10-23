@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-23 管道容器下的矩形 TUBI 目录件照矩形画——aps7200 `/HVAC/RECT/M1/B2` 的支管管身对上
+
+- 路由容器的学科按属主 noun 定（`PIPE` → 管道、`HVAC` → 风管），管道学科的隐式管身只读离开侧 stub 目录件的
+  `PARA[2]` 外径。aps7200 `BRAN /HVAC/RECT/M1/B2` 挂在 PIPE `/HVAC/RECT/M1` 下，`OLET → ELBO` 那段的 `LSTU = /RDUCT/XYDUCT`：
+  SCOM `/XYDUCT` 的 `PARA[2]` 是 1，断面写在 GMSE 的 BOXING 里（`PXLE` 100 × `PZLE` 50，目录元组里的常数），E3D 照矩形画
+  （TTY `Box[50, 100, 2150]`），我们画成 1 mm 的圆管（off 49.5）。现在管道学科先按风管那条路（`hvac_tube::duct_departure_section`）
+  问一遍：解得出**矩形**断面就用它；圆的、解不出的、读挂的照旧走 `PARA[2]` / 到达侧通径。记录标架按离开侧构件的滚转写
+  （`Box[100, 50, 2150]`），与 E3D 按世界轴写的是同一只盒子。
+- 真库门 `rvm_record_kinds_real` 加这段管身：世界包围盒对 E3D 0.05 mm。aps7200 off 4 → 3、种类不同 9 → 8。
+
 ## 2026-10-23 零尺寸的设计 CYLI 照 E3D 写一条空记录——aps7200 `/EQRACK.5M.HR5` 那只 `Cylinder[0, 0]` 对上
 
 - 设计侧 CYLI `DIAM` / `HEIG` 为 0 时 Core 不出体，我们按尺寸退化跳过（账在 `skipped`），E3D 的 RVM 驱动却照走 DRCYL：

@@ -1255,8 +1255,25 @@ fn build_route_tubes(
         // 风管——同一个 stub 指向的 TUBI 目录件没有 PARA，断面在它的 BOXING / TUBE 图元里，
         // 由离开 P 点的 PWID/PHEI/PBOR 与离开方向的 ORIMAT 定（[`crate::hvac_tube`]）；没有回落，
         // 解不出就是 `NoRadius`，与管道「外径与通径都没有」同一档记账。
-        let (section, section_source) = match route.discipline {
-            RouteDiscipline::Pipe => {
+        // 管道容器名下也会挂风管式的 TUBI 目录件：aps7200 `/HVAC/RECT/M1`（PIPE）下的 `OLET → ELBO` 槽位，
+        // `LSTU = /RDUCT/XYDUCT`，SCOM `/XYDUCT` 的 `PARA[2]` 是 1、断面写在 GMSE 的 BOXING 里（`PXLE` 100 × `PZLE` 50），
+        // E3D 照矩形画（TTY `Box[50, 100, 2150]`），按 `PARA[2]` 读是一根 1 mm 的圆管。所以管道学科先按风管那条路
+        // 问一遍：解得出**矩形**断面就用它；圆的、解不出的、读挂的照旧走 `PARA[2]` / 到达侧通径，一个字不变。
+        let boxed_pipe_section = match route.discipline {
+            RouteDiscipline::Pipe => match duct_departure_section(&slot.from) {
+                Ok(Some(duct)) if matches!(duct.section, TubeSection::Rectangular { .. }) => {
+                    Some(duct)
+                }
+                _ => None,
+            },
+            RouteDiscipline::Hvac => None,
+        };
+        let (section, section_source) = match (route.discipline, boxed_pipe_section) {
+            (RouteDiscipline::Pipe, Some(duct)) => {
+                ledger.catalogue_od += 1;
+                (Some(duct.section), format!("catalogue {}", duct.source))
+            }
+            (RouteDiscipline::Pipe, None) => {
                 let catalogue_od_result = match &slot.from {
                     crate::route::RouteEnd::ContainerHead(departure)
                     | crate::route::RouteEnd::ContainerTail(departure) => {
@@ -1288,7 +1305,7 @@ fn build_route_tubes(
                     source,
                 )
             }
-            RouteDiscipline::Hvac => match duct_departure_section(&slot.from) {
+            (RouteDiscipline::Hvac, _) => match duct_departure_section(&slot.from) {
                 Ok(Some(duct)) => {
                     ledger.catalogue_od += 1;
                     (Some(duct.section), format!("catalogue {}", duct.source))

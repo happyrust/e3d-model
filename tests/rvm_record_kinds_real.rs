@@ -19,7 +19,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use e3d_model::rvm_read::{Primitive, RvmFile, RvmMember};
+use e3d_model::rvm_read::{Primitive, RvmFile, RvmGeometry, RvmMember};
 
 const AMS_DIR: &str = r"D:\AVEVA\Projects\E3D3.1\AvevaMarineSample\ams000";
 const ACP_DIR: &str = r"D:\AVEVA\Projects\E3D3.1\AvevaCatalogue\acp000";
@@ -957,6 +957,75 @@ fn a_zero_size_design_cylinder_still_writes_its_empty_record() {
             (geometry.translation_mm[component] - want_origin[component]).abs() < 0.05,
             "记录原点 {:?}，E3D {want_origin:?}",
             geometry.translation_mm
+        );
+    }
+
+    std::fs::remove_dir_all(&scratch).ok();
+}
+
+/// aps7200 `BRAN /HVAC/RECT/M1/B2`（`23584/7312`）挂在 **PIPE** `/HVAC/RECT/M1` 下，`OLET 23584/7318 → ELBO 23584/7319` 那段
+/// 隐式管身的 `LSTU = /RDUCT/XYDUCT`：SCOM `/XYDUCT` 的 `PARA[2]` 是 1，断面在 GMSE 的 BOXING 里（`PXLE` 100 × `PZLE` 50）。
+/// E3D TTY（gen-model `verification/civil-tty-20261021/aps7200-w7h/aps7200_lv6_23584_7298.rvm`）在容器组里写
+/// `Box[50, 100, 2150]`，原点 (3100, 18000, 3875)、三轴就是世界轴；此前按管道学科读 `PARA[2]`，写成 1 mm 的圆管（off 49.5）。
+#[test]
+fn a_boxed_tube_catalogue_under_a_pipe_still_draws_the_rectangle() {
+    if !fixtures_present_in(APS_DIR, APS_COPY_ONLY_DB) {
+        return;
+    }
+    let scratch: PathBuf =
+        std::env::temp_dir().join(format!("e3d-model-rvm-boxed-tube-aps-{}", std::process::id()));
+    let (rvm, _) = generate_in(APS_DIR, APS_COPY_ONLY_DB, "23584/7312", "on", &scratch);
+    // 我们的隐式管身各自成组（`TUBI n of BRAN …`），E3D 写在容器组里；这支只有这一段有长度的管身。
+    let name = "/HVAC/RECT/M1/B2";
+    let boxes: Vec<&RvmGeometry> = rvm
+        .members
+        .iter()
+        .filter(|member| member.name.trim().starts_with("TUBI") && member.name.contains(name))
+        .flat_map(|member| member.geometries.iter())
+        .collect();
+    assert_eq!(
+        boxes.len(),
+        1,
+        "{name}: {:?}",
+        boxes.iter().map(|geometry| geometry.primitive.name()).collect::<Vec<_>>()
+    );
+    let geometry = boxes[0];
+    assert!(
+        matches!(geometry.primitive, Primitive::Box(_)),
+        "{name}: 管身记录是 {:?}，E3D 是 Box",
+        geometry.primitive
+    );
+    let Primitive::Box(size) = geometry.primitive else {
+        unreachable!()
+    };
+    // 记录标架的写法不计（E3D 按世界三轴写 `Box[50, 100, 2150]`，我们按离开侧构件的滚转写 `Box[100, 50, 2150]`，
+    // 同一只盒子）：比的是盒子在世界系里的包围盒，与 `rvm_compare` 的判档同一口径。
+    let axes = [
+        [geometry.matrix3[0], geometry.matrix3[1], geometry.matrix3[2]],
+        [geometry.matrix3[3], geometry.matrix3[4], geometry.matrix3[5]],
+        [geometry.matrix3[6], geometry.matrix3[7], geometry.matrix3[8]],
+    ]
+    .map(|axis| axis.map(|value| value * 1000.0));
+    let mut half = [0.0f64; 3];
+    for (axis, length) in axes.iter().zip(size) {
+        for component in 0..3 {
+            half[component] += (axis[component] * length / 2.0).abs();
+        }
+    }
+    let origin = geometry.translation_mm;
+    let got = [
+        origin[0] - half[0],
+        origin[1] - half[1],
+        origin[2] - half[2],
+        origin[0] + half[0],
+        origin[1] + half[1],
+        origin[2] + half[2],
+    ];
+    let want = [3075.0, 17950.0, 2800.0, 3125.0, 18050.0, 4950.0];
+    for (component, (g, w)) in got.iter().zip(want).enumerate() {
+        assert!(
+            (g - w).abs() < 0.05,
+            "{name}: 管身世界包围盒第 {component} 分量 {g:.3}，E3D {w:.3}（记录 Box {size:?}，全部 {got:?}）"
         );
     }
 
