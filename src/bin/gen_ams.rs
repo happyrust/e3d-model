@@ -938,6 +938,7 @@ fn main() -> anyhow::Result<()> {
             elements,
             report,
             marks,
+            bodyless,
             ..
         } = generated_root?;
         if let Some((
@@ -987,6 +988,7 @@ fn main() -> anyhow::Result<()> {
             .iter()
             .map(|generated| generated.refno)
             .chain(marks.iter().map(|mark| mark.refno))
+            .chain(bodyless.iter().map(|record| record.refno))
             .map(|refno| set.element(refno).owner())
             .collect::<Result<Vec<_>, _>>()?
             .into_iter()
@@ -1461,6 +1463,39 @@ fn main() -> anyhow::Result<()> {
                     translation_mm: mark.origin.to_array(),
                     material: 1,
                     geometries: e3d_model::rvm_write::mark_line_geometries(mark),
+                });
+            }
+            // 零尺寸的设计基本体：不出实体、不进 elements.json，RVM 里照 E3D 写一条空记录
+            // （见 [`e3d_model::elmodl::bodyless_design_record`]）。记录矩阵就是元素的世界标架。
+            for record in &bodyless {
+                let geometry = match record.shape {
+                    e3d_model::elmodl::DegenerateCatalogueShape::Cylinder {
+                        radius_mm,
+                        height_mm,
+                    } => e3d_model::rvm_write::bodyless_cylinder_geometry(
+                        &record.world,
+                        &glam::DMat4::IDENTITY,
+                        radius_mm,
+                        height_mm,
+                    ),
+                    _ => continue,
+                };
+                let (owner_desc, ordinal) = keys.get(&record.refno).cloned().unwrap_or((None, 0));
+                let identity_noun = udets.display_noun(&set.element(record.refno))?;
+                let name = rvm_display_name(
+                    record.name.as_ref(),
+                    &identity_noun,
+                    owner_desc.as_ref(),
+                    ordinal,
+                );
+                rvm_zero_size += 1;
+                rvm_members.push(e3d_model::rvm_read::RvmMember {
+                    path: format!("/GENERATED/{name}"),
+                    name,
+                    parent: Some(0),
+                    translation_mm: record.world.w_axis.truncate().to_array(),
+                    material: 1,
+                    geometries: vec![geometry],
                 });
             }
         }

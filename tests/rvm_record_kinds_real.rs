@@ -907,3 +907,58 @@ fn a_round_to_rectangular_transition_leans_its_snouts_the_way_e3d_does() {
 
     std::fs::remove_dir_all(&scratch).ok();
 }
+
+/// aps7200 `CYLINDER 3 of SUBSTRUCTURE 1 of STRUCTURE /EQRACK.5M.HR5`（`23584/9172`，`DIAM = HEIG = 0`）：Core 不出体、
+/// 我们按尺寸退化跳过，E3D TTY（gen-model `verification/civil-tty-20261021/aps7200-w7h/aps7200_lv6_23584_8574.rvm`）却写了
+/// 一条 `Cylinder[0, 0]`，矩阵是元素的世界标架（属主绕 Z 转了 180°）。记录只进 RVM，`elements.json` 里没有它。
+#[test]
+fn a_zero_size_design_cylinder_still_writes_its_empty_record() {
+    if !fixtures_present_in(APS_DIR, APS_COPY_ONLY_DB) {
+        return;
+    }
+    let scratch: PathBuf =
+        std::env::temp_dir().join(format!("e3d-model-rvm-zero-cyli-aps-{}", std::process::id()));
+    let (rvm, elements) = generate_in(APS_DIR, APS_COPY_ONLY_DB, "23584/9172", "on", &scratch);
+    assert!(
+        elements.as_array().unwrap().is_empty(),
+        "零尺寸的 CYLI 不该进模型集：{elements}"
+    );
+    let member = rvm
+        .members
+        .iter()
+        .find(|member| member.name.trim().starts_with("CYLI 3 of SUBS 1 of STRU /EQRACK.5M.HR5"))
+        .unwrap_or_else(|| {
+            panic!(
+                "RVM 里没有零尺寸 CYLI 的组：{:?}",
+                rvm.members.iter().map(|member| member.name.trim()).collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(member.geometries.len(), 1, "{}", member.name);
+    let geometry = &member.geometries[0];
+    assert_eq!(geometry.primitive, Primitive::Cylinder([0.0, 0.0]), "{}", member.name);
+    let axes = [
+        [geometry.matrix3[0], geometry.matrix3[1], geometry.matrix3[2]],
+        [geometry.matrix3[3], geometry.matrix3[4], geometry.matrix3[5]],
+        [geometry.matrix3[6], geometry.matrix3[7], geometry.matrix3[8]],
+    ]
+    .map(|axis| axis.map(|value| value * 1000.0));
+    let want_axes = [[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0]];
+    for (axis, want) in axes.iter().zip(want_axes) {
+        for component in 0..3 {
+            assert!(
+                (axis[component] - want[component]).abs() < 1e-6,
+                "记录三轴 {axes:?}，E3D {want_axes:?}"
+            );
+        }
+    }
+    let want_origin = [7698.5, 10140.0, 5880.0];
+    for component in 0..3 {
+        assert!(
+            (geometry.translation_mm[component] - want_origin[component]).abs() < 0.05,
+            "记录原点 {:?}，E3D {want_origin:?}",
+            geometry.translation_mm
+        );
+    }
+
+    std::fs::remove_dir_all(&scratch).ok();
+}

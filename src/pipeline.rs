@@ -403,6 +403,10 @@ pub struct GenerationOutcome {
     /// [`exports_mark_as_lines`] 那类点标记里算得出位置的（[`MarkLines`]），按遍历序。模型集（`elements`）
     /// 里没有它们——不出实体，gen-model 的烘焙要实体；RVM 写出端（`gen_ams`）照它们写线。
     pub marks: Vec<MarkLines>,
+    /// 零尺寸的设计基本体（[`crate::elmodl::bodyless_design_record`]），按遍历序：按 [`SkipKind::NoShape`] 跳过、
+    /// 账照记在 [`Report::skipped`]，E3D 的 RVM 驱动却照样落一条 `Cylinder[0, 0]`。与 [`Self::marks`] 同一条只写 RVM 的
+    /// 通道：模型集里没有它。
+    pub bodyless: Vec<crate::elmodl::BodylessDesignRecord>,
     /// DFS 访问到的每一个元素，**按遍历序**、含根、含没出几何的容器与记账项；
     /// 被属主消费掉的成员（剖面环 / 负体）不入栈，因此也不在这里——它们在
     /// [`Report::consumed`] 那本账上。`visited.len() == report.visited` 恒成立。
@@ -443,6 +447,7 @@ pub fn generate_subtree_with_cache(
 ) -> Result<GenerationOutcome, DbElementError> {
     let mut elements = Vec::new();
     let mut marks = Vec::new();
+    let mut bodyless = Vec::new();
     let mut report = Report::default();
     let mut visited = Vec::new();
     let cache_stats_before = catalogue_mesh_cache.stats();
@@ -525,6 +530,19 @@ pub fn generate_subtree_with_cache(
                         elements.push(*generated);
                     }
                     Ok(Modeled::Skipped { kind, reason }) => {
+                        // 零尺寸的设计 CYLI：Core 不出体，E3D 的 RVM 驱动照样写 `Cylinder[0, 0]`。账照记跳过，
+                        // 记录另走只写 RVM 的通道（[`GenerationOutcome::bodyless`]）。
+                        if kind == SkipKind::NoShape {
+                            match crate::elmodl::bodyless_design_record(&el, &noun) {
+                                Ok(Some(record)) => bodyless.push(record),
+                                Ok(None) => {}
+                                Err(error) => report.notes.push(Incident {
+                                    refno: refno.clone(),
+                                    noun: noun.clone(),
+                                    detail: format!("零尺寸记录的标架算不出，RVM 里不写：{error}"),
+                                }),
+                            }
+                        }
                         record_skip(&mut report, kind, refno, noun, reason);
                     }
                     Err(error) => report.failed.push(Incident {
@@ -801,6 +819,7 @@ pub fn generate_subtree_with_cache(
         elements,
         report,
         marks,
+        bodyless,
         visited,
         catalogue_visited,
     })

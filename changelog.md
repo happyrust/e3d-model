@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-23 零尺寸的设计 CYLI 照 E3D 写一条空记录——aps7200 `/EQRACK.5M.HR5` 那只 `Cylinder[0, 0]` 对上
+
+- 设计侧 CYLI `DIAM` / `HEIG` 为 0 时 Core 不出体，我们按尺寸退化跳过（账在 `skipped`），E3D 的 RVM 驱动却照走 DRCYL：
+  aps7200 `CYLINDER 3 of SUBSTRUCTURE 1 of STRUCTURE /EQRACK.5M.HR5`（`23584/9172`，`LEVE [0,10]`）TTY 导出里是一条
+  `Cylinder[0, 0]`，矩阵就是元素的世界标架。现在这种元素走新的只写 RVM 的通道 `GenerationOutcome::bodyless`
+  （`elmodl::bodyless_design_record`，与点标记 `marks` 同款）：`gen_ams` 照 E3D 写空记录，模型集、`elements.json` 与增量都不动，
+  跳过的账照记。表现级门与正体同一道。只认 CYLI：别的设计基本体零尺寸时 E3D 写不写，语料里还没有样本。
+- 真库门 `rvm_record_kinds_real` 加这只 CYLI：记录、三轴与原点对 E3D，`elements.json` 里没有它。aps7200 对拍
+  只在 E3D 21 → 20、exact 2324 → 2325。
+
 ## 2026-10-23 圆转方风管变径的偏心 Snout 按 E3D 的方向偏——aps7200 `/HVAC2-B1/ITEM8` 对上（修在 e3d-io）
 
 - acp7002 `/FORD`（圆转方风管变径）本体的两只 LSNO 把偏心方向 `PBAX` 取自 P7 / P8，它们的 `PTCD` 是

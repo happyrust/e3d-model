@@ -248,6 +248,54 @@ pub struct DegenerateCataloguePart {
     pub shape: DegenerateCatalogueShape,
 }
 
+/// 一只**设计侧**零尺寸基本体的空记录：Core 不出体、我们按 [`SkipKind::NoShape`] 跳过，E3D 的 RVM 驱动却
+/// 照走 DRCYL。aps7200 `CYLINDER 3 of SUBSTRUCTURE 1 of STRUCTURE /EQRACK.5M.HR5`（`23584/9172`，`DIAM = HEIG = 0`、
+/// `LEVE [0,10]`）在 TTY 导出里是一条 `Cylinder[0, 0]`，矩阵就是元素自己的世界标架。与目录图元的
+/// [`DegenerateCataloguePart`] 同一口径，只是没有局部放置这一层。模型集里没有它（不出实体），只进 RVM。
+#[derive(Debug, Clone, PartialEq)]
+pub struct BodylessDesignRecord {
+    pub refno: RefNo,
+    pub noun: String,
+    pub name: Option<String>,
+    /// 元素的世界标架，就是记录的矩阵。
+    pub world: DMat4,
+    pub shape: DegenerateCatalogueShape,
+}
+
+/// 一只按 [`SkipKind::NoShape`] 跳过的设计基本体，E3D 是否仍写一条零尺寸记录（[`BodylessDesignRecord`]）。
+///
+/// 只认 `CYLI`：别的设计基本体零尺寸时 E3D 写不写，语料里还没有样本。表现级门与正体同一道
+/// （[`design_leve_admits`]）：被 DRWAND 挡下的元素 E3D 连组都不开。半径、高照存的值写（目录侧的
+/// `Cylinder[radius=57 height=-0]` 半径也是照留的）；两个尺寸都为正的建得出体，不走这里。
+pub fn bodyless_design_record(
+    el: &DbElement,
+    noun: &str,
+) -> Result<Option<BodylessDesignRecord>, ModelError> {
+    if noun != "CYLI" {
+        return Ok(None);
+    }
+    let (lo, hi) = negative_leve(el);
+    if !design_leve_admits(lo, hi, repre_level_of(el)?) {
+        return Ok(None);
+    }
+    let (Some(diam), Some(heig)) = (el.get_double("DIAM")?, el.get_double("HEIG")?) else {
+        return Ok(None);
+    };
+    if !diam.is_finite() || !heig.is_finite() || (diam > 0.0 && heig > 0.0) {
+        return Ok(None);
+    }
+    Ok(Some(BodylessDesignRecord {
+        refno: el.refno(),
+        noun: noun.to_string(),
+        name: el.stored_name()?,
+        world: crate::transform::world_matrix(el)?,
+        shape: DegenerateCatalogueShape::Cylinder {
+            radius_mm: diam / 2.0,
+            height_mm: heig,
+        },
+    }))
+}
+
 /// 与 `parts` 逐块对齐的**记录事实**：这一块要写几条记录、用哪只标架写。
 ///
 /// 标架定**记录的矩阵**——E3D 的 DRCYL / DRSNO 写的是目录图元自己的标架（`ORIMAT(PAXI)`、
