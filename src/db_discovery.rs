@@ -41,10 +41,12 @@ use std::io::{Read as _, Seek as _, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use e3d_attlib::AttlibData;
 use e3d_io::db_element::{DbFilePin, DbFileResolver, DbSet, template_file_for};
 use e3d_io::engine::{ReadOnlyEngine, ScanTier};
 use e3d_io::meta::{DbDescriptor, FileInfo};
 use e3d_io::record::descriptor::DescriptorValue;
+use e3d_io::uda_catalog::UdaCatalog;
 
 /// 目录里认出来的一个库文件（含 extent 文件）。
 #[derive(Debug, Clone)]
@@ -289,6 +291,34 @@ impl DirectoryDbResolver {
             .collect();
         out.sort_unstable();
         out
+    }
+
+    /// 给定字典库里的 UDA 定义，按给出的库号顺序合并（同一把键先到先得，
+    /// [`UdaCatalog::merge_in_order`]），连同读不开的库（库号、文件、原因）。表里没有的库号跳过。
+    ///
+    /// 给 `gen_ams` 挂字典用（[`DbSet::with_uda_catalog`]），库号与它的 UDET 名字表是同一份
+    /// （[`Self::dbnos_of_type`] 问 DICT，升序）。生产 gen-model 按 MDB 的 DICT 名单（SYS 库 `CURD`
+    /// 序）读同一种表；这里只有目录，序按库号——两本字典给出同一把键时才分得出先后。
+    /// 读不开的库交给调用方报，不拦整张表：一本坏字典不该让别的字典里的定义一起消失。
+    pub fn uda_catalog(
+        &self,
+        dictionaries: &[u32],
+        template_dir: &Path,
+        attlib: &AttlibData,
+    ) -> (UdaCatalog, Vec<(u32, PathBuf, String)>) {
+        let dicvir = template_dir.join("dicvir.dat");
+        let mut merged = UdaCatalog::default();
+        let mut unreadable = Vec::new();
+        for &dbno in dictionaries {
+            let Some(pin) = self.pins.get(&dbno) else {
+                continue;
+            };
+            match UdaCatalog::read(&pin.file, &dicvir, attlib) {
+                Ok(catalog) => merged.merge_in_order(catalog),
+                Err(error) => unreadable.push((dbno, pin.file.clone(), error)),
+            }
+        }
+        (merged, unreadable)
     }
 
     /// 一行人话总结，给 CLI 开场打印。
