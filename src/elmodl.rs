@@ -1361,13 +1361,28 @@ fn wall_local_solid(el: &DbElement, notes: &mut Vec<String>) -> Result<Manifold,
         }
     };
     let profile_ring = section.ring();
+    // 挂着关节（WALL 的 `JOIS` / `JOIE`）的那一端不按 SPINE 端向斜切：端部归关节管。aps7200 `/C1101-BASE`
+    // 的 165° 弧墙（`23584/6980`）两端各一只 PJOI（`CREF` 指回墙自己，`CUTP` 就是 DRNS / DRNE 翻了 Y 的向量），
+    // SPINE 却写着与切向成 44° 的 `DRNS` / `DRNE`：按它们过端点切半空间，弧绕回来被两刀削得只剩 565 mm
+    // 一小块；E3D TTY 导出里两端都是径向平头。没有关节的弧墙（ams1112 RR001 WALL 4，`DRNS = E`）E3D 照
+    // DRNS 斜切，所以只跳过挂着关节的那一端。
+    let start_joint = el.get_ref("JOIS")?.is_some();
+    let end_joint = el.get_ref("JOIE")?.is_some();
     let mut cuts = Vec::new();
-    for (label, name, angle, is_start) in [
-        ("起点", "DRNS", a0, true),
-        ("终点", "DRNE", a0 + sweep, false),
+    for (label, name, angle, is_start, joint) in [
+        ("起点", "DRNS", a0, true, start_joint),
+        ("终点", "DRNE", a0 + sweep, false, end_joint),
     ] {
         let drn = spine_direction(name);
         if drn.length_squared() <= 1e-18 {
+            continue;
+        }
+        if joint {
+            notes.push(format!(
+                "WALL {label}端挂着关节（{}）：SPINE {name} {:?} 不斜切，径向平头",
+                if is_start { "JOIS" } else { "JOIE" },
+                drn.to_array()
+            ));
             continue;
         }
         let radial = DVec3::new(angle.cos(), angle.sin(), 0.0);

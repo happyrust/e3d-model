@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-23 挂着关节的弧墙两端不按 SPINE 端向斜切——aps7200 `/C1101-BASE` 的 165° 弧墙对上
+
+- WALL 的一端挂着 PJOI（`JOIS` / `JOIE`，关节的 `CREF` 回指墙自己）时，端部归关节管，E3D 不按 SPINE 的 `DRNS` / `DRNE`
+  斜切那一端。aps7200 `WALL 1 of FRMW /C1101-BASE`（`23584/6980`：165° 弧、`RADI` 1850、`JUSL OBOW`）两端各一只 PJOI，
+  SPINE 却写着与切向成 44° 的 `DRNS` / `DRNE`（两只关节的 `CUTP` 就是它们翻了 Y 的向量）：此前按它们过端点切半空间，
+  弧绕回来被两刀削得只剩 565 mm 一小块（对拍 off 1742 mm）；E3D TTY 导出里两端都是径向平头。现在只跳过挂着关节的
+  那一端，没有关节的弧墙（ams1112 `/1RS-WF05-W-C-RR001` WALL 4，`DRNS = E`）E3D 照 `DRNS` 斜切、照旧。
+- 语料（ams1112、ams7997、aps250110、aps7200）里只有这一堵 WALL 挂着关节，直墙挂关节的没有样本：直墙的端切不动，
+  PJOI 的 `CUTP` 也没有拿来切。
+- 真库门 `rvm_record_kinds_real` 加这堵弧墙的世界包围盒（对 E3D 面片，0.05 mm）。aps7200 对拍 off 6 → 5、exact 2322 → 2323。
+
 ## 2026-10-23 结构节点 SNOD 照 E3D 写点标记的三条线——aps7200 191 只节点补齐
 
 - E3D 把 SNOD 导成 RVM 是三条 `Line[5, 20]`（Core3D `gm_CreateMark`）：以 SNOD 的站位为中点，按 X / Y / Z 的顺序

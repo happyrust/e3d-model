@@ -821,3 +821,25 @@ fn section_joint_flanges_draw_and_cut_their_beam() {
 
     std::fs::remove_dir_all(&scratch).ok();
 }
+
+/// aps7200 `/C1101-BASE` 的 165° 弧墙 `WALL 1`（`23584/6980`，SPINE 是 `CURTYP THRU` 的三点圆弧，R 1850）：两端各挂
+/// 一只 PJOI（`JOIS` / `JOIE`，`CREF` 指回墙自己），SPINE 的 `DRNS` / `DRNE` 与切向成 44°。E3D TTY 在项目副本上导出
+/// （gen-model `verification/civil-tty-20261021/aps7200-w7h/aps7200_lv6_23584_6799.rvm`）两端都是径向平头、整段弧都在；
+/// 此前按 DRNS / DRNE 过端点切半空间，弧绕回来只剩 565 mm 一小块（off 1742 mm）。世界包围盒取 E3D 面片的。
+#[test]
+fn a_jointed_arc_wall_keeps_its_radial_ends() {
+    if !fixtures_present_in(APS_DIR, APS_COPY_ONLY_DB) {
+        return;
+    }
+    let scratch: PathBuf =
+        std::env::temp_dir().join(format!("e3d-model-rvm-arc-wall-aps-{}", std::process::id()));
+    let (_, elements) = generate_in(APS_DIR, APS_COPY_ONLY_DB, "23584/6980", "on", &scratch);
+    assert_world_aabb(
+        &elements,
+        "23584/6980",
+        [3573.04, 7001.13, 1000.0, 7210.0, 8850.0, 2705.0],
+        0.05,
+    );
+
+    std::fs::remove_dir_all(&scratch).ok();
+}
