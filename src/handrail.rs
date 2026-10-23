@@ -29,6 +29,12 @@
 //! 垂直于轴、顶点正好在端点上方 `RAILHE` 处；踢脚板在两库的导出里都是 ±2 × [10, 110]。此前轴线放在 `RAILHE`、
 //! 斜段两端用水平切面补包围盒，平台段就高出 20 mm。
 //!
+//! 开口路径的两端（2026-10-24，W7t）：`RPATH` 的 `DRNS` / `DRNE` 非零时，端面是**过端点、法向 = 端向**的平面，与 GENSEC
+//! SPINE 的斜接同一条规则（[`spine_mitre_plane`]：与切向平行 / 垂直或为零时仍是垂直于轴的平头）。aps250209
+//! `/A01-AREA05-BASE-FL-STAIRS` 的 16 只梯段扶手（路径 = 平台段 + 斜段、`DRNE = (0, 1, 0)`）在 E3D TTY 导出里斜段顶端是
+//! `y = 端点` 的竖直面（端柱还在端点上），此前按平头画多伸 24.07 − 15 = 9.07 mm；aps250110 `SF_002` 的 `DRNS` / `DRNE` 是零、
+//! aps250112 `SF_001` 的两端是平台段，两条规则在那里给出同一张面，所以此前没露出来。
+//!
 //! **对拍**：`test_data/rvm/` 里没有任何一份含 HANDRA 的 E3D 导出，这个模块的几何
 //! 到 2026-09-06 为止只有自证（单测里的解析几何），没有与 E3D 逐件对过。
 
@@ -43,7 +49,7 @@ use crate::elmodl::ModelError;
 use crate::section::{
     SectionChain, SectionCutPlane, SectionCuts, SpinePath, SpineSegment, cut_plane_normal,
     evaluate_section_profile, placement_between, section_catalogue, section_local_solid,
-    spine_swept_solid,
+    spine_mitre_plane, spine_swept_solid,
 };
 use crate::solid::{SolidError, circ_torus_solid, cut_by_plane, cylinder_segments, placed};
 
@@ -188,12 +194,13 @@ pub fn handrail_local_solid(
         )));
     }
 
-    let segments = build_path(&points, params.closed, notes);
+    let mut segments = build_path(&points, params.closed, notes);
     if segments.is_empty() {
         return Ok(HandrailBuild::NoGeometry(
             "路径点全部重合，没有一段有长度，E3D 同样不出几何".to_string(),
         ));
     }
+    apply_end_directions(&mut segments, params.closed, raw.drns, raw.drne, notes);
 
     let mut parts = Vec::new();
     let mut rails = 0usize;
@@ -206,8 +213,19 @@ pub fn handrail_local_solid(
         }
     }
     if params.show_kickplate {
-        for segment in &segments {
-            // 踢脚板挂在路径标高上，不随栏杆抬。
+        // 踢脚板挂在路径标高上，不随栏杆抬；也**不跟圆角弧**：E3D 把直板一直画到原拐点、按角平分面斜接
+        // （aps250209 `/A01-AREA05-4TH-FLOOR-HANDRAILS` FRAD 100 的水平拐角、`/A02-AREA07-HANDRAILS` 竖直面里的内弯拐角，
+        // TTY 导出的板顶 / 板底都在过拐点的角平分面上相交），所以按没有倒角的路径重排一遍直段。
+        let unfilleted: Vec<(DVec3, f64)> = points.iter().map(|&(point, _)| (point, 0.0)).collect();
+        let mut plate_segments = build_path(&unfilleted, params.closed, &mut Vec::new());
+        apply_end_directions(
+            &mut plate_segments,
+            params.closed,
+            raw.drns,
+            raw.drne,
+            &mut Vec::new(),
+        );
+        for segment in &plate_segments {
             parts.push(kickplate_segment_solid(segment)?);
         }
     }
@@ -476,6 +494,55 @@ pub fn path_layout(points: &[(DVec3, f64)], closed: bool, notes: &mut Vec<String
     }
 }
 
+/// 开口路径的两端按 `RPATH` 的 `DRNS` / `DRNE` 切（Core3D `setMitrePlanes` 的端向那一半）：首段起点 / 末段终点
+/// 本来是平头（`mitre_* = None`），端向非零且与该段既不平行也不垂直时，换成过端点、法向 = 端向的平面；
+/// 法向按拐角斜接面的约定规约成**沿行进方向**（[`rail_segment_solid`] / [`kickplate_segment_solid`] 的起点留正侧、
+/// 终点留负侧）。闭合路径没有端，不动。
+pub fn apply_end_directions(
+    segments: &mut [PathSegment],
+    closed: bool,
+    drns: DVec3,
+    drne: DVec3,
+    notes: &mut Vec<String>,
+) {
+    if closed || segments.is_empty() {
+        return;
+    }
+    let last = segments.len() - 1;
+    for (index, drn, is_start, label) in [(0usize, drns, true, "DRNS"), (last, drne, false, "DRNE")]
+    {
+        let PathSegment::Line {
+            start,
+            end,
+            mitre_start,
+            mitre_end,
+        } = &mut segments[index]
+        else {
+            continue;
+        };
+        let slot = if is_start { mitre_start } else { mitre_end };
+        if slot.is_some() {
+            continue;
+        }
+        let tangent = *end - *start;
+        let point = if is_start { *start } else { *end };
+        let Some(plane) = spine_mitre_plane(drn, tangent, point, is_start) else {
+            continue;
+        };
+        // `spine_mitre_plane` 把法向规约成指向体内；这里的槽位约定是沿行进方向（起点端两者一致，终点端相反）。
+        let normal = if is_start {
+            plane.normal
+        } else {
+            -plane.normal
+        };
+        *slot = Some(normal);
+        notes.push(format!(
+            "RPATH {label} = [{:.3}, {:.3}, {:.3}]：开口端按端向切（过端点的平面），不是垂直于轴的平头",
+            drn.x, drn.y, drn.z
+        ));
+    }
+}
+
 /// 一段路径上顶母线在 z=0 的那根栏杆：直段是（切过斜接面的）圆柱，弧段是一节圆环。
 ///
 /// 截面圆心在路径下方 `RAIL_RADIUS`（沿 [`section_up`]），两端平头、端环垂直于轴。斜接面过顶母线上的拐点：
@@ -562,11 +629,51 @@ fn mitre_tan_half(normal: DVec3, d: DVec3) -> f64 {
 }
 
 /// 默认布局式踢脚板：板厚 4、离路径 10 起高 100，截面跟着路径的「上」向（斜段在竖直方向上是
-/// 10 / cosθ 起、高 100 / cosθ），拐角与栏杆同样加长后按角平分面切；开口路径的两端是过端点的竖直面
+/// 10 / cosθ 起、高 100 / cosθ），拐角一律加长后按过拐点的角平分面切（`FRAD` 的圆角只给栏杆，踢脚板不跟弧）；开口路径的两端是过端点的竖直面
 /// （法向取路径的水平向），不是截面——斜段的板顶不往端点外俯出去。E3D TTY 导出：aps250112
 /// `/EQUIP_SUPPORT/SF_001` 平台段 ±2 × [10, 110]，斜段 [12.53, 137.74]（cosθ = 0.7986），平台与斜段的斜接在
 /// 顶边上退 110·tan(θ/2)；aps250110 `/B01_LEVEL_03_ACCESS/SF_001` 的单段斜扶手，板在两端立柱之外一点不露。
 fn kickplate_segment_solid(segment: &PathSegment) -> Result<Manifold, ModelError> {
+    band_segment_solid(
+        segment,
+        &BandSection {
+            across: 0.0,
+            half_thickness: KICKPLATE_THICKNESS / 2.0,
+            low: KICKPLATE_LIFT,
+            high: KICKPLATE_LIFT + KICKPLATE_HEIGHT,
+            open_end: OpenEnd::Vertical,
+        },
+        "handrail kickplate",
+    )
+}
+
+/// 没有端向（`mitre_* = None`）的开口端怎么收。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OpenEnd {
+    /// 过端点的竖直面，法向取路径的水平向（踢脚板：斜段的板顶不往端点外俯出去）。
+    Vertical,
+    /// 垂直于路径的平头（梯段斜梁：aps250209 `STRFLT 2 of /A01-AREA05-BASE-FL-STAIRS` 的底端）。
+    Perpendicular,
+}
+
+/// 沿路径直段扫的矩形「带」：截面在路径的横向（`d × up`）上居中于 `across`、半宽 `half_thickness`，沿截面「上」向
+/// （[`section_up`]）从 `low` 到 `high`（负值在路径下方）。踢脚板、梯段的斜梁与平台板都是它。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct BandSection {
+    pub across: f64,
+    pub half_thickness: f64,
+    pub low: f64,
+    pub high: f64,
+    pub open_end: OpenEnd,
+}
+
+/// 一段直路径上的带：斜接端加长到切得到角平分面（或端向面）再切；没有面的开口端按 [`OpenEnd`] 收。
+/// 只收直段：踢脚板与梯段都按没有倒角的路径排（E3D 在拐点斜接，不跟 `FRAD` 的弧）。
+pub(crate) fn band_segment_solid(
+    segment: &PathSegment,
+    band: &BandSection,
+    what: &'static str,
+) -> Result<Manifold, ModelError> {
     let PathSegment::Line {
         start,
         end,
@@ -575,29 +682,35 @@ fn kickplate_segment_solid(segment: &PathSegment) -> Result<Manifold, ModelError
     } = segment
     else {
         return Err(ModelError::Solid(SolidError::Degenerate {
-            what: "kickplate arc",
-            detail: "layout kickplate does not support arc segments".to_string(),
+            what,
+            detail: "bands are built from the unfilleted path; E3D mitres them at the corner"
+                .to_string(),
         }));
     };
     let d = (*end - *start).normalize();
     let up = section_up(d);
-    let half = d.cross(up) * (KICKPLATE_THICKNESS / 2.0);
-    let reach = KICKPLATE_LIFT + KICKPLATE_HEIGHT;
+    let across = d.cross(up);
+    let half = across * band.half_thickness;
+    let shift = across * band.across;
+    let reach = band.low.abs().max(band.high.abs());
     let horizontal = (d.x * d.x + d.y * d.y).sqrt();
-    let level = DVec3::new(d.x, d.y, 0.0).try_normalize();
-    // 斜接端加长到切得到角平分面；开口端加长到板顶也越过端点的竖直面（斜段板顶比板底水平靠后 reach·sinθ）。
-    let open_end = if horizontal > 1e-9 {
-        reach * d.z.abs() / horizontal
-    } else {
-        0.0
+    let level = match band.open_end {
+        OpenEnd::Vertical => DVec3::new(d.x, d.y, 0.0).try_normalize(),
+        OpenEnd::Perpendicular => None,
+    };
+    // 斜接端加长到切得到角平分面；竖切的开口端加长到离路径最远的那条边也越过端点的竖直面
+    // （斜段上这条边比路径水平靠后 reach·sinθ）；平头的开口端不加长。
+    let open_end = match (band.open_end, horizontal > 1e-9) {
+        (OpenEnd::Vertical, true) => reach * d.z.abs() / horizontal,
+        _ => 0.0,
     };
     let extension = |normal: &Option<DVec3>| -> f64 {
         normal.map_or(open_end, |n| reach * mitre_tan_half(n, d))
     };
-    let first = *start - d * extension(mitre_start);
-    let last = *end + d * extension(mitre_end);
-    let low = up * KICKPLATE_LIFT;
-    let high = up * reach;
+    let first = *start - d * extension(mitre_start) + shift;
+    let last = *end + d * extension(mitre_end) + shift;
+    let low = up * band.low;
+    let high = up * band.high;
     let points = [
         first - half + low,
         first + half + low,
@@ -621,9 +734,7 @@ fn kickplate_segment_solid(segment: &PathSegment) -> Result<Manifold, ModelError
         (None, None) => {}
     }
     if solid.is_empty() || solid.num_tri() == 0 {
-        return Err(ModelError::Solid(SolidError::EmptyManifold {
-            what: "handrail kickplate",
-        }));
+        return Err(ModelError::Solid(SolidError::EmptyManifold { what }));
     }
     Ok(solid)
 }
@@ -1277,8 +1388,8 @@ fn owning_handrail(el: &DbElement) -> Result<Option<DbElement>, ModelError> {
         .then_some(owner))
 }
 
-/// HANDRA 的第一个 `RPATH` 成员（`sub_109F7150` 把它存进 `+128`）。
-fn first_rpath(handrail: &DbElement) -> Result<Option<DbElement>, ModelError> {
+/// HANDRA（或 STRFLT）的第一个 `RPATH` 成员（`sub_109F7150` 把它存进 `+128`）。
+pub(crate) fn first_rpath(handrail: &DbElement) -> Result<Option<DbElement>, ModelError> {
     for member in handrail.members()? {
         if member.element_type()? == "RPATH" {
             return Ok(Some(member));
@@ -1288,20 +1399,23 @@ fn first_rpath(handrail: &DbElement) -> Result<Option<DbElement>, ModelError> {
 }
 
 /// 一条 `RPATH` 读出来的路径。
-struct RawPath {
+pub(crate) struct RawPath {
     /// `POINTR` 的 refno、位置、`FRAD` 倒角半径。
-    points: Vec<(String, DVec3, f64)>,
+    pub(crate) points: Vec<(String, DVec3, f64)>,
     /// 本期没接的那些路径段：`(夹在它前面的那个点在 points 里的下标, 说明)`。
     ///
     /// `createCurvesFromPath` 除点串外还认三种：`CURVE`/`RSECT` 走 vtbl+24 出圆弧、
     /// `EXTGEO` 走 `sub_105D13B0` 出外部几何段。它们夹在两个 `POINTR` 之间，
     /// **把那条边从直段换成别的东西**——只记一条 note 再照直段画，画出来的是一根
     /// 形状不对的杆；所以要把边号一并交出去，由调用方决定这一段还画不画。
-    unwired: Vec<(usize, String)>,
+    pub(crate) unwired: Vec<(usize, String)>,
+    /// `RPATH` 的 `DRNS` / `DRNE`（开口路径两端的端向）；未设读成零向量。
+    pub(crate) drns: DVec3,
+    pub(crate) drne: DVec3,
 }
 
-/// 读一条 `RPATH` 的点串。
-fn path_points(rpath: &DbElement) -> Result<RawPath, ModelError> {
+/// 读一条 `RPATH` 的点串（HANDRA 的，也是梯段 STRFLT 自己那条的）。
+pub(crate) fn path_points(rpath: &DbElement) -> Result<RawPath, ModelError> {
     let mut points: Vec<(String, DVec3, f64)> = Vec::new();
     let mut unwired = Vec::new();
     for member in rpath.members()? {
@@ -1328,7 +1442,19 @@ fn path_points(rpath: &DbElement) -> Result<RawPath, ModelError> {
         let fillet = member.get_double("FRAD")?.unwrap_or(0.0).max(0.0);
         points.push((member.refno().to_string(), pos, fillet));
     }
-    Ok(RawPath { points, unwired })
+    let direction = |name: &str| -> Result<DVec3, ModelError> {
+        Ok(rpath
+            .get_direction(name)?
+            .map(DVec3::from_array)
+            .filter(|v| v.is_finite())
+            .unwrap_or(DVec3::ZERO))
+    };
+    Ok(RawPath {
+        points,
+        unwired,
+        drns: direction("DRNS")?,
+        drne: direction("DRNE")?,
+    })
 }
 
 /// `STAREF` / `ENDREF` 两个点号 → 要扫的曲线号串（`sub_105AB2C0` 第 101–148 行）。
@@ -1498,6 +1624,151 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert!(notes.is_empty(), "{notes:?}");
+    }
+
+    /// aps250209 梯段扶手的路径：平台段 302.45 再上斜段，`RPATH` 的 `DRNS = DRNE = +Y`。起点端向与平台段平行→仍是
+    /// 平头；终点端向与斜段成角→末段尾部换成过终点、法向 +Y（沿行进方向）的竖直面；拐角那张斜接面不动。
+    /// 零端向和闭合路径一张都不加。
+    #[test]
+    fn open_ends_follow_the_rpath_end_directions_when_they_are_oblique() {
+        let mut notes = Vec::new();
+        let points = [
+            (DVec3::new(0.0, 0.0, 0.0), 0.0),
+            (DVec3::new(0.0, 302.45, 0.0), 0.0),
+            (DVec3::new(0.0, 2929.95, 1980.0), 0.0),
+        ];
+        let mut segments = build_path(&points, false, &mut notes);
+        assert_eq!(segments.len(), 2, "{segments:?}");
+        let corner = match &segments[1] {
+            PathSegment::Line { mitre_start, .. } => mitre_start.expect("corner mitre"),
+            other => panic!("{other:?}"),
+        };
+        apply_end_directions(&mut segments, false, DVec3::Y, DVec3::Y, &mut notes);
+        match (&segments[0], &segments[1]) {
+            (
+                PathSegment::Line {
+                    mitre_start: None,
+                    mitre_end: Some(_),
+                    ..
+                },
+                PathSegment::Line {
+                    mitre_start: Some(n_corner),
+                    mitre_end: Some(n_end),
+                    ..
+                },
+            ) => {
+                assert!((*n_corner - corner).length() < 1e-12, "{n_corner}");
+                assert!((*n_end - DVec3::Y).length() < 1e-12, "{n_end}");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes[0].contains("DRNE"), "{notes:?}");
+
+        // 零端向（aps250110 SF_002 那样）：两端都是平头。
+        let mut plain = build_path(&points, false, &mut Vec::new());
+        apply_end_directions(&mut plain, false, DVec3::ZERO, DVec3::ZERO, &mut Vec::new());
+        match &plain[1] {
+            PathSegment::Line {
+                mitre_end: None, ..
+            } => {}
+            other => panic!("{other:?}"),
+        }
+        // 闭合路径没有端。
+        let square = [
+            (p(0.0, 0.0), 0.0),
+            (p(1000.0, 0.0), 0.0),
+            (p(1000.0, 1000.0), 0.0),
+            (p(0.0, 1000.0), 0.0),
+        ];
+        let mut closed = build_path(&square, true, &mut Vec::new());
+        let before = closed.clone();
+        apply_end_directions(&mut closed, true, DVec3::Z, DVec3::Z, &mut Vec::new());
+        assert_eq!(closed, before);
+    }
+
+    /// 端向切过的栏杆实体：斜段终点 (0, 2929.95, 1980)、`DRNE = +Y`，整根栏杆在 y 上正好止于终点，而平头会多伸
+    /// 截面圆下坠 20·sinθ 再加端环半径在 y 上的投影 20·sinθ（θ = 37° 时共 24.07 mm）。
+    #[test]
+    fn an_end_direction_cut_stops_the_rail_exactly_at_the_path_end() {
+        let start = DVec3::new(0.0, 302.45, 0.0);
+        let end = DVec3::new(0.0, 2929.95, 1980.0);
+        let plain = rail_segment_solid(&PathSegment::Line {
+            start,
+            end,
+            mitre_start: None,
+            mitre_end: None,
+        })
+        .unwrap();
+        let cut = rail_segment_solid(&PathSegment::Line {
+            start,
+            end,
+            mitre_start: None,
+            mitre_end: Some(DVec3::Y),
+        })
+        .unwrap();
+        let y_max = |solid: &Manifold| solid.bounding_box().expect("rail").max()[1];
+        let d = (end - start).normalize();
+        let overhang = 2.0 * RAIL_RADIUS * d.z;
+        assert!(
+            (y_max(&plain) - (end.y + overhang)).abs() < 0.05,
+            "{}",
+            y_max(&plain)
+        );
+        assert!((y_max(&cut) - end.y).abs() < 0.05, "{}", y_max(&cut));
+    }
+
+    /// FRAD 100 的直角拐角：栏杆走弧，踢脚板不走——按没有倒角的路径排成两段直板，在过拐点 (1000, 0) 的角平分面上
+    /// 斜接：第一段的外边（y = −2）画到 x = 1002、内边（y = +2）停在 998，板高 10..110。此前弧段在这里被拒，整只扶手都不出。
+    /// 竖直面里的内弯拐角（平台接斜段，弧心在板一侧、FRAD < 板顶 110）同一条规则，所以不存在「截面跨过弧心」的问题。
+    #[test]
+    fn a_kickplate_is_mitred_at_the_corner_instead_of_following_the_fillet_arc() {
+        let points = [
+            (p(0.0, 0.0), 0.0),
+            (p(1000.0, 0.0), 100.0),
+            (p(1000.0, 800.0), 0.0),
+        ];
+        let unfilleted: Vec<(DVec3, f64)> = points.iter().map(|&(point, _)| (point, 0.0)).collect();
+        let plates = build_path(&unfilleted, false, &mut Vec::new());
+        assert_eq!(plates.len(), 2, "{plates:?}");
+        assert!(
+            plates
+                .iter()
+                .all(|segment| matches!(segment, PathSegment::Line { .. }))
+        );
+        let first = kickplate_segment_solid(&plates[0]).unwrap();
+        let bb = first.bounding_box().unwrap();
+        let (lo, hi) = (bb.min(), bb.max());
+        for (got, want) in lo.iter().zip([0.0, -2.0, 10.0]) {
+            assert!((got - want).abs() < 0.05, "min {lo:?}");
+        }
+        for (got, want) in hi.iter().zip([1002.0, 2.0, 110.0]) {
+            assert!((got - want).abs() < 0.05, "max {hi:?}");
+        }
+
+        // 竖直面里的内弯：平台段接斜段（aps250209 `/A02-AREA07-HANDRAILS`），板底 10 与板顶 110 都在角平分面上相交。
+        let stair = [
+            (DVec3::new(0.0, 0.0, 0.0), 0.0),
+            (DVec3::new(0.0, -1404.55, 0.0), 0.0),
+            (DVec3::new(0.0, -3950.0, 2000.0), 0.0),
+        ];
+        let plates = build_path(&stair, false, &mut Vec::new());
+        let flat = kickplate_segment_solid(&plates[0])
+            .unwrap()
+            .bounding_box()
+            .unwrap();
+        let d_out = (stair[2].0 - stair[1].0).normalize();
+        let normal = (DVec3::NEG_Y + d_out).normalize();
+        // 板底（z = 10）的远端落在斜接面上：n.y (y + 1404.55) + n.z·10 = 0 → y = −1401.09（E3D 导出里板底面的末端）；
+        // 板顶收到 −1366.49，所以整块板的 y 最小就是板底那一点。
+        let bottom_end = -1404.55 + normal.z * KICKPLATE_LIFT / normal.y.abs();
+        assert!((bottom_end + 1401.09).abs() < 0.01, "{bottom_end}");
+        assert!(
+            (flat.min()[1] - bottom_end).abs() < 0.05,
+            "{:?} vs {bottom_end}",
+            flat.min()
+        );
+        assert!((flat.max()[2] - 110.0).abs() < 0.05 && (flat.min()[2] - 10.0).abs() < 0.05);
     }
 
     /// 带 FRAD 的拐角：两邻边各缩 `FRAD·tan(θ/2)`，中间一节弧切于两边、圆心在角平分线上。

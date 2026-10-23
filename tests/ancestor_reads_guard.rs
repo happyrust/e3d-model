@@ -295,8 +295,9 @@ const ANCESTOR_CONSUMERS: &[(&str, &str, &[&str], &str)] = &[
     (
         "handrail.rs",
         "path_points",
-        &["FRAD", "POS"],
-        "读 HANDRA 名下 RPATH 的 POINTR 位置与倒角：扶手单元内部的成员，单元整体重建覆盖",
+        &["DRNE", "DRNS", "FRAD", "POS"],
+        "读 HANDRA 名下 RPATH 的 POINTR 位置与倒角，以及 RPATH 自己的两端端向 DRNS / DRNE（开口路径两端的切面）：都是扶手单元内部的
+         成员，单元整体重建覆盖；立柱模板件那路（member_station）只用点串，端向不进它的几何", 
     ),
     (
         "rpath.rs",

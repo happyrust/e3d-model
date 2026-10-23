@@ -449,9 +449,14 @@ fn rvm_component_geometry(
 /// **折弯板**（BPANEL，[`e3d_model::bpanel`]）：aps250110 的 52 只全是 `FacetGroup`——没有开孔的一段一条，
 /// 有开孔的整只一条；直板那几段按长相会被认成 `Box`。
 ///
+/// **布局式扶手**（HANDRA，[`e3d_model::handrail`]）：Core3D 把栏杆、立柱、踢脚板连同圆角弧合成一棵 CSG 树交给
+/// 一次写出，aps250209 / aps250112 / aps250110 的 TTY 导出里每只 HANDRA 都是**一条** `FacetGroup`；我们的零件是
+/// `compose` 起来的，圆角弧与直段不共顶点时会被按连通性拆开、环段被认成 `CircularTorus`、立柱认成 `Cylinder`
+/// （aps250209 `/A01-AREA05-2ND-FL-HANDRAILS` 的 HANDRA 2 拆成 7 条）。
+///
 /// 名单 = 设计侧环拉伸（[`e3d_model::category::Category::LoopExtrusion`]：PANE / FLOOR / EXTR /
 /// AEXTR / SCREED / GWALL）+ 型材扫掠（SCTN / GENSEC / STWALL / WALL / RAIL / KICKPL）+
-/// 多面体（[`e3d_model::category::Category::Polyhedron`]：POHE / POLYHE）+ 通用图元 GENPRI + 折弯板 BPANEL。
+/// 多面体（[`e3d_model::category::Category::Polyhedron`]：POHE / POLYHE）+ 通用图元 GENPRI + 折弯板 BPANEL + 布局式扶手 HANDRA。
 /// 目录构件（FITT / FIXING / SBFI / PCOM…）**不在**名单里：它们由 GMSE 图元拼成，E3D 走
 /// DRBOX / DRCYL 等图元写出器——`:SDS_Entity 3` 那块底板就是 E3D 自己写的 `Pyramid`。
 ///
@@ -463,7 +468,15 @@ fn e3d_exports_facets_only(noun: &str) -> bool {
         e3d_model::category::Category::LoopExtrusion | e3d_model::category::Category::Polyhedron
     ) || matches!(
         noun,
-        "SCTN" | "GENSEC" | "STWALL" | "WALL" | "RAIL" | "KICKPL" | "GENPRI" | "BPANEL"
+        "SCTN"
+            | "GENSEC"
+            | "STWALL"
+            | "WALL"
+            | "RAIL"
+            | "KICKPL"
+            | "GENPRI"
+            | "BPANEL"
+            | "HANDRA"
     )
 }
 

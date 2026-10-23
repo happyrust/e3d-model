@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-10-24 布局式扶手的两端按 RPATH 端向切、踢脚板在圆角拐角按拐点斜接、整只写一条面片——aps250209 38 只 HANDRA 对上
+
+- **开口端**：`RPATH` 的 `DRNS` / `DRNE` 非零且与该段既不平行也不垂直时，栏杆与踢脚板的开口端是过端点、法向 = 端向的平面
+  （`handrail::apply_end_directions`，复用 GENSEC SPINE 的 `spine_mitre_plane` 门），其余情形仍是垂直于轴的平头。aps250209
+  `/A01-AREA05-BASE-FL-STAIRS` 等 8 段梯段的 16 只 HANDRA（平台段 + 斜段、`DRNE = +Y`）在 E3D TTY 导出里斜段顶端是 `y = 端点` 的竖直面
+  （端柱还在端点上），我们按平头画多伸 24.07 − 15 = 9.07 mm；aps250110 `SF_002` 的端向是零、aps250112 `SF_001` 两端是平台段，
+  两条规则在那里给出同一张面。off 16 → 0。
+- **圆角拐角的踢脚板**：此前 `FRAD > 0` 的拐角踢脚板拒做（`layout kickplate does not support arc segments`），整只扶手都不出
+  （aps250209 22 只）。E3D 的踢脚板不跟弧：直板一直画到原拐点、按角平分面斜接（`/A01-AREA05-4TH-FLOOR-HANDRAILS` FRAD 100 的水平拐角、
+  `/A02-AREA07-HANDRAILS` 竖直面里的内弯拐角，板顶 / 板底都在过拐点的角平分面上相交），现在踢脚板按没有倒角的路径重排直段，栏杆照旧走弧。
+  只在 E3D 22 → 0，全 exact。
+- **记录种类**：E3D 给每只布局式 HANDRA 写一条 `FacetGroup`（aps250209 / aps250112 / aps250110 的导出都是）；我们的零件是 `compose`
+  起来的，弧与直段不共顶点时会被按连通性拆开、环段被认成 `CircularTorus`、立柱认成 `Cylinder`（一只拆成 7 条）。`gen_ams`
+  的 `e3d_exports_facets_only` 加 HANDRA，整只一条面片。
+- 真库门 `rvm_record_kinds_real` 加两条（aps250209 在副本 SYS 库登记后导出）：梯段扶手 `2013286753/40206` / `40211` 的世界盒止于端柱
+  36445.0，圆角踢脚板扶手 `40177` / `40183` 的世界盒对 E3D 0.05 mm，两条都钉每只 HANDRA 恰好一条 `FacetGroup`。祖先读守卫登记 RPATH
+  的 `DRNS` / `DRNE`。aps250209 对拍 4583 对 4564 exact、off 19、只在 E3D 40 → 4605 对 4602 exact、off 3（CTORUS 负体布尔 2 + 整圈 REVO 1）、
+  只在 E3D 18（全是 STRFLT 自身的面片）、种类不同 2。
+
 ## 2026-10-23 桥架分支的路径点照 E3D 写 10 mm 记号——aps7200 8 条空分支的 20 个 POINTR 对上
 
 - E3D 给 `CWBRAN` 的 RPATH 每个 `POINTR` 写一只 10 × 10 × 10、沿世界轴、以点为中心的 `Box`（Core3D

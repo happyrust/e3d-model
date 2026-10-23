@@ -34,6 +34,8 @@ const APS_HVAC_DB: &str = "aps250142_0001";
 const APS_VALVE_DB: &str = "aps250132_0001";
 /// 不在 APS 的 `/ALL` 里，E3D 只能在项目副本上导；设计库文件照样在 aps000。
 const APS_COPY_ONLY_DB: &str = "aps7200_0001";
+/// 同样不在 `/ALL`：E3D 3.1 样例的结构 AREA05 / 02 / 06 / 07 库，2026-10-24 在副本的 SYS 库里登记后导出。
+const APS_AREA05_DB: &str = "aps250209_0001";
 const TEMPLATE_DIR: &str = r"E:\reverse\e3d\shadow_e3d31_aps_all";
 const IJOINT1: &str = "23708/42148";
 const IJOINT1_NAME: &str = "/SUPPORT/FRAMES/BS/FT03H/9-V1/S1/IJOINT1";
@@ -844,6 +846,97 @@ fn a_jointed_arc_wall_keeps_its_radial_ends() {
     std::fs::remove_dir_all(&scratch).ok();
 }
 
+/// aps250209 梯段上的布局式扶手 `HANDRA 1 of STRFLT 1 of SBFRAMEWORK /A01-AREA05-BASE-FL-STAIRS`（`2013286753/40206`）：路径是
+/// 平台段 302.45 + 斜段到 (0, 2929.95, 1980)，`RPATH` 的 `DRNS = DRNE = +Y`。E3D TTY 在项目副本上导出（gen-model
+/// `verification/civil-tty-20261021/aps250209-w7t/aps250209_lv6_2013286753_40120.rvm`）：斜段顶端的栏杆是 `y = 端点`（世界
+/// 36430.0）的竖直面，整只的 y 最大落在端点上的 Ø30 端柱 36445.0；此前按垂直于轴的平头画到 36454.07（off 9.07，16 只同病）。
+#[test]
+fn a_stair_flight_handrail_ends_on_the_rpath_end_direction() {
+    if !fixtures_present_in(APS_DIR, APS_AREA05_DB) {
+        return;
+    }
+    let scratch: PathBuf = std::env::temp_dir().join(format!(
+        "e3d-model-rvm-stair-handrail-aps-{}",
+        std::process::id()
+    ));
+    let (rvm, elements) = generate_in(APS_DIR, APS_AREA05_DB, "2013286753/40205", "on", &scratch);
+    assert_world_aabb(
+        &elements,
+        "2013286753/40206",
+        [22505.0, 33485.05, 2020.0, 22545.0, 36445.0, 5100.0],
+        0.05,
+    );
+    assert_world_aabb(
+        &elements,
+        "2013286753/40211",
+        [23355.0, 33485.05, 2020.0, 23395.0, 36445.0, 5100.0],
+        0.05,
+    );
+    // E3D 给每只布局式 HANDRA 写一条 FacetGroup：栏杆、立柱、踢脚板不拆。
+    let handrails: Vec<&RvmMember> = rvm
+        .members
+        .iter()
+        .filter(|member| member.name.trim().starts_with("HANDRA"))
+        .collect();
+    assert_eq!(
+        handrails.len(),
+        2,
+        "{:?}",
+        handrails.iter().map(|m| &m.name).collect::<Vec<_>>()
+    );
+    for member in handrails {
+        let kinds: Vec<&str> = member
+            .geometries
+            .iter()
+            .map(|geometry| geometry.primitive.name())
+            .collect();
+        assert_eq!(kinds, ["FacetGroup"], "{}", member.name);
+    }
+
+    std::fs::remove_dir_all(&scratch).ok();
+}
+
+/// aps250209 平台扶手 `HANDRA 1 / 2 of SBFRAMEWORK /A01-AREA05-4TH-FLOOR-HANDRAILS`（`2013286753/40177`、`40183`）：路径四点
+/// U 形、拐角 `FRAD 100`、`SHOWKP` 真。此前踢脚板不支持弧段、整只生成失败（aps250209 共 22 只）；现在弧段的踢脚板是
+/// 一节矩形圆环，整只与 E3D TTY 导出的世界盒一致（`aps250209_lv6_2013286753_40120.rvm`），并且照 E3D 写成一条 FacetGroup。
+#[test]
+fn a_layout_handrail_with_filleted_corners_builds_its_kickplate_too() {
+    if !fixtures_present_in(APS_DIR, APS_AREA05_DB) {
+        return;
+    }
+    let scratch: PathBuf = std::env::temp_dir().join(format!(
+        "e3d-model-rvm-arc-kickplate-aps-{}",
+        std::process::id()
+    ));
+    let (rvm, elements) = generate_in(APS_DIR, APS_AREA05_DB, "2013286753/40176", "on", &scratch);
+    assert_world_aabb(
+        &elements,
+        "2013286753/40177",
+        [20480.0, 29485.0, 11500.05, 29520.0, 38520.0, 12600.05],
+        0.05,
+    );
+    assert_world_aabb(
+        &elements,
+        "2013286753/40183",
+        [21380.0, 32480.0, 11500.05, 23420.0, 36450.0, 12600.05],
+        0.05,
+    );
+    for member in rvm
+        .members
+        .iter()
+        .filter(|member| member.name.trim().starts_with("HANDRA"))
+    {
+        let kinds: Vec<&str> = member
+            .geometries
+            .iter()
+            .map(|geometry| geometry.primitive.name())
+            .collect();
+        assert_eq!(kinds, ["FacetGroup"], "{}", member.name);
+    }
+
+    std::fs::remove_dir_all(&scratch).ok();
+}
+
 /// aps7200 圆转方风管变径 `TRNS /HVAC2-B1/ITEM8`（`23584/7410`，目录 acp7002 `/FORD`）：本体的两只偏心 `Snout`
 /// 把偏心方向 `PBAX` 取自 P7 / P8，它们的 `PTCD` 是 `AXIS -Y ( ATANT ( ±DESP[10] - (DESP[4] - DESP[5]) / 2 , 0 - DESP[11] ) ) ∓X`。
 /// E3D TTY（gen-model `verification/civil-tty-20261021/aps7200-w7h/aps7200_lv6_23584_7298.rvm`）里两只 Snout 的记录
@@ -885,7 +978,8 @@ fn a_round_to_rectangular_transition_leans_its_snouts_the_way_e3d_does() {
         (450.0, [0.0, -1.0, 0.0], [4902.5, 17555.0, 4650.0]),
         (50.0, [0.0, 1.0, 0.0], [4902.5, 17805.0, 4650.0]),
     ];
-    for ((parameters, x_axis, origin), (offset, want_axis, want_origin)) in snouts.iter().zip(want) {
+    for ((parameters, x_axis, origin), (offset, want_axis, want_origin)) in snouts.iter().zip(want)
+    {
         assert!(
             [200.0, 150.0, 525.0, offset]
                 .iter()
@@ -916,8 +1010,10 @@ fn a_zero_size_design_cylinder_still_writes_its_empty_record() {
     if !fixtures_present_in(APS_DIR, APS_COPY_ONLY_DB) {
         return;
     }
-    let scratch: PathBuf =
-        std::env::temp_dir().join(format!("e3d-model-rvm-zero-cyli-aps-{}", std::process::id()));
+    let scratch: PathBuf = std::env::temp_dir().join(format!(
+        "e3d-model-rvm-zero-cyli-aps-{}",
+        std::process::id()
+    ));
     let (rvm, elements) = generate_in(APS_DIR, APS_COPY_ONLY_DB, "23584/9172", "on", &scratch);
     assert!(
         elements.as_array().unwrap().is_empty(),
@@ -926,20 +1022,45 @@ fn a_zero_size_design_cylinder_still_writes_its_empty_record() {
     let member = rvm
         .members
         .iter()
-        .find(|member| member.name.trim().starts_with("CYLI 3 of SUBS 1 of STRU /EQRACK.5M.HR5"))
+        .find(|member| {
+            member
+                .name
+                .trim()
+                .starts_with("CYLI 3 of SUBS 1 of STRU /EQRACK.5M.HR5")
+        })
         .unwrap_or_else(|| {
             panic!(
                 "RVM 里没有零尺寸 CYLI 的组：{:?}",
-                rvm.members.iter().map(|member| member.name.trim()).collect::<Vec<_>>()
+                rvm.members
+                    .iter()
+                    .map(|member| member.name.trim())
+                    .collect::<Vec<_>>()
             )
         });
     assert_eq!(member.geometries.len(), 1, "{}", member.name);
     let geometry = &member.geometries[0];
-    assert_eq!(geometry.primitive, Primitive::Cylinder([0.0, 0.0]), "{}", member.name);
+    assert_eq!(
+        geometry.primitive,
+        Primitive::Cylinder([0.0, 0.0]),
+        "{}",
+        member.name
+    );
     let axes = [
-        [geometry.matrix3[0], geometry.matrix3[1], geometry.matrix3[2]],
-        [geometry.matrix3[3], geometry.matrix3[4], geometry.matrix3[5]],
-        [geometry.matrix3[6], geometry.matrix3[7], geometry.matrix3[8]],
+        [
+            geometry.matrix3[0],
+            geometry.matrix3[1],
+            geometry.matrix3[2],
+        ],
+        [
+            geometry.matrix3[3],
+            geometry.matrix3[4],
+            geometry.matrix3[5],
+        ],
+        [
+            geometry.matrix3[6],
+            geometry.matrix3[7],
+            geometry.matrix3[8],
+        ],
     ]
     .map(|axis| axis.map(|value| value * 1000.0));
     let want_axes = [[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0]];
@@ -972,8 +1093,10 @@ fn a_boxed_tube_catalogue_under_a_pipe_still_draws_the_rectangle() {
     if !fixtures_present_in(APS_DIR, APS_COPY_ONLY_DB) {
         return;
     }
-    let scratch: PathBuf =
-        std::env::temp_dir().join(format!("e3d-model-rvm-boxed-tube-aps-{}", std::process::id()));
+    let scratch: PathBuf = std::env::temp_dir().join(format!(
+        "e3d-model-rvm-boxed-tube-aps-{}",
+        std::process::id()
+    ));
     let (rvm, _) = generate_in(APS_DIR, APS_COPY_ONLY_DB, "23584/7312", "on", &scratch);
     // 我们的隐式管身各自成组（`TUBI n of BRAN …`），E3D 写在容器组里；这支只有这一段有长度的管身。
     let name = "/HVAC/RECT/M1/B2";
@@ -987,7 +1110,10 @@ fn a_boxed_tube_catalogue_under_a_pipe_still_draws_the_rectangle() {
         boxes.len(),
         1,
         "{name}: {:?}",
-        boxes.iter().map(|geometry| geometry.primitive.name()).collect::<Vec<_>>()
+        boxes
+            .iter()
+            .map(|geometry| geometry.primitive.name())
+            .collect::<Vec<_>>()
     );
     let geometry = boxes[0];
     assert!(
@@ -1001,9 +1127,21 @@ fn a_boxed_tube_catalogue_under_a_pipe_still_draws_the_rectangle() {
     // 记录标架的写法不计（E3D 按世界三轴写 `Box[50, 100, 2150]`，我们按离开侧构件的滚转写 `Box[100, 50, 2150]`，
     // 同一只盒子）：比的是盒子在世界系里的包围盒，与 `rvm_compare` 的判档同一口径。
     let axes = [
-        [geometry.matrix3[0], geometry.matrix3[1], geometry.matrix3[2]],
-        [geometry.matrix3[3], geometry.matrix3[4], geometry.matrix3[5]],
-        [geometry.matrix3[6], geometry.matrix3[7], geometry.matrix3[8]],
+        [
+            geometry.matrix3[0],
+            geometry.matrix3[1],
+            geometry.matrix3[2],
+        ],
+        [
+            geometry.matrix3[3],
+            geometry.matrix3[4],
+            geometry.matrix3[5],
+        ],
+        [
+            geometry.matrix3[6],
+            geometry.matrix3[7],
+            geometry.matrix3[8],
+        ],
     ]
     .map(|axis| axis.map(|value| value * 1000.0));
     let mut half = [0.0f64; 3];
@@ -1061,7 +1199,10 @@ fn empty_cableway_branches_mark_their_route_points_like_e3d() {
         marks.len(),
         20,
         "{:?}",
-        marks.iter().map(|member| member.name.trim()).collect::<Vec<_>>()
+        marks
+            .iter()
+            .map(|member| member.name.trim())
+            .collect::<Vec<_>>()
     );
     for member in &marks {
         assert_eq!(member.geometries.len(), 1, "{}", member.name);
@@ -1078,7 +1219,10 @@ fn empty_cableway_branches_mark_their_route_points_like_e3d() {
         .unwrap_or_else(|| {
             panic!(
                 "没有 B1 的第一点：{:?}",
-                marks.iter().map(|member| member.name.trim()).collect::<Vec<_>>()
+                marks
+                    .iter()
+                    .map(|member| member.name.trim())
+                    .collect::<Vec<_>>()
             )
         });
     let geometry = &first.geometries[0];
@@ -1091,9 +1235,21 @@ fn empty_cableway_branches_mark_their_route_points_like_e3d() {
         );
     }
     let axes = [
-        [geometry.matrix3[0], geometry.matrix3[1], geometry.matrix3[2]],
-        [geometry.matrix3[3], geometry.matrix3[4], geometry.matrix3[5]],
-        [geometry.matrix3[6], geometry.matrix3[7], geometry.matrix3[8]],
+        [
+            geometry.matrix3[0],
+            geometry.matrix3[1],
+            geometry.matrix3[2],
+        ],
+        [
+            geometry.matrix3[3],
+            geometry.matrix3[4],
+            geometry.matrix3[5],
+        ],
+        [
+            geometry.matrix3[6],
+            geometry.matrix3[7],
+            geometry.matrix3[8],
+        ],
     ]
     .map(|axis| axis.map(|value| value * 1000.0));
     let want_axes = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
