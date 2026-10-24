@@ -79,7 +79,7 @@ const SLOPE_DIRECTIONS: &str = "SLODIR";
 const DIRECTION_TOL: f64 = 1.0e-9;
 /// Core3D `pplib/NAXIS` subtracts 1000 from a point-axis number and negates
 /// the resolved point direction.  The point position remains the axis datum.
-const NEGATED_POINT_BASE: u32 = 1000;
+pub(crate) const NEGATED_POINT_BASE: u32 = 1000;
 
 /// 走目录链解 P 点的 [`PPointResolver`]。
 ///
@@ -801,7 +801,9 @@ fn axial(
     Ok((origin + dir * distance, dir))
 }
 
-fn encoded_point_axis(words: &[u32]) -> Option<u32> {
+/// `PAXI = Pn` 的编码（`[3, n]`，或带个数前缀的 `[2, 3, n]`）→ n；具名轴与其他形状给 `None`。
+/// `n >= NEGATED_POINT_BASE` 是反向的 `-Pn`，调用方自己拆。
+pub(crate) fn encoded_point_axis(words: &[u32]) -> Option<u32> {
     match words {
         [3, number] => Some(*number),
         [count, rest @ ..] if *count as usize == rest.len() => match rest {
@@ -813,7 +815,7 @@ fn encoded_point_axis(words: &[u32]) -> Option<u32> {
 }
 
 /// `PAXI` 的原始词。实现里两种数组形状都出现过，都收。
-fn axis_words(point: &DbElement) -> Option<Vec<u32>> {
+pub(crate) fn axis_words(point: &DbElement) -> Option<Vec<u32>> {
     match point.attribute("PAXI") {
         Ok(Some(DescriptorValue::RawWords(words))) => Some(words),
         Ok(Some(DescriptorValue::WordArray(words))) => Some(words),

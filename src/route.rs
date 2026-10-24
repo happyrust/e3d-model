@@ -60,10 +60,11 @@ use e3d_io::refno::RefNo;
 
 use crate::catalogue_point::catalogue_component;
 use crate::category::{Category, RouteDiscipline, classify, route_discipline};
+use crate::elmodl::CataloguePartRecord;
 use crate::primitive_instance::{
     PrimitiveInstance, instantiate_box, instantiate_centered_cylinder,
 };
-use crate::solid::SolidError;
+use crate::solid::{SolidError, box_solid, csg_cylinder_solid, placed};
 use crate::transform::world_matrix;
 
 /// `ORIMAT` 挑副轴时判「叉积退化」的阈值。
@@ -782,7 +783,7 @@ pub fn departure_tube_outer_diameter(from: &RouteEnd) -> Result<Option<f64>, DbE
 /// （目录 TUBE `PDIA = ( ATTRIB LBOR OF PREV )`）与指向 `RTUBEA|B|C` 的矩形直段（目录
 /// BOXING `PXLE` / `PZLE` 各读 `LEAWID` / `LEAHEI OF PREV`，A 与 B/C 只差两个名字对调），
 /// 见 [`crate::hvac_tube`]。
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TubeSection {
     /// 圆管，外径（mm）。
     Round { outer_diameter: f64 },
@@ -800,6 +801,54 @@ pub enum TubeSection {
         /// [`build_tube`] 会把它投影到轴的法平面上再用）。
         z_axis: DVec3,
     },
+    /// 目录 TUBI 的几何集里有不止一只可见图元时，管身是它们逼图元的并置（[`crate::hvac_tube`]）。aps250142 的扁圆风管
+    /// `/FOTUBE2`：一只 BOXING（`PXLE = LEAWID − LEAHEI`、`PZLE = LEAHEI`，居中）加两只 TUBE（`PDIA = LEAHEI`，轴是 P 点 P4 / P5，
+    /// `PX = ±(LEAWID − LEAHEI)/2`），保温为 0 时保温的两只 TUBE 与它们重合；E3D 写一条 `Box` 加四条 `Cylinder`。滑转与矩形断面
+    /// 同一格（`z_axis`），各块的偏移在那个滑转后的断面平面里。
+    Composite {
+        parts: Vec<DuctPart>,
+        z_axis: DVec3,
+    },
+}
+
+/// 复合断面里的一块：目录 TUBI 几何集的一只可见 BOXING / TUBE。
+#[derive(Debug, Clone, PartialEq)]
+pub struct DuctPart {
+    pub shape: DuctPartShape,
+    /// 图元轴在断面平面里的位置（mm）：`[沿管身局部 X（PXLE 方向）, 沿 z_axis]`。BOXING 居中是 `[0, 0]`；
+    /// TUBE 的 `PAXI = Pn` 时是那个 P 点的 `(PX, PZ)`。
+    pub offset: [f64; 2],
+    /// 几只成员算成同形同位的一块：E3D 逐成员写记录，体只放一块（见 [`CataloguePartRecord::repeats`]）。
+    pub repeats: usize,
+    /// 第一只成员的图元名，进 note。
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DuctPartShape {
+    /// BOXING：`PXLE` 沿管身局部 X，`PZLE` 沿 `z_axis`。
+    Box { x_length: f64, z_length: f64 },
+    /// TUBE：`PDIA`。
+    Round { diameter: f64 },
+}
+
+impl DuctPartShape {
+    fn is_buildable(&self) -> bool {
+        match *self {
+            DuctPartShape::Box { x_length, z_length } => {
+                x_length.is_finite() && x_length > 0.0 && z_length.is_finite() && z_length > 0.0
+            }
+            DuctPartShape::Round { diameter } => diameter.is_finite() && diameter > 0.0,
+        }
+    }
+
+    /// 目录图元的 noun，RVM 写出端据此挑记录种类（BOXING → `Box`、TUBE → `Cylinder`）。
+    pub fn catalogue_noun(&self) -> &'static str {
+        match self {
+            DuctPartShape::Box { .. } => "BOXI",
+            DuctPartShape::Round { .. } => "TUBE",
+        }
+    }
 }
 
 impl TubeSection {
@@ -814,7 +863,7 @@ impl TubeSection {
     pub fn radius_mm(&self) -> Option<f64> {
         match self {
             TubeSection::Round { outer_diameter } => Some(outer_diameter / 2.0),
-            TubeSection::Rectangular { .. } => None,
+            TubeSection::Rectangular { .. } | TubeSection::Composite { .. } => None,
         }
     }
 
@@ -835,6 +884,15 @@ impl TubeSection {
                     && *z_length > 0.0
                     && z_axis.is_finite()
             }
+            TubeSection::Composite { parts, z_axis } => {
+                !parts.is_empty()
+                    && z_axis.is_finite()
+                    && parts.iter().all(|part| {
+                        part.shape.is_buildable()
+                            && part.offset.iter().all(|value| value.is_finite())
+                            && part.repeats >= 1
+                    })
+            }
         }
     }
 }
@@ -850,6 +908,13 @@ pub struct TubeGeometry {
     pub placement: DMat4,
     /// Canonical CylinderV3 / BoxV1 placement in the tube-local frame.
     pub primitive_instance: Option<PrimitiveInstance>,
+    /// 复合断面（[`TubeSection::Composite`]）逐块的世界系实体；单一断面是 `None`。与
+    /// [`crate::elmodl::GeneratedElement::parts`] 同一句话：E3D 逐目录图元写记录。
+    pub parts: Option<Vec<Manifold>>,
+    /// 与 `parts` 逐块对齐的目录图元 noun（`BOXI` / `TUBE`）。
+    pub part_nouns: Vec<String>,
+    /// 与 `parts` 逐块对齐的记录事实：份数与图元在管身局部系里的标架。
+    pub part_records: Vec<CataloguePartRecord>,
 }
 
 impl TubeGeometry {
@@ -911,20 +976,48 @@ pub fn build_tube(from: &RoutePoint, to: &RoutePoint, section: Option<TubeSectio
     let Some(placement) = tumat(from.pos, from.dir, to.pos) else {
         return TubeOutcome::NoDirection;
     };
-    let (placement, local) = match section {
+    let (placement, local) = match &section {
         TubeSection::Round { outer_diameter } => (
             placement,
-            instantiate_centered_cylinder(outer_diameter, length),
+            instantiate_centered_cylinder(*outer_diameter, length),
         ),
         TubeSection::Rectangular {
             x_length,
             z_length,
             z_axis,
         } => {
-            let Some(placement) = rolled_placement(placement, z_axis) else {
+            let Some(placement) = rolled_placement(placement, *z_axis) else {
                 return TubeOutcome::NoDirection;
             };
-            (placement, instantiate_box(x_length, z_length, length, true))
+            (placement, instantiate_box(*x_length, *z_length, length, true))
+        }
+        TubeSection::Composite { parts, z_axis } => {
+            let Some(placement) = rolled_placement(placement, *z_axis) else {
+                return TubeOutcome::NoDirection;
+            };
+            return match composite_parts(parts, length) {
+                Ok((local_parts, records)) => {
+                    let solid = placed(&Manifold::compose(&local_parts), placement);
+                    let world_parts = local_parts
+                        .iter()
+                        .map(|part| placed(part, placement))
+                        .collect();
+                    TubeOutcome::Built(Box::new(TubeGeometry {
+                        solid,
+                        length_mm: length,
+                        placement,
+                        primitive_instance: None,
+                        parts: Some(world_parts),
+                        part_nouns: parts
+                            .iter()
+                            .map(|part| part.shape.catalogue_noun().to_string())
+                            .collect(),
+                        part_records: records,
+                        section,
+                    }))
+                }
+                Err(error) => TubeOutcome::Failed(error),
+            };
         }
     };
     match local {
@@ -934,9 +1027,37 @@ pub fn build_tube(from: &RoutePoint, to: &RoutePoint, section: Option<TubeSectio
             section,
             placement,
             primitive_instance: local.instance,
+            parts: None,
+            part_nouns: Vec::new(),
+            part_records: Vec::new(),
         })),
         Err(error) => TubeOutcome::Failed(error),
     }
+}
+
+/// 复合断面逐块建在管身局部系里（轴沿 +Z、原点在两端中点，局部 X / Y 由 [`rolled_placement`] 定）：盒子与圆柱都按真尺寸建
+/// （不走单位体实例，多块的元素没有整元素的实例身份），再按各自的断面偏移平移。记录标架就是那个平移。
+fn composite_parts(
+    parts: &[DuctPart],
+    length: f64,
+) -> Result<(Vec<Manifold>, Vec<CataloguePartRecord>), SolidError> {
+    let mut solids = Vec::with_capacity(parts.len());
+    let mut records = Vec::with_capacity(parts.len());
+    for part in parts {
+        let local = match part.shape {
+            DuctPartShape::Box { x_length, z_length } => box_solid(x_length, z_length, length)?,
+            DuctPartShape::Round { diameter } => csg_cylinder_solid(diameter, length)?,
+        };
+        let frame = DMat4::from_translation(DVec3::new(part.offset[0], part.offset[1], 0.0));
+        solids.push(placed(&local, frame));
+        records.push(CataloguePartRecord {
+            repeats: part.repeats.max(1),
+            frame: Some(frame),
+            knuckled_dish: false,
+            analytic: None,
+        });
+    }
+    Ok((solids, records))
 }
 
 /// 把 [`tumat`] 给的放置矩阵绕它自己的 `+Z`（轴向）转到「局部 Y 沿 `z_axis`」。
@@ -1345,7 +1466,7 @@ mod tests {
             z_length: 1520.0,
             z_axis: DVec3::Z,
         };
-        let TubeOutcome::Built(tube) = build_tube(&from, &to, Some(section)) else {
+        let TubeOutcome::Built(tube) = build_tube(&from, &to, Some(section.clone())) else {
             panic!("3807 的 TUBE 1 该建得出来");
         };
         assert!((tube.length_mm - 300.0).abs() < 1.0e-9);
@@ -1427,7 +1548,7 @@ mod tests {
             TubeOutcome::NoRadius
         ));
         assert!(matches!(
-            build_tube(&from, &from, Some(section)),
+            build_tube(&from, &from, Some(section.clone())),
             TubeOutcome::ZeroLength { .. }
         ));
         // 圆管断面的 `round` 收口：非正外径与 `None` 一样是「取不到」。
@@ -1440,6 +1561,96 @@ mod tests {
                 outer_diameter: 33.4
             })
         );
+    }
+
+    /// 扁圆风管的复合断面（aps250142 `/SUPPLY_LEVEL02-001/02` 那 4.41 mm：`/FOTUBE2` 的 BOXING 400 × 100 + 两只 Ø100 的 TUBE 在
+    /// ±200，保温为 0 的两只与之重合计份数）：逐块建在滑转后的管身局部系里，并集盒 500 × 100 × 长，三块、份数 1 / 2 / 2、
+    /// 记录标架是各自的断面偏移，没有整元素的实例身份。
+    #[test]
+    fn a_flat_oval_duct_body_builds_its_box_and_tubes_as_parts() {
+        let from = RoutePoint {
+            pos: DVec3::new(-307955.59, 320397.25, 106900.0),
+            dir: -DVec3::X,
+            bore: Some(600.0),
+        };
+        let to = RoutePoint {
+            pos: DVec3::new(-307960.0, 320397.25, 106900.0),
+            dir: DVec3::X,
+            bore: Some(600.0),
+        };
+        let tube_at = |x: f64, repeats: usize| DuctPart {
+            shape: DuctPartShape::Round { diameter: 100.0 },
+            offset: [x, 0.0],
+            repeats,
+            source: String::new(),
+        };
+        let section = TubeSection::Composite {
+            parts: vec![
+                DuctPart {
+                    shape: DuctPartShape::Box {
+                        x_length: 400.0,
+                        z_length: 100.0,
+                    },
+                    offset: [0.0, 0.0],
+                    repeats: 1,
+                    source: String::new(),
+                },
+                tube_at(200.0, 2),
+                tube_at(-200.0, 2),
+            ],
+            z_axis: DVec3::Z,
+        };
+        let TubeOutcome::Built(tube) = build_tube(&from, &to, Some(section.clone())) else {
+            panic!("扁圆管身该建得出来");
+        };
+        assert!((tube.length_mm - 4.41).abs() < 1.0e-9);
+        assert_eq!(tube.radius_mm(), None);
+        assert!(tube.primitive_instance.is_none(), "多块没有整元素的实例身份");
+        assert_eq!(tube.part_nouns, ["BOXI", "TUBE", "TUBE"]);
+        let repeats: Vec<usize> = tube.part_records.iter().map(|r| r.repeats).collect();
+        assert_eq!(repeats, [1, 2, 2]);
+        let parts = tube.parts.as_ref().expect("逐块交出");
+        assert_eq!(parts.len(), 3);
+        let bounds = tube.solid.bounding_box().expect("有体就有盒");
+        let (min, max) = (bounds.min(), bounds.max());
+        assert!((max[0] - min[0] - 4.41).abs() < 1.0e-6, "轴向沿世界 X：{min:?} {max:?}");
+        assert!((max[1] - min[1] - 500.0).abs() < 1.0e-6, "PXLE + 两半圆沿世界 Y：{min:?} {max:?}");
+        assert!((max[2] - min[2] - 100.0).abs() < 1.0e-6, "PZLE 沿 z_axis = 世界 Z：{min:?} {max:?}");
+        assert!(((min[1] + max[1]) * 0.5 - 320397.25).abs() < 1.0e-6);
+        // 两只管的世界盒中心在 ±200（沿管身局部 X = 世界 ±Y）。
+        let mut centres: Vec<f64> = parts[1..]
+            .iter()
+            .map(|part| {
+                let b = part.bounding_box().unwrap();
+                (b.min()[1] + b.max()[1]) * 0.5 - 320397.25
+            })
+            .collect();
+        centres.sort_by(f64::total_cmp);
+        assert!((centres[0] + 200.0).abs() < 1.0e-6 && (centres[1] - 200.0).abs() < 1.0e-6, "{centres:?}");
+        let frames: Vec<DVec3> = tube
+            .part_records
+            .iter()
+            .map(|r| r.frame.unwrap().w_axis.truncate())
+            .collect();
+        assert_eq!(frames[0], DVec3::ZERO);
+        assert_eq!(frames[1], DVec3::new(200.0, 0.0, 0.0));
+        assert_eq!(frames[2], DVec3::new(-200.0, 0.0, 0.0));
+        // 任一块尺寸非正就是整根解不出；空表也是。
+        let broken = TubeSection::Composite {
+            parts: vec![tube_at(0.0, 1), DuctPart {
+                shape: DuctPartShape::Round { diameter: 0.0 },
+                offset: [0.0, 0.0],
+                repeats: 1,
+                source: String::new(),
+            }],
+            z_axis: DVec3::Z,
+        };
+        assert!(matches!(build_tube(&from, &to, Some(broken)), TubeOutcome::NoRadius));
+        let empty = TubeSection::Composite {
+            parts: Vec::new(),
+            z_axis: DVec3::Z,
+        };
+        assert!(matches!(build_tube(&from, &to, Some(empty)), TubeOutcome::NoRadius));
     }
 
     /// 共轴门：横偏 < 千分之一轴向才建。观测边界照抄：0.983 mrad 建（`/M-OR-1R323-A` TUBE 2）、

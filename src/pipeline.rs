@@ -1373,9 +1373,10 @@ fn build_route_tubes(
                     is_invalid_tubi: false,
                     name: None,
                     solid: tube.solid,
-                    parts: None,
-                    part_catalogue_nouns: Vec::new(),
-                    part_record_repeats: Vec::new(),
+                    // 复合断面（扁圆风管）逐图元一块：E3D 逐目录图元写记录（`Box` + `Cylinder` × n）。
+                    parts: tube.parts,
+                    part_catalogue_nouns: tube.part_nouns,
+                    part_record_repeats: tube.part_records,
                     degenerate_parts: Vec::new(),
                     world: tube.placement,
                     primitive_instance: tube.primitive_instance,
@@ -1384,7 +1385,7 @@ fn build_route_tubes(
                     own_ngms_cuts: 0,
                     negatives_skipped: Vec::new(),
                     joint_cuts_explained: Vec::new(),
-                    notes: vec![match tube.section {
+                    notes: vec![match &tube.section {
                         TubeSection::Round { outer_diameter } => format!(
                             "implied tube length={}mm radius={}mm source={section_source}",
                             tube.length_mm,
@@ -1395,6 +1396,24 @@ fn build_route_tubes(
                         } => format!(
                             "implied duct length={}mm section={x_length}x{z_length}mm source={section_source}",
                             tube.length_mm,
+                        ),
+                        TubeSection::Composite { parts, .. } => format!(
+                            "implied duct length={}mm section=composite[{}] source={section_source}",
+                            tube.length_mm,
+                            parts
+                                .iter()
+                                .map(|part| match part.shape {
+                                    crate::route::DuctPartShape::Box { x_length, z_length } => format!(
+                                        "box {x_length}x{z_length}@({},{})x{}",
+                                        part.offset[0], part.offset[1], part.repeats
+                                    ),
+                                    crate::route::DuctPartShape::Round { diameter } => format!(
+                                        "tube d{diameter}@({},{})x{}",
+                                        part.offset[0], part.offset[1], part.repeats
+                                    ),
+                                })
+                                .collect::<Vec<_>>()
+                                .join(", "),
                         ),
                     }],
                 });

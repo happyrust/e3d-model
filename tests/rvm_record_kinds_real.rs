@@ -532,6 +532,78 @@ fn duct_splitters_do_not_end_a_duct() {
     std::fs::remove_dir_all(&scratch).ok();
 }
 
+/// aps250142 扁圆风管 `BRAN /SUPPLY_LEVEL02-001/02`（`2013286686/121`）：STIF `ITEM1.1` 离开到 DAMP `/FD5` 那 4.41 mm 的隐式管身，
+/// `LSTU /AVEVAHVACSPEC/FOTUBEB` → SCOM `/FOTUBE2`，几何集里可见的是五只图元：BOXING（`PXLE = LEAWID − LEAHEI` = 400、`PZLE = LEAHEI` = 100）、
+/// TUB1 / TUB2（`PDIA` 100，轴是 P4 / P5，`PX = ±200`）与保温为 0 的 INS1 / INS2（与前两只重合）。E3D TTY 导出
+/// （`aps_survey_lv6_2013286686_75.rvm`）写一条 `Box[100, 400, 4.41]` 加四条 `Cylinder[50, 4.41]`（两对字节一样），此前我们只按第一只
+/// TUBE 写一条居中的 `Cylinder`（off 200）。现在逐图元建（`route::TubeSection::Composite`）：五条记录、世界盒对 E3D 0.05 mm。
+#[test]
+fn a_flat_oval_duct_body_writes_its_box_and_tubes_like_e3d() {
+    if !fixtures_present_in(APS_DIR, APS_HVAC_DB) {
+        return;
+    }
+    let scratch: PathBuf =
+        std::env::temp_dir().join(format!("e3d-model-rvm-flat-oval-aps-{}", std::process::id()));
+    let (rvm, elements) = generate_in(APS_DIR, APS_HVAC_DB, "2013286686/121", "on", &scratch);
+    let tubes: Vec<&RvmMember> = rvm
+        .members
+        .iter()
+        .filter(|member| {
+            let name = member.name.trim();
+            name.starts_with("TUBI ") && name.ends_with(" of BRAN /SUPPLY_LEVEL02-001/02")
+        })
+        .collect();
+    let [tube] = tubes.as_slice() else {
+        panic!("这条风管只有一根隐式管身，实际 {} 根", tubes.len());
+    };
+    let mut kinds: Vec<&str> = tube
+        .geometries
+        .iter()
+        .map(|geometry| geometry.primitive.name())
+        .collect();
+    kinds.sort_unstable();
+    assert_eq!(
+        kinds,
+        ["Box", "Cylinder", "Cylinder", "Cylinder", "Cylinder"]
+    );
+    for geometry in &tube.geometries {
+        match geometry.primitive {
+            Primitive::Box(lengths) => {
+                let mut sorted = lengths;
+                sorted.sort_by(f64::total_cmp);
+                assert!(
+                    (sorted[0] - 4.41).abs() < 0.01
+                        && (sorted[1] - 100.0).abs() < 0.01
+                        && (sorted[2] - 400.0).abs() < 0.01,
+                    "Box{lengths:?}"
+                );
+            }
+            Primitive::Cylinder([radius, height]) => {
+                assert!((radius - 50.0).abs() < 0.01 && (height - 4.41).abs() < 0.01);
+            }
+            ref other => panic!("{}", other.name()),
+        }
+    }
+    let got = tube.world_aabb_mm().expect("有体就有盒");
+    for (axis, (g, w)) in got
+        .iter()
+        .zip([-307960.0, 320147.25, 106850.0, -307955.59, 320647.26, 106950.0])
+        .enumerate()
+    {
+        assert!((g - w).abs() <= 0.05, "管身世界盒第 {axis} 分量 {g:.3}，E3D {w:.2}（全部 {got:?}）");
+    }
+    // 模型集里是一件、三块（盒 + 两只管；保温为 0 的两只与管重合，只计份数）。
+    let tubi = elements
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|element| element["noun"] == "TUBI" && element["owner_desc"] == "BRAN /SUPPLY_LEVEL02-001/02")
+        .expect("elements.json 里有这根管身");
+    assert_eq!(tubi["components"].as_array().map(Vec::len), Some(3), "{tubi}");
+
+    std::fs::remove_dir_all(&scratch).ok();
+}
+
 /// aps250132 阀门 `/V118`（`2013286676/1591`，E3D TTY 导出 gen-model
 /// `verification/civil-tty-20261021/aps_survey_lv6_2013286676_490.rvm`）：目录 `LINE`（`PTS 0 3`、`TUFL` 真）
 /// E3D 写一条 `Line[5, 292]`，原点在阀杆 P0→P3 的中点，Z 沿阀杆 `(0, -0.0872, 0.9962)`，X 是世界 −X。

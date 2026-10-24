@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-10-24 扁圆风管的隐式管身按管身目录件的几何集逐图元建——aps250142 `/SUPPLY_LEVEL02-001/02` 对上，aps250142 521 对全 exact
+
+- 风管隐式直段的断面此前只认管身目录件 GMSE 里**第一只**可见的 BOXING / TUBE。扁圆风管 `LSTU /AVEVAHVACSPEC/FOTUBEB` → `/FOTUBE2` 可见的是五只：
+  `-BOXI`（`PXLE = LEAWID − LEAHEI`、`PZLE = LEAHEI`）、`-TUB1` / `-TUB2`（`PDIA = LEAHEI`，轴是 PTSE 的 P4 / P5，`PX = ±(LEAWID − LEAHEI)/2`）与
+  `-INS1` / `-INS2`（`OBST 1` 但 `TUFL` 真、`LEVE [0,10]`，`REPRE TUBE ON` 下 E3D 照画；`PDIA = LEAHEI + IPAR[1]`，保温为 0 时与 TUB1 / TUB2 重合）。
+  aps250142 `/SUPPLY_LEVEL02-001/02` STIF → DAMP 那 4.41 mm 的槽位（LEAWID 500 / LEAHEI 100）E3D 写 `Box[100, 400, 4.41]` + 四条 `Cylinder[50, 4.41]`
+  （圆柱在 ±200，两对字节一样），我们只按 TUB1 写一条居中的 `Cylinder[50, 4.41]`（off 200）。
+- `hvac_tube::duct_departure_section` 现在收集全部可见的 BOXING / TUBE（仍是 `display_filtered` 那一道）：一只照旧；多只交 `TubeSection::Composite`
+  ——BOXING 居中，TUBE 的 `PAXI = Pn` 取那个 P 点的 `PX` / `PZ`（同一套 `OF PREV` 环境求，求不出的分量是 0）作断面内的偏移，同形同位的成员并成
+  一块记份数；`route::build_tube` 逐块按真尺寸建在滑转后的管身局部系里（滑转与矩形断面同一格 `z_axis`），`parts` / `part_nouns`（`BOXI` / `TUBE`）/
+  `part_records`（份数 + 偏移标架）交给隐式管身的 `GeneratedElement`，`gen_ams` 照目录 noun 写 `Box` / `Cylinder`。`TubeSection` 不再 `Copy`。
+  目录局部 X（`PXLE` 方向）与管身局部 X 的正向是否一致没有样本：语料里的偏移成对对称，符号不影响结果。
+- 单元测试 `route::a_flat_oval_duct_body_builds_its_box_and_tubes_as_parts`；真库门 `rvm_record_kinds_real::a_flat_oval_duct_body_writes_its_box_and_tubes_like_e3d`
+  （五条记录、世界盒对 E3D 0.05 mm、模型集一件三块）。aps250142 对拍 521 对 520 exact、off 1、种类不同 1 → 521 exact、off 0、种类不同 0。
+
 ## 2026-10-24 风管头槽位按目录写下的键在宿主 BRAN 上精确取 `:HXYsize`、`gen_ams` 挂 UDA 字典——aps250142 `/RETURN_LEVEL02-002/01` 的头管对上（并回 `w7j-uda`）
 
 - 分支 `w7j-uda`（2026-10-23，`5e1649e`、`e11d359`，基于 `b758b28`）并回 main，自动合并无冲突。

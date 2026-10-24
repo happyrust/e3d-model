@@ -167,6 +167,9 @@ fn recogniser_for_catalogue_noun(noun: &str) -> Option<Recogniser> {
     match noun {
         "SBOX" => Some(Recogniser::Box),
         "SCYL" | "LCYL" => Some(Recogniser::Cylinder),
+        // TUBI 目录的图元（扁圆风管的隐式管身逐图元交出来，`route::TubeSection::Composite`）：E3D 照 DRBOX / DRCYL 写。
+        "BOXI" => Some(Recogniser::Box),
+        "TUBE" => Some(Recogniser::Cylinder),
         "LSNO" | "SCON" => Some(Recogniser::Snout),
         "SCTO" => Some(Recogniser::CircularTorus),
         // E3D 的 DRRTO：`/TT-0301` 那一族两只 180° 的半环各写一条 `RectangularTorus`

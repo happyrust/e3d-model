@@ -63,10 +63,11 @@ use e3d_io::record::descriptor::DescriptorValue;
 
 use crate::catalogue::{display_filtered, repre_level_of};
 use crate::catalogue_point::{
-    catalogue_component, catalogue_point_local, number_of, point_numbered, tube_component_of_stub,
+    NEGATED_POINT_BASE, axis_words, catalogue_component, catalogue_point_local,
+    encoded_point_axis, number_of, point_numbered, tube_component_of_stub,
 };
 use crate::elmodl::ModelError;
-use crate::route::{RouteEnd, TubeSection, ppoint_number};
+use crate::route::{DuctPart, DuctPartShape, RouteEnd, TubeSection, ppoint_number};
 use crate::transform::world_matrix;
 
 /// 容器头 / 尾读的 stub——与管道那支 `GTTUBE` 同一份（先 `HSTU`，再 `HSRO`）。
@@ -108,7 +109,8 @@ pub fn duct_departure_section(from: &RouteEnd) -> Result<Option<DuctSection>, Db
     let Some(component) = component else {
         return Ok(None);
     };
-    let Some(primitive) = tube_primitive(&component, departure)? else {
+    let primitives = tube_primitives(&component, departure)?;
+    let Some(primitive) = primitives.first().cloned() else {
         return Ok(None);
     };
     let env = PreviousElementEnv {
@@ -121,6 +123,9 @@ pub fn duct_departure_section(from: &RouteEnd) -> Result<Option<DuctSection>, Db
             RouteEnd::MemberLeave { .. } | RouteEnd::MemberArrive { .. } => None,
         },
     };
+    if primitives.len() > 1 {
+        return composite_section(&component, departure, &primitives, &env);
+    }
     let noun = primitive.element_type()?;
     let section = match noun.as_str() {
         BOX_PRIMITIVE => {
@@ -157,41 +162,144 @@ pub fn duct_departure_section(from: &RouteEnd) -> Result<Option<DuctSection>, Db
     }))
 }
 
-/// TUBI 目录件几何集里承担管身的那只图元：第一只按**离开侧构件的表现级**可见的 BOXING / TUBE。
+/// TUBI 目录件几何集里承担管身的图元：按**离开侧构件的表现级**可见的每一只 BOXING / TUBE，按成员序。
 ///
 /// 每个 `RTUBE*` / `CTUBE` 的 GMSE 都是两只同 noun 的图元：`-BOXI` / `-TUBE`（`LEVE [0,10]`）
-/// 与 `-INSU`（`LEVE [7,10]`，保温体），窄口径导出（`LEVEL HVAC 6`）只有前者在场；
+/// 与 `-INSU`（`LEVE [7,10]`，保温体），窄口径导出（`LEVEL HVAC 6`）只有前者在场，所以常态是一只。扁圆的
+/// `/FOTUBE2` 是五只：`-BOXI` + `-TUB1` / `-TUB2`（轴是 P4 / P5）+ `-INS1` / `-INS2`（`OBST 1` 但 `TUFL` 真、`LEVE [0,10]`，
+/// `REPRE TUBE ON` 下照画；`PDIA = LEAHEI + IPAR[1]`，保温为 0 时与 TUB1 / TUB2 重合）。
 /// 用 [`display_filtered`] 那一道筛而不是认名字后缀，与目录构件的图元筛同一份口径。
-fn tube_primitive(
+fn tube_primitives(
     component: &DbElement,
     departure: &DbElement,
-) -> Result<Option<DbElement>, DbElementError> {
+) -> Result<Vec<DbElement>, DbElementError> {
     let set = match component.get_element("GMRE") {
         Ok(set) => set,
         Err(DbElementError::UnknownAttribute { .. }) => None,
         Err(error) => return Err(error),
     };
     let Some(set) = set else {
-        return Ok(None);
+        return Ok(Vec::new());
     };
     let level = match repre_level_of(departure) {
         Ok(level) => level,
         Err(ModelError::Db(error)) => return Err(error),
-        Err(_) => return Ok(None),
+        Err(_) => return Ok(Vec::new()),
     };
+    let mut visible = Vec::new();
     for primitive in set.members()? {
         let noun = primitive.element_type()?;
         if noun != BOX_PRIMITIVE && noun != ROUND_PRIMITIVE {
             continue;
         }
         match display_filtered(&primitive, level) {
-            Ok(None) => return Ok(Some(primitive)),
+            Ok(None) => visible.push(primitive),
             Ok(Some(_)) => continue,
             Err(ModelError::Db(error)) => return Err(error),
             Err(_) => continue,
         }
     }
-    Ok(None)
+    Ok(visible)
+}
+
+/// 几只可见图元并置成一根管身（[`TubeSection::Composite`]）：BOXING 居中、`PXLE` × `PZLE`；TUBE 的 `PDIA` 为直径、轴是
+/// `PAXI`——具名轴就是管身轴（居中），`Pn` 是那个 P 点的位置（`PX` / `PZ` 用同一套 `OF PREV` 环境求，求不出的分量是 0，
+/// 与 `pplib/QPPOS` 同口径；`PY` 沿管身轴，不入断面）。同形同位的成员并成一块记份数。任一块的尺寸解不出、或者管身的
+/// 滑转解不出，整根按解不出记账（不单画一半）。目录的局部 X（`PXLE` 方向）与管身局部 X 的正向是否一致没有样本：
+/// 语料里的偏移成对对称（±(LEAWID − LEAHEI)/2），符号不影响结果。
+fn composite_section(
+    component: &DbElement,
+    departure: &DbElement,
+    primitives: &[DbElement],
+    env: &PreviousElementEnv,
+) -> Result<Option<DuctSection>, DbElementError> {
+    let Some(z_axis) = leave_frame_z_axis(departure)? else {
+        return Ok(None);
+    };
+    let mut parts: Vec<DuctPart> = Vec::new();
+    let mut names = Vec::new();
+    for primitive in primitives {
+        let noun = primitive.element_type()?;
+        let shape = match noun.as_str() {
+            BOX_PRIMITIVE => {
+                let (Some(x_length), Some(z_length)) = (
+                    evaluated(primitive, "PXLE", env),
+                    evaluated(primitive, "PZLE", env),
+                ) else {
+                    return Ok(None);
+                };
+                DuctPartShape::Box { x_length, z_length }
+            }
+            _ => {
+                let Some(diameter) = evaluated(primitive, "PDIA", env) else {
+                    return Ok(None);
+                };
+                DuctPartShape::Round { diameter }
+            }
+        };
+        let Some(offset) = primitive_offset(primitive, component, env)? else {
+            return Ok(None);
+        };
+        let name = primitive.stored_name()?.unwrap_or_default();
+        names.push(format!("{noun} {name}"));
+        match parts.iter_mut().find(|part| {
+            part.shape == shape
+                && (part.offset[0] - offset[0]).abs() <= OFFSET_MERGE_MM
+                && (part.offset[1] - offset[1]).abs() <= OFFSET_MERGE_MM
+        }) {
+            Some(part) => part.repeats += 1,
+            None => parts.push(DuctPart {
+                shape,
+                offset,
+                repeats: 1,
+                source: name,
+            }),
+        }
+    }
+    Ok(Some(DuctSection {
+        section: TubeSection::Composite { parts, z_axis },
+        source: format!(
+            "{} {}",
+            component.stored_name()?.unwrap_or_default(),
+            names.join(" + ")
+        ),
+    }))
+}
+
+/// 同形的两只图元轴心相距不超过这个数（mm）就是同一块（保温为 0 的 `-INS1` 与 `-TUB1`）。
+const OFFSET_MERGE_MM: f64 = 1.0e-6;
+
+/// 图元轴在目录局部系断面平面里的位置 `[X, Z]`：`PAXI` 是具名轴（或没存）就是原点；是 `Pn` 就是那个 P 点的
+/// `PX` / `PZ`。P 点不在 PTSE 里给 `None`。
+fn primitive_offset(
+    primitive: &DbElement,
+    component: &DbElement,
+    env: &PreviousElementEnv,
+) -> Result<Option<[f64; 2]>, DbElementError> {
+    let Some(words) = axis_words(primitive) else {
+        return Ok(Some([0.0, 0.0]));
+    };
+    let Some(encoded) = encoded_point_axis(&words) else {
+        return Ok(Some([0.0, 0.0]));
+    };
+    let number = if encoded >= NEGATED_POINT_BASE {
+        encoded - NEGATED_POINT_BASE
+    } else {
+        encoded
+    };
+    let point = match point_numbered(component, number)? {
+        Ok(point) => point,
+        Err(_) => return Ok(None),
+    };
+    let coordinate = |name: &str| {
+        point
+            .get_number(name, env)
+            .ok()
+            .and_then(|outcome| outcome.value())
+            .filter(|value| value.is_finite())
+            .unwrap_or(0.0)
+    };
+    Ok(Some([coordinate("PX"), coordinate("PZ")]))
 }
 
 /// 图元的一个尺寸属性求成有限正数；求不出、非正、非有限都是「解不出」。
