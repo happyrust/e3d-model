@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-10-24 ATTA 断不断隐式管身按它自己的 `SPKBRK`，不再按目录 GTYP、也不分学科——ams8000 `/M-OR-1RX-3081D` 多出的两根归零，ams8000 2614 对全 exact
+
+- ams8000 `/M-OR-1RX-3081D` 挂三对 MDS 托架支撑的 DATUM / SREF ATTA，E3D 写三根隐式管（SREF → BEND 820、两只弯头间 4.17 / 4.18），
+  我们按「SCOM `GTYP=ANCI` 是站点」多写 DATUM → SREF 240、FTUB → DATUM 140 两根（off 603、种类不同）。逐只对属性：
+  `/1RX03-MSUP-E0017`、`E0018` 两对 ATTA 是梯架支撑里仅有的没存 `SPKBRK` 的（`E0015` 那对与 ams8000 其余 233 只全真；另两只在
+  `/M-OR-1RX-3AF0A`，槽位全零长）；E3D 自己记在 `SPAMAP` 第二个字里的隐式管空间键也只在画了管的成员上有值。目录链、LSTU
+  （E0017 / E0018 的是 `/ACP1000-Ladder` 那套，别的支管同样混用照画）、PCON、成对正反向槽位的形态逐一排除。
+- 旁证：ams7997 `/Copy-of-1RCS0620-1R80025` 的 `/Copy-of-NP-R322003-DAB` 是 `/AVEVA-ATTA-SPEC` 那族（`GTYP=ATTA`，此前一律穿过）里
+  唯一 `SPKBRK` 真的，只读 TTY 导出（gen-model `verification/civil-tty-20261021/spkbrk_lv6_24381_145993.rvm`）E3D 把 WELD 5 → WELD 6
+  那根在它那里切成 124.0 + 300.0；管道支撑附着点（ams8000 43 + 2、ams7997 1848、aps7200 60 只）与风管链上的 MDS 支撑
+  （ams7997 572、ams8000 2 只，`GTYP=ANCI`）全没存，与「GTYP=ATTA 穿过」「风管 ATTA 一律穿过」两条经验判据的结论一致——它们只是
+  和 `SPKBRK` 相关。旧 fast_model（`cata_model.rs`）也是按 `SPKBRK` 跳过不断管的 ATTA。
+- `route::station_verdict` 第三参改为 ATTA 的 `SPKBRK`（存了值给 `Some`，没存按布尔缺省 `Some(false)`，模板里没有才 `None` →
+  `PassThroughUnresolved`）；`member_station_verdict` 不再走 `SPRE → SCOM.GTYP`，风管学科不再特判 ATTA（SPLR 照旧穿过）。STIF / BRCO /
+  SPLR 的模板里没有 `SPKBRK`，不走这条。读取集合 168 → 169（`SPKBRK`；gen-model 的 `generation_read_set.json` 同步）。
+- 单元 `route::station_verdict_follows_spkbrk_for_atta`、`an_atta_on_a_duct_route_follows_the_same_spkbrk_rule`；真库门
+  `rvm_record_kinds_real::an_atta_without_spkbrk_does_not_end_a_tube`（`/M-OR-1RX-3081D` 三根 `Cylinder[12.5, 819.995 / 4.169 / 4.176]`）。
+  ams8000 对拍 2614 对 2613 exact、off 1、种类不同 29 → 2614 exact、off 0、种类不同 28（余 28 是整圈 SREV 的写法）。
+
 ## 2026-10-24 扁圆风管的隐式管身按管身目录件的几何集逐图元建——aps250142 `/SUPPLY_LEVEL02-001/02` 对上，aps250142 521 对全 exact
 
 - 风管隐式直段的断面此前只认管身目录件 GMSE 里**第一只**可见的 BOXING / TUBE。扁圆风管 `LSTU /AVEVAHVACSPEC/FOTUBEB` → `/FOTUBE2` 可见的是五只：

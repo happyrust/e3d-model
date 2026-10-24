@@ -496,6 +496,44 @@ fn sloped_tee_points_take_their_slodir_directions() {
     std::fs::remove_dir_all(&scratch).ok();
 }
 
+/// ams8000 托架支管 `/M-OR-1RX-3081D`（E3D TTY 导出 gen-model
+/// `verification/civil-tty-20261021/ams8000_lv6_24384_2498.rvm`）挂着三对 MDS 托架支撑的 DATUM / SREF ATTA：
+/// `/1RX03-MSUP-E0015` 那对 `SPKBRK` 真，是站点，SREF → BEND 画 819.995 mm；`E0017`、`E0018` 两对没存 `SPKBRK`，
+/// E3D 的管身穿过它们——DATUM → SREF 的 240 mm、FTUB → DATUM 的 140 mm 都不画。连同两只弯头间的 4.17 / 4.18 mm，
+/// 这条支管一共三根 `Cylinder[12.5, …]`。
+#[test]
+fn an_atta_without_spkbrk_does_not_end_a_tube() {
+    if !fixtures_present(CABLE_EQUIP_DB) {
+        return;
+    }
+    let scratch: PathBuf =
+        std::env::temp_dir().join(format!("e3d-model-rvm-spkbrk-{}", std::process::id()));
+    let (rvm, _) = generate(CABLE_EQUIP_DB, "24384/2860", "on", &scratch);
+    let mut tubes: Vec<[f64; 2]> = rvm
+        .members
+        .iter()
+        .filter(|member| {
+            let name = member.name.trim();
+            name.starts_with("TUBI ") && name.ends_with(" of BRAN /M-OR-1RX-3081D")
+        })
+        .flat_map(|member| &member.geometries)
+        .filter_map(|geometry| match geometry.primitive {
+            Primitive::Cylinder(parameters) => Some(parameters),
+            _ => None,
+        })
+        .collect();
+    tubes.sort_by(|a, b| a[1].total_cmp(&b[1]));
+    assert_eq!(tubes.len(), 3, "{tubes:?}");
+    for (got, want) in tubes.iter().zip([4.169, 4.176, 819.995]) {
+        assert!(
+            (got[0] - 12.5).abs() < 1e-6 && (got[1] - want).abs() < 0.01,
+            "要 Cylinder[12.5, {want}]，得到 {got:?}：{tubes:?}"
+        );
+    }
+
+    std::fs::remove_dir_all(&scratch).ok();
+}
+
 /// aps250142 风管 `/SUPPLY_WORKSHOP-001`（E3D TTY 导出 gen-model
 /// `verification/civil-tty-20261021/aps_survey_lv6_2013286686_2.rvm`）只有一根管身：BRCO `2013286686/56` 到
 /// 下一件的 144.7 mm 矩形管。分流片 SPLR `2013286686/18` 伸进下一件 25 mm，E3D 不拿它当端点，那里没有管。

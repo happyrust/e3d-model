@@ -622,7 +622,7 @@ pub fn generate_subtree_with_cache(
                             refno: refno.clone(),
                             noun: noun.clone(),
                             detail: format!(
-                                "{} 只 ATTA 的目录链走不到 SCOM，按穿过处理；若是 ANCI 型支撑，管身会比 E3D 少几段",
+                                "{} 只 ATTA 的模板里没有 SPKBRK，按穿过处理；若本该断管，管身会比 E3D 少几段",
                                 route.pass_through_unresolved
                             ),
                         });

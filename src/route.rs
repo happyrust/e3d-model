@@ -58,7 +58,6 @@ use e3d_io::db_element::{DbElement, DbElementError};
 use e3d_io::record::descriptor::DescriptorValue;
 use e3d_io::refno::RefNo;
 
-use crate::catalogue_point::catalogue_component;
 use crate::category::{Category, RouteDiscipline, classify, route_discipline};
 use crate::elmodl::CataloguePartRecord;
 use crate::primitive_instance::{
@@ -202,8 +201,8 @@ pub struct Route {
     /// 目录 `GTYP=ATTA` 的附着点属于 RouteMember、会生成自己的目录几何，但 E3D 的
     /// TUBE 穿过它（见 [`station_verdict`]）。
     pub non_route_members: Vec<DbElement>,
-    /// 设计 noun 为 ATTA、目录链却走不到 SCOM 而**按穿过处理**的成员数。
-    /// 不为零时，这条链上的 ANCI 型支撑（梯架的 RACK-REST / SPECIAL）可能被当成了穿过，
+    /// 设计 noun 为 ATTA、模板里却没有 `SPKBRK` 而**按穿过处理**的成员数。
+    /// 不为零时，这条链上本该断管的 ATTA（梯架的 RACK-REST / SPECIAL 那一类）可能被当成了穿过，
     /// 管身会比 E3D 少几段——报告里要点名。
     pub pass_through_unresolved: usize,
     /// 管身槽位，链序。条数恒为 `members.len() + 1`。
@@ -250,38 +249,40 @@ pub enum StationVerdict {
     Station,
     /// 管身穿过它：记账、下钻，但不参与串接。
     PassThrough,
-    /// 设计 noun 是 ATTA，目录链却走不到 SCOM（无 SPRE、库没开、目标不在会话）：
+    /// 设计 noun 是 ATTA，模板里却没有 `SPKBRK`（老模板）：断不断管无从判，
     /// 按穿过处理，另计一笔（[`Route::pass_through_unresolved`]）。
     PassThroughUnresolved,
 }
 
-/// 这个成员是不是隐式管身的一个串接站点——纯裁决，`noun` 是设计 noun，
-/// `scom_gtyp` 是它目录件 `SCOM.GTYP` 的字面（解不出给 `None`）。
+/// 这个成员是不是隐式管身的一个串接站点——纯裁决，`noun` 是设计 noun，`spkbrk` 是设计 ATTA
+/// 自己的 `SPKBRK`（存了值给 `Some`，没存按 E3D 的布尔缺省 `Some(false)`；模板里没有这个属性才给 `None`）。
 ///
 /// `Category::RouteMember` 回答的是“这件东西属于管路且要生成目录几何”；它不等于
-/// “这件东西切断管身”。设计 noun 同为 ATTA 的成员在 E3D 里分两种：
+/// “这件东西切断管身”。设计 noun 同为 ATTA 的成员在 E3D 里分两种，分界就是 ATTA 自己的 **`SPKBRK`**
+/// （`cachelib/GTTUBE` 用 `NATTA(NEXT)` 跳到后件：不断管的 ATTA 被跳过）：
 ///
-/// - 目录 **`GTYP=ATTA/PCLA`**（`/AVEVA-ATTA-SPEC/SUPP:ANY`、`/NPHS/SPEC/PIPE/BRAN` 这类管道
-///   支撑附着点）：E3D 的 TUBE 连续穿过它。ams7999 `/1RCV0101…/B1` 的 TUBE 2 = 801 mm 穿过
-///   `/R342.062`，ams8000 `24384/26229` 的 TUBE 2 = 312.1 mm 穿过三只到 VALV。把它加入站点链
-///   会把连续管拆段；附着点在中心线外时还会生成一来一回的重叠假管。
-/// - 目录 **`GTYP=ANCI`**（MDS 梯架支撑 `/RACK-REST-300`、`/SPECIAL.300`，P1/P2 通径 300）：
-///   是普通站点，管身在它两侧断开。`/C-GR-1RX-3020B`（24384/2944）的六根 TUBE 全以它为端点，
-///   `/C-GR-1RX-3000A`（24384/3277）唯一一根是 ATTA9→BEND3。
+/// - **`SPKBRK` 真**：普通站点，管身在它两侧断开。MDS 梯架支撑成对的 DATUM / SREF ATTA
+///   （`/RACK-REST-*`、`/SPECIAL.*`，SCOM `GTYP=ANCI`）绝大多数如此（ams8000 233 只）：`/C-GR-1RX-3020B`
+///   （24384/2944）的六根 TUBE 全以它们为端点，`/C-GR-1RX-3000A`（24384/3277）唯一一根是 ATTA9→BEND3。
+///   ams7997 `/Copy-of-1RCS0620-1R80025` 的 `/Copy-of-NP-R322003-DAB`（`/AVEVA-ATTA-SPEC` 那族的管道支撑
+///   附着点，`GTYP=ATTA`）也真，E3D 把 WELD 5 → WELD 6 那根管在它那里切成 124.0 + 300.0 两段（TTY 导出
+///   gen-model `verification/civil-tty-20261021/spkbrk_lv6_24381_145993.rvm`）——所以不是 GTYP 在起作用。
+/// - **`SPKBRK` 假 / 没存**：E3D 的 TUBE 连续穿过它。管道支撑附着点（`GTYP=ATTA/PCLA`：ams8000 43 + 2、
+///   ams7997 1848、aps7200 60 只全没存）如此——ams7999 `/1RCV0101…/B1` 的 TUBE 2 = 801 mm 穿过 `/R342.062`，
+///   ams8000 `24384/26229` 的 TUBE 2 = 312.1 mm 穿过三只到 VALV；把它们加入站点链会把连续管拆段，附着点在
+///   中心线外时还会生成一来一回的重叠假管。风管链上的 MDS 支撑（`/MDS/.HVAC-REST.*`，`GTYP=ANCI`：
+///   ams7997 572 只、ams8000 2 只）也全没存，E3D 一段管也没有以它为端点：`/-VES-S-2-L-4910` 的 STRT→DAMP
+///   之间夹着一只 ATTA，按站点算 STRT→ATTA 是 10 mm，E3D 画的是 **15 mm**（STRT→DAMP）；`/-CCV-E-3-L-1704`
+///   同形是 48.30 mm、无名支管 `24381/79980` 是 179.52 mm（按站点算是 844.5 mm）；`/-VES-E-2-L-3807` 的
+///   STRT 30285→ATTA 30286 有 405 mm 的真缝、断面也读得出，E3D 一样不画。梯架支撑里仅有的没存 `SPKBRK`
+///   的是 ams8000 `/M-OR-1RX-3081D` 的 `/1RX03-MSUP-E0017`、`E0018` 两对 DATUM / SREF（另两只在
+///   `/M-OR-1RX-3AF0A`，槽位全零长）：E3D 在那里不画 DATUM → SREF 240 mm、FTUB → DATUM 140 mm 两根，连
+///   它自己记在 `SPAMAP` 第二个字里的隐式管空间键也空着；此前按 `GTYP=ANCI` 当站点，正多出这两根。
 ///
-/// 所以看的是目录 GTYP，不是设计 noun。证据见
-/// `evidence/20260902-ams8000-bran-audit/rvm-pending-items-2026-09-02.md` §2。
-///
-/// # 风管链上的 ATTA 一律穿过，不问 GTYP
-///
-/// 上面那条 ANCI 判据是管道语料（MDS 梯架支撑）钉的。风管链上的 ATTA 同样是 MDS 支撑
-/// （`/MDS/.HVAC-REST.1300` 一族，SCOM `GTYP=ANCI`），E3D 却**不在它两侧断管**——
-/// ams7997 216 条风管 BRAN、572 处 ATTA 站点，E3D 一段管也没有以它为端点；三条支管的
-/// 管长把这件事钉死：`/-VES-S-2-L-4910` 的 STRT→DAMP 之间夹着一只 ATTA，按站点算 STRT→ATTA
-/// 是 10 mm，E3D 画的是 **15 mm**（STRT→DAMP）；`/-CCV-E-3-L-1704` 同形是 48.30 mm、
-/// 无名支管 `24381/79980` 是 179.52 mm（按站点算是 844.5 mm）。反过来
-/// `/-VES-E-2-L-3807` 的 STRT 30285→ATTA 30286 有 405 mm 的真缝、断面也读得出，E3D 一样不画。
-/// 所以风管链上 ATTA 不看目录、直接穿过；管道那条 ANCI 判据原样保留。
+/// 所以看的是 ATTA 的 `SPKBRK`，不是目录 GTYP、也不分学科：GTYP 与学科只是和它相关（MDS 给梯架支撑
+/// 置真、给风管支撑不置）。风管链上 `SPKBRK` 为真的 ATTA 语料里没有，按同一条规则当站点。证据见
+/// `evidence/20260902-ams8000-bran-audit/rvm-pending-items-2026-09-02.md` §2 与 gen-model 计划 §9
+/// 「M8 · W7j ams8000 托架」。
 ///
 /// # 风管链上的 SPLR 也穿过
 ///
@@ -294,7 +295,7 @@ pub enum StationVerdict {
 pub fn station_verdict(
     discipline: RouteDiscipline,
     noun: &str,
-    scom_gtyp: Option<&str>,
+    spkbrk: Option<bool>,
 ) -> StationVerdict {
     if !matches!(classify(noun), Category::RouteMember) {
         return StationVerdict::PassThrough;
@@ -305,42 +306,31 @@ pub fn station_verdict(
     if !noun.eq_ignore_ascii_case("ATTA") {
         return StationVerdict::Station;
     }
-    if discipline == RouteDiscipline::Hvac {
-        return StationVerdict::PassThrough;
-    }
-    match scom_gtyp {
-        Some(gtyp) if gtyp.eq_ignore_ascii_case("ANCI") => StationVerdict::Station,
-        Some(_) => StationVerdict::PassThrough,
+    match spkbrk {
+        Some(true) => StationVerdict::Station,
+        Some(false) => StationVerdict::PassThrough,
         None => StationVerdict::PassThroughUnresolved,
     }
 }
 
-/// 库上的裁决：非 ATTA 不查目录；管道链上的 ATTA 走 `SPRE → (CATR)* → SCOM` 读 `GTYP`，
-/// 风管链上的 ATTA 连目录都不查（见 [`station_verdict`]）。
-/// 目录库没开 / 目标不在所钉会话与「没有 SPRE」同样算解不出——那是配置或数据的事，
-/// 不该把整条链的遍历打断。
+/// 库上的裁决：非 ATTA 不读属性；ATTA 读它自己的 `SPKBRK`（见 [`station_verdict`]）。
+/// 模板里没有这个属性算解不出——那是模板版本的事，不该把整条链的遍历打断。
 fn member_station_verdict(
     member: &DbElement,
     discipline: RouteDiscipline,
 ) -> Result<StationVerdict, DbElementError> {
     let noun = member.element_type()?;
-    if !noun.eq_ignore_ascii_case("ATTA") || discipline == RouteDiscipline::Hvac {
+    if !noun.eq_ignore_ascii_case("ATTA") {
         return Ok(station_verdict(discipline, &noun, None));
     }
-    let gtyp = match catalogue_component(member) {
-        Ok(Some(component)) => scom_gtyp(&component)?,
-        Ok(None) => None,
-        Err(DbElementError::DbNotRegistered { .. } | DbElementError::NotFound { .. }) => None,
-        Err(error) => return Err(error),
-    };
-    Ok(station_verdict(discipline, &noun, gtyp.as_deref()))
+    Ok(station_verdict(discipline, &noun, spool_break(member)?))
 }
 
-/// `SCOM.GTYP` 的字面（`Word { text }`，attlib 解不出字面时为 `None`）。
-fn scom_gtyp(component: &DbElement) -> Result<Option<String>, DbElementError> {
-    Ok(match component.attribute("GTYP") {
-        Ok(Some(DescriptorValue::Word { text, .. })) => text,
-        Ok(_) => None,
+/// 设计 ATTA 的 `SPKBRK`：存了值给 `Some`，没存按 E3D 布尔的缺省 `Some(false)`；模板里没有这个属性给 `None`。
+fn spool_break(member: &DbElement) -> Result<Option<bool>, DbElementError> {
+    Ok(match member.attribute("SPKBRK") {
+        Ok(Some(DescriptorValue::Bool(flag))) => Some(flag),
+        Ok(_) => Some(false),
         Err(DbElementError::UnknownAttribute { .. }) => None,
         Err(error) => return Err(error),
     })
@@ -1357,26 +1347,19 @@ mod tests {
         );
     }
 
-    /// 站点裁决看的是目录 `GTYP`，不是设计 noun：`GTYP=ATTA/PCLA` 的附着点被 E3D 的 TUBE 穿过，
-    /// `GTYP=ANCI` 的梯架支撑是站点；目录链走不通按穿过处理但要单列。
+    /// 站点裁决看的是 ATTA 自己的 `SPKBRK`，不是设计 noun、也不是目录 GTYP：置真的（MDS 梯架支撑的
+    /// DATUM / SREF、ams7997 `/Copy-of-NP-R322003-DAB`）是站点，假 / 没存的（管道支撑附着点、
+    /// `/M-OR-1RX-3081D` 的 E0017 / E0018 两对）被 TUBE 穿过；模板里没有这个属性按穿过处理但要单列。
     #[test]
-    fn station_verdict_follows_the_catalogue_gtyp_for_atta() {
+    fn station_verdict_follows_spkbrk_for_atta() {
         let pipe = RouteDiscipline::Pipe;
         assert_eq!(
-            station_verdict(pipe, "ATTA", Some("ATTA")),
-            StationVerdict::PassThrough
-        );
-        assert_eq!(
-            station_verdict(pipe, "ATTA", Some("atta")),
-            StationVerdict::PassThrough
-        );
-        assert_eq!(
-            station_verdict(pipe, "ATTA", Some("PCLA")),
-            StationVerdict::PassThrough
-        );
-        assert_eq!(
-            station_verdict(pipe, "ATTA", Some("ANCI")),
+            station_verdict(pipe, "ATTA", Some(true)),
             StationVerdict::Station
+        );
+        assert_eq!(
+            station_verdict(pipe, "ATTA", Some(false)),
+            StationVerdict::PassThrough
         );
         assert_eq!(
             station_verdict(pipe, "ATTA", None),
@@ -1389,29 +1372,30 @@ mod tests {
                 "{noun}"
             );
         }
-        // 不属于管路的成员从来不是站点，GTYP 说什么都不算。
+        // 不属于管路的成员从来不是站点，`SPKBRK` 说什么都不算。
         assert_eq!(
-            station_verdict(pipe, "BOX", Some("ANCI")),
+            station_verdict(pipe, "BOX", Some(true)),
             StationVerdict::PassThrough
         );
     }
 
-    /// 风管链上的 ATTA 一律穿过——连管道那条 ANCI 判据都不问。ams7997 216 条风管 BRAN 的
-    /// 572 处 ATTA（全是 `/MDS/.HVAC-REST.*`，SCOM `GTYP=ANCI`）E3D 一处都不当端点：
+    /// 风管链上的 ATTA 走同一条 `SPKBRK` 规则。ams7997 216 条风管 BRAN 的 572 处 ATTA（全是
+    /// `/MDS/.HVAC-REST.*`，SCOM `GTYP=ANCI`）一只都没存 `SPKBRK`，E3D 一处都不当端点：
     /// `/-VES-S-2-L-4910` STRT→(ATTA)→DAMP 画的是 15 mm 而不是 STRT→ATTA 的 10 mm。
-    /// 其余风管构件照旧是站点；「解不出」这一档在风管上也不存在。
+    /// 其余风管构件照旧是站点（STIF / BRCO / SPLR 的模板里没有 `SPKBRK`，不走这条）。
     #[test]
-    fn an_atta_on_a_duct_route_is_always_passed_through() {
+    fn an_atta_on_a_duct_route_follows_the_same_spkbrk_rule() {
         let hvac = RouteDiscipline::Hvac;
-        for gtyp in [Some("ANCI"), Some("ATTA"), Some("PCLA"), None] {
-            assert_eq!(
-                station_verdict(hvac, "ATTA", gtyp),
-                StationVerdict::PassThrough,
-                "{gtyp:?}"
-            );
-        }
+        assert_eq!(
+            station_verdict(hvac, "ATTA", Some(false)),
+            StationVerdict::PassThrough
+        );
+        assert_eq!(
+            station_verdict(hvac, "ATTA", Some(true)),
+            StationVerdict::Station
+        );
         for noun in [
-            "STRT", "BEND", "TAPE", "DAMP", "MESH", "BRCO", "TRNS", "OFST", "GRIL",
+            "STRT", "BEND", "TAPE", "DAMP", "MESH", "BRCO", "TRNS", "OFST", "GRIL", "STIF",
         ] {
             assert_eq!(
                 station_verdict(hvac, noun, None),
@@ -1419,11 +1403,6 @@ mod tests {
                 "{noun}"
             );
         }
-        // 管道链上同一只 ANCI ATTA 仍是站点：两个学科的判据互不串。
-        assert_eq!(
-            station_verdict(RouteDiscipline::Pipe, "ATTA", Some("ANCI")),
-            StationVerdict::Station
-        );
     }
 
     /// 风管链上的分流片 SPLR 也穿过：aps250142 `/SUPPLY_WORKSHOP-001` 的 `2013286686/18` 伸进下一件
