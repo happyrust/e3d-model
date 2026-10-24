@@ -1415,6 +1415,8 @@ fn main() -> anyhow::Result<()> {
                                 lengths_mm,
                             )
                         }
+                        // 开放面片只有设计侧的 GENPRI 走（下面 `bodyless` 那一段），目录零尺寸件没有这一支。
+                        e3d_model::elmodl::DegenerateCatalogueShape::OpenFacets { .. } => continue,
                     });
                 }
                 let name = rvm_display_name(
@@ -1507,6 +1509,10 @@ fn main() -> anyhow::Result<()> {
                             &glam::DMat4::IDENTITY,
                             lengths_mm,
                         )
+                    }
+                    // 归档版本 4 的 GENPRI（地形格的缓存面片）：是面不是体，照 E3D 写一条 FacetGroup。
+                    e3d_model::elmodl::DegenerateCatalogueShape::OpenFacets { ref polygons } => {
+                        e3d_model::rvm_write::bodyless_facet_group_geometry(&record.world, polygons)
                     }
                     _ => continue,
                 };

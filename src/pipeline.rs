@@ -773,6 +773,19 @@ pub fn generate_subtree_with_cache(
                     }
                     Ok(Modeled::Skipped { kind, reason }) => {
                         decrement(&mut report.evidence_pending, &noun);
+                        // 归档版本 4 的 GENPRI（地形格的缓存面片）是面不是体：账记跳过，RVM 里照 E3D 写一条 FacetGroup
+                        // （[`GenerationOutcome::bodyless`]，与上面零尺寸 CYLI 那条通道同款）。
+                        if kind == SkipKind::NoShape {
+                            match crate::elmodl::bodyless_design_record(&el, &noun) {
+                                Ok(Some(record)) => bodyless.push(record),
+                                Ok(None) => {}
+                                Err(error) => report.notes.push(Incident {
+                                    refno: refno.clone(),
+                                    noun: noun.clone(),
+                                    detail: format!("空记录算不出，RVM 里不写：{error}"),
+                                }),
+                            }
+                        }
                         record_skip(&mut report, kind, refno, noun, reason);
                     }
                     Err(error) => report.failed.push(Incident {

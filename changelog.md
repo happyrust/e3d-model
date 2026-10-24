@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-10-24 地形格的 GENPRI（归档版本 4，缓存面片）照 E3D 写成面片——aps250212 6 只对上，只在 E3D 归零
+
+- aps250212 地形模型 `TRNMOD /TerrainA/DEF01/MOD01 → TRNCC 1 → TRNCEL 1..6` 每格一只 `GENPRI 1`，`ELDATA` 的归档版本是 4：
+  没有 SMLib B-rep，是 `GeoGenericPrimitiveImpl::ReadFrom` 在版本 ≥ 3 多读的那份缓存面片（字节流：顶点号流 + 顶点表 + 法向表 + 法向号流，
+  布局见 `genpri` 模块文档）。解码器此前只认版本 2，6 只全挂 `failed`（只在 E3D 6）。E3D 的 TTY 导出写的就是这份缓存：6 格的多边形数、
+  环数、点数、包围盒逐一相同（格 6 的 103 个多边形逐环同点同序）。现在 `genpri::decode_archive` 按第 0 字分派：2 → B-rep、
+  4 → `CachedFacets`；一张面的几个环按环向分组（与面法向反向的是孔、同向的各写一个多边形，这是 E3D 的取舍：格 2 的两张带孔面
+  写成带两孔的多边形，格 3 里同向交缠的 20 / 21 边两环拆成两个）。
+- 这些面片是面不是体：地形格是带一圈边界边的高程面（格 6 有 33 条只被一张面用的边），TRNSLD 的虽封闭却夹着零面积的折返环，
+  建不成流形。照 E3D 只写 RVM：建模判 `Skipped(NoShape)`（理由写明是面），管线在复合单元的 `NoShape` 后也问一遍
+  `bodyless_design_record`（与零尺寸 CYLI 同款），新的 `DegenerateCatalogueShape::OpenFacets` 走 [`GenerationOutcome::bodyless`]，
+  `gen_ams` 用 `rvm_write::bodyless_facet_group_geometry` 写一条 `FacetGroup`（多边形 / 孔照归档，法线取外环面法线）；模型集、
+  `elements.json` 与增量不动。同库 TRNSUR 的 GENPRI（`2013286756/1507`）变换类型是 2（非单位阵，跟 16 个实数），不在导出里、没有可对拍的
+  语料，照例 `Layout` 拒读。
+- 单元测试加格 6 的整块 `ELDATA`（`tests/fixtures/genpri/aps250212-2013286756-1844-terrain-cell6.eldata`）：103 面 / 141 点 / 尺寸直方图 /
+  包围盒对 E3D，环分组规则另钩一条；真库门 `rvm_record_kinds_real` 加 `/TERRAIN-A-ZONE`：6 条 `FacetGroup`，格 1 / 2 / 6 的多边形数与环数、
+  格 1 / 6 的世界盒对 E3D，`elements.json` 里没有它们。aps250212 对拍 0 对、只在 E3D 6 → 6 对全 exact。
+
 ## 2026-10-24 进了布尔的正 CTOR / RTOR 按 10 mm 粗格建——aps250209 设备模板的两只半圈管对上
 
 - E3D 把 LNEGIT 的最终结果写成一条粗面片，**正体也按 10 mm 口径离散**，与负体同一张格（CYLI / CONE / DISH / 斜切圆柱早已这么做）；

@@ -49,6 +49,29 @@
 //!
 //! 布局只认语料里见过的那一种（一区一壳、单位变换、数据版本 32、只有 B 样条）；别的一律
 //! [`GenpriError::Layout`] 报出来，不猜。
+//!
+//! ## 归档版本 4：缓存面片
+//!
+//! aps250212 的地形模型（`TRNMOD → TRNCC → TRNCEL → GENPRI`，还有 TRNSLD / TRNSUR 下的）写的是版本 4：没有 B 样条、没有
+//! SMLib 头，是 `GeoGenericPrimitiveImpl::ReadFrom` 在版本 ≥ 3 多读的那份**缓存面片**。E3D 的 TTY 导出写的就是它：6 格的多边形数、
+//! 环数、点数、包围盒与导出逐一相同（格 6：103 个多边形逐环同点同序）。字节流（标志位占一字节，后面全部不对齐字界；
+//! 整数 4 字节、实数 8 字节、小端）：
+//!
+//! | 字节 | 内容 |
+//! |---|---|
+//! | 0–3 | 归档版本 4 |
+//! | 4–7 | 字节数（不含版本字，块尾按字补齐） |
+//! | 8–23 | UUID |
+//! | 24–27 | `GeoTransf3d` 类型，1 = 单位阵（TRNSUR 的是 2，后跟 16 个实数，没有可对拍的导出，不读） |
+//! | 28 | 有缓存面片 = 1 |
+//! | 29–32 | 1（面片组数） |
+//! | 33… | 顶点号流：个数 n，然后 n 个整数——环是一串点号收于 `-点数`，面是几个环收于 `-2`，整流收于 `-1` |
+//! | … | 顶点数 V，V × 3 实数（mm，GENPRI 局部系；地形链上 POS / ORI 全 0，即世界系） |
+//! | … | 法向数 N，N × 3 实数；再一份同构的法向号流 |
+//! | … | 每条边一组 `1 n 2`，没认，也用不上 |
+//!
+//! 一张面的几个环不全是「外环 + 孔」：E3D 导出时把与面法向反向的环当孔、同向的各写一个多边形（[`facet_polygons`]）。这些面片是面
+//! 不是体（地形格是带一圈边界边的高程面；TRNSLD 的虽封闭却夹着零面积的折返环），建不成流形，照 E3D 只写 RVM（[`GenpriBuild::Surface`]）。
 
 use std::collections::{HashMap, VecDeque};
 use std::ops::Range;
@@ -268,6 +291,9 @@ pub struct Brep {
 /// GENPRI 的两种结局。
 pub enum GenpriBuild {
     Solid(Manifold),
+    /// 归档版本 4 的缓存面片：是面不是体（aps250212 的地形格是带边界环的高程面，地形体 TRNSLD 虽封闭但夹着零面积的
+    /// 折返环），建不成流形；E3D 照样写成一条 `FacetGroup`，我们也只写 RVM（[`facet_polygons`]）。
+    Surface(CachedFacets),
     /// 有依据地不出几何（没有归档；或小到 E3D 的 `IwTess` 门槛以下）。
     NoShape(String),
 }
@@ -282,14 +308,309 @@ pub fn generic_primitive_local_solid(
             "没有 ARCHIV → ATTDAT.ELDATA，GENPRI 无几何可读（E3D 同样不出）".to_string(),
         ));
     };
-    let brep = decode(&words)?;
-    let Some(mesh) = tessellate(&brep, notes)? else {
-        return Ok(GenpriBuild::NoShape(
-            "B-rep 包围盒次长边 < 1 mm 且最长边 < 20 mm，E3D IwTess 前就放弃（GeoIwBrepImpl::Tessellate）"
-                .to_string(),
-        ));
-    };
-    Ok(GenpriBuild::Solid(mesh_solid(&mesh)?))
+    match decode_archive(&words)? {
+        Archive::Brep(brep) => {
+            let Some(mesh) = tessellate(&brep, notes)? else {
+                return Ok(GenpriBuild::NoShape(
+                    "B-rep 包围盒次长边 < 1 mm 且最长边 < 20 mm，E3D IwTess 前就放弃（GeoIwBrepImpl::Tessellate）"
+                        .to_string(),
+                ));
+            };
+            Ok(GenpriBuild::Solid(mesh_solid(&mesh)?))
+        }
+        // 缓存面片不过 IwTess：E3D 照样写出去，没有尺寸门。
+        Archive::Facets(facets) => Ok(GenpriBuild::Surface(facets)),
+    }
+}
+
+/// 归档版本 4 的缓存面片（`GeoGenericPrimitiveImpl::ReadFrom` 在版本 ≥ 3 多读的那份）：E3D 的 TTY 导出写的就是它
+/// （aps250212 地形 6 格的环数、点数、包围盒与 E3D 的面片逐一相同，见模块文档）。
+#[derive(Debug, Clone)]
+pub struct CachedFacets {
+    pub vertices: Vec<DVec3>,
+    /// 面 → 环 → 顶点号。一张面的几个环可能是外环 + 孔，也可能是同一张平面上互不嵌套的几块、甚至不共面的几块
+    /// （E3D 导出时后两种各写一个多边形），分组见 [`facets_mesh`]。
+    pub faces: Vec<Vec<Vec<u32>>>,
+}
+
+/// 一块 `ELDATA` 解出来的几何：版本 2 是 SMLib B-rep，版本 4 是缓存面片。
+#[derive(Debug, Clone)]
+pub enum Archive {
+    Brep(Brep),
+    Facets(CachedFacets),
+}
+
+/// 按第 0 字的归档版本分派：2 → [`decode`]，4 → 缓存面片；别的版本还没有语料，照例 [`GenpriError::Layout`]。
+pub fn decode_archive(words: &[u32]) -> Result<Archive, GenpriError> {
+    match words.first().map(|&w| w as i32) {
+        Some(2) => Ok(Archive::Brep(decode(words)?)),
+        Some(4) => Ok(Archive::Facets(decode_cached_facets(words)?)),
+        Some(other) => Err(GenpriError::Layout {
+            at: 0,
+            reason: format!("归档版本 {other}，只认 2（SMLib B-rep）与 4（缓存面片）"),
+        }),
+        None => Err(GenpriError::Layout {
+            at: 0,
+            reason: "空块".to_string(),
+        }),
+    }
+}
+
+/// 版本 4 是字节流（标志位占一字节，后面的整数与实数都不对齐字界），按字节读；报错位置折成字号、原因里带字节号。
+struct Bytes<'a> {
+    data: &'a [u8],
+    at: usize,
+}
+
+impl<'a> Bytes<'a> {
+    fn fail<T>(&self, at: usize, reason: impl Into<String>) -> Result<T, GenpriError> {
+        Err(GenpriError::Layout {
+            at: at / 4,
+            reason: format!("（版本 4 字节流第 {at} 字节）{}", reason.into()),
+        })
+    }
+
+    fn take(&mut self, n: usize) -> Result<&'a [u8], GenpriError> {
+        let Some(slice) = self.data.get(self.at..self.at + n) else {
+            return self.fail(self.at, "数据提前结束");
+        };
+        self.at += n;
+        Ok(slice)
+    }
+
+    fn byte(&mut self) -> Result<u8, GenpriError> {
+        Ok(self.take(1)?[0])
+    }
+
+    fn int(&mut self) -> Result<i32, GenpriError> {
+        let b = self.take(4)?;
+        Ok(i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    }
+
+    fn real(&mut self) -> Result<f64, GenpriError> {
+        let b = self.take(8)?;
+        Ok(f64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
+    }
+
+    fn count(&mut self, what: &str) -> Result<usize, GenpriError> {
+        let at = self.at;
+        let value = self.int()?;
+        match usize::try_from(value) {
+            Ok(n) if n <= self.data.len() => Ok(n),
+            _ => self.fail(at, format!("{what} = {value} 不合理")),
+        }
+    }
+}
+
+/// 版本 4 的整块 `ELDATA` → [`CachedFacets`]（布局见模块文档）。
+fn decode_cached_facets(words: &[u32]) -> Result<CachedFacets, GenpriError> {
+    let data: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+    let mut r = Bytes { data: &data, at: 0 };
+    let version = r.int()?;
+    if version != 4 {
+        return r.fail(0, format!("归档版本 {version}，缓存面片只认 4"));
+    }
+    // 字节数不含版本字，块尾按字补齐（aps250212 的 8 块都多 3 字节）。
+    let bytes = r.int()?;
+    let payload = i64::try_from(data.len()).unwrap_or(i64::MAX) - 4;
+    if !(i64::from(bytes) <= payload && i64::from(bytes) + 4 > payload) {
+        return r.fail(
+            4,
+            format!("声明 {bytes} 字节，实有 {} 字（除版本字外 {payload} 字节）", words.len()),
+        );
+    }
+    r.take(16)?; // UUID = `ARCHIV.UUIDAR`
+    let transform = r.int()?;
+    if transform != 1 {
+        return r.fail(
+            24,
+            format!("GeoTransf3d 类型 {transform}（非单位阵）尚无可对拍的语料"),
+        );
+    }
+    let at = r.at;
+    let cached = r.byte()?;
+    if cached != 1 {
+        return r.fail(at, format!("缓存面片标志 {cached}，只认 1（有面片）"));
+    }
+    let at = r.at;
+    let sets = r.int()?;
+    if sets != 1 {
+        return r.fail(at, format!("面片组数 {sets}，只认 1"));
+    }
+    let faces = read_ring_stream(&mut r, "顶点号流")?;
+    let vertex_count = r.count("顶点数")?;
+    let mut vertices = Vec::with_capacity(vertex_count);
+    for _ in 0..vertex_count {
+        vertices.push(DVec3::new(r.real()?, r.real()?, r.real()?));
+    }
+    // 后面是法向表与同构的法向号流（绕向由 [`orient_triangles`] 统一，这里只核结构）；再往后每条边一组 `1 n 2`
+    // 的字节还没认，三角化用不上。
+    let normal_count = r.count("法向数")?;
+    r.take(24 * normal_count)?;
+    let normal_rings = read_ring_stream(&mut r, "法向号流")?;
+    if normal_rings.len() != faces.len() {
+        return r.fail(
+            at,
+            format!("法向号流 {} 张面，顶点号流 {} 张", normal_rings.len(), faces.len()),
+        );
+    }
+    for (fi, face) in faces.iter().enumerate() {
+        for ring in face {
+            if ring.len() < 3 {
+                return Err(GenpriError::Topology(format!("面 {fi} 有不足 3 点的环")));
+            }
+            if let Some(&v) = ring.iter().find(|&&v| v as usize >= vertex_count) {
+                return Err(GenpriError::Topology(format!(
+                    "面 {fi} 引用顶点 {v}，只有 {vertex_count} 个"
+                )));
+            }
+        }
+    }
+    Ok(CachedFacets { vertices, faces })
+}
+
+/// 「个数 + 流」：环是一串号码收于 `-点数`，面是几个环收于 `-2`，整流收于 `-1`；个数把这三种收尾都算上。
+fn read_ring_stream(r: &mut Bytes, what: &str) -> Result<Vec<Vec<Vec<u32>>>, GenpriError> {
+    let start = r.at;
+    let n = r.count(what)?;
+    let mut faces = Vec::new();
+    let mut rings: Vec<Vec<u32>> = Vec::new();
+    let mut ring: Vec<u32> = Vec::new();
+    let mut read = 0usize;
+    loop {
+        if read >= n {
+            return r.fail(start, format!("{what}：{n} 个字里没有结束符 -1"));
+        }
+        let at = r.at;
+        let value = r.int()?;
+        read += 1;
+        match value {
+            -1 => break,
+            -2 => {
+                if !ring.is_empty() || rings.is_empty() {
+                    return r.fail(at, format!("{what}：-2 之前应是收完环的面"));
+                }
+                faces.push(std::mem::take(&mut rings));
+            }
+            v if v < 0 => {
+                if ring.len() != v.unsigned_abs() as usize {
+                    return r.fail(
+                        at,
+                        format!("{what}：环收尾 {v} 与环上 {} 个点不符", ring.len()),
+                    );
+                }
+                rings.push(std::mem::take(&mut ring));
+            }
+            v => ring.push(v as u32),
+        }
+    }
+    if read != n {
+        return r.fail(start, format!("{what}：声明 {n} 个字，-1 在第 {read} 个"));
+    }
+    if !ring.is_empty() || !rings.is_empty() {
+        return r.fail(start, format!("{what}：结束符前有没收完的环"));
+    }
+    Ok(faces)
+}
+
+/// 判两个环共面的距离门（mm）：平面面的点是 SMLib 算出来的双精度，共面的误差在 1e-9 量级；不共面的那些差的是整层高度。
+const COPLANAR_MM: f64 = 0.05;
+
+/// 缓存面片 → E3D 写进 RVM 的多边形（局部 mm；每个多边形第一个环是外环、其余是孔）：每张面的环按「共面且被包着」
+/// 分组（[`group_rings`]），面的顺序与环内点的顺序照归档。aps250212 六格的环数、各环点数与 E3D TTY 导出逐一相同。
+pub fn facet_polygons(facets: &CachedFacets) -> Vec<Vec<Vec<DVec3>>> {
+    let points = &facets.vertices;
+    facets
+        .faces
+        .iter()
+        .flat_map(|face| group_rings(face, points))
+        .map(|group| {
+            group
+                .into_iter()
+                .map(|ring| ring.into_iter().map(|i| points[i as usize]).collect())
+                .collect()
+        })
+        .collect()
+}
+
+/// 环的单位法向（Newell）、面积与顶点平均点。
+fn ring_plane(ring: &[u32], points: &[DVec3]) -> (DVec3, f64, DVec3) {
+    let mut normal = DVec3::ZERO;
+    let mut centre = DVec3::ZERO;
+    for k in 0..ring.len() {
+        let a = points[ring[k] as usize];
+        let b = points[ring[(k + 1) % ring.len()] as usize];
+        normal += a.cross(b);
+        centre += a;
+    }
+    (
+        normal.normalize_or_zero(),
+        0.5 * normal.length(),
+        centre / ring.len().max(1) as f64,
+    )
+}
+
+/// 平面内的两条正交轴。
+fn plane_basis(normal: DVec3) -> (DVec3, DVec3) {
+    let helper = if normal.x.abs() < 0.9 { DVec3::X } else { DVec3::Y };
+    let u = normal.cross(helper).normalize();
+    (u, normal.cross(u))
+}
+
+fn project_ring(ring: &[u32], points: &[DVec3], origin: DVec3, u: DVec3, v: DVec3) -> Vec<DVec2> {
+    ring.iter()
+        .map(|&i| {
+            let d = points[i as usize] - origin;
+            DVec2::new(d.dot(u), d.dot(v))
+        })
+        .collect()
+}
+
+/// 一张面的环分组，按环向（SMLib 的约定：外环与面法向同向、孔反向）：与最大环同向的各自是一个多边形（照归档顺序），
+/// 反向的是孔，挂到共面且包着它最多顶点的外环上（同样多时取面积小的；谁都不包就挂最大的那个）——数顶点而不是只看质心，
+/// 孔里套着岛时质心会落在岛里。这就是 E3D 写导出时的取舍：aps250212 TRNCEL 2
+/// 的面 149 / 4410（外环 + 其内反向的 32 / 28 边两环）E3D 写成一个带两孔的多边形；面 0（同在 z −250 上、同向的 57 / 91
+/// 边两块）、TRNCEL 3 的面 0（同向、互相交缠的 20 / 21 边两块）与 TRNCEL 1 的面 10（z 0 与 z −5000 各一块）都拆成两个
+/// 多边形——只看包含关系会把 TRNCEL 3 那对误认成外环 + 孔。返回每组的环，第一个是外环。
+fn group_rings(face: &[Vec<u32>], points: &[DVec3]) -> Vec<Vec<Vec<u32>>> {
+    if face.len() <= 1 {
+        return vec![face.to_vec()];
+    }
+    let planes: Vec<(DVec3, f64, DVec3)> = face.iter().map(|r| ring_plane(r, points)).collect();
+    let largest = (0..face.len())
+        .max_by(|&a, &b| planes[a].1.total_cmp(&planes[b].1))
+        .unwrap_or(0);
+    let reference = planes[largest].0;
+    let outers: Vec<usize> = (0..face.len())
+        .filter(|&k| planes[k].0.dot(reference) >= 0.0)
+        .collect();
+    let mut groups: Vec<Vec<Vec<u32>>> = outers.iter().map(|&k| vec![face[k].clone()]).collect();
+    let largest_group = outers.iter().position(|&k| k == largest).unwrap_or(0);
+    for j in (0..face.len()).filter(|&k| planes[k].0.dot(reference) < 0.0) {
+        let cj = planes[j].2;
+        // (组号, 包住的顶点数, 外环面积)：顶点数多者优先，同样多时面积小者优先。
+        let mut best: Option<(usize, usize, f64)> = None;
+        for (g, &i) in outers.iter().enumerate() {
+            let (ni, ai, ci) = planes[i];
+            if ni.dot(cj - ci).abs() > COPLANAR_MM {
+                continue;
+            }
+            let (u, v) = plane_basis(ni);
+            let ring_i = project_ring(&face[i], points, ci, u, v);
+            let ring_j = project_ring(&face[j], points, ci, u, v);
+            let votes = ring_j
+                .iter()
+                .filter(|&&p| inside(std::slice::from_ref(&ring_i), p))
+                .count();
+            if votes > 0
+                && best.is_none_or(|(_, n, a)| votes > n || (votes == n && ai < a))
+            {
+                best = Some((g, votes, ai));
+            }
+        }
+        groups[best.map_or(largest_group, |(g, _, _)| g)].push(face[j].clone());
+    }
+    groups
 }
 
 /// `GENPRI → ARCHIV → ATTDAT.ELDATA` 按成员顺序接起来的全部字；链不在时 `None`。
@@ -1924,6 +2245,10 @@ mod tests {
             "genpri13" => {
                 include_str!("../tests/fixtures/genpri/aps250162-2013286706-1103-genpri13.eldata")
             }
+            // aps250212 地形 `GENPRI 1 of TRNCEL 6 of TRNCC 1 of TRNMOD /TerrainA/DEF01/MOD01`（归档版本 4）。
+            "terrain6" => {
+                include_str!("../tests/fixtures/genpri/aps250212-2013286756-1844-terrain-cell6.eldata")
+            }
             other => panic!("no fixture {other}"),
         };
         text.split_whitespace()
@@ -2189,5 +2514,105 @@ mod tests {
         let plain = Tessellation::for_extent(DVec3::new(90.0, 85.0, 48.0), 6.0).unwrap();
         assert_eq!(plain.chord, 6.0);
         assert!((plain.max_edge - 0.4 * DVec3::new(90.0, 85.0, 48.0).length()).abs() < 1e-12);
+    }
+
+    /// 归档版本 4：aps250212 地形格 6 的缓存面片。E3D TTY 导出（`aps250212_lv6_2013286756_1588.rvm`）里同一件是 103 个多边形
+    /// （41 个三角、56 个四边、两个六边、八 / 九 / 32 / 45 边各一个）、141 个不同的点，包围盒 [−4000, 10000, −4818.31] ..
+    /// [0, 125000, 13500]；解出来的面片逐环相同。它是张带 33 条边界边的高程面，不是体；旧的 B-rep 解码器对它照例拒读。
+    #[test]
+    fn version_4_terrain_facets_decode_into_e3d_polygons() {
+        let words = fixture("terrain6");
+        assert!(matches!(
+            decode(&words),
+            Err(GenpriError::Layout { at: 0, .. })
+        ));
+        let Archive::Facets(facets) = decode_archive(&words).unwrap() else {
+            panic!("版本 4 应解成缓存面片");
+        };
+        assert_eq!(facets.vertices.len(), 141);
+        assert_eq!(facets.faces.len(), 103);
+        assert!(facets.faces.iter().all(|face| face.len() == 1), "格 6 没有带孔的面");
+
+        let polygons = facet_polygons(&facets);
+        assert_eq!(polygons.len(), 103);
+        let mut sizes: HashMap<usize, usize> = HashMap::new();
+        for polygon in &polygons {
+            assert_eq!(polygon.len(), 1);
+            *sizes.entry(polygon[0].len()).or_insert(0) += 1;
+        }
+        let mut sizes: Vec<(usize, usize)> = sizes.into_iter().collect();
+        sizes.sort_unstable();
+        assert_eq!(
+            sizes,
+            [(3, 41), (4, 56), (6, 2), (8, 1), (9, 1), (32, 1), (45, 1)]
+        );
+        let mut lo = DVec3::INFINITY;
+        let mut hi = DVec3::NEG_INFINITY;
+        for p in polygons.iter().flatten().flatten() {
+            lo = lo.min(*p);
+            hi = hi.max(*p);
+        }
+        assert_box(
+            [lo.x, lo.y, lo.z, hi.x, hi.y, hi.z],
+            [-4000.0, 10000.0, -4818.31, 0.0, 125000.0, 13500.0],
+            0.01,
+            "terrain6",
+        );
+        // 边界边（只被一张面用到）：高程面的外沿一圈。
+        let mut uses: HashMap<(u32, u32), usize> = HashMap::new();
+        for ring in facets.faces.iter().flatten() {
+            for k in 0..ring.len() {
+                let (a, b) = (ring[k], ring[(k + 1) % ring.len()]);
+                *uses.entry((a.min(b), a.max(b))).or_insert(0) += 1;
+            }
+        }
+        assert_eq!(uses.values().filter(|&&n| n == 1).count(), 33);
+    }
+
+    /// 一张面的几个环怎么分组（E3D 导出时的取舍）：与最大环反向的是孔，挂在包着它的外环上；同向的——哪怕在外环里、
+    /// 哪怕在另一张平面上——都是自己的多边形。
+    #[test]
+    fn rings_group_into_outer_rings_and_their_holes_the_way_e3d_splits_them() {
+        let square = |x0: f64, y0: f64, x1: f64, y1: f64, z: f64| {
+            vec![
+                DVec3::new(x0, y0, z),
+                DVec3::new(x1, y0, z),
+                DVec3::new(x1, y1, z),
+                DVec3::new(x0, y1, z),
+            ]
+        };
+        let mut points = Vec::new();
+        let mut ring = |pts: Vec<DVec3>| -> Vec<u32> {
+            let first = points.len() as u32;
+            points.extend(pts);
+            (first..first + 4).collect()
+        };
+        let outer = ring(square(0.0, 0.0, 100.0, 100.0, 0.0));
+        let mut reversed = square(20.0, 20.0, 80.0, 80.0, 0.0);
+        reversed.reverse();
+        let hole = ring(reversed);
+        let island = ring(square(40.0, 40.0, 60.0, 60.0, 0.0));
+        let beside = ring(square(200.0, 0.0, 300.0, 100.0, 0.0));
+        let lifted = ring(square(20.0, 20.0, 80.0, 80.0, 50.0));
+        let face = vec![
+            lifted.clone(),
+            hole.clone(),
+            beside.clone(),
+            island.clone(),
+            outer.clone(),
+        ];
+        let groups = group_rings(&face, &points);
+        assert_eq!(groups.len(), 4, "{groups:?}");
+        assert!(groups.contains(&vec![outer.clone(), hole.clone()]), "{groups:?}");
+        assert!(groups.contains(&vec![beside.clone()]));
+        assert!(groups.contains(&vec![island.clone()]));
+        assert!(groups.contains(&vec![lifted.clone()]));
+
+        // 单环的面原样交出；两个共面互不嵌套的环各自成组。
+        assert_eq!(group_rings(&[outer.clone()], &points), vec![vec![outer.clone()]]);
+        assert_eq!(
+            group_rings(&[outer.clone(), beside.clone()], &points).len(),
+            2
+        );
     }
 }

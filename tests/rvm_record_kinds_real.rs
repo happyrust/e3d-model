@@ -1018,6 +1018,97 @@ fn a_circular_torus_with_negatives_bakes_the_coarse_boolean_grid() {
     std::fs::remove_dir_all(&scratch).ok();
 }
 
+/// aps250212 地形模型 `TRNMOD /TerrainA/DEF01/MOD01 → TRNCC 1 → TRNCEL 1..6`，每格一只 `GENPRI 1`，归档版本 4（缓存面片，
+/// 不是 B-rep）：此前解码器只认版本 2，6 只全挂 `failed`（aps250212 只在 E3D 6）。它们是带边界环的高程面、不成体，照 E3D
+/// 只写 RVM：每只一条 `FacetGroup`，多边形数、环数与世界盒对 E3D TTY 导出 `aps250212_lv6_2013286756_1588.rvm`（格 6：103 个
+/// 多边形，[−4000, 10000, −4818.31] .. [0, 125000, 13500]；格 1：3142 个，[125000, 125000, −5000] .. [204000, 225000.12, 0]）；
+/// `elements.json` 里没有它们。
+#[test]
+fn terrain_cells_write_their_cached_facets_as_e3d_facet_groups() {
+    const APS_TERRAIN_DB: &str = "aps250212_0001";
+    if !fixtures_present_in(APS_DIR, APS_TERRAIN_DB) {
+        return;
+    }
+    let scratch: PathBuf = std::env::temp_dir().join(format!(
+        "e3d-model-rvm-terrain-aps-{}",
+        std::process::id()
+    ));
+    let (rvm, elements) = generate_in(APS_DIR, APS_TERRAIN_DB, "2013286756/1588", "on", &scratch);
+    let cells: Vec<&RvmMember> = rvm
+        .members
+        .iter()
+        .filter(|member| member.name.trim().starts_with("GENPRI 1 of TRNCEL"))
+        .collect();
+    assert_eq!(
+        cells.len(),
+        6,
+        "{:?}",
+        rvm.members.iter().map(|m| &m.name).collect::<Vec<_>>()
+    );
+    for member in &cells {
+        let kinds: Vec<&str> = member
+            .geometries
+            .iter()
+            .map(|geometry| geometry.primitive.name())
+            .collect();
+        assert_eq!(kinds, ["FacetGroup"], "{}", member.name);
+    }
+    let world_box = |name: &str| {
+        let member = cells
+            .iter()
+            .find(|member| member.name.trim().starts_with(name))
+            .unwrap_or_else(|| panic!("没有 {name}"));
+        let Primitive::FacetGroup(polygons) = &member.geometries[0].primitive else {
+            unreachable!()
+        };
+        let mut lo = [f64::INFINITY; 3];
+        let mut hi = [f64::NEG_INFINITY; 3];
+        for p in member.world_vertices_mm() {
+            for axis in 0..3 {
+                lo[axis] = lo[axis].min(p[axis]);
+                hi[axis] = hi[axis].max(p[axis]);
+            }
+        }
+        (
+            polygons.len(),
+            polygons.iter().map(|p| p.contours.len()).sum::<usize>(),
+            [lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]],
+        )
+    };
+    let (polygons, contours, bbox) = world_box("GENPRI 1 of TRNCEL 6 of");
+    assert_eq!((polygons, contours), (103, 103));
+    for (axis, (got, want)) in bbox
+        .iter()
+        .zip([-4000.0, 10000.0, -4818.31, 0.0, 125000.0, 13500.0])
+        .enumerate()
+    {
+        assert!((got - want).abs() <= 0.05, "格 6 包围盒第 {axis} 分量 {got:.3}，E3D {want:.2}");
+    }
+    let (polygons, contours, bbox) = world_box("GENPRI 1 of TRNCEL 1 of");
+    assert_eq!((polygons, contours), (3142, 3142));
+    for (axis, (got, want)) in bbox
+        .iter()
+        .zip([125000.0, 125000.0, -5000.0, 204000.0, 225000.12, 0.0])
+        .enumerate()
+    {
+        assert!((got - want).abs() <= 0.05, "格 1 包围盒第 {axis} 分量 {got:.3}，E3D {want:.2}");
+    }
+    // 格 2 的两张带孔的面（外环 + 反向的 32 / 28 边两环）照 E3D 写成带两孔的多边形：4413 个多边形、4417 个环。
+    let (polygons, contours, _) = world_box("GENPRI 1 of TRNCEL 2 of");
+    assert_eq!((polygons, contours), (4413, 4417));
+    // 模型集里没有它们：是面不是体。
+    assert!(
+        elements
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|element| element["noun"] != "GENPRI"),
+        "地形 GENPRI 不进 elements.json"
+    );
+
+    std::fs::remove_dir_all(&scratch).ok();
+}
+
 /// aps250209 平台扶手 `HANDRA 1 / 2 of SBFRAMEWORK /A01-AREA05-4TH-FLOOR-HANDRAILS`（`2013286753/40177`、`40183`）：路径四点
 /// U 形、拐角 `FRAD 100`、`SHOWKP` 真。此前踢脚板不支持弧段、整只生成失败（aps250209 共 22 只）；现在弧段的踢脚板是
 /// 一节矩形圆环，整只与 E3D TTY 导出的世界盒一致（`aps250209_lv6_2013286753_40120.rvm`），并且照 E3D 写成一条 FacetGroup。

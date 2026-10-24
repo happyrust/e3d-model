@@ -243,6 +243,12 @@ pub enum DegenerateCatalogueShape {
     Box {
         lengths_mm: [f64; 3],
     },
+    /// 一片开放面片（归档版本 4 的 GENPRI：aps250212 的地形格）：是面不是体，建不成流形，E3D 照样写成一条
+    /// `FacetGroup`。多边形在元素局部系（mm），每个的第一个环是外环、其余是孔（[`crate::genpri::facet_polygons`]）。
+    /// 同样只有设计侧走这一支。
+    OpenFacets {
+        polygons: Vec<Vec<Vec<[f64; 3]>>>,
+    },
 }
 
 pub struct DegenerateCataloguePart {
@@ -276,6 +282,9 @@ pub fn bodyless_design_record(
     el: &DbElement,
     noun: &str,
 ) -> Result<Option<BodylessDesignRecord>, ModelError> {
+    if noun == "GENPRI" {
+        return open_facets_record(el, noun);
+    }
     if noun != "CYLI" {
         return Ok(None);
     }
@@ -298,6 +307,37 @@ pub fn bodyless_design_record(
             radius_mm: diam / 2.0,
             height_mm: heig,
         },
+    }))
+}
+
+/// 归档版本 4 的 GENPRI（缓存面片，[`crate::genpri::GenpriBuild::Surface`]）的只写 RVM 记录：多边形照归档，记录矩阵是元素的
+/// 世界标架（地形模型从 ZONE 到 GENPRI 的 POS / ORI 全是 0，E3D 的记录也是单位阵）。不是版本 4、或者没有归档时 `None`：
+/// 这条路只在建模判 `Skipped(NoShape)` 之后被问，那些情形的理由已经记在跳过账上。
+fn open_facets_record(
+    el: &DbElement,
+    noun: &str,
+) -> Result<Option<BodylessDesignRecord>, ModelError> {
+    let Some(words) = crate::genpri::eldata_words(el)? else {
+        return Ok(None);
+    };
+    let crate::genpri::Archive::Facets(facets) = crate::genpri::decode_archive(&words)? else {
+        return Ok(None);
+    };
+    let polygons = crate::genpri::facet_polygons(&facets)
+        .into_iter()
+        .map(|polygon| {
+            polygon
+                .into_iter()
+                .map(|ring| ring.into_iter().map(|p| p.to_array()).collect())
+                .collect()
+        })
+        .collect();
+    Ok(Some(BodylessDesignRecord {
+        refno: el.refno(),
+        noun: noun.to_string(),
+        name: el.stored_name()?,
+        world: crate::transform::world_matrix(el)?,
+        shape: DegenerateCatalogueShape::OpenFacets { polygons },
     }))
 }
 
@@ -727,6 +767,18 @@ pub fn model_element_with_cache(
         Category::Composite(CompositeFamily::Equipment) if noun == "GENPRI" => {
             match crate::genpri::generic_primitive_local_solid(el, &mut notes)? {
                 crate::genpri::GenpriBuild::Solid(solid) => (solid, None),
+                // 开放面片不是体：模型集不进，RVM 里照 E3D 写一条 FacetGroup（管线在 `Skipped(NoShape)` 后问
+                // [`bodyless_design_record`]，它把同一份归档再解一遍交出多边形）。
+                crate::genpri::GenpriBuild::Surface(facets) => {
+                    return Ok(Modeled::Skipped {
+                        kind: SkipKind::NoShape,
+                        reason: format!(
+                            "归档版本 4 的缓存面片（{} 张面、{} 个点）是面不是体（地形格是带边界环的高程面）；照 E3D 只写 RVM 面片，模型集不进",
+                            facets.faces.len(),
+                            facets.vertices.len()
+                        ),
+                    });
+                }
                 crate::genpri::GenpriBuild::NoShape(reason) => {
                     return Ok(Modeled::Skipped {
                         kind: SkipKind::NoShape,

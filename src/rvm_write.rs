@@ -1831,6 +1831,63 @@ pub fn bodyless_box_geometry(
     }
 }
 
+/// 给一片**开放面片**造一条 `FacetGroup` 记录（归档版本 4 的 GENPRI：aps250212 的地形格，
+/// [`crate::elmodl::DegenerateCatalogueShape::OpenFacets`]）。多边形在元素局部系（mm）、每个的第一个环是外环、
+/// 其余是孔，照样写成 polygon / contour；法线取外环的面法线（Newell）逐顶点写。记录矩阵 = `world`。
+pub fn bodyless_facet_group_geometry(
+    world: &glam::DMat4,
+    polygons_mm: &[Vec<Vec<[f64; 3]>>],
+) -> crate::rvm_read::RvmGeometry {
+    let polygons = polygons_mm
+        .iter()
+        .filter(|polygon| polygon.first().is_some_and(|outer| outer.len() >= 3))
+        .map(|polygon| {
+            let normal = newell_normal(&polygon[0]);
+            Polygon {
+                contours: polygon
+                    .iter()
+                    .map(|ring| Contour {
+                        vertices: ring.clone(),
+                        normals: vec![normal; ring.len()],
+                    })
+                    .collect(),
+            }
+        })
+        .collect();
+    let cols = world.to_cols_array();
+    let matrix3 = [
+        cols[0], cols[1], cols[2], cols[4], cols[5], cols[6], cols[8], cols[9], cols[10],
+    ]
+    .map(|value| value / M_TO_MM);
+    let mut geometry = RvmGeometry {
+        tag: "PRIM".to_string(),
+        flags: 1,
+        primitive: Primitive::FacetGroup(polygons),
+        matrix3,
+        translation_mm: [cols[12], cols[13], cols[14]],
+        record_bbox: [0.0; 6],
+        bbox_frame: crate::rvm_read::BboxFrame::Rotated,
+        level: None,
+    };
+    geometry.record_bbox = rotated_frame_bbox(&geometry);
+    geometry
+}
+
+/// 一个空间多边形的单位法线（Newell）；退化时给 +Z。
+fn newell_normal(ring: &[[f64; 3]]) -> [f64; 3] {
+    let mut n = glam::DVec3::ZERO;
+    for k in 0..ring.len() {
+        let a = glam::DVec3::from_array(ring[k]);
+        let b = glam::DVec3::from_array(ring[(k + 1) % ring.len()]);
+        n += a.cross(b);
+    }
+    if n.length_squared() > 0.0 {
+        n.normalize().to_array()
+    } else {
+        [0.0, 0.0, 1.0]
+    }
+}
+
 /// 给一只**没有体**的目录圆台造一条 `Snout` 记录。
 ///
 /// `/1WCC188VN` 的两只法兰盘：`PBDI = PTDI = 0`、直径 168.3。Core 不出体，E3D 的 DRSNO
