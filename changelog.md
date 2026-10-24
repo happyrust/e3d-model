@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-10-24 进了布尔的正 CTOR / RTOR 按 10 mm 粗格建——aps250209 设备模板的两只半圈管对上
+
+- E3D 把 LNEGIT 的最终结果写成一条粗面片，**正体也按 10 mm 口径离散**，与负体同一张格（CYLI / CONE / DISH / 斜切圆柱早已这么做）；
+  正环管、正矩形环此前仍按 0.5 mm 曲面口径建。aps250209 `CTORUS 1 / 2 of TMPLATE 1 of EQUIPMENT /A02-AREA05-PRIMARY-CRUSHER`
+  （`RINS 1558.44 / ROUT 2377.56 / ANGL 180`，名下 NCTO 掉空、NRTO 切外半、NRTO 在 z −290 切下段）：E3D 的面片扫 18 段、管 16 段，
+  正是 `negative_part_rev_segments(ROUT, ANGL)` × `negative_cylinder_segments(管半径)`；切外半的 NRTO `ROUT` 与正体相同（2377.56），
+  同一张格下两者的外弦重合、切得干净。我们 78 × 64 的细格正体，外赤道的弦在 NRTO 的 18 条粗弦之间探出去，差完留下一圈 22 片碎块，
+  包围盒比 E3D 大一个管半径（off 409.56）。现在 `primitive_local_solid` 的 `RectTorus` / `CircTorus` 在有负体（`allow_instance == false`）时
+  走 `*_with_segments` 的粗格。同类证据：aps250164 `CTORUS 1 of SUBEQUIPMENT /C1101-SKIRT`（93 / 207 / 90 + NCTO）E3D 扫 3 段、管 8 段；
+  aps7200 `RTORUS 1 of SUBSTRUCTURE /C1101-PL1-BASE`（ROUT 1850 / ANGL 165 + NCYL + NBOX）E3D 扫 15 段、每段 11°——这两件包围盒本来就对，
+  只是面片比 E3D 密十来倍。语料里带负体的环共 347 只（ams7997 340 只 RTOR 不在 TTY 导出里），包围盒不随格数变，回归门不受影响。
+- 结果与 E3D 同形：体积 8.9620e7 对 E3D 面片的 8.9621e7 mm³，连 E3D 自己留下的两处碎片（内赤道上正体的弦探进 NRTO 内圆 1555.62
+  以内的 12 片、r = 1968 处 NRTO 顶点圈探出另一只 16 段 NRTO 粗弦的 4 处底部薄片）都一样有，z 范围同样是 ±409.56。
+- 真库门 `rvm_record_kinds_real` 加这对：世界盒对 E3D 0.05 mm、体积 ±0.2%、每只一条 `FacetGroup`。aps250209 对拍 4623 对 4620 exact、
+  off 3 → 4622 exact、off 1（整圈 REVO，ISSUE_09 既有类）、种类不同 2。
+
 ## 2026-10-24 布局式梯段 STRFLT 自己的斜梁、踏步与平台板——aps250209 18 只对上，只在 E3D 归零
 
 - `INSTOP` 以 `LAYOUT` 开头的梯段没有 TREADS / STRSTR 成员，E3D 给 STRFLT 自己写一条 `FacetGroup`；我们把 STRFLT 当纯容器，一件不画

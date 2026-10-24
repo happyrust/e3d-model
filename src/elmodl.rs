@@ -2381,17 +2381,49 @@ fn primitive_local_solid(
             let rout = require_double(el, noun, "ROUT", "rectangular torus")?;
             let h = require_double(el, noun, "HEIG", "rectangular torus")?;
             let angle = require_double(el, noun, "ANGL", "rectangular torus")?;
+            let solid = if allow_instance {
+                rect_torus_solid(rins, rout, h, angle)?
+            } else {
+                // 进了布尔的正环与它的负体同一张粗扫描格（与上面的 CYLI 同一条理由）：aps7200
+                // `RTORUS 1 of SUBSTRUCTURE /C1101-PL1-BASE`（ROUT 1850 / ANGL 165，NCYL + NBOX）
+                // E3D 的面片扫 15 段、每段 11°，正是 `negative_part_rev_segments` 的格。
+                rect_torus_solid_with_segments(
+                    rins,
+                    rout,
+                    h,
+                    angle,
+                    negative_part_rev_segments(rout, angle),
+                )?
+            };
             Ok(PrimitiveBuild {
-                solid: rect_torus_solid(rins, rout, h, angle)?,
+                solid,
                 instance: None,
                 analytic: None,
             })
         }
         Prim::CircTorus => {
+            let rins = default_zero(el, "RINS")?;
             let rout = require_double(el, noun, "ROUT", "circular torus")?;
             let angle = require_double(el, noun, "ANGL", "circular torus")?;
+            let solid = if allow_instance {
+                circ_torus_solid(rins, rout, angle)?
+            } else {
+                // 进了布尔的正环管与 NCTO 同一张粗格：扫描按 ROUT、管截面按管半径各走 10 mm 口径。
+                // aps250209 `CTORUS 1 / 2 of TMPLATE 1 of EQUIPMENT /A02-AREA05-PRIMARY-CRUSHER`
+                // （RINS 1558.44 / ROUT 2377.56 / ANGL 180，NCTO + NRTO × 2）E3D 的面片扫 18 段、
+                // 管 16 段；aps250164 `CTORUS 1 of SUBEQUIPMENT /C1101-SKIRT`（93 / 207 / 90，NCTO）
+                // 扫 3 段、管 8 段。按 0.5 mm 细格建正体时，正体的外赤道弦在 NRTO 的粗弦之间
+                // 探出去，差完留下一圈碎块，包围盒比 E3D 大一个管半径（off 409.56）。
+                circ_torus_solid_with_segments(
+                    rins,
+                    rout,
+                    angle,
+                    negative_part_rev_segments(rout, angle),
+                    negative_cylinder_segments((rout - rins) * 0.5),
+                )?
+            };
             Ok(PrimitiveBuild {
-                solid: circ_torus_solid(default_zero(el, "RINS")?, rout, angle)?,
+                solid,
                 instance: None,
                 analytic: None,
             })

@@ -954,6 +954,70 @@ fn a_layout_stair_flight_draws_its_stringers_treads_and_landing() {
     std::fs::remove_dir_all(&scratch).ok();
 }
 
+/// aps250209 设备模板里带负体的半圈管 `CTORUS 1 / 2 of TMPLATE 1 of EQUIPMENT /A02-AREA05-PRIMARY-CRUSHER`（`2013286753/41624`、
+/// `41628`：`RINS 1558.44 / ROUT 2377.56 / ANGL 180`，名下 NCTO 掉空、NRTO 切外半、NRTO 在 z −90 切下段）。E3D 把进了布尔的
+/// 正环管也按 10 mm 粗格建（扫 18 段、管 16 段，与 NCTO / NRTO 同一张格），正体外赤道的弦与 NRTO 的外弦重合、切得干净；
+/// 此前我们按 0.5 mm 细格建正体，外赤道在粗弦之间探出去、差完留下一圈碎块，包围盒比 E3D 大一个管半径（off 409.56）。世界盒与
+/// 体积（8.962e7 mm³，按 E3D 面片的散度定理算）都取 E3D TTY 导出 `aps250209_lv6_2013286753_40798.rvm` 里的面片。
+#[test]
+fn a_circular_torus_with_negatives_bakes_the_coarse_boolean_grid() {
+    if !fixtures_present_in(APS_DIR, APS_AREA05_DB) {
+        return;
+    }
+    let scratch: PathBuf = std::env::temp_dir().join(format!(
+        "e3d-model-rvm-ctorus-boolean-aps-{}",
+        std::process::id()
+    ));
+    let (rvm, elements) = generate_in(APS_DIR, APS_AREA05_DB, "2013286753/41597", "on", &scratch);
+    assert_world_aabb(
+        &elements,
+        "2013286753/41624",
+        [23032.0, 23032.0, 10680.93, 26968.0, 25000.0, 11500.05],
+        0.05,
+    );
+    assert_world_aabb(
+        &elements,
+        "2013286753/41628",
+        [23032.0, 25000.0, 10680.93, 26968.0, 26968.0, 11500.05],
+        0.05,
+    );
+    for refno in ["2013286753/41624", "2013286753/41628"] {
+        let element = elements
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|element| element["refno"] == refno)
+            .unwrap();
+        let volume = element["volume_mm3"].as_f64().unwrap();
+        assert!(
+            (volume - 8.962e7).abs() <= 0.02e7,
+            "{refno}：体积 {volume:.4e}，E3D 面片 8.962e7"
+        );
+        assert_eq!(element["negatives_applied"], 3, "{refno}");
+    }
+    let tori: Vec<&RvmMember> = rvm
+        .members
+        .iter()
+        .filter(|member| member.name.trim().starts_with("CTOR"))
+        .collect();
+    assert_eq!(
+        tori.len(),
+        2,
+        "{:?}",
+        tori.iter().map(|m| &m.name).collect::<Vec<_>>()
+    );
+    for member in tori {
+        let kinds: Vec<&str> = member
+            .geometries
+            .iter()
+            .map(|geometry| geometry.primitive.name())
+            .collect();
+        assert_eq!(kinds, ["FacetGroup"], "{}", member.name);
+    }
+
+    std::fs::remove_dir_all(&scratch).ok();
+}
+
 /// aps250209 平台扶手 `HANDRA 1 / 2 of SBFRAMEWORK /A01-AREA05-4TH-FLOOR-HANDRAILS`（`2013286753/40177`、`40183`）：路径四点
 /// U 形、拐角 `FRAD 100`、`SHOWKP` 真。此前踢脚板不支持弧段、整只生成失败（aps250209 共 22 只）；现在弧段的踢脚板是
 /// 一节矩形圆环，整只与 E3D TTY 导出的世界盒一致（`aps250209_lv6_2013286753_40120.rvm`），并且照 E3D 写成一条 FacetGroup。
