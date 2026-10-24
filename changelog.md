@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-10-24 布局式梯段 STRFLT 自己的斜梁、踏步与平台板——aps250209 18 只对上，只在 E3D 归零
+
+- `INSTOP` 以 `LAYOUT` 开头的梯段没有 TREADS / STRSTR 成员，E3D 给 STRFLT 自己写一条 `FacetGroup`；我们把 STRFLT 当纯容器，一件不画
+  （aps250209 只在 E3D 18）。新模块 `stair_flight`，照 TTY 导出的面片还原：两条宽 50 的斜梁贴在 `TWIDTH` 之外（中心 ±(TWIDTH/2 + 25)，
+  正是 HANDRA 的 `POS`），上边是 RPATH、沿路径法向往下 `FTHICK`，拐角按过拐点的角平分面斜接、开口端按 RPATH 的 `DRNS` / `DRNE`
+  （这些梯段 `DRNS = +X` 垂直于路径 → 平头，`DRNE = +Y` → 顶端竖切）；斜段上 `n = round(升高 / RISE)` 级踏步盒，进深 `g = 水平投影 / n`，
+  每级从第 k 条立板到第 k+1 条再探 `TREADO`，厚 `g / 10`，第 0 级只在前面有平台段时画、第 n 级（上层平台）不画；水平段是宽
+  `TWIDTH`、厚 `g / 10` 的平台板，拐角同样斜接。踏步厚的三条证据（26.28 / 24.37 / 24.91 对 g 262.75 / 243.7 / 249.09）里 `FTHICK` 恰好都等于 g，
+  是 g/10 还是 FTHICK/10 还要一条两者不等的样本；`ORISE` / `OGOING` / `UEXTNS` / `LEXTNS` 语料里全是 0，非零时记 note。
+- `category::is_model_unit` 把 STRFLT 认成单元（名下的 HANDRA 仍各自成件）；gb==2 容器的护栏给它开了唯一的例外（我们对的是 RVM 导出，
+  它给 LAYOUT 梯段写了面片）。详图式（`INSTOP` 以 DETAIL 开头）照旧 `Skipped(NoShape)`，几何在成员上。`gen_ams` 的
+  `e3d_exports_facets_only` 加 STRFLT，整只一条面片。踢脚板那套「沿直段扫的带」抽成 `handrail::band_segment_solid`，斜梁与平台板共用。
+  读取集合多 `INSTOP` / `FTHICK` / `ORISE` / `UEXTNS` / `LEXTNS`（163 → 168），gen-model 那份一起重生成。
+- 真库门 `rvm_record_kinds_real` 加 `/A01-AREA05-BASE-FL-STAIRS` 的两段：世界盒对 E3D 0.05 mm（平台 + 10 级的那段长到末级踢边、高到路径顶；
+  从斜段起步的那段底端平头最低点 −194.67），每只一条 `FacetGroup`，四只扶手照旧各自成件。aps250209 对拍 4605 对 → 4623 对 4620 exact、
+  off 3（CTORUS 负体布尔 2 + 整圈 REVO 1）、只在 E3D 0、种类不同 2。
+
 ## 2026-10-24 布局式扶手的两端按 RPATH 端向切、踢脚板在圆角拐角按拐点斜接、整只写一条面片——aps250209 38 只 HANDRA 对上
 
 - **开口端**：`RPATH` 的 `DRNS` / `DRNE` 非零且与该段既不平行也不垂直时，栏杆与踢脚板的开口端是过端点、法向 = 端向的平面

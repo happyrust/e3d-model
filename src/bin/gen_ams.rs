@@ -456,7 +456,8 @@ fn rvm_component_geometry(
 ///
 /// 名单 = 设计侧环拉伸（[`e3d_model::category::Category::LoopExtrusion`]：PANE / FLOOR / EXTR /
 /// AEXTR / SCREED / GWALL）+ 型材扫掠（SCTN / GENSEC / STWALL / WALL / RAIL / KICKPL）+
-/// 多面体（[`e3d_model::category::Category::Polyhedron`]：POHE / POLYHE）+ 通用图元 GENPRI + 折弯板 BPANEL + 布局式扶手 HANDRA。
+/// 多面体（[`e3d_model::category::Category::Polyhedron`]：POHE / POLYHE）+ 通用图元 GENPRI + 折弯板 BPANEL + 布局式扶手 HANDRA
+/// + 布局式梯段 STRFLT（[`e3d_model::stair_flight`]：斜梁、踏步、平台板在 aps250209 的 TTY 导出里是一条面片）。
 /// 目录构件（FITT / FIXING / SBFI / PCOM…）**不在**名单里：它们由 GMSE 图元拼成，E3D 走
 /// DRBOX / DRCYL 等图元写出器——`:SDS_Entity 3` 那块底板就是 E3D 自己写的 `Pyramid`。
 ///
@@ -477,6 +478,7 @@ fn e3d_exports_facets_only(noun: &str) -> bool {
             | "GENPRI"
             | "BPANEL"
             | "HANDRA"
+            | "STRFLT"
     )
 }
 

@@ -896,6 +896,64 @@ fn a_stair_flight_handrail_ends_on_the_rpath_end_direction() {
     std::fs::remove_dir_all(&scratch).ok();
 }
 
+/// aps250209 布局式梯段 `STRFLT 1 / 2 of SBFRAMEWORK /A01-AREA05-BASE-FL-STAIRS`（`2013286753/40205`、`40220`，`INSTOP`
+/// `LAYOUT;;;;;;;;DOWN`）：此前我们对 STRFLT 自己一件不画（aps250209 只在 E3D 18）。E3D TTY 导出里每只一条面片：两条宽 50、
+/// 深 `FTHICK` 的斜梁（拐角斜接、顶端按 `DRNE = +Y` 竖切、底端平头）+ `RISE` × `进深` 的踏步盒（踢边 `TREADO`，厚进深/10）+
+/// 平台板。世界盒取 E3D 面片的：STRFLT 1（平台 + 10 级）长到最后一级踏步的踢边 36455.0、高到路径顶 4000；
+/// STRFLT 2（11 级 + 顶部平台，从斜段起步）底端平头的最低点 −194.67。
+#[test]
+fn a_layout_stair_flight_draws_its_stringers_treads_and_landing() {
+    if !fixtures_present_in(APS_DIR, APS_AREA05_DB) {
+        return;
+    }
+    let scratch: PathBuf = std::env::temp_dir().join(format!(
+        "e3d-model-rvm-stair-flight-aps-{}",
+        std::process::id()
+    ));
+    let (rvm, elements) = generate_in(APS_DIR, APS_AREA05_DB, "2013286753/40204", "on", &scratch);
+    assert_world_aabb(
+        &elements,
+        "2013286753/40205",
+        [22500.0, 33500.05, 1757.25, 23400.0, 36455.0, 4000.0],
+        0.05,
+    );
+    assert_world_aabb(
+        &elements,
+        "2013286753/40220",
+        [21400.0, 33500.0, -194.67, 22300.0, 36430.7, 2020.0],
+        0.05,
+    );
+    let flights: Vec<&RvmMember> = rvm
+        .members
+        .iter()
+        .filter(|member| member.name.trim().starts_with("STRFLT"))
+        .collect();
+    assert_eq!(
+        flights.len(),
+        2,
+        "{:?}",
+        flights.iter().map(|m| &m.name).collect::<Vec<_>>()
+    );
+    for member in flights {
+        let kinds: Vec<&str> = member
+            .geometries
+            .iter()
+            .map(|geometry| geometry.primitive.name())
+            .collect();
+        assert_eq!(kinds, ["FacetGroup"], "{}", member.name);
+    }
+    // 名下的四只扶手照旧各自成件。
+    assert_eq!(
+        rvm.members
+            .iter()
+            .filter(|member| member.name.trim().starts_with("HANDRA"))
+            .count(),
+        4
+    );
+
+    std::fs::remove_dir_all(&scratch).ok();
+}
+
 /// aps250209 平台扶手 `HANDRA 1 / 2 of SBFRAMEWORK /A01-AREA05-4TH-FLOOR-HANDRAILS`（`2013286753/40177`、`40183`）：路径四点
 /// U 形、拐角 `FRAD 100`、`SHOWKP` 真。此前踢脚板不支持弧段、整只生成失败（aps250209 共 22 只）；现在弧段的踢脚板是
 /// 一节矩形圆环，整只与 E3D TTY 导出的世界盒一致（`aps250209_lv6_2013286753_40120.rvm`），并且照 E3D 写成一条 FacetGroup。

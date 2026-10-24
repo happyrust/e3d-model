@@ -695,6 +695,25 @@ pub fn model_element_with_cache(
                 }
             }
         }
+        // 布局式梯段（`crate::stair_flight`）：斜梁、踏步、平台板一件挂在 STRFLT 自己的 refno 上；
+        // 详图式（`INSTOP` 以 DETAIL 开头，几何在 TREADS / STRSTR 成员上）与没东西可画的都是
+        // 「E3D 在 STRFLT 这一层同样不画」，落 `Skipped(NoShape)`。
+        Category::Composite(CompositeFamily::Structural) if noun == "STRFLT" => {
+            match crate::stair_flight::stair_flight_local_solid(el, &mut notes)? {
+                crate::stair_flight::StairFlightBuild::Solid(solid) => (solid, None),
+                crate::stair_flight::StairFlightBuild::Detailed(reason)
+                | crate::stair_flight::StairFlightBuild::NoGeometry(reason) => {
+                    return Ok(Modeled::Skipped {
+                        kind: SkipKind::NoShape,
+                        reason: if notes.is_empty() {
+                            reason
+                        } else {
+                            format!("{reason}; {}", notes.join("; "))
+                        },
+                    });
+                }
+            }
+        }
         // 折弯板：RPATH 中线 + `WTHICK` 厚 + `WIDT` 宽（`crate::bpanel`）。各段另记在
         // `section_members` 里：名下没有负体时 E3D 逐段写记录（见下面 `parts`）。
         Category::Composite(CompositeFamily::Structural) if noun == "BPANEL" => {

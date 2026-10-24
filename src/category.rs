@@ -581,11 +581,15 @@ pub fn is_model_unit(noun: &str) -> bool {
         // 扶手：布局式 HANDRA 的栏杆与立柱是一件挂在 HANDRA 自己 refno 上的实体
         // （`crate::handrail`，管线的 `Composite(Structural) if noun == "HANDRA"` 臂产出，
         // 增量上卷到它后走 `model_element` 的同名臂）。折弯板 `BPANEL` 同一族、同一种消费语义
-        // （吃自己的 RPATH 与开孔负体），几何在 `crate::bpanel`。同族的 HRPOST/STRFLT/RLADDR
-        // 还没有 builder，不是单元。
+        // （吃自己的 RPATH 与开孔负体），几何在 `crate::bpanel`。布局式梯段 `STRFLT`（`crate::stair_flight`）
+        // 同样：斜梁、踏步、平台板挂在 STRFLT 自己的 refno 上，名下的 HANDRA 仍是各自的单元（字典给它 gb==2，
+        // 说的是成员各自成件；它自己画不画由 INSTOP 定，aps250209 的 18 只 LAYOUT 梯段 E3D 都写了面片）。
+        // 同族的 HRPOST/RLADDR 还没有 builder，不是单元。
         Category::Composite(CompositeFamily::Structural) => {
             let noun = noun.trim();
-            noun.eq_ignore_ascii_case("HANDRA") || noun.eq_ignore_ascii_case("BPANEL")
+            noun.eq_ignore_ascii_case("HANDRA")
+                || noun.eq_ignore_ascii_case("BPANEL")
+                || noun.eq_ignore_ascii_case("STRFLT")
         }
 
         // 类 28：`NOZZ` / `ELCONN` 的实体是它 `CATR` 那只目录件的 GMRE 求值结果，键就是
@@ -1746,7 +1750,7 @@ mod tests {
         assert!(is_model_unit("FIXING"));
         assert!(builds_from_catalogue_component("FIXING"));
         // HANDRA（recheck-4 W4-1）：布局式扶手的栏杆与立柱挂在 HANDRA 自己的 refno 上；
-        // 同族的 STRFLT 还没有 builder，不能顺手一起认成单元。
+        // STRFLT（W7t）：布局式梯段的斜梁 / 踏步 / 平台板同样挂在自己的 refno 上；RLADDR 还没有 builder。
         assert_eq!(
             classify("HANDRA"),
             Category::Composite(CompositeFamily::Structural)
@@ -1759,7 +1763,12 @@ mod tests {
             assert!(builds_from_catalogue_component(noun), "{noun}");
             assert!(is_handrail_member(noun), "{noun}");
         }
-        for noun in ["STRFLT", "RLADDR"] {
+        assert_eq!(
+            classify("STRFLT"),
+            Category::Composite(CompositeFamily::Structural)
+        );
+        assert!(is_model_unit("STRFLT"));
+        for noun in ["RLADDR"] {
             assert_eq!(
                 classify(noun),
                 Category::Composite(CompositeFamily::Structural),
@@ -1960,6 +1969,9 @@ mod tests {
     /// 保证**：谁照着 `primitive` 位往 `classify` 里补一条 `Primitive(_)` 臂，就会让这些
     /// 容器静默出几何。这条测试就是那一刻会红的东西。
     ///
+    /// 唯一的例外是 `STRFLT`（2026-10-24，W7t）：E3D 的 RVM 导出给 LAYOUT 模式的梯段自己写了一条面片（aps250209 的
+    /// 18 只，斜梁 + 踏步 + 平台板），所以它既是层级容器（名下的 HANDRA 各自成件）也是单元（`crate::stair_flight`）。
+    ///
     /// 与 gb==3 相对照：`3` 在 core 里没有任何代码路径、与 `0` 等价，因此**不该**有
     /// 对应的护栏——为它加分派才是分歧。
     #[test]
@@ -1971,19 +1983,24 @@ mod tests {
             .collect();
         assert_eq!(containers.len(), 98, "E3D 3.1 字典里 gb==2 应当恰好 98 个");
         for noun in &containers {
-            assert!(
-                !is_model_unit(noun),
-                "{noun} 是 gb==2 层级容器，core 不单独画它"
-            );
+            // 唯一的例外是 STRFLT：E3D 的 RVM 导出给 LAYOUT 模式的梯段自己写了面片（aps250209 18 只，见下面），
+            // 我们对的是导出，不是显示路径的 gb 门。
+            if *noun != "STRFLT" {
+                assert!(
+                    !is_model_unit(noun),
+                    "{noun} 是 gb==2 层级容器，core 不单独画它"
+                );
+            }
             assert!(
                 !is_derived_unit(noun),
                 "{noun} 是 gb==2 层级容器，名下不派生几何"
             );
         }
-        // 字典 `primitive` 位与 core 的 gb==2 门冲突的那 10 个，逐个点名。
+        // 字典 `primitive` 位与 core 的 gb==2 门冲突的那 10 个，逐个点名。STRFLT 是例外：gb==2 说的是它名下的
+        // HANDRA 各自成件，它自己在 LAYOUT 模式下照样画（aps250209 的 18 只在 E3D 的 RVM 里各有一条面片），
+        // 所以它既是层级容器也是单元。
         for noun in [
-            "CSURF", "PLTGRD", "HRPANE", "STRLNG", "CPANEL", "INTFRM", "HICPAN", "ENVLOP",
-            "HTFEAT", "STRFLT",
+            "CSURF", "PLTGRD", "HRPANE", "STRLNG", "CPANEL", "INTFRM", "HICPAN", "ENVLOP", "HTFEAT",
         ] {
             assert_eq!(graphics_behaviour(noun), Some(2), "{noun}");
             assert!(
@@ -1991,6 +2008,8 @@ mod tests {
                 "{noun} 带字典 primitive 位，但 core 不画它"
             );
         }
+        assert_eq!(graphics_behaviour("STRFLT"), Some(2));
+        assert!(is_model_unit("STRFLT"), "布局式梯段自己有面片");
         // 锚点：普通容器与几个熟脸。
         for noun in ["WORL", "SITE", "ZONE", "ROOM"] {
             assert_eq!(graphics_behaviour(noun), Some(2), "{noun}");
