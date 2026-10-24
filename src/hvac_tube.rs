@@ -31,15 +31,24 @@
 //! | 滚转 | 无（圆） | 单轴 `ORI Y IS <离开方向>` 在构件局部系里算出的 Z 折到世界系（[`leave_frame_z_axis`]） |
 //! | 回落 | 到达侧通径 | **没有**——任一格解不出就是 [`crate::route::TubeOutcome::NoRadius`] |
 //!
-//! # 头槽位：E3D 自己在这个库上一根都画不出来
+//! # 头槽位：H 族读宿主 BRAN 上的 UDA，只认目录写下的那把键
 //!
 //! 容器头读 `HSTU`，风管的 `HSTU` 指向 **H 族**（`/CADCHVACSPEC/HRTUBEA|B` → `/HRTUBE1|2-BOXI`，
 //! `HCTUBE` → `/HCTUBE-TUBE`），表达式是 `( :HXYsize[1|2] )`——BRAN 上的一个 UDA，不是
-//! `OF PREV`。ams7997 上 7 条头槽位有缝的支管 E3D 全部报 `Catalogue error … unable to evaluate
-//! catalogue expression for attribute PXLE`、一根没画（`e3d-hvac-all-121918/h1_export_hvac.log`）。
-//! 这里的求值环境**不挂设计元素**（TUBI 没有自己的设计件，`PREV` 才是那个构件），UDA 自然
-//! 答不上，头槽位一律 [`crate::route::TubeOutcome::NoRadius`]——与 E3D 在这个库上的表现一致。
-//! 若将来某个库上 E3D 画得出 H 族头管，要补的是 `:HXYsize` 那一格，不是这条路。
+//! `OF PREV`。目录写下的是键 `0x17EF4B61`（`acp7006` 那本字典里 `/UDA/HVAC/HXYsize` 的 `OLDKEY`），
+//! 这里按这把键在宿主 BRAN 上精确取（`PreviousElementEnv::uda_host`），不走 [`DbElementParamEnv`]
+//! 的同名回退，两座库的表现都对得上：
+//!
+//! - ams7997 的 BRAN 把 `HXYsize` 存在本项目 `ams5100` 那本的键 `0x2652AB52` 下，按目录的键取不到
+//!   正数，头槽位判 [`crate::route::TubeOutcome::NoRadius`]。E3D 在这里 7 条头槽位有缝的支管全部报
+//!   `Catalogue error … unable to evaluate catalogue expression for attribute PXLE`、一根没画
+//!   （`e3d-hvac-all-121918/h1_export_hvac.log`）；同名回退会把它们画出来。
+//! - aps250142 `/RETURN_LEVEL02-002/01` 的 BRAN 把它存在这把键下，E3D 照画头管（Cylinder r 225、
+//!   2374.5 mm），这里也取得到。
+//!
+//! 矩形的 H 族头槽位断面读得出，滚转却没有样本（见 [`leave_frame_z_axis`]），仍判解不出。
+//! 取值要池里挂着 UDA 字典（`DbSet::with_uda_catalog`）：gen-model 生产侧挂着，`gen_ams` 按扫到的
+//! DICT 库挂（[`crate::db_discovery::DirectoryDbResolver::uda_catalog`]）。
 //!
 //! 取证：`_runs/ams-init-1112-7997-20260917-mc/ledger-seg15-frameall.md` §10–§13，
 //! 全库 216 条风管 BRAN 对 E3D：16 段真实直段逐根重合、0 段多画（§13）。
@@ -50,6 +59,7 @@ use e3d_io::db_element::{DbElement, DbElementError};
 use e3d_io::db_param_env::DbElementParamEnv;
 use e3d_io::record::catalogue_eval::{AttribRef, ParamArray, ParamEnv};
 use e3d_io::record::catalogue_pml::PREVIOUS_ELEMENT_NAME;
+use e3d_io::record::descriptor::DescriptorValue;
 
 use crate::catalogue::{display_filtered, repre_level_of};
 use crate::catalogue_point::{
@@ -104,6 +114,12 @@ pub fn duct_departure_section(from: &RouteEnd) -> Result<Option<DuctSection>, Db
     let env = PreviousElementEnv {
         inner: DbElementParamEnv::catalogue_only(component.clone()).without_insulation(),
         departure: departure.clone(),
+        uda_host: match from {
+            RouteEnd::ContainerHead(container) | RouteEnd::ContainerTail(container) => {
+                Some(container.clone())
+            }
+            RouteEnd::MemberLeave { .. } | RouteEnd::MemberArrive { .. } => None,
+        },
     };
     let noun = primitive.element_type()?;
     let section = match noun.as_str() {
@@ -211,8 +227,13 @@ fn evaluated(primitive: &DbElement, name: &str, env: &dyn ParamEnv) -> Option<f6
 /// 读不到 P 点、离开方向解不出、构件世界矩阵退化都是 `None`：滚转不能猜，见
 /// [`crate::route::build_tube`]。
 fn leave_frame_z_axis(member: &DbElement) -> Result<Option<DVec3>, DbElementError> {
-    let Some(number) = ppoint_number(member, "LEAV")? else {
-        return Ok(None);
+    let number = match ppoint_number(member, "LEAV") {
+        Ok(Some(number)) => number,
+        Ok(None) => return Ok(None),
+        // 容器（BRAN）模板里没有 `LEAV`：H 族矩形头槽位（`/HRTUBE1|2-BOXI`）的断面读得出，
+        // 滚转却没有样本——语料里 E3D 画出来的 H 族头管只有圆的那一根——不猜，按解不出记账。
+        Err(DbElementError::UnknownAttribute { .. }) => return Ok(None),
+        Err(error) => return Err(error),
     };
     let Some(component) = design_component(member)? else {
         return Ok(None);
@@ -290,13 +311,15 @@ pub fn hvac_pseudo_attribute(
 }
 
 /// TUBI 目录件表达式的求值环境：`PARAM n` 等照常问目录件；`ATTRIB <名> OF PREV` 问
-/// **离开侧构件**的伪属性（[`hvac_pseudo_attribute`]）。
+/// **离开侧构件**的伪属性（[`hvac_pseudo_attribute`]）；按键问的 UDA 先问 `uda_host`。
 ///
-/// 不挂设计元素：隐式管身没有自己的设计件，`PREV` 才是那个构件。H 族的 `( :HXYsize[n] )`
-/// 因此答不上——那正是 E3D 在这个库上的表现（模块文档「头槽位」一节）。
+/// 不挂设计元素：隐式管身没有自己的设计件，`PREV` 才是那个构件。
 struct PreviousElementEnv {
     inner: DbElementParamEnv,
     departure: DbElement,
+    /// 容器头 / 尾槽位的宿主 BRAN。H 族目录的 `( :HXYsize[n] )` 按目录写下的键在它身上
+    /// **精确**取（模块文档「头槽位」一节）；构件离开侧的槽位没有它。
+    uda_host: Option<DbElement>,
 }
 
 impl ParamEnv for PreviousElementEnv {
@@ -331,14 +354,24 @@ impl ParamEnv for PreviousElementEnv {
         }
     }
 
-    /// 按字典键问的 UDA 交给内层。这里**没有** `PREV` 那一支：`( :HXYsize[2] )` 写下的是键，
-    /// 不带属主链（`ledger-seg15-frameall.md` §19.1），所以拦不着也不该拦；内层挂的是目录件，
-    /// 答的就是目录件自己的 UDA。
+    /// 按字典键问的 UDA。这里**没有** `PREV` 那一支：`( :HXYsize[2] )` 写下的是键，不带属主链
+    /// （`ledger-seg15-frameall.md` §19.1），所以拦不着也不该拦。
     ///
-    /// 不转发的话这里落回 [`ParamEnv::uda_number`] 的默认 `None`——**目录件身上真存着的 UDA
-    /// 也读不出来**，而且无声。本库看不出差别（H 族头槽位那条路的键属于 acp7006 那本字典、
-    /// 元素上没值，§19.2），换一座库就看得出，所以钉在这儿。
+    /// 容器头 / 尾槽位先在宿主 BRAN 上按这把键取（[`DbElement::uda_by_key`]）：字典认这把键就到此
+    /// 为止，有值取值、没值答不上，**不**走 [`DbElementParamEnv`] 的同名回退——ams7997 的值存在
+    /// 另一把键下，E3D 在那里求值失败（模块文档「头槽位」）。字典对 BRAN 不认这把键（没挂字典、
+    /// 键不在字典里、定义对 BRAN 无效）才交给内层的目录件。
+    ///
+    /// 内层那一支不能省：省了就落回 [`ParamEnv::uda_number`] 的默认 `None`，**目录件身上真存着
+    /// 的 UDA 也读不出来**，而且无声。
     fn uda_number(&self, key: u32, subscript: Option<f64>) -> Option<f64> {
+        if let Some(host) = &self.uda_host {
+            match host.uda_by_key(key) {
+                Ok(Some(value)) => return uda_value_number(&value, subscript),
+                Ok(None) => return None,
+                Err(_) => {}
+            }
+        }
         self.inner.uda_number(key, subscript)
     }
 
@@ -349,6 +382,27 @@ impl ParamEnv for PreviousElementEnv {
 
     fn direction_angle(&self, program: &[i32]) -> Option<f64> {
         self.inner.direction_angle(program)
+    }
+}
+
+/// 一个 UDA 值读成数，与 e3d-io `db_param_env` 里同名的那一份同口径：标量直接给（`[1]` 也算
+/// 是它自己），数组按 1 起的下标取；文本、逻辑、引用都不是数。
+fn uda_value_number(value: &DescriptorValue, subscript: Option<f64>) -> Option<f64> {
+    let index = match subscript {
+        None => None,
+        Some(subscript) if subscript.fract() == 0.0 && subscript >= 1.0 => {
+            Some(subscript as usize - 1)
+        }
+        Some(_) => return None,
+    };
+    match (value, index) {
+        (DescriptorValue::Real(real), None | Some(0)) => Some(*real),
+        (DescriptorValue::Int(int), None | Some(0)) => Some(f64::from(*int)),
+        (DescriptorValue::RealArray(items), Some(index)) => items.get(index).copied(),
+        (DescriptorValue::IntArray(items), Some(index)) => {
+            items.get(index).map(|item| f64::from(*item))
+        }
+        _ => None,
     }
 }
 
@@ -409,6 +463,7 @@ mod tests {
         let env = PreviousElementEnv {
             inner: DbElementParamEnv::new(None, None),
             departure,
+            uda_host: None,
         };
         let prev = ["PREV"];
         // 库没注册：伪属性读库出错 → 环境答不上（不是 0）。
@@ -520,6 +575,7 @@ mod tests {
         let env = PreviousElementEnv {
             inner,
             departure: bran,
+            uda_host: None,
         };
         assert_eq!(
             (
@@ -531,5 +587,111 @@ mod tests {
         );
         // 字典里没有的键仍然答不上（`uda_by_key` 在里面报 Err，不冒充 0）。
         assert_eq!(env.uda_number(0xDEAD_BEEF, Some(1.0)), None);
+    }
+
+    /// H 族头槽位按目录写下的键在宿主 BRAN 上精确取 `:HXYsize`（模块文档「头槽位」）。
+    ///
+    /// aps250142 `/RETURN_LEVEL02-002/01`：BRAN 在这把键下存着断面，E3D 照画头管（普查导出里
+    /// 那条 Cylinder：r 225、2374.5 mm）。ams7997 `/-CCV-S-2-L-1405` 的值存在 `ams5100` 那把键下：
+    /// 带同名回退的内层拿得到 675，按目录的键精确取拿不到正数——E3D 在那座库的头槽位上
+    /// 求值失败。字典由 [`DirectoryDbResolver::uda_catalog`] 读，与 `gen_ams` 同一份。
+    /// 缺语料默认红，同上一条。
+    ///
+    /// [`DirectoryDbResolver::uda_catalog`]: crate::db_discovery::DirectoryDbResolver::uda_catalog
+    #[test]
+    fn a_head_slot_reads_the_branch_uda_by_the_catalogue_key_only() {
+        use std::path::{Path, PathBuf};
+        use std::sync::Arc;
+
+        use e3d_attlib::AttlibData;
+        use e3d_io::db_element::{DbFilePin, DbSet, template_file_for};
+        use e3d_io::refno::RefNo;
+
+        use crate::db_discovery::DirectoryDbResolver;
+
+        const PROJECTS: &str = r"D:\AVEVA\Projects\E3D3.1";
+        const TEMPLATE_DIR: &str = r"E:\reverse\e3d\shadow_e3d31_aps_all";
+        /// aps250142 `/RETURN_LEVEL02-002/01`。
+        const RETURN_BRAN: RefNo = RefNo::new(2_013_286_686, 301);
+        /// ams7997 `/-CCV-S-2-L-1405`，E3D `Q :HXYsize` = `675 600`。
+        const AMS_BRAN: RefNo = RefNo::new(24_381, 59_287);
+        /// `/HCTUBE-TUBE`、`/HRTUBE1|2-BOXI` 写下的键：`acp7006` 的 `/UDA/HVAC/HXYsize` 的 `OLDKEY`。
+        const HXYSIZE_CATALOGUE_KEY: u32 = 0x17EF_4B61;
+
+        let template_dir = Path::new(TEMPLATE_DIR);
+        let attlib_file = template_dir.join("attlib.dat");
+        let aps = PathBuf::from(PROJECTS).join(r"AvevaPlantSample\aps000");
+        let ams = PathBuf::from(PROJECTS).join(r"AvevaMarineSample\ams000");
+        let acp = PathBuf::from(PROJECTS).join(r"AvevaCatalogue\acp000");
+        let missing = [
+            attlib_file.as_path(),
+            aps.as_path(),
+            ams.as_path(),
+            acp.as_path(),
+        ]
+        .into_iter()
+        .filter(|path| !path.exists())
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            assert!(
+                std::env::var_os("E3D_SKIP_REAL_GATES").is_some(),
+                "缺语料：{}；确属无语料环境请显式设 E3D_SKIP_REAL_GATES=1",
+                missing.join("、")
+            );
+            return;
+        }
+
+        let attlib = Arc::new(AttlibData::parse_file(&attlib_file).expect("attlib 解析得开"));
+        let open = |dirs: &[PathBuf], design: &str| -> Arc<DbSet> {
+            let resolver = DirectoryDbResolver::scan(dirs, template_dir).expect("项目目录扫得开");
+            let dictionaries = resolver.dbnos_of_type("DICT");
+            let (uda, unreadable) = resolver.uda_catalog(&dictionaries, template_dir, &attlib);
+            assert!(unreadable.is_empty(), "{unreadable:?}");
+            let set = Arc::new(
+                DbSet::with_resolver(Arc::clone(&attlib), Box::new(resolver))
+                    .with_uda_catalog(Arc::new(uda)),
+            );
+            set.add_db(DbFilePin {
+                file: dirs[0].join(design),
+                template: template_file_for(template_dir, "DESI").expect("DESI 模板"),
+                db_type: Some("DESI".to_string()),
+                sesno: None,
+            })
+            .expect("设计库开得了");
+            set
+        };
+
+        let set = open(&[aps.clone(), acp.clone()], "aps250142_0001");
+        let duct = duct_departure_section(&RouteEnd::ContainerHead(set.element(RETURN_BRAN)))
+            .expect("读库不出错")
+            .expect("H 族头管解得出");
+        assert_eq!(
+            duct.section,
+            TubeSection::Round {
+                outer_diameter: 450.0
+            },
+            "{}",
+            duct.source
+        );
+
+        let set = open(&[ams, acp], "ams7997_0001");
+        let bran = set.element(AMS_BRAN);
+        let inner = DbElementParamEnv::catalogue_only(bran.clone()).without_insulation();
+        assert_eq!(
+            inner.uda_number(HXYSIZE_CATALOGUE_KEY, Some(1.0)),
+            Some(675.0),
+            "同名回退拿得到本项目那把键下的值"
+        );
+        let env = PreviousElementEnv {
+            inner,
+            departure: bran.clone(),
+            uda_host: Some(bran),
+        };
+        assert!(
+            env.uda_number(HXYSIZE_CATALOGUE_KEY, Some(1.0))
+                .is_none_or(|value| value <= 0.0),
+            "头槽位只认目录的键，不走同名回退"
+        );
     }
 }

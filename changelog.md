@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-10-24 风管头槽位按目录写下的键在宿主 BRAN 上精确取 `:HXYsize`、`gen_ams` 挂 UDA 字典——aps250142 `/RETURN_LEVEL02-002/01` 的头管对上（并回 `w7j-uda`）
+
+- 分支 `w7j-uda`（2026-10-23，`5e1649e`、`e11d359`，基于 `b758b28`）并回 main，自动合并无冲突。
+- `gen_ams` 此前从不挂 UDA 字典，目录表达式里按键读 UDA 的那一类（风管 H 族头管的 `( :HXYsize[n] )`）在对拍里永远求不出值，而 gen-model 生产
+  一直挂着（`UdaCatalogProvider`）。新增 `DirectoryDbResolver::uda_catalog`（给定 DICT 库号逐本读 `UdaCatalog`、按给出的顺序合并，库号由调用方给），
+  `gen_ams` 用 UDET 那份 DICT 库号挂字典（APS 一套 5184 条定义）。
+- 容器头 / 尾槽位的求值环境只挂目录件 SCOM，挂了字典也问不到 BRAN 上的 UDA。`hvac_tube::PreviousElementEnv` 加 `uda_host`（容器头 / 尾 = 宿主 BRAN）：
+  按目录写下的键 `0x17EF4B61`（acp7006 `/UDA/HVAC/HXYsize` 的 `OLDKEY`）在 BRAN 上精确取（`DbElement::uda_by_key`），不走同名回退；字典不认这把键才交给
+  目录件。aps250142 的 BRAN 在这把键下存着 450，头管（Cylinder r 225、2374.5 mm）与 E3D 对上；ams7997 的 BRAN 把值存在 ams5100 那把键
+  `0x2652AB52` 下，精确取拿不到、仍 NoRadius——与 E3D 在那里求值失败一致（同名回退会画出 675 × 600）。矩形 H 族头槽位的断面现在读得出，但 BRAN
+  没有 `LEAV`、滚转没有样本：`leave_frame_z_axis` 对缺 `LEAV` 按解不出记账。读取集合不动（按键读的是 UDA）。
+- 真库门 `hvac_tube::a_head_slot_reads_the_branch_uda_by_the_catalogue_key_only`。分支上的回归门 `uda3` / `uda4`（对 `w7q`）：V1–V5、V7、V8
+  0 变化，V9 只有 aps250142 变（exact 519 → 520、off 2 → 1、种类不同 2 → 1）；并回后的门见计划 §9。
+
 ## 2026-10-24 地形格的 GENPRI（归档版本 4，缓存面片）照 E3D 写成面片——aps250212 6 只对上，只在 E3D 归零
 
 - aps250212 地形模型 `TRNMOD /TerrainA/DEF01/MOD01 → TRNCC 1 → TRNCEL 1..6` 每格一只 `GENPRI 1`，`ELDATA` 的归档版本是 4：

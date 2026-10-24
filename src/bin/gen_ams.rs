@@ -802,9 +802,29 @@ fn main() -> anyhow::Result<()> {
         }
         println!("{}", resolver.summary());
         let dict_dbnos = resolver.dbnos_of_type("DICT");
+        // UDA 字典与 gen-model 生产侧一样挂上：目录表达式里按键读 UDA 的那一类
+        // （风管 H 族头管的 `( :HXYsize[n] )`）不挂就求不出值，对拍量不到生产的行为。
+        let attlib =
+            std::sync::Arc::new(e3d_attlib::AttlibData::parse_file(&args.attlib).map_err(
+                |error| anyhow::anyhow!("parse attlib {}: {error}", args.attlib.display()),
+            )?);
+        let (uda, unreadable) = resolver.uda_catalog(&dict_dbnos, &template_dir, &attlib);
+        for (dbno, file, error) in &unreadable {
+            println!(
+                "DICT 库 {dbno}（{}）的 UDA 定义读不出：{error}",
+                file.display()
+            );
+        }
+        if !dict_dbnos.is_empty() {
+            println!(
+                "DICT 库 {dict_dbnos:?} 里读到 {} 条 UDA 定义",
+                uda.definition_count()
+            );
+        }
         (
             std::sync::Arc::new(
-                DbSet::with_attlib_file_and_resolver(&args.attlib, Box::new(resolver))?
+                DbSet::with_resolver(attlib, Box::new(resolver))
+                    .with_uda_catalog(std::sync::Arc::new(uda))
                     .with_element_cache(),
             ),
             dict_dbnos,
