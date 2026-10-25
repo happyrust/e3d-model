@@ -45,9 +45,12 @@ use e3d_io::db_param_env::DbElementParamEnv;
 use e3d_io::record::descriptor::DescriptorValue;
 
 use crate::catalogue::{display_filtered, optional_number, repre_level_of, required_number};
-use crate::discretise::{FilletVertex, flatten_ring};
+use crate::discretise::{FilletVertex, PROFILE_CHORD_TOL_MM, circle_segments_uncapped, flatten_ring};
 use crate::elmodl::ModelError;
-use crate::solid::{MANIFOLD_NUDGE_MM, cut_by_plane, cylinder_segments, extrude_rings, placed};
+use crate::solid::{
+    MANIFOLD_NUDGE_MM, MAX_SEGMENTS, cut_by_plane, cylinder_segments, extrude_rings, loft_rings,
+    placed,
+};
 
 /// 缺省对齐线：`JUSL` 未设时 E3D 用中性轴。
 pub const DEFAULT_JUSTIFICATION_LINE: &str = "NA";
@@ -122,6 +125,9 @@ pub struct SectionMember {
     pub member_refno: String,
     /// `rings[0]` 外边界，其余是孔（整圈 SANN 的内圆）。顶点带倒圆半径，尚未折线化。
     pub rings: Vec<Vec<FilletVertex>>,
+    /// 变截面：成员在 `POSE` 端的环（与 `rings` 逐环同顶点数，由 SANN 的 `DRAD` / `DWID` / `DX` / `DY` 求得，
+    /// 见 [`sann_rings`]）；`None` = 等截面。直段 SCTN 按两端放样（[`crate::solid::loft_rings`]），沿 SPINE 的扫掠不支持。
+    pub taper: Option<Vec<Vec<FilletVertex>>>,
 }
 
 /// 求好的二维截面：环在截面自己的平面里（x 右、y 上），单位 mm。
@@ -273,10 +279,11 @@ pub fn evaluate_section_profile(
             _ => unreachable!("上面只放行这三种 noun"),
         };
         match built {
-            Ok(Some((source, rings))) => members.push(SectionMember {
+            Ok(Some((source, rings, taper))) => members.push(SectionMember {
                 source,
                 member_refno: member.refno().to_string(),
                 rings,
+                taper,
             }),
             Ok(None) => notes.push(format!(
                 "{} {noun} 没有顶点（CLFL 占位），不出形状",
@@ -506,7 +513,12 @@ pub fn plax_rotation(plax_angle: f64) -> f64 {
     plax_angle - FRAC_PI_2
 }
 
-type MemberRings = Option<(SectionSource, Vec<Vec<FilletVertex>>)>;
+/// 一个成员的出身、`POSS` 端的环、变截面时 `POSE` 端的环。
+type MemberRings = Option<(
+    SectionSource,
+    Vec<Vec<FilletVertex>>,
+    Option<Vec<Vec<FilletVertex>>>,
+)>;
 
 fn vertex(frame: &MemberFrame, x: f64, y: f64, frad: f64) -> FilletVertex {
     let [px, py] = frame.apply(x, y);
@@ -548,6 +560,7 @@ fn spro_rings(
             vertices: ring.len(),
         },
         vec![ring],
+        None,
     )))
 }
 
@@ -571,7 +584,7 @@ fn srec_rings(
         .into_iter()
         .map(|(x, y)| vertex(frame, x, y, 0.0))
         .collect();
-    Ok(Some((SectionSource::Srec, vec![ring])))
+    Ok(Some((SectionSource::Srec, vec![ring], None)))
 }
 
 /// SANN：外半径 `PRAD`、壁厚 `PWID`、扫角 `PANG`。
@@ -607,10 +620,118 @@ fn sann_rings(
         None
     };
     let sweep = optional_number(sann, "PANG", env).unwrap_or(0.0);
+    // 变截面（SPRF `GTYP VTUB` 那族，aps7200 `/OD-CONE`）：`DRAD` / `DWID` 是半径 / 壁厚从 POSS 到 POSE 的增量，
+    // `DX` / `DY` 是圆心在截面平面里的位移（与 `PX` / `PY` 同一个平面）。E3D 在两端各求一张截面放样，弧按
+    // 10 mm 口径、按**起点**半径定段数（`/TAPER-SCTN1` 外径 1000 → 500、壁 200：外弧 24 段、内弧 20 段，半圈各 12 / 10 步）；
+    // 等截面的 SANN 照旧走 0.5 mm 曲面口径的 [`annulus_rings`]。
+    let delta_radius = optional_number(sann, "DRAD", env).unwrap_or(0.0);
+    let delta_width = optional_number(sann, "DWID", env).unwrap_or(0.0);
+    let delta_x = optional_number(sann, "DX", env).unwrap_or(0.0);
+    let delta_y = optional_number(sann, "DY", env).unwrap_or(0.0);
+    let tapered = [delta_radius, delta_width, delta_x, delta_y]
+        .iter()
+        .any(|delta| delta.abs() > 1e-9);
+    if !tapered {
+        return Ok(Some((
+            SectionSource::Sann,
+            annulus_rings(frame, radius, inner, sweep),
+            None,
+        )));
+    }
+    let end_radius = radius + delta_radius;
+    if !(end_radius > 0.0) {
+        return Err(SectionError::Degenerate {
+            refno: sann.refno().to_string(),
+            noun: "SANN".to_string(),
+            detail: format!("PRAD + DRAD = {end_radius}"),
+        });
+    }
+    let end_width = width + delta_width;
+    let end_inner = (inner.is_some() && end_width > 0.0 && end_width < end_radius)
+        .then(|| end_radius - end_width);
+    let (inner, end_inner) = match (inner, end_inner) {
+        (Some(start), Some(end)) => (Some(start), Some(end)),
+        (None, None) => (None, None),
+        _ => {
+            notes.push(format!(
+                "SANN {} 变截面两端一端有壁厚一端没有（PWID={width}、DWID={delta_width}），按实心圆放样",
+                sann.refno()
+            ));
+            (None, None)
+        }
+    };
+    let outer_segments = profile_arc_segments(radius);
+    let inner_segments = inner.map_or(outer_segments, profile_arc_segments);
+    let end_frame = MemberFrame {
+        offset: [frame.offset[0] + delta_x, frame.offset[1] + delta_y],
+        rotation: frame.rotation,
+    };
     Ok(Some((
         SectionSource::Sann,
-        annulus_rings(frame, radius, inner, sweep),
+        tapered_annulus_rings(frame, radius, inner, sweep, outer_segments, inner_segments),
+        Some(tapered_annulus_rings(
+            &end_frame,
+            end_radius,
+            end_inner,
+            sweep,
+            outer_segments,
+            inner_segments,
+        )),
     )))
+}
+
+/// 变截面 SANN 的弧段数：10 mm 轮廓口径的整圈段数（E3D 放样的面片格，见 [`sann_rings`]）。
+fn profile_arc_segments(radius: f64) -> i32 {
+    circle_segments_uncapped(radius, PROFILE_CHORD_TOL_MM)
+        .min(MAX_SEGMENTS)
+        .max(3)
+}
+
+/// 变截面 SANN 的环：与 [`annulus_rings`] 同一形状，但外弧 / 内弧各按给定的整圈段数铺点（两端用同一组段数，
+/// 放样才能逐点对应）。
+pub fn tapered_annulus_rings(
+    frame: &MemberFrame,
+    radius: f64,
+    inner: Option<f64>,
+    sweep_deg: f64,
+    outer_full_segments: i32,
+    inner_full_segments: i32,
+) -> Vec<Vec<FilletVertex>> {
+    let full_circle =
+        sweep_deg == 0.0 || (sweep_deg.abs() - 360.0).abs() <= 1e-6 || sweep_deg.abs() > 360.0;
+    let circle = |r: f64, n: i32| -> Vec<FilletVertex> {
+        (0..n)
+            .map(|i| {
+                let theta = std::f64::consts::TAU * f64::from(i) / f64::from(n);
+                let (sin, cos) = theta.sin_cos();
+                vertex(frame, r * cos, r * sin, 0.0)
+            })
+            .collect()
+    };
+    if full_circle {
+        let mut rings = vec![circle(radius, outer_full_segments)];
+        if let Some(inner) = inner {
+            rings.push(circle(inner, inner_full_segments));
+        }
+        return rings;
+    }
+    let steps = |full: i32| ((f64::from(full) * sweep_deg.abs() / 360.0).ceil() as i32).max(1);
+    let arc = |r: f64, from_deg: f64, to_deg: f64, n: i32| {
+        (0..=n)
+            .map(|i| {
+                let t = f64::from(i) / f64::from(n);
+                let theta = (from_deg + (to_deg - from_deg) * t).to_radians();
+                let (sin, cos) = theta.sin_cos();
+                vertex(frame, r * cos, r * sin, 0.0)
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut ring = arc(radius, 0.0, sweep_deg, steps(outer_full_segments));
+    match inner {
+        Some(inner) => ring.extend(arc(inner, sweep_deg, 0.0, steps(inner_full_segments))),
+        None => ring.push(vertex(frame, 0.0, 0.0, 0.0)),
+    }
+    vec![ring]
 }
 
 /// SANN 的环几何（纯函数，便于单测）：见 [`sann_rings`]。
@@ -1700,10 +1821,15 @@ fn circumcentre(a: DVec3, b: DVec3, c: DVec3) -> DVec3 {
 
 /// 截面点在 JUSL 对齐 + `LMIRR` 镜像之后的环组，按 GMSS 成员分开（每个成员一组环，
 /// `rings[0]` 外环）。折不出外环的成员整组跳过并记 note；孔环折不出只丢那一个。
-fn placed_profile_rings(
-    profile: &SectionProfile,
-    notes: &mut Vec<String>,
-) -> Vec<(String, SectionSource, Vec<Vec<[f64; 2]>>)> {
+/// 折线化 + 对齐 + 镜像之后的成员环：（成员 refno、出身、`POSS` 端的环、变截面时 `POSE` 端的环）。
+type PlacedMember = (
+    String,
+    SectionSource,
+    Vec<Vec<[f64; 2]>>,
+    Option<Vec<Vec<[f64; 2]>>>,
+);
+
+fn placed_profile_rings(profile: &SectionProfile, notes: &mut Vec<String>) -> Vec<PlacedMember> {
     let [jx, jy] = profile.justification;
     // `LMIRR`：整张截面连同 p-line 一起沿 x 镜像，所以镜的是**对齐之后**的点。
     // 取负会把环的绕向也翻过来，`extrude_rings` 认绕向，所以顺序一并倒过来。
@@ -1740,9 +1866,27 @@ fn placed_profile_rings(
                 )),
             }
         }
-        if !rings.is_empty() {
-            out.push((member.member_refno.clone(), member.source, rings));
+        if rings.is_empty() {
+            continue;
         }
+        // 变截面的另一端照同一套对齐 / 镜像；顶点没有倒圆，折线化不改点数，两端仍逐点对应。
+        let taper = member.taper.as_ref().and_then(|end_rings| {
+            let placed: Vec<Vec<[f64; 2]>> = end_rings
+                .iter()
+                .filter_map(|ring| flatten_ring(ring).map(|(points, _)| place(points)))
+                .collect();
+            let same_topology = placed.len() == rings.len()
+                && placed.iter().zip(&rings).all(|(a, b)| a.len() == b.len());
+            if !same_topology {
+                notes.push(format!(
+                    "截面成员 {} 变截面两端折线化后拓扑不同，按等截面画",
+                    member.member_refno
+                ));
+                return None;
+            }
+            Some(placed)
+        });
+        out.push((member.member_refno.clone(), member.source, rings, taper));
     }
     out
 }
@@ -1772,6 +1916,11 @@ pub fn spine_swept_solid(
     let members = placed_profile_rings(profile, notes);
     if members.is_empty() || path.segments.is_empty() {
         return Ok(None);
+    }
+    if members.iter().any(|(_, _, _, taper)| taper.is_some()) {
+        notes.push(
+            "变截面成员沿 SPINE 扫掠按起点截面等截面处理（E3D 的变截面只在直段 SCTN 上有样本）".to_string(),
+        );
     }
     let spin = bang_deg.to_radians() + profile.neutral_axis_spin;
 
@@ -1818,7 +1967,7 @@ pub fn spine_swept_solid(
         match segment {
             SpineSegment::Straight { .. } => {
                 let length = segment.length();
-                for (member, _, rings) in &members {
+                for (member, _, rings, _) in &members {
                     match extrude_rings(rings.clone(), length) {
                         Ok(solid) => pieces.push(placed(&solid, frame)),
                         Err(error) => notes.push(format!(
@@ -1876,7 +2025,7 @@ pub fn spine_swept_solid(
                     glam::DVec4::Z,
                     centre_2d.truncate().extend(0.0).extend(1.0),
                 );
-                for (member, _, rings) in &members {
+                for (member, _, rings, _) in &members {
                     let crosses_axis = rings.iter().flatten().any(|&[x, y]| {
                         (glam::DVec2::new(x, y) - centre_2d.truncate()).dot(outward) <= 0.0
                     });
@@ -1959,7 +2108,7 @@ pub fn spine_swept_solid(
         // 体所在一侧在端标架 Z 上的符号：起点端体在 +Z（沿行进方向挤出），终点端在 −Z。
         let body_dir = if is_start { 1.0 } else { -1.0 };
         let mut extended = 0.0f64;
-        for (member, _, rings) in &members {
+        for (member, _, rings, _) in &members {
             extended = extended.max(mitre_extension_length(rings, frame, &plane, body_dir));
             match mitre_extension_solid(rings, frame, &plane, body_dir) {
                 Ok(Some(extension)) => body = body.union(&extension),
@@ -2130,6 +2279,9 @@ pub struct SectionSolid {
     /// DRWEXT 的面片——**看的是目录名词，不是截面长相**：`/CS001` 的截面同样是个矩形，
     /// 只因为它写成 `SPRO` + 4 个 `SPVE`，E3D 出的就是一条 `FacetGroup`。
     pub member_sources: Vec<SectionSource>,
+    /// 有成员是变截面（两端放样）。E3D 把变截面型材整只写一条面片（aps7200 `/TAPER-SCTN1` 的两个 SANN 半环在
+    /// 同一条里），不像等截面那样逐成员写。
+    pub tapered: bool,
 }
 
 /// 直段实体（局部系 = [`SectionPlacement::local`] 的截面平面，沿 +Z 挤出）：
@@ -2153,7 +2305,8 @@ pub fn section_local_solid(
 ) -> Result<Option<SectionSolid>, SectionError> {
     let mut members: Vec<Manifold> = Vec::new();
     let mut member_sources: Vec<SectionSource> = Vec::new();
-    for (member_refno, source, rings) in placed_profile_rings(profile, notes) {
+    let mut tapered = false;
+    for (member_refno, source, rings, taper) in placed_profile_rings(profile, notes) {
         let (z_min, z_max) = cuts.extrusion_range(&rings, placement.length);
         if z_min < 0.0 || z_max > placement.length {
             notes.push(format!(
@@ -2161,8 +2314,30 @@ pub fn section_local_solid(
                 placement.length
             ));
         }
-        let mut solid = match extrude_rings(rings, z_max - z_min) {
-            Ok(solid) => solid.translate(0.0, 0.0, z_min),
+        let built = match &taper {
+            // 变截面：截面沿长度线性变，挤出区间被斜切拉出 [0, L] 时照直线外推，再在两端之间放样。
+            Some(end_rings) => {
+                tapered = true;
+                let section_at = |z: f64| -> Vec<Vec<[f64; 2]>> {
+                    let t = z / placement.length;
+                    rings
+                        .iter()
+                        .zip(end_rings)
+                        .map(|(start, end)| {
+                            start
+                                .iter()
+                                .zip(end)
+                                .map(|(p, q)| [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t])
+                                .collect()
+                        })
+                        .collect()
+                };
+                loft_rings(section_at(z_min), section_at(z_max), z_min, z_max)
+            }
+            None => extrude_rings(rings, z_max - z_min).map(|solid| solid.translate(0.0, 0.0, z_min)),
+        };
+        let mut solid = match built {
+            Ok(solid) => solid,
             Err(error) => {
                 notes.push(format!("截面成员 {member_refno} 挤出失败：{error}"));
                 continue;
@@ -2194,6 +2369,7 @@ pub fn section_local_solid(
         body,
         members,
         member_sources,
+        tapered,
     }))
 }
 
@@ -2485,6 +2661,7 @@ mod tests {
             members: vec![SectionMember {
                 source: SectionSource::Srec,
                 member_refno: "test/srec".to_string(),
+            taper: None,
                 rings: vec![vec![
                     FilletVertex {
                         x: -10.0,
@@ -2559,6 +2736,7 @@ mod tests {
             members: vec![SectionMember {
                 source: SectionSource::Srec,
                 member_refno: "test/flat".to_string(),
+            taper: None,
                 rings: vec![vec![
                     FilletVertex {
                         x: 0.0,
@@ -2640,6 +2818,7 @@ mod tests {
             source: SectionSource::Sann,
             member_refno: refno.to_string(),
             rings: annulus_rings(frame, 500.0, Some(450.0), 180.0),
+            taper: None,
         };
         let profile = SectionProfile {
             members: vec![half("test/sann-up", &upper), half("test/sann-down", &lower)],
@@ -2693,6 +2872,82 @@ mod tests {
         );
     }
 
+    /// 变截面管（aps7200 `/OD-CONE`：两个 `PANG=180` 的 SANN，`PRAD 1000 / PWID 200`，`DRAD −500`）：成员带 `taper`
+    /// 时两端放样。弧按 10 mm 口径、起点半径定段（外 24 / 内 20 段，半圈 12 / 10 步，与 E3D 面片同），体积是外内两只
+    /// 多边形扇面棱台之差；两半焦成一只、`tapered` 置位（E3D 整只写一条）。
+    #[test]
+    fn a_tapered_tube_lofts_both_half_annuli_between_its_two_end_sections() {
+        let upper = MemberFrame {
+            offset: [0.0, 0.0],
+            rotation: 0.0,
+        };
+        let lower = MemberFrame {
+            offset: [0.0, 0.0],
+            rotation: plax_rotation(plax_angle(&[2, 2]).unwrap()),
+        };
+        let (outer, inner) = (profile_arc_segments(1000.0), profile_arc_segments(800.0));
+        assert_eq!((outer, inner), (24, 20));
+        let half = |refno: &str, frame: &MemberFrame| SectionMember {
+            source: SectionSource::Sann,
+            member_refno: refno.to_string(),
+            rings: tapered_annulus_rings(frame, 1000.0, Some(800.0), 180.0, outer, inner),
+            taper: Some(tapered_annulus_rings(frame, 500.0, Some(300.0), 180.0, outer, inner)),
+        };
+        let start = half("test/up", &upper);
+        assert_eq!(start.rings[0].len(), 13 + 11, "外弧 12 步 + 内弧 10 步");
+        assert_eq!(start.taper.as_ref().unwrap()[0].len(), start.rings[0].len());
+        let profile = SectionProfile {
+            members: vec![start, half("test/down", &lower)],
+            justification: [0.0, 0.0],
+            justification_line: DEFAULT_JUSTIFICATION_LINE.to_string(),
+            justification_found: true,
+            neutral_axis_spin: 0.0,
+            level: 0,
+            mirrored: false,
+            notes: Vec::new(),
+        };
+        let placement = SectionPlacement {
+            local: DMat4::IDENTITY,
+            length: 2000.0,
+            bang_deg: 0.0,
+        };
+        let cuts = SectionCuts {
+            start: SectionCutPlane {
+                point: DVec3::ZERO,
+                normal: DVec3::Z,
+            },
+            end: SectionCutPlane {
+                point: DVec3::new(0.0, 0.0, 2000.0),
+                normal: DVec3::NEG_Z,
+            },
+        };
+        let mut notes = Vec::new();
+        let built = section_local_solid(&profile, &placement, &cuts, &mut notes)
+            .expect("变截面管应当建得出来")
+            .expect("平头管不会被端切切空");
+        assert!(built.tapered, "{notes:?}");
+        assert_eq!(built.members.len(), 2);
+        // 多边形扇面的棱台：A(r) = (n/2)·r²·sin(2π/n)，V = L/3·(A₁ + √(A₁A₂) + A₂)；半圈取一半。
+        let sector = |r: f64, n: i32| 0.5 * f64::from(n) * r * r * (std::f64::consts::TAU / f64::from(n)).sin() * 0.5;
+        let frustum = |a1: f64, a2: f64| 2000.0 / 3.0 * (a1 + (a1 * a2).sqrt() + a2);
+        let want_half = frustum(sector(1000.0, outer), sector(500.0, outer))
+            - frustum(sector(800.0, inner), sector(300.0, inner));
+        for piece in &built.members {
+            assert!(
+                (piece.volume() - want_half).abs() < 1e-6 * want_half,
+                "{} vs {want_half}",
+                piece.volume()
+            );
+            let bb = piece.bounding_box().unwrap();
+            assert!((bb.max()[2] - 2000.0).abs() < 1e-9 && bb.min()[2].abs() < 1e-9);
+        }
+        assert_eq!(built.body.decompose().len(), 1, "两半焦成一只");
+        assert!((built.body.volume() - 2.0 * want_half).abs() < 1e-6 * want_half);
+        // 小端在 z = 2000：那里的外半径是 500。
+        let bb = built.body.bounding_box().unwrap();
+        assert!((bb.max()[0] - 1000.0).abs() < 1e-9 && (bb.min()[0] + 1000.0).abs() < 1e-9);
+    }
+
     /// 出身要与那几块**逐块对齐**，混在一起就写错记录种类。
     ///
     /// `/CS036` 空心矩形的四张壁板是 `SREC`（E3D 走 DRPYR），`/CS035` 管型材的两个半环是
@@ -2707,6 +2962,7 @@ mod tests {
         let plate = SectionMember {
             source: SectionSource::Srec,
             member_refno: "test/srec".to_string(),
+            taper: None,
             rings: vec![vec![
                 vertex(&frame, -500.0, 900.0, 0.0),
                 vertex(&frame, 500.0, 900.0, 0.0),
@@ -2718,6 +2974,7 @@ mod tests {
             source: SectionSource::Sann,
             member_refno: "test/sann".to_string(),
             rings: annulus_rings(&frame, 500.0, Some(450.0), 360.0),
+            taper: None,
         };
         let profile = SectionProfile {
             members: vec![plate, ring],
@@ -2963,6 +3220,7 @@ mod tests {
             members: vec![SectionMember {
                 source: SectionSource::Spro { vertices: 48 },
                 member_refno: "test/bar".to_string(),
+            taper: None,
                 rings: vec![ring],
             }],
             justification: [0.0, 0.0],
@@ -3008,6 +3266,7 @@ mod tests {
             members: vec![SectionMember {
                 source: SectionSource::Spro { vertices: 4 },
                 member_refno: "test/square".to_string(),
+            taper: None,
                 rings: vec![
                     [[-50.0, -50.0], [50.0, -50.0], [50.0, 50.0], [-50.0, 50.0]]
                         .map(|[x, y]| FilletVertex { x, y, frad: 0.0 })

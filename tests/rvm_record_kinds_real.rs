@@ -1210,6 +1210,42 @@ fn a_polyhedron_writes_one_facet_group_per_body_like_e3d() {
     std::fs::remove_dir_all(&scratch).ok();
 }
 
+/// 变截面型材：aps7200 `/TAPER-SCTN1`（`23584/7040`，SPRF `/OD-CONE` 的两个 `PANG=180` SANN，`PRAD 1000 / PWID 200`、
+/// `DRAD = −500`）。E3D 在两端各求一张截面放样（外径 1000 → 500）、整只写一条面片，面片体积 1.625157e9 mm³
+/// （`aps7200_lv6_23584_6799.rvm`，两个半壳合起来按散度定理算）；此前我们不读 `DRAD`，按等截面画成 2.26e9 的直管、两条记录，
+/// 包围盒恰好相同（[1000, −1000, −1500] .. [3000, 1000, 500]）所以对拍一直是 exact。
+#[test]
+fn a_tapered_section_lofts_between_its_end_sections_in_one_facet_group() {
+    if !fixtures_present_in(APS_DIR, APS_COPY_ONLY_DB) {
+        return;
+    }
+    let scratch: PathBuf = std::env::temp_dir().join(format!(
+        "e3d-model-rvm-taper-sctn-aps-{}",
+        std::process::id()
+    ));
+    let (rvm, elements) = generate_in(APS_DIR, APS_COPY_ONLY_DB, "23584/7040", "on", &scratch);
+    assert_world_aabb(
+        &elements,
+        "23584/7040",
+        [1000.0, -1000.0, -1500.0, 3000.0, 1000.0, 500.0],
+        0.05,
+    );
+    let element = elements
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|element| element["refno"] == "23584/7040")
+        .unwrap();
+    let volume = element["volume_mm3"].as_f64().unwrap();
+    assert!(
+        (volume - 1.625157e9).abs() <= 0.001e9,
+        "体积 {volume:.6e}，E3D 面片 1.625157e9（等截面直管是 2.26e9）"
+    );
+    assert_eq!(element["components"].as_array().unwrap().len(), 1, "两半焦成一只");
+    assert_eq!(record_kinds(&rvm, "/TAPER-SCTN1"), ["FacetGroup"]);
+    std::fs::remove_dir_all(&scratch).ok();
+}
+
 /// aps250212 地形模型 `TRNMOD /TerrainA/DEF01/MOD01 → TRNCC 1 → TRNCEL 1..6`，每格一只 `GENPRI 1`，归档版本 4（缓存面片，
 /// 不是 B-rep）：此前解码器只认版本 2，6 只全挂 `failed`（aps250212 只在 E3D 6）。它们是带边界环的高程面、不成体，照 E3D
 /// 只写 RVM：每只一条 `FacetGroup`，多边形数、环数与世界盒对 E3D TTY 导出 `aps250212_lv6_2013286756_1588.rvm`（格 6：103 个

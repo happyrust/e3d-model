@@ -117,6 +117,118 @@ pub fn extrude_rings_inflated(
     extrude_rings_grown(rings, height, grow, false)
 }
 
+/// 变截面型材的放样：同一张截面在两端各求一次（`bottom` 在 z = `z_bottom`、`top` 在 z = `z_top`），逐环逐顶点直线相连：
+/// 侧面是四边形条带，两端按环（外环 + 孔）三角化封口。两组环的环数与各环顶点数必须一致。
+///
+/// 对标 E3D 变截面 SCTN（SPRF `/OD-CONE`，`GTYP VTUB`：SANN 的 `DRAD` / `DWID` / `DX` / `DY`）的面片：aps7200
+/// `/TAPER-SCTN1` 外径 1000 → 500、壁 200，两端各一张截面、弧上逐点相连的四边形（`aps7200_lv6_23584_6799.rvm`）。
+/// 绕向与 [`extrude_rings`] 同一约定（外环逆时针、孔顺时针），进来的绕向不对就把两端一起翻过来。
+pub fn loft_rings(
+    mut bottom: Vec<Vec<[f64; 2]>>,
+    mut top: Vec<Vec<[f64; 2]>>,
+    z_bottom: f64,
+    z_top: f64,
+) -> Result<Manifold, SolidError> {
+    const WHAT: &str = "tapered section";
+    let height = z_top - z_bottom;
+    if !(height > f64::EPSILON) {
+        return Err(SolidError::BadHeight { what: WHAT, height });
+    }
+    let same_topology = !bottom.is_empty()
+        && bottom.len() == top.len()
+        && bottom
+            .iter()
+            .zip(&top)
+            .all(|(b, t)| b.len() == t.len() && b.len() >= 3);
+    if !same_topology {
+        return Err(SolidError::Degenerate {
+            what: WHAT,
+            detail: format!(
+                "两端截面拓扑不同：{:?} / {:?} 个顶点",
+                bottom.iter().map(Vec::len).collect::<Vec<_>>(),
+                top.iter().map(Vec::len).collect::<Vec<_>>()
+            ),
+        });
+    }
+    for (index, (b, t)) in bottom.iter_mut().zip(top.iter_mut()).enumerate() {
+        let area = signed_area(b);
+        if (index == 0 && area < 0.0) || (index > 0 && area > 0.0) {
+            b.reverse();
+            t.reverse();
+        }
+    }
+    // 顶点：逐环先底圈再顶圈。
+    let mut vertices: Vec<f64> = Vec::new();
+    let mut ring_base: Vec<usize> = Vec::with_capacity(bottom.len());
+    for (b, t) in bottom.iter().zip(&top) {
+        ring_base.push(vertices.len() / 3);
+        for p in b {
+            vertices.extend_from_slice(&[p[0], p[1], z_bottom]);
+        }
+        for p in t {
+            vertices.extend_from_slice(&[p[0], p[1], z_top]);
+        }
+    }
+    let mut triangles: Vec<u64> = Vec::new();
+    // 侧面：外环逆时针、孔顺时针时，(底 i, 底 j, 顶 j) / (底 i, 顶 j, 顶 i) 的法向都朝材料外。
+    for (ring, b) in bottom.iter().enumerate() {
+        let n = b.len();
+        let base = ring_base[ring];
+        for i in 0..n {
+            let j = (i + 1) % n;
+            let (bi, bj, ti, tj) = (base + i, base + j, base + n + i, base + n + j);
+            triangles.extend([bi as u64, bj as u64, tj as u64]);
+            triangles.extend([bi as u64, tj as u64, ti as u64]);
+        }
+    }
+    // 封口：两端各按自己的环带孔三角化；三角按平面坐标定成逆时针（+Z），底面再翻成 −Z。
+    for (rings, is_top) in [(&bottom, false), (&top, true)] {
+        let mut flat: Vec<f64> = Vec::new();
+        let mut holes: Vec<usize> = Vec::new();
+        let mut offsets: Vec<usize> = Vec::with_capacity(rings.len());
+        for (index, ring) in rings.iter().enumerate() {
+            if index > 0 {
+                holes.push(flat.len() / 2);
+            }
+            offsets.push(flat.len() / 2);
+            for p in ring {
+                flat.extend_from_slice(p);
+            }
+        }
+        let cap = earcutr::earcut(&flat, &holes, 2).map_err(|error| SolidError::Degenerate {
+            what: WHAT,
+            detail: format!("端面三角化：{error}"),
+        })?;
+        let to_vertex = |k: usize| -> u64 {
+            let ring = offsets.iter().rposition(|&offset| offset <= k).unwrap_or(0);
+            let local = k - offsets[ring];
+            let n = rings[ring].len();
+            (ring_base[ring] + if is_top { n } else { 0 } + local) as u64
+        };
+        for tri in cap.chunks_exact(3) {
+            let mut ids = [tri[0], tri[1], tri[2]];
+            let (a, b, c) = (
+                [flat[2 * ids[0]], flat[2 * ids[0] + 1]],
+                [flat[2 * ids[1]], flat[2 * ids[1] + 1]],
+                [flat[2 * ids[2]], flat[2 * ids[2] + 1]],
+            );
+            if (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]) < 0.0 {
+                ids.swap(1, 2);
+            }
+            if !is_top {
+                ids.swap(1, 2);
+            }
+            triangles.extend(ids.map(to_vertex));
+        }
+    }
+    let solid =
+        Manifold::from_mesh_f64(&vertices, 3, &triangles).map_err(|error| SolidError::Degenerate {
+            what: WHAT,
+            detail: format!("放样网格：{error}"),
+        })?;
+    ensure_solid(solid, WHAT)
+}
+
 fn extrude_rings_grown(
     mut rings: Vec<Vec<[f64; 2]>>,
     height: f64,
@@ -1561,6 +1673,33 @@ pub(crate) fn ensure_solid(solid: Manifold, what: &'static str) -> Result<Manifo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 放样：100 方 → 50 方高 100 是棱台（V = h/3 (A₁ + A₂ + √(A₁A₂))）；带孔的环（外 100 方 / 内 60 方 → 外 50 / 内 30）
+    /// 体积是两只棱台之差、亏格 1；进来的绕向反了照样成体、体积为正。
+    #[test]
+    fn loft_between_two_rings_is_the_frustum() {
+        let square = |h: f64| vec![[-h, -h], [h, -h], [h, h], [-h, h]];
+        let frustum = |a1: f64, a2: f64, h: f64| h / 3.0 * (a1 + a2 + (a1 * a2).sqrt());
+        let solid = loft_rings(vec![square(50.0)], vec![square(25.0)], 0.0, 100.0).unwrap();
+        assert_eq!(solid.genus(), 0);
+        let want = frustum(10_000.0, 2_500.0, 100.0);
+        assert!((solid.volume() - want).abs() < 1e-6 * want, "{} vs {want}", solid.volume());
+        let bb = solid.bounding_box().unwrap();
+        assert!((bb.min()[2]).abs() < 1e-9 && (bb.max()[2] - 100.0).abs() < 1e-9);
+
+        let reversed = |ring: Vec<[f64; 2]>| ring.into_iter().rev().collect::<Vec<_>>();
+        let hollow = loft_rings(
+            vec![reversed(square(50.0)), reversed(square(30.0))],
+            vec![reversed(square(25.0)), reversed(square(15.0))],
+            10.0,
+            110.0,
+        )
+        .unwrap();
+        assert_eq!(hollow.genus(), 1, "贯穿的孔是一个环柄");
+        let want = frustum(10_000.0, 2_500.0, 100.0) - frustum(3_600.0, 900.0, 100.0);
+        assert!((hollow.volume() - want).abs() < 1e-6 * want, "{} vs {want}", hollow.volume());
+        assert!(loft_rings(vec![square(50.0)], vec![vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]], 0.0, 1.0).is_err());
+    }
 
     #[test]
     fn snout_is_closed_centered_and_preserves_volume_under_eccentric_shear() {

@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-10-25 变截面型材按两端截面放样——aps7200 `/TAPER-SCTN1..4` 的锥管不再画成直管，记录条数也对上
+
+- SPRF `/OD-CONE`（`GTYP VTUB`）的两个 `PANG=180` SANN 带着 `DRAD = 0.5·DESP[2] − 0.5·DESP[1]`、`DWID`、`DX` / `DY`：半径 /
+  壁厚 / 圆心从 POSS 到 POSE 的增量。E3D 在两端各求一张截面放样（`/TAPER-SCTN1` 外径 1000 → 500、壁 200 → 200），弧按 10 mm
+  口径、**起点**半径定段（外弧 24 / 内弧 20 段，半圈各 12 / 10 步），整只写一条面片（两个半壳在同一条里，径向的内面不写），
+  面片体积 1.625157e9 mm³；我们不读这四个属性，按等截面挤成 2.26e9 的直管、逐成员两条记录——包围盒恰好相同，对拍一直是
+  exact，只在种类不同里露头（4 件）。
+- `section::sann_rings` 读 `DRAD` / `DWID` / `DX` / `DY`，有增量时成员带 `taper`（POSE 端的环，与起点环逐点对应：两端同一组段数，
+  `tapered_annulus_rings`）；`section_local_solid` 对带 `taper` 的成员在挤出区间两端各插一张截面放样（新的 `solid::loft_rings`：侧面四边形、
+  两端带孔三角化封口），端切照旧；`SectionSolid::tapered` 走到 `elmodl`，变截面的型材不逐成员交 `parts`，整只一条。等截面的
+  SANN 照旧走 0.5 mm 曲面口径（ams7997 DTUB 那 68 根不动）；沿 SPINE 的扫掠遇到变截面成员只记 note、按起点截面画（没有样本）。
+  读取集合 169 → 171（`DRAD` / `DWID`；`DX` / `DY` 本就在），gen-model 那份一起重生成。
+- 单元 `solid::loft_between_two_rings_is_the_frustum`、`section::a_tapered_tube_lofts_both_half_annuli_between_its_two_end_sections`；真库门
+  `rvm_record_kinds_real::a_tapered_section_lofts_between_its_end_sections_in_one_facet_group`（世界盒不变、体积对 E3D 面片 0.1%、一条）。
+  aps7200 种类不同 4 → 0，其余回归门 0 变化。
+
 ## 2026-10-25 多面体逐连通体写一条面片——aps7200 `/STAIRC.TOP` 两只 POHE 的记录条数对上
 
 - `POHE 1 / 2 of SUBS 1 of /STAIRC.TOP`（`23584/9700`、`9753`）各是 8 块互不相连的薄板（六边形板 2 + 矩形板 6，厚 0.99），

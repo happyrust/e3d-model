@@ -667,6 +667,7 @@ pub fn model_element_with_cache(
     let mut section_members: Vec<Manifold> = Vec::new();
     let mut section_member_sources: Vec<SectionSource> = Vec::new();
     let mut section_square_ends = false;
+    let mut section_tapered = false;
 
     let local_timing = crate::perf::local_solid_scope();
     let mut analytic_primitive: Option<AnalyticPrimitive> = None;
@@ -854,12 +855,14 @@ pub fn model_element_with_cache(
                 members,
                 member_sources,
                 square_ends,
+                tapered,
                 frame,
             } => {
                 section_frame = Some(frame);
                 section_members = members;
                 section_member_sources = member_sources;
                 section_square_ends = square_ends;
+                section_tapered = tapered;
                 (solid, None)
             }
             // 本体建不出来就是这一件没有：名下 FITT 的几何不在这里兜——它们自己是单元
@@ -1029,7 +1032,8 @@ pub fn model_element_with_cache(
         // 一块。带负体时只有并集体是可见结果——`parts` 按定义是「非布尔」的那一份，退回整只。
         // 只有一个成员时也要把出身交出去：截面就是一只 SREC 的 STWALL，E3D 写一条 `Pyramid`
         // （ams7997 `/1SL-WF08-W-C-S8038`、`/1SL-WF08-W-C-S8019` 的 STWA 1），不是拉伸体面片。
-        if negatives_applied == 0 && !section_members.is_empty() {
+        // 变截面（两端放样）的型材 E3D 整只写一条：aps7200 `/TAPER-SCTN1` 的两个 SANN 半环在同一条面片里。
+        if negatives_applied == 0 && !section_members.is_empty() && !section_tapered {
             // 逐块的出身跟着一起交出去：E3D 对 `SREC` 成员走 DRPYR，对 `SPRO` / `SANN`
             // 才走拉伸体的面片（见 [`GeneratedElement::part_catalogue_nouns`]）。端头斜切的 `SREC`
             // 不是棱台，E3D 写面片（aps250110 门框模板里 45° 斜接的 FBAR），出身不交：包围盒自校拦不住
@@ -1255,6 +1259,8 @@ enum SectionBody {
         member_sources: Vec<SectionSource>,
         /// 两端都是平头：`SREC` 成员挤出来才是一只棱台，记录可以写 `Pyramid`。
         square_ends: bool,
+        /// 变截面（两端放样）：E3D 整只写一条面片，不逐成员写（[`crate::section::SectionSolid::tapered`]）。
+        tapered: bool,
         frame: DMat4,
     },
     CentrelineOnly(String),
@@ -1336,6 +1342,7 @@ fn section_body(el: &DbElement, notes: &mut Vec<String>) -> Result<SectionBody, 
                 members: Vec::new(),
                 member_sources: Vec::new(),
                 square_ends: false,
+                tapered: false,
                 frame: DMat4::IDENTITY,
             }),
             None => Ok(SectionBody::CentrelineOnly(
@@ -1357,6 +1364,7 @@ fn section_body(el: &DbElement, notes: &mut Vec<String>) -> Result<SectionBody, 
             members: built.members,
             member_sources: built.member_sources,
             square_ends: cuts.start.is_square() && cuts.end.is_square(),
+            tapered: built.tapered,
             frame: placement.local,
         }),
         None => Ok(SectionBody::CentrelineOnly(
@@ -4518,6 +4526,7 @@ mod tests {
                     source: crate::section::SectionSource::Spro { vertices: 4 },
                     member_refno: "0/0".into(),
                     rings: vec![ring.clone()],
+                    taper: None,
                 }],
                 justification,
                 justification_line: String::new(),
