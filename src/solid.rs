@@ -29,7 +29,7 @@
 //!    逐轴缩放对这种边的外推量趋近 0，差完留下一根 0.01mm 厚、贯穿全高的针，
 //!    把 AABB 顶出去 63.5mm。截面 offset 是**平行外扩**，斜边不转动，不吃摆放角度。
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use glam::{DMat3, DMat4, DVec3};
 use manifold_csg::{CrossSection, FillRule, JoinType, Manifold};
@@ -1358,6 +1358,9 @@ struct FacePlane {
 ///
 /// 量化只用来分桶，不参与判定：同一张平面的三角形偏移逐位相同，必落同一桶；
 /// 曲面的每条弦各成一桶也无妨，判定那头本来就带容差。
+///
+/// 桶用有序表：面表的顺序决定 [`snap_one_negative`] 里同量外推的先后，进而决定布尔结果的三角剖分；
+/// `HashMap` 每个进程换一个种子，同一件连生成两遍面片就不同（e3d-model#9）。
 fn face_planes(solid: &Manifold) -> Vec<FacePlane> {
     let (properties, stride, triangles) = solid.to_mesh_f64();
     if stride < 3 || properties.len() < stride {
@@ -1368,7 +1371,7 @@ fn face_planes(solid: &Manifold) -> Vec<FacePlane> {
         DVec3::new(properties[base], properties[base + 1], properties[base + 2])
     };
     // 法向量化到 1/4096，偏移量化到一个 RES_TOL_MM。
-    let mut buckets: HashMap<[i64; 4], (DVec3, f64, f64)> = HashMap::new();
+    let mut buckets: BTreeMap<[i64; 4], (DVec3, f64, f64)> = BTreeMap::new();
     for triangle in triangles.chunks_exact(3) {
         let (a, b, c) = (point(triangle[0]), point(triangle[1]), point(triangle[2]));
         let cross = (b - a).cross(c - a);
@@ -1461,8 +1464,13 @@ fn snap_one_negative(host_planes: &[FacePlane], neg: Manifold) -> Manifold {
         return neg;
     }
     // 同一方向只推最远的那一次；`neg ∪ (neg + n·d)` 把该法向的面整体外移 d，
-    // 反方向的面一动不动（凹处扫不满只会少推，不会多推）。
-    moves.sort_by(|(_, a), (_, b)| b.total_cmp(a));
+    // 反方向的面一动不动（凹处扫不满只会少推，不会多推）。同量的按法向定序，并集的先后不许随进程变。
+    moves.sort_by(|(na, a), (nb, b)| {
+        b.total_cmp(a)
+            .then(na.x.total_cmp(&nb.x))
+            .then(na.y.total_cmp(&nb.y))
+            .then(na.z.total_cmp(&nb.z))
+    });
     let mut pushed: Vec<DVec3> = Vec::new();
     let mut snapped = neg;
     for (normal, distance) in moves {

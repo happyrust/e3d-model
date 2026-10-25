@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-10-25 扣过负体的面片两遍生成逐字节相同——近共面吸附的面表改有序桶（#9）
+
+- 同一个二进制、同一份数据连跑两遍，ams7997 `EQUI /Copy-of-1RCS000BA-BODY-NEW` `SUBE 8` 下六只扣过负体的 CYLI 里有五只三角剖分不同
+  （体积到 1e-6 mm³ 相同、三角数不同），D14 干净检出补验时 44 份库里只有这 6 件不能逐字节复现。几何不差，但 gen-model 的烘焙网格按内容哈希寻址
+  （`baked_mesh_id`），这些件每重生成一次就是一个新 id、一个新 `.mesh`。
+- 根因不在 manifold：关掉 `parallel`（MANIFOLD_PAR / TBB）重编后仍然不同，修好之后开着 `parallel` 连跑五遍也逐字节相同（且与不并行的那份同一个哈希）。
+  在 `solid::face_planes`：近共面吸刀（`snap_negatives_to_host_faces`）的面表按（量化法向，量化偏移）用 `HashMap` 分桶再 `into_values()`，每个进程一个哈希种子，
+  面表顺序随进程变；`snap_one_negative` 把外推按距离稳定排序，同量的保持面表顺序，于是 `neg ∪ (neg + n·d)` 的先后随进程变，差集的剖分跟着变。
+- 改法：桶换 `BTreeMap`（键是整数四元组，按键定序）；外推排序同量时再按法向三个分量定序。几何不变，只是剖分从此可复现。
+- 真库门 `tests/boolean_determinism_real.rs`：只生成 `24381/156976` 这一根连跑两遍，`elements.json` 的三角数与 `generated.rvm` 字节必须相同；
+  对着改前的 `solid.rs` 跑它确实红（5 只三角数不同）。
+
 ## 2026-10-25 带 FRAD 圆角的详图式 RAIL 逐节写面片——aps250112 10 根栏杆的记录条数对上
 
 - E3D 把详图式 RAIL 沿 RPATH 逐节写：直段一条（整张截面一次挤出，管截面的两个 SANN 半环在同一条里）、`FRAD` 圆角弧**每个 GMSS 成员
