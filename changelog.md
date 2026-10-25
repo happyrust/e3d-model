@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-10-25 带 FRAD 圆角的详图式 RAIL 逐节写面片——aps250112 10 根栏杆的记录条数对上
+
+- E3D 把详图式 RAIL 沿 RPATH 逐节写：直段一条（整张截面一次挤出，管截面的两个 SANN 半环在同一条里）、`FRAD` 圆角弧**每个 GMSS 成员
+  一条**（各走一次 `gm_CreateRevolution`）：aps250112 `RAIL 1 / 2 of RAILSET 1 of /EL(+)104880_TOS_PLATE/HR_003`（3 直段 + 2 弧）各 7 条，
+  `/EL(+)107820_TOS/HR_001` 的 16 条、`/EL(+)102470_TOS_PLATE/HR_001` 的 13 条同款（`aps_survey_lv6_2013286656_2.rvm`）；我们整根一条
+  （W7a 时记为种类不同 10，几何 exact / chord ≤ 0.15）。
+- 只有直段的折线（拐角斜接）E3D 仍是整根一条：aps250110 `/B01_LEVEL_01_HANDRAILS/HR_001` 3 节、`/BUILDING_01_LEVEL_03/HR_001` 6 节、
+  aps250112 `RAIL 1 of RAILSET 1 of /EL(+)102470_TOS_PLATE/HR_001`（一节直段 + 末端一只弧长 0.085 mm 的退化圆角，E3D 不写那只弧）都是
+  一条，带 `CURTYP THRU` 弧的路径也是一条（aps250110 `/BUILDING_01_LEVEL_03/HR_001`：4 直段 + 1 段 R≈14 m 的 THRU 弧，E3D 一条 326 个多边形）；
+  第一版把它们也拆了（`gates-w7v4` aps250110 种类不同 0 → 8），现在只在路径带弧长 ≥ 1 mm 的 **FRAD** 圆角弧时才逐节写。
+- `handrail::detailed_item_local_solid` 本来就是逐节建再 `compose`：现在弧逐成员各扫一块（单成员的 `SectionProfile` 走 `spine_swept_solid`），
+  `RailBuild::Solid` 把逐节的块（含 `ZOFF`）一并交出；`elmodl` 对 RAIL（不含 KICKPL，没有分条的样本）且没有负体时把它们交 `parts`
+  （出身不交，与 BPANEL 同款），写出端逐块一条 `FacetGroup`。几何不动。
+- 真库门 `rvm_record_kinds_real::a_detailed_rail_with_fillets_writes_one_facet_group_per_piece_like_e3d`（HR_003 两根各 7 条、世界盒照旧；
+  102470 HR_001 的 RAILSET 1 一条、RAILSET 2 13 条）。aps250112 种类不同 10 → 0，其余回归门 0 变化。
+
 ## 2026-10-25 变截面型材按两端截面放样——aps7200 `/TAPER-SCTN1..4` 的锥管不再画成直管，记录条数也对上
 
 - SPRF `/OD-CONE`（`GTYP VTUB`）的两个 `PANG=180` SANN 带着 `DRAD = 0.5·DESP[2] − 0.5·DESP[1]`、`DWID`、`DX` / `DY`：半径 /

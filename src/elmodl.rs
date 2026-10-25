@@ -673,6 +673,8 @@ pub fn model_element_with_cache(
     let mut analytic_primitive: Option<AnalyticPrimitive> = None;
     // 扫角超过 180° 的回转体照 libgm 拆成的两块（局部系）：E3D 写两条面片。有负体时写的是布尔结果、整只一条，不拆。
     let mut revolution_parts: Option<Vec<Manifold>> = None;
+    // 详图式 RAIL 沿路径的逐节块（局部系）：E3D 逐节写面片，见 [`crate::handrail::RailBuild::Solid`]。
+    let mut rail_pieces: Option<Vec<Manifold>> = None;
     let (local, primitive_instance) = match category {
         // 与基本体同一条实例化边界：正体一旦有负体要扣，就按布尔参与者烘焙直建。
         Category::LoopExtrusion => match extrusion_local_solid(
@@ -834,7 +836,13 @@ pub fn model_element_with_cache(
         // 三种结局也同口径。
         Category::Catalog if crate::handrail::is_detailed_item(&noun) => {
             match crate::handrail::detailed_item_local_solid(el, &mut notes)? {
-                crate::handrail::RailBuild::Solid(solid) => (solid, None),
+                crate::handrail::RailBuild::Solid { solid, pieces } => {
+                    // 带 FRAD 圆角的 RAIL E3D 逐节写（直段一条、弧每成员一条）；KICKPL 没有分条的样本，照旧整只一条。
+                    if noun == "RAIL" && pieces.len() > 1 {
+                        rail_pieces = Some(pieces);
+                    }
+                    (solid, None)
+                }
                 crate::handrail::RailBuild::CentrelineOnly(reason) => {
                     return Ok(Modeled::Skipped {
                         kind: SkipKind::CentrelineOnly,
@@ -1076,6 +1084,11 @@ pub fn model_element_with_cache(
                 .map(|member| placed(member, world))
                 .collect(),
         )
+    } else if let Some(pieces) = rail_pieces.filter(|_| negatives_applied == 0) {
+        // 带 FRAD 圆角的详图式 RAIL：E3D 逐节写（aps250112 `RAIL 1 of RAILSET 1 of /EL(+)104880_TOS_PLATE/HR_003` 7 条）。
+        // 出身不交，只为逐块一条；种类照面片族一律 FacetGroup。
+        part_catalogue_nouns = vec![String::new(); pieces.len()];
+        Some(pieces.iter().map(|piece| placed(piece, world)).collect())
     } else if let Some(halves) = revolution_parts.filter(|_| negatives_applied == 0) {
         // 扫角超过 180° 的 REVO：E3D 照 libgm 拆成的两段写两条 FacetGroup（[`crate::solid::revolution_is_split`]）。
         // 出身同样不交，只为逐块一条；两条的记录矩阵都是元素标架，与 E3D 同。

@@ -47,9 +47,9 @@ use e3d_io::db_element::DbElement;
 
 use crate::elmodl::ModelError;
 use crate::section::{
-    SectionChain, SectionCutPlane, SectionCuts, SpinePath, SpineSegment, cut_plane_normal,
-    evaluate_section_profile, placement_between, section_catalogue, section_local_solid,
-    spine_mitre_plane, spine_swept_solid,
+    SectionChain, SectionCutPlane, SectionCuts, SectionProfile, SpinePath, SpineSegment,
+    cut_plane_normal, evaluate_section_profile, placement_between, section_catalogue,
+    section_local_solid, spine_mitre_plane, spine_swept_solid,
 };
 use crate::solid::{SolidError, circ_torus_solid, cut_by_plane, cylinder_segments, placed};
 
@@ -844,7 +844,16 @@ pub fn is_detailed_item(noun: &str) -> bool {
 /// 「E3D 也只有中心线」与「目录链根本走不通」各有各的账，混成一句话就分不出
 /// 是哪种欠账。
 pub enum RailBuild {
-    Solid(Manifold),
+    Solid {
+        solid: Manifold,
+        /// E3D 逐节写时的记录单位（局部系，已含 `ZOFF`）：直段一节一块（整张截面），`FRAD` 圆角弧每个 GMSS 成员一块。
+        /// **只在路径带圆角弧时才给**：aps250112 `RAIL 1 of RAILSET 1 of /EL(+)104880_TOS_PLATE/HR_003`（3 直段 + 2 弧，管截面是两个
+        /// SANN 半环）E3D 是 7 条面片——直段一条挤出（两个壳在同一条里），弧每个成员各走一次 `gm_CreateRevolution`、各一条；
+        /// 只有直段的折线（拐角斜接）与带 `CURTYP THRU` 弧的路径 E3D 整根一条（aps250110 `/B01_LEVEL_01_HANDRAILS/HR_001` 3 节、
+        /// `/BUILDING_01_LEVEL_03/HR_001` 4 直段 + 1 THRU 弧都是一条，aps250112 `RAIL 1 of RAIL 1 of /EL(+)102470_TOS_PLATE/HR_001`
+        /// 一节直段 + 一只 0.085 mm 的退化圆角也是），那时这里是空表。
+        pieces: Vec<Manifold>,
+    },
     CentrelineOnly(String),
     ChainBroken(String),
 }
@@ -1021,9 +1030,20 @@ pub fn detailed_item_local_solid(
                 spine.drns = *start_mitre;
                 spine.drne = *end_mitre;
             }
-            match spine_swept_solid(&profile, &spine, bang_deg, notes)? {
-                Some(body) => pieces.push(body),
-                None => notes.push(format!("路径第 {index} 段（圆角弧）扫不出实体")),
+            // 弧逐 GMSS 成员各扫一块：E3D 对每个成员各走一次回转、各写一条面片（见 [`RailBuild::Solid`]）；直段是整张截面一次挤出。
+            let mut swept_any = false;
+            for member in &profile.members {
+                let single = SectionProfile {
+                    members: vec![member.clone()],
+                    ..profile.clone()
+                };
+                if let Some(body) = spine_swept_solid(&single, &spine, bang_deg, notes)? {
+                    pieces.push(body);
+                    swept_any = true;
+                }
+            }
+            if !swept_any {
+                notes.push(format!("路径第 {index} 段（圆角弧）扫不出实体"));
             }
             continue;
         };
@@ -1072,13 +1092,33 @@ pub fn detailed_item_local_solid(
         pieces.len(),
         profile.justification_line
     ));
-    Ok(RailBuild::Solid(if z_offset == 0.0 {
-        solid
-    } else {
-        // `ZOFF` 与布局式的 `RAILHE` 同一个意思：整根栏杆沿属主局部 +Z 抬起来
-        // （语料里 RAIL 的 ZOFF 恰好就是属主的 `RAILHE` 两个值）。
-        solid.translate(0.0, 0.0, z_offset)
-    }))
+    // `ZOFF` 与布局式的 `RAILHE` 同一个意思：整根栏杆沿属主局部 +Z 抬起来
+    // （语料里 RAIL 的 ZOFF 恰好就是属主的 `RAILHE` 两个值）。
+    let lift = |body: &Manifold| {
+        if z_offset == 0.0 {
+            body.clone()
+        } else {
+            body.translate(0.0, 0.0, z_offset)
+        }
+    };
+    // 只有 `FRAD` 圆角弧才让 E3D 逐节写：`CURTYP THRU` 的弧是路径自己的一段，整根仍是一条（aps250110
+    // `/BUILDING_01_LEVEL_03/HR_001`：4 直段 + 1 段 R≈14 m 的 THRU 弧，E3D 一条 326 个多边形）；退化的圆角（弧长不到 1 mm，
+    // aps250112 `/EL(+)102470_TOS_PLATE/HR_001` 的 RAILSET 1 末端那一只 0.085 mm）E3D 不写，也不算。
+    let has_arc = run.iter().any(|(index, segment)| match segment {
+        PathSegment::Arc { radius, sweep, .. } => {
+            radius * sweep.abs() >= 1.0
+                && !arc_mitres.iter().any(|(arc_edge, _, _)| arc_edge == index)
+        }
+        PathSegment::Line { .. } => false,
+    });
+    Ok(RailBuild::Solid {
+        solid: lift(&solid),
+        pieces: if has_arc {
+            pieces.iter().map(lift).collect()
+        } else {
+            Vec::new()
+        },
+    })
 }
 
 /// 把一段圆角弧包成单段 [`SpinePath`]，好让 [`spine_swept_solid`] 去回转截面。

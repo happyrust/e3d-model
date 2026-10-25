@@ -1246,6 +1246,92 @@ fn a_tapered_section_lofts_between_its_end_sections_in_one_facet_group() {
     std::fs::remove_dir_all(&scratch).ok();
 }
 
+/// 带 FRAD 圆角的详图式 RAIL E3D 逐节写：aps250112 `RAIL 1 / 2 of RAILSET 1 of HANDRA /EL(+)104880_TOS_PLATE/HR_003`（HANDRA
+/// `2013286656/614`，RAIL `623` / `624`：3 直段 + 2 圆角弧，管截面是两个 SANN 半环）TTY 导出各 7 条 `FacetGroup`——直段一条
+/// （两个壳在同一条里）、弧每个成员一条；我们此前整根一条（几何 exact 0.018）。世界盒照旧。只有直段的折线 E3D 仍是整根一条：
+/// 同库 `/EL(+)102470_TOS_PLATE/HR_001`（HANDRA `1609`）的 `RAIL 1 of RAILSET 1`（一节直段 + 一只 0.085 mm 的退化圆角）一条，
+/// `RAIL 1 of RAILSET 2`（5 直段 + 4 弧）13 条；带 `CURTYP THRU` 弧的也是一条：aps250110 `/BUILDING_01_LEVEL_03/HR_001`（HANDRA
+/// `2013286654/3335`，4 直段 + 1 段 R≈14 m 的 THRU 弧）。
+#[test]
+fn a_detailed_rail_with_fillets_writes_one_facet_group_per_piece_like_e3d() {
+    const APS_HANDRAIL_DB: &str = "aps250112_0001";
+    if !fixtures_present_in(APS_DIR, APS_HANDRAIL_DB) {
+        return;
+    }
+    let scratch: PathBuf = std::env::temp_dir().join(format!(
+        "e3d-model-rvm-rail-pieces-aps-{}",
+        std::process::id()
+    ));
+    let (rvm, elements) = generate_in(APS_DIR, APS_HANDRAIL_DB, "2013286656/614", "on", &scratch);
+    assert_world_aabb(
+        &elements,
+        "2013286656/623",
+        [-310438.576, 292972.556, 105983.15, -308088.543, 294216.056, 106016.85],
+        0.05,
+    );
+    for ordinal in [1, 2] {
+        let prefix = format!("RAIL {ordinal} of ");
+        let rail = rvm
+            .members
+            .iter()
+            .find(|member| {
+                let name = member.name.trim();
+                name.starts_with(&prefix) && name.ends_with("/EL(+)104880_TOS_PLATE/HR_003")
+            })
+            .unwrap_or_else(|| panic!("RVM 里没有 RAIL {ordinal}"));
+        let kinds: Vec<&str> = rail
+            .geometries
+            .iter()
+            .map(|geometry| geometry.primitive.name())
+            .collect();
+        assert_eq!(kinds, vec!["FacetGroup"; 7], "{}", rail.name);
+    }
+    std::fs::remove_dir_all(&scratch).ok();
+
+    let scratch: PathBuf = std::env::temp_dir().join(format!(
+        "e3d-model-rvm-rail-polyline-aps-{}",
+        std::process::id()
+    ));
+    let (rvm, _) = generate_in(APS_DIR, APS_HANDRAIL_DB, "2013286656/1609", "on", &scratch);
+    let rail_kinds = |prefix: &str| -> Vec<&str> {
+        rvm.members
+            .iter()
+            .find(|member| {
+                let name = member.name.trim();
+                name.starts_with(prefix) && name.ends_with("/EL(+)102470_TOS_PLATE/HR_001")
+            })
+            .unwrap_or_else(|| panic!("RVM 里没有 {prefix}"))
+            .geometries
+            .iter()
+            .map(|geometry| geometry.primitive.name())
+            .collect()
+    };
+    assert_eq!(rail_kinds("RAIL 1 of RAILSE 1 of "), ["FacetGroup"], "只有直段的折线整根一条");
+    assert_eq!(rail_kinds("RAIL 1 of RAILSE 2 of "), vec!["FacetGroup"; 13]);
+    std::fs::remove_dir_all(&scratch).ok();
+
+    let scratch: PathBuf = std::env::temp_dir().join(format!(
+        "e3d-model-rvm-rail-thru-arc-aps-{}",
+        std::process::id()
+    ));
+    let (rvm, _) = generate_in(APS_DIR, APS_STRUCTURAL_DB, "2013286654/3335", "on", &scratch);
+    let thru = rvm
+        .members
+        .iter()
+        .find(|member| {
+            let name = member.name.trim();
+            name.starts_with("RAIL 1 of ") && name.ends_with("/BUILDING_01_LEVEL_03/HR_001")
+        })
+        .expect("RVM 里没有 /BUILDING_01_LEVEL_03/HR_001 的 RAIL 1");
+    let kinds: Vec<&str> = thru
+        .geometries
+        .iter()
+        .map(|geometry| geometry.primitive.name())
+        .collect();
+    assert_eq!(kinds, ["FacetGroup"], "带 THRU 弧的路径整根一条：{}", thru.name);
+    std::fs::remove_dir_all(&scratch).ok();
+}
+
 /// aps250212 地形模型 `TRNMOD /TerrainA/DEF01/MOD01 → TRNCC 1 → TRNCEL 1..6`，每格一只 `GENPRI 1`，归档版本 4（缓存面片，
 /// 不是 B-rep）：此前解码器只认版本 2，6 只全挂 `failed`（aps250212 只在 E3D 6）。它们是带边界环的高程面、不成体，照 E3D
 /// 只写 RVM：每只一条 `FacetGroup`，多边形数、环数与世界盒对 E3D TTY 导出 `aps250212_lv6_2013286756_1588.rvm`（格 6：103 个
