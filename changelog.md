@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-25 多面体逐连通体写一条面片——aps7200 `/STAIRC.TOP` 两只 POHE 的记录条数对上
+
+- `POHE 1 / 2 of SUBS 1 of /STAIRC.TOP`（`23584/9700`、`9753`）各是 8 块互不相连的薄板（六边形板 2 + 矩形板 6，厚 0.99），
+  E3D TTY 导出逐连通体写、各 8 条 `FacetGroup`；我们把多面体按拉伸体的规矩（MDS `4-BAR-1` 两个连通分量 E3D 只写一条）
+  合成一条。`gen_ams` 的「没有目录出身的面片族整只一条」给 `Category::Polyhedron` 开例外，按连通性逐块一条；几何不动。
+- 真库门 `rvm_record_kinds_real::a_polyhedron_writes_one_facet_group_per_body_like_e3d`（世界盒对 E3D 0.05 mm、8 条）。
+  aps7200 种类不同 6 → 4（余 `/TAPER-SCTN1..4`：E3D 把变截面型材的两个 SANN 半环写在一条里，且半径按 `DRAD` 从 1000 收到 500，
+  我们还不读 `DRAD` / `DWID` / `DX` / `DY`，包围盒恰好相同）。回归门 `w7v2`（与回转图元那条同一轮）其余 0 变化。
+
 ## 2026-10-25 扫角超过 180° 的回转图元照 libgm 拆两段写两条面片——aps250209 的 REVO、ams8000 28 只接线盒的整圈 SREV、aps7200 / aps250110 的整圈 REVO 对上
 
 - libgm `gm_CreateRevolution` 一次只扫 ≤ 180°：超过的拆成两段各扫 ANGL/2、**各按自己的扫角定段数**，再 `gm_CreateCombination(1)`

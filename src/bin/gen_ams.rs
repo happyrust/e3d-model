@@ -1142,7 +1142,14 @@ fn main() -> anyhow::Result<()> {
                 let facets_only = e3d_exports_facets_only(&generated.noun);
                 // 没有目录出身的拉伸体不按连通性拆：E3D 的拉伸写出器一只元素写一条面片。MDS
                 // `/SUPPORT/FRAMES/BS/FT08/4-BAR-1` 的网格是两个连通分量，E3D 只有一条 FacetGroup。
-                let whole_extrusion = facets_only && generated.part_catalogue_nouns.is_empty();
+                // 多面体相反，**逐连通体一条**：aps7200 `/STAIRC.TOP` 的 `POHE 1 / 2` 各是 8 块互不相连的薄板，
+                // E3D TTY 导出各 8 条（`aps7200_lv6_23584_8574.rvm`），我们此前合成一条。
+                let polyhedron = matches!(
+                    e3d_model::category::classify(&generated.noun),
+                    e3d_model::category::Category::Polyhedron
+                );
+                let whole_extrusion =
+                    facets_only && generated.part_catalogue_nouns.is_empty() && !polyhedron;
                 let component_meshes: Vec<TriMesh> = if (generated.negatives_applied > 0
                     && !split_uncut)
                     || generated.noun == "CABLE"

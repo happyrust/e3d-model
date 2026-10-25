@@ -1184,6 +1184,32 @@ fn a_revolution_over_180_degrees_writes_two_facet_groups_like_e3d() {
     std::fs::remove_dir_all(&scratch).ok();
 }
 
+/// 多面体逐连通体一条面片：aps7200 `POHE 1 / 2 of SUBS 1 of /STAIRC.TOP`（`23584/9700`、`9753`）各是 8 块互不相连的薄板，
+/// E3D TTY 导出（`aps7200_lv6_23584_8574.rvm`）各 8 条 `FacetGroup`，我们此前按拉伸体的规矩合成一条；世界盒
+/// [11570.51, 4609.01, 5739.01] .. [11647.49, 9211.59, 8935.49]。
+#[test]
+fn a_polyhedron_writes_one_facet_group_per_body_like_e3d() {
+    if !fixtures_present_in(APS_DIR, APS_COPY_ONLY_DB) {
+        return;
+    }
+    let scratch: PathBuf = std::env::temp_dir().join(format!(
+        "e3d-model-rvm-pohe-bodies-aps-{}",
+        std::process::id()
+    ));
+    let (rvm, elements) = generate_in(APS_DIR, APS_COPY_ONLY_DB, "23584/9700", "on", &scratch);
+    assert_world_aabb(
+        &elements,
+        "23584/9700",
+        [11570.51, 4609.01, 5739.01, 11647.49, 9211.59, 8935.49],
+        0.05,
+    );
+    assert_eq!(
+        record_kinds(&rvm, "POHE 1 of SUBS 1 of STRU /STAIRC.TOP"),
+        vec!["FacetGroup"; 8]
+    );
+    std::fs::remove_dir_all(&scratch).ok();
+}
+
 /// aps250212 地形模型 `TRNMOD /TerrainA/DEF01/MOD01 → TRNCC 1 → TRNCEL 1..6`，每格一只 `GENPRI 1`，归档版本 4（缓存面片，
 /// 不是 B-rep）：此前解码器只认版本 2，6 只全挂 `failed`（aps250212 只在 E3D 6）。它们是带边界环的高程面、不成体，照 E3D
 /// 只写 RVM：每只一条 `FacetGroup`，多边形数、环数与世界盒对 E3D TTY 导出 `aps250212_lv6_2013286756_1588.rvm`（格 6：103 个
