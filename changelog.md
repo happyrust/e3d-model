@@ -1,5 +1,27 @@
 # Changelog
 
+## 2026-10-25 扫角超过 180° 的回转图元照 libgm 拆两段写两条面片——aps250209 的 REVO、ams8000 28 只接线盒的整圈 SREV、aps7200 / aps250110 的整圈 REVO 对上
+
+- libgm `gm_CreateRevolution` 一次只扫 ≤ 180°：超过的拆成两段各扫 ANGL/2、**各按自己的扫角定段数**，再 `gm_CreateCombination(1)`
+  并起来；E3D 的 RVM 驱动照两段写两条 `FacetGroup`（记录矩阵相同）。取证：aps250209 `/AREA07-CV_0001/Belt` REVO 2（`ANGL 190`）
+  E3D 95° + 95° 各 5 步（10 mm 口径 R 409.75 整圈 16 段），我们整段一次算 9 步 21.1°，包围盒差 1.18 mm（这就是 W7t 收口时剩的
+  那 1 件 off）；`/AREA05-CV_0001/Belt` REVO 4（210°）105° + 105° 各 5 步；同库 180° 整的 REVO 4 of `/AREA07-CV_0001/Belt` 一条；
+  ams8000 接线盒 `ELCONN 1 of /1-WCC-151-BC` 的目录 SREV（`PANG = −360`）180° + 180° 各 4 步，E3D 先写朝 +Z 的那半；
+  aps7200 `REVO 1 / 2 of TMPL 1 of FITT 1 of STWA 3 of /WALLS`、aps250110 10 只整圈设计 REVO 同款。
+- `solid::revolution_is_split`（|ANGL| > 180°）；`revolve_rings_primitive` 建整体、角度格按两段之和铺（190° → 10 步，与拆开建的逐点相同；
+  整圈的格不变）；`revolve_rings_profile_faceted_parts` 交两块记录单位（第二块 = 第一块绕局部 X 再转 ANGL/2；负角两块对调）。
+  设计 REVO：没有负体时 `elmodl` 把两块交 `parts`（出身不交，与 BPANEL 同款），有负体照旧布尔结果整只一条；NREV 刀同一张格。
+  目录 SREV：名下没有刀时两块各一个网格键（`SrevMeshKey.part` 1 / 2，`SREV_TESSELLATION_VERSION` 2 → 3）、同一个放置，
+  各一条记录；挂着刀的照旧整只（没有样本）。`gen_ams` 的 `e3d_exports_facets_only` 加 `Category::Revolution`：E3D 的 DRWREV
+  一律面片，半环不许被按长相认成 `RectangularTorus`。
+- **只给回转图元**：型材沿弧 SPINE 的扫掠与目录 NSRE 刀照旧 `revolve_rings_profile_faceted`（整段一次定段数）——第一轮
+  （`gates-w7v1`）把两段的格透进了这条路，aps250110 / aps250112 的 18 只钢筋箍 GENSEC（整圈弧 SPINE）偏 5.7–6.2 mm，E3D 的
+  `DB_Gensec` 扫掠自己按整段定段数；收回后全部 exact。单元 `solid::a_revolution_over_180_degrees_is_built_on_the_two_half_grid`
+  把两张格都钉住。
+- 真库门 `rvm_record_kinds_real::a_revolution_over_180_degrees_writes_two_facet_groups_like_e3d`：REVO 2 的世界盒对 E3D 0.05 mm、
+  两条，REVO 4（180°）一条；`ELCONN 1 of /1-WCC-151-BC` 7 条 + 世界盒。对拍：aps250209 4623 对 4622 exact、off 1、种类不同 2 →
+  4623 exact、off 0、种类不同 0；ams8000 种类不同 28 → 0；aps7200 种类不同 8 → 6；aps250110 种类不同 10 → 0；其余回归门 0 变化。
+
 ## 2026-10-24 ATTA 断不断隐式管身按它自己的 `SPKBRK`，不再按目录 GTYP、也不分学科——ams8000 `/M-OR-1RX-3081D` 多出的两根归零，ams8000 2614 对全 exact
 
 - ams8000 `/M-OR-1RX-3081D` 挂三对 MDS 托架支撑的 DATUM / SREF ATTA，E3D 写三根隐式管（SREF → BEND 820、两只弯头间 4.17 / 4.18），

@@ -31,7 +31,8 @@ use crate::route::orimat;
 use crate::solid::{
     SolidError, box_solid, circ_torus_solid, csg_cylinder_solid, cylinder_segments,
     dish_knuckle_radius, elliptical_dish_solid, extrude_rings, placed, pyramid_solid,
-    rect_torus_solid, revolve_rings_profile_faceted, slope_ended_cylinder_solid, snout_solid,
+    rect_torus_solid, revolution_is_split, revolve_rings_primitive, revolve_rings_profile_faceted,
+    revolve_rings_profile_faceted_parts, slope_ended_cylinder_solid, snout_solid,
     snout_solid_with_segments, spherical_dish_solid, unit_sphere_solid,
 };
 use crate::transform::world_matrix;
@@ -40,7 +41,8 @@ const GEOMETRY_REF: &str = "GMRE";
 const AXIS_TOL: f64 = 1.0e-9;
 const HEIGHT_TOL_MM: f64 = 1.0e-6;
 const SEXT_TESSELLATION_VERSION: u32 = 1;
-const SREV_TESSELLATION_VERSION: u32 = 2;
+/// 3：扫角超过 180° 的 SREV 照 libgm 拆两段铺格（每半段自己定段数），无刀时两块各一张网格（`part` 1 / 2）。
+const SREV_TESSELLATION_VERSION: u32 = 3;
 const SBOX_TESSELLATION_VERSION: u32 = 1;
 const NSCY_AXIAL_OVERCUT_MM: f64 = 0.01;
 const CYLINDER_TESSELLATION_VERSION: u32 = 1;
@@ -261,6 +263,9 @@ struct SrevMeshKey {
     ring_lengths: Vec<usize>,
     coordinate_bits: Vec<u64>,
     cutters: Vec<CatalogueCutKey>,
+    /// 0 = 整只；1 / 2 = 扫角超过 180° 时 libgm 拆成的两段（[`revolve_rings_profile_faceted_parts`]），
+    /// 同一个放置下各自一条记录。
+    part: u8,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -1044,27 +1049,52 @@ pub fn model_catalogue_member_with_cache(
                         cache.stats.evaluated_srev += 1;
                         catalogue_negatives += evaluated.cutters.len();
                         diagnostics.append(&mut evaluated.diagnostics);
-                        let mesh_id = match cached_mesh_id(cache, &evaluated.mesh_key, || {
-                            build_srev(&evaluated)
-                        }) {
-                            Ok(mesh_id) => mesh_id,
-                            Err(error) => {
-                                diagnostics.push(format!(
-                                    "catalogue primitive {} skipped by Core-style local failure: {error}",
-                                    primitive.refno()
-                                ));
-                                continue;
+                        // 扫角超过 180°、名下没有刀的 SREV：E3D 照 libgm 拆成的两段写两条 FacetGroup
+                        // （ams8000 28 只接线盒 `PANG = −360` 的 SREV 各 180°，记录矩阵相同）：两块各一张网格、
+                        // 同一个放置。挂着刀的照旧整只一块（扣过刀的 SREV E3D 怎么写还没有样本）。
+                        let srev_parts: Vec<(CatalogueMeshKey, u8)> =
+                            if revolution_is_split(evaluated.angle_deg)
+                                && evaluated.cutters.is_empty()
+                            {
+                                [1u8, 2]
+                                    .iter()
+                                    .map(|part| (srev_part_key(&evaluated.mesh_key, *part), *part))
+                                    .collect()
+                            } else {
+                                vec![(evaluated.mesh_key.clone(), 0)]
+                            };
+                        let mut first_placement_duplicate = false;
+                        for (part_key, part) in &srev_parts {
+                            let mesh_id = match cached_mesh_id(cache, part_key, || {
+                                if *part == 0 {
+                                    build_srev(&evaluated)
+                                } else {
+                                    build_srev_part(&evaluated, *part)
+                                }
+                            }) {
+                                Ok(mesh_id) => mesh_id,
+                                Err(error) => {
+                                    diagnostics.push(format!(
+                                        "catalogue primitive {} skipped by Core-style local failure: {error}",
+                                        primitive.refno()
+                                    ));
+                                    continue;
+                                }
+                            };
+                            if !place_part_once(
+                                cache,
+                                &mut placed_parts,
+                                &mut solids,
+                                &primitive_noun,
+                                part_key,
+                                mesh_id,
+                                evaluated.transform,
+                            ) && *part <= 1
+                            {
+                                first_placement_duplicate = true;
                             }
-                        };
-                        if !place_part_once(
-                            cache,
-                            &mut placed_parts,
-                            &mut solids,
-                            &primitive_noun,
-                            &evaluated.mesh_key,
-                            mesh_id,
-                            evaluated.transform,
-                        ) {
+                        }
+                        if first_placement_duplicate {
                             member_duplicates += 1;
                         }
                     }
@@ -2701,6 +2731,7 @@ fn evaluate_srev(
         ring_lengths,
         coordinate_bits,
         cutters: cutter_keys,
+        part: 0,
     });
     Ok(Some(EvaluatedSrev {
         mesh_key,
@@ -4225,9 +4256,29 @@ fn build_sext(evaluated: &EvaluatedSext) -> Result<Manifold, ModelError> {
     Ok(body)
 }
 
+/// 扫角超过 180° 的 SREV 的第 `part`（1 / 2）段（[`revolve_rings_profile_faceted_parts`]）。只给没有刀的 SREV 用。
+fn build_srev_part(evaluated: &EvaluatedSrev, part: u8) -> Result<Manifold, ModelError> {
+    debug_assert!(evaluated.cutters.is_empty(), "挂着刀的 SREV 不拆段");
+    let mut parts =
+        revolve_rings_profile_faceted_parts(evaluated.rings.clone(), evaluated.angle_deg)?;
+    let index = usize::from(part.saturating_sub(1)).min(parts.len().saturating_sub(1));
+    Ok(parts.swap_remove(index))
+}
+
+/// 同一只 SREV 的第 `part` 段的网格键（其余字段照抄）。
+fn srev_part_key(key: &CatalogueMeshKey, part: u8) -> CatalogueMeshKey {
+    match key {
+        CatalogueMeshKey::Srev(base) => CatalogueMeshKey::Srev(SrevMeshKey {
+            part,
+            ..base.clone()
+        }),
+        other => other.clone(),
+    }
+}
+
 /// SREV 局部网格：轮廓绕局部 X 回转，再扣掉名下的成员级刀集。
 fn build_srev(evaluated: &EvaluatedSrev) -> Result<Manifold, ModelError> {
-    let mut body = revolve_rings_profile_faceted(evaluated.rings.clone(), evaluated.angle_deg)?;
+    let mut body = revolve_rings_primitive(evaluated.rings.clone(), evaluated.angle_deg, 0.0)?;
     for cutter in &evaluated.cutters {
         let (local, transform) = cutter_solid(cutter)?;
         body = &body - &placed(&local, transform);
@@ -5016,6 +5067,7 @@ mod tests {
                 ring_lengths: Vec::new(),
                 coordinate_bits: Vec::new(),
                 cutters: Vec::new(),
+                part: 0,
             }),
             rings,
             angle_deg,

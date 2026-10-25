@@ -1128,6 +1128,62 @@ fn a_circular_torus_with_negatives_bakes_the_coarse_boolean_grid() {
     std::fs::remove_dir_all(&scratch).ok();
 }
 
+/// 扫角超过 180° 的回转体 E3D 照 libgm 拆成两段写两条 `FacetGroup`（`solid::revolution_is_split`：两段各扫 ANGL/2、各按自己的
+/// 扫角定段数）。aps250209 `/AREA07-CV_0001/Belt`（SUBE `2013286753/55730`）的 REVO 2（`55802`，`ANGL 190`）E3D 两条、各 5 步，
+/// 世界盒 [164325.997, 174619, 16803.36] .. [164820.35, 175381, 17619.788]（TTY 导出 `aps250209_lv6_2013286753_54544.rvm`）；
+/// 此前我们一条、整段 9 步，盒差 1.18 mm。同一 SUBE 的 REVO 4（`55823`，`ANGL 180`）照旧一条。目录侧同一条规则：ams8000
+/// 接线盒 `ELCONN 1 of /1-WCC-151-BC`（`24384/24909`）的 GMSE 是 5 块 SEXT + 1 块 `PANG = −360` 的 SREV，E3D 7 条面片
+/// （`ams8000_lv6_24384_24828.rvm`）、我们此前 6 条，世界盒 [−2243.723, 17255.328, 1112] .. [−1985.975, 17477.469, 1262]。
+#[test]
+fn a_revolution_over_180_degrees_writes_two_facet_groups_like_e3d() {
+    if !fixtures_present_in(APS_DIR, APS_AREA05_DB) || !fixtures_present(CABLE_EQUIP_DB) {
+        return;
+    }
+    let scratch: PathBuf = std::env::temp_dir().join(format!(
+        "e3d-model-rvm-revo-split-aps-{}",
+        std::process::id()
+    ));
+    let (rvm, elements) = generate_in(APS_DIR, APS_AREA05_DB, "2013286753/55730", "on", &scratch);
+    assert_world_aabb(
+        &elements,
+        "2013286753/55802",
+        [164325.997, 174619.0, 16803.36, 164820.35, 175381.0, 17619.788],
+        0.05,
+    );
+    assert_eq!(
+        record_kinds(&rvm, "REVO 2 of SUBE /AREA07-CV_0001/Belt"),
+        ["FacetGroup", "FacetGroup"]
+    );
+    assert_eq!(
+        record_kinds(&rvm, "REVO 4 of SUBE /AREA07-CV_0001/Belt"),
+        ["FacetGroup"]
+    );
+    let belt = elements
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|element| element["refno"] == "2013286753/55802")
+        .unwrap();
+    assert_eq!(belt["components"].as_array().unwrap().len(), 2, "两段各一块");
+    assert_eq!(belt["negatives_applied"], 0);
+    std::fs::remove_dir_all(&scratch).ok();
+
+    let scratch: PathBuf = std::env::temp_dir().join(format!(
+        "e3d-model-rvm-revo-split-ams-{}",
+        std::process::id()
+    ));
+    let (rvm, elements) = generate(CABLE_EQUIP_DB, "24384/24909", "on", &scratch);
+    let kinds = record_kinds(&rvm, "ELCONN 1 of EQUI /1-WCC-151-BC");
+    assert_eq!(kinds, vec!["FacetGroup"; 7], "5 块 SEXT + SREV 的两半");
+    assert_world_aabb(
+        &elements,
+        "24384/24909",
+        [-2243.723, 17255.328, 1112.0, -1985.975, 17477.469, 1262.0],
+        0.05,
+    );
+    std::fs::remove_dir_all(&scratch).ok();
+}
+
 /// aps250212 地形模型 `TRNMOD /TerrainA/DEF01/MOD01 → TRNCC 1 → TRNCEL 1..6`，每格一只 `GENPRI 1`，归档版本 4（缓存面片，
 /// 不是 B-rep）：此前解码器只认版本 2，6 只全挂 `failed`（aps250212 只在 E3D 6）。它们是带边界环的高程面、不成体，照 E3D
 /// 只写 RVM：每只一条 `FacetGroup`，多边形数、环数与世界盒对 E3D TTY 导出 `aps250212_lv6_2013286756_1588.rvm`（格 6：103 个

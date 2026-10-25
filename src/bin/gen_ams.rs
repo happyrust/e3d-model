@@ -458,7 +458,9 @@ fn rvm_component_geometry(
 /// （aps250209 `/A01-AREA05-2ND-FL-HANDRAILS` 的 HANDRA 2 拆成 7 条）。
 ///
 /// 名单 = 设计侧环拉伸（[`e3d_model::category::Category::LoopExtrusion`]：PANE / FLOOR / EXTR /
-/// AEXTR / SCREED / GWALL）+ 型材扫掠（SCTN / GENSEC / STWALL / WALL / RAIL / KICKPL）+
+/// AEXTR / SCREED / GWALL）+ 设计侧回转体（[`e3d_model::category::Category::Revolution`]：REVO，E3D 的 DRWREV 一律面片；
+/// 扫角超过 180° 的照 libgm 拆成两块各一条，由 `elmodl` 交 `parts`，半环不许被按长相认成 `RectangularTorus`）+
+/// 型材扫掠（SCTN / GENSEC / STWALL / WALL / RAIL / KICKPL）+
 /// 多面体（[`e3d_model::category::Category::Polyhedron`]：POHE / POLYHE）+ 通用图元 GENPRI + 折弯板 BPANEL + 布局式扶手 HANDRA
 /// + 布局式梯段 STRFLT（[`e3d_model::stair_flight`]：斜梁、踏步、平台板在 aps250209 的 TTY 导出里是一条面片）。
 /// 目录构件（FITT / FIXING / SBFI / PCOM…）**不在**名单里：它们由 GMSE 图元拼成，E3D 走
@@ -469,7 +471,9 @@ fn rvm_component_geometry(
 fn e3d_exports_facets_only(noun: &str) -> bool {
     matches!(
         e3d_model::category::classify(noun),
-        e3d_model::category::Category::LoopExtrusion | e3d_model::category::Category::Polyhedron
+        e3d_model::category::Category::LoopExtrusion
+            | e3d_model::category::Category::Revolution
+            | e3d_model::category::Category::Polyhedron
     ) || matches!(
         noun,
         "SCTN"

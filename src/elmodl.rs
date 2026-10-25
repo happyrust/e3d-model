@@ -44,8 +44,9 @@ use crate::solid::{
     cleanup_floor_boolean_components, csg_cylinder_solid_with_segments, cylinder_segments,
     dish_knuckle_radius, drop_subresolution_films, elliptical_dish_solid_with_segments,
     extrude_rings, inflate_about_center, negative_cylinder_segments, negative_part_rev_segments,
-    placed, pyramid_solid, rect_torus_solid, rect_torus_solid_with_segments,
-    revolve_rings_profile_faceted_inflated, slope_ended_cylinder_solid_with_segments,
+    placed, pyramid_solid, rect_torus_solid, rect_torus_solid_with_segments, revolution_is_split,
+    revolve_rings_primitive, revolve_rings_profile_faceted_parts,
+    slope_ended_cylinder_solid_with_segments,
     snap_negatives_to_host_faces, snout_segments, snout_solid_with_segments,
     spherical_dish_solid_with_segments, subtract_negatives,
 };
@@ -669,6 +670,8 @@ pub fn model_element_with_cache(
 
     let local_timing = crate::perf::local_solid_scope();
     let mut analytic_primitive: Option<AnalyticPrimitive> = None;
+    // 扫角超过 180° 的回转体照 libgm 拆成的两块（局部系）：E3D 写两条面片。有负体时写的是布尔结果、整只一条，不拆。
+    let mut revolution_parts: Option<Vec<Manifold>> = None;
     let (local, primitive_instance) = match category {
         // 与基本体同一条实例化边界：正体一旦有负体要扣，就按布尔参与者烘焙直建。
         Category::LoopExtrusion => match extrusion_local_solid(
@@ -713,7 +716,13 @@ pub fn model_element_with_cache(
             analytic_primitive = built.analytic;
             (built.solid, built.instance)
         }
-        Category::Revolution => (revolution_local_solid(el, &noun, 0.0, &mut notes)?, None),
+        Category::Revolution => {
+            let (rings, angle) = revolution_profile(el, &noun, &mut notes)?;
+            if !had_negative_members && revolution_is_split(angle) {
+                revolution_parts = Some(revolve_rings_profile_faceted_parts(rings.clone(), angle)?);
+            }
+            (revolve_rings_primitive(rings, angle, 0.0)?, None)
+        }
         Category::Polyhedron => (polyhedron_local_solid(el, &mut notes)?, None),
         // 布局式扶手（`crate::handrail`）：判据在 `category::is_model_unit` 的
         // `Composite(Structural) => HANDRA`，这里是它的执行臂；管线的同名臂与增量上卷
@@ -1063,6 +1072,11 @@ pub fn model_element_with_cache(
                 .map(|member| placed(member, world))
                 .collect(),
         )
+    } else if let Some(halves) = revolution_parts.filter(|_| negatives_applied == 0) {
+        // 扫角超过 180° 的 REVO：E3D 照 libgm 拆成的两段写两条 FacetGroup（[`crate::solid::revolution_is_split`]）。
+        // 出身同样不交，只为逐块一条；两条的记录矩阵都是元素标架，与 E3D 同。
+        part_catalogue_nouns = vec![String::new(); halves.len()];
+        Some(halves.iter().map(|half| placed(half, world)).collect())
     } else {
         None
     };
@@ -2631,6 +2645,20 @@ fn revolution_local_solid(
     grow: f64,
     notes: &mut Vec<String>,
 ) -> Result<Manifold, ModelError> {
+    let (rings, angle) = revolution_profile(el, noun, notes)?;
+    // Both REVO and NREV are baked profile FacetGroups in AMS 8000:
+    // R=500, ANGL=180 gives eight sweep intervals, including after edits.
+    Ok(revolve_rings_primitive(rings, angle, grow)?)
+}
+
+/// 回转体的剖面环（局部 XY，已折线化）与归一后的扫角。
+type RevolutionProfile = (Vec<Vec<[f64; 2]>>, f64);
+
+fn revolution_profile(
+    el: &DbElement,
+    noun: &str,
+    notes: &mut Vec<String>,
+) -> Result<RevolutionProfile, ModelError> {
     let angle = require_double(el, noun, "ANGL", "revolution")?;
     let profile = loop_profile(el)?;
     let rings = flatten_profile_rings(el, noun, &profile, notes)?;
@@ -2640,9 +2668,7 @@ fn revolution_local_solid(
     } else {
         angle
     };
-    // Both REVO and NREV are baked profile FacetGroups in AMS 8000:
-    // R=500, ANGL=180 gives eight sweep intervals, including after edits.
-    Ok(revolve_rings_profile_faceted_inflated(rings, angle, grow)?)
+    Ok((rings, angle))
 }
 
 /// PDMS 缺省语义：属性未设（省存）或该 noun 模板里没有 → 取 0。
@@ -3679,7 +3705,7 @@ mod tests {
             [500.0, 500.0],
             [0.0, 500.0],
         ]];
-        let solid = revolve_rings_profile_faceted_inflated(profile, 180.0, 0.0).unwrap();
+        let solid = revolve_rings_primitive(profile, 180.0, 0.0).unwrap();
         let rvm_volume = 160_726_996.3865;
         assert!((solid.volume() - rvm_volume).abs() / rvm_volume < 0.0001);
     }

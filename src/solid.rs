@@ -503,16 +503,64 @@ pub fn circ_torus_solid_with_segments(
 /// 出平面基向量同时取反，保住右手系），而不是去裁轮廓。
 ///
 /// 对标 Core3D `CSG_BasicREV::getPrimGeom`(0x107270c0 → `sub_1071C4F0`)（活桥反编译，
-/// 7UW4 §3.7.5）：外环 `gm_CreateRevolution`、其余环 `gm_AddCurve` 作孔。两处**有意与
-/// libgm 分歧**，都因 manifold 自带几何内核、无需复刻 libgm 的实现约束（planning §1.1）：
-/// 1. libgm 单次回转扫角 ≤180°，>180° 拆两段各建再 `gm_CreateCombination(1)` 并起来；
-///    manifold 的 `revolve` 一次能到 360°，本 crate 不拆分。
+/// 7UW4 §3.7.5）：外环 `gm_CreateRevolution`、其余环 `gm_AddCurve` 作孔。
+///
+/// 1. libgm 单次回转扫角 ≤180°，>180° 拆两段各建再 `gm_CreateCombination(1)` 并起来，**两段各按自己的
+///    扫角定段数**；E3D 的 RVM 驱动照两段写两条面片（见 [`revolution_is_split`]）。这条规则只属于**回转图元**
+///    （设计 REVO / NREV、目录 SREV：[`revolve_rings_primitive`] 与 [`revolve_rings_profile_faceted_parts`]）；本函数与
+///    [`revolve_rings_profile_faceted`]（型材沿弧 SPINE 的扫掠、目录 NSRE 刀）仍按整段一次定段数，一块建到 360°。
 /// 2. libgm 负角走 `off = 180` 起始相位偏移；本 crate 改为按 |ANGL| 正扫后整体回转
 ///    −|ANGL|（几何等价于镜像象限，见 `swept_solid_grown`）。partial 负回转的起始
 ///    相位尚无 RVM 数据坐实——ams1112 仅 2 件 NREV 且为坏数据；出现可对拍的 partial
 ///    负回转再核 `off` 约定。
 pub fn revolve_rings(rings: Vec<Vec<[f64; 2]>>, angle_deg: f64) -> Result<Manifold, SolidError> {
-    revolve_rings_grown(rings, angle_deg, 0.0, false)
+    revolve_rings_grown(rings, angle_deg, 0.0, false, false)
+}
+
+/// libgm `gm_CreateRevolution` 一次只扫 ≤ 180°：扫角超过 180° 的回转拆成两段各扫 ANGL/2。
+/// E3D 的 RVM 驱动把这两段写成两条 `FacetGroup`（记录矩阵相同）：ams8000 28 只接线盒的整圈 SREV
+/// 各 180°；aps250209 `/AREA07-CV_0001/Belt` REVO 2 的 190° 拆成 95° + 95°、`/AREA05-CV_0001/Belt`
+/// REVO 4 的 210° 拆成 105° + 105°（每半段 5 步）；180° 整的（同库 REVO 4 of `/AREA07-CV_0001/Belt`）一条。
+pub fn revolution_is_split(angle_deg: f64) -> bool {
+    angle_deg.abs() > 180.0 + 1e-6
+}
+
+/// 回转**图元**（设计 REVO / NREV、目录 SREV）的整体：libgm `gm_CreateRevolution` 的格——扫角超过 180° 时两段各按自己的
+/// 扫角定段数、并起来是均匀的 2n 步（190° 的环 R=409.75：两段各 5 步 = 10 步 19°，整段一次算是 9 步 21.1°）；体仍是一块。
+/// `grow` 是负体的剖面外扩（见 [`revolve_rings_inflated`]）。
+///
+/// 型材沿弧 SPINE 的扫掠（`section`）与目录 NSRE 刀不走这条：E3D 的 `DB_Gensec` 扫掠自己按整段定段数，aps250110 /
+/// aps250112 的钢筋箍（整圈弧 SPINE 的 GENSEC）按整段一次算的段数才对得上（按两段铺会偏 5.7–6.2 mm），它们照旧走
+/// [`revolve_rings_profile_faceted`]。
+pub fn revolve_rings_primitive(
+    rings: Vec<Vec<[f64; 2]>>,
+    angle_deg: f64,
+    grow: f64,
+) -> Result<Manifold, SolidError> {
+    revolve_rings_grown(rings, angle_deg, grow, true, true)
+}
+
+/// 回转图元照 libgm 的拆法交出**记录单位**：扫角 ≤ 180° 一块；超过的两块各扫 ANGL/2，第二块从第一块的
+/// 终面接着扫（第一块绕回转轴——局部 X——再转 ANGL/2）。两块合起来与 [`revolve_rings_primitive`]
+/// 建的整体逐点相同（同一张 2n 步的格）。
+///
+/// 顺序照 E3D 的写出顺序：正角先写从剖面平面起的那半；负角（目录 SREV 的 `PANG = −360`）E3D 先写的是
+/// 朝 +Z 的那半，即本 crate 镜像约定下后扫出来的那块，所以负角两块对调。partial 负回转同样没有样本。
+pub fn revolve_rings_profile_faceted_parts(
+    rings: Vec<Vec<[f64; 2]>>,
+    angle_deg: f64,
+) -> Result<Vec<Manifold>, SolidError> {
+    if !revolution_is_split(angle_deg) {
+        return Ok(vec![revolve_rings_grown(rings, angle_deg, 0.0, true, true)?]);
+    }
+    let half = angle_deg / 2.0;
+    let first = revolve_rings_grown(rings, half, 0.0, true, true)?;
+    let second = placed(&first, DMat4::from_rotation_x(half.to_radians()));
+    Ok(if angle_deg < 0.0 {
+        vec![second, first]
+    } else {
+        vec![first, second]
+    })
 }
 
 /// Catalogue SREV is exported as a baked profile FacetGroup and therefore
@@ -521,7 +569,7 @@ pub fn revolve_rings_profile_faceted(
     rings: Vec<Vec<[f64; 2]>>,
     angle_deg: f64,
 ) -> Result<Manifold, SolidError> {
-    revolve_rings_grown(rings, angle_deg, 0.0, true)
+    revolve_rings_grown(rings, angle_deg, 0.0, true, false)
 }
 
 /// 负体版回转：剖面在（半径, 轴向）平面里 miter offset 外扩 `grow` 再回转。
@@ -533,24 +581,16 @@ pub fn revolve_rings_inflated(
     angle_deg: f64,
     grow: f64,
 ) -> Result<Manifold, SolidError> {
-    revolve_rings_grown(rings, angle_deg, grow, false)
+    revolve_rings_grown(rings, angle_deg, grow, false, false)
 }
 
-/// Design REVO/NREV use the baked profile grid, with the same negative
-/// profile offset as other boolean operands.
-pub fn revolve_rings_profile_faceted_inflated(
-    rings: Vec<Vec<[f64; 2]>>,
-    angle_deg: f64,
-    grow: f64,
-) -> Result<Manifold, SolidError> {
-    revolve_rings_grown(rings, angle_deg, grow, true)
-}
-
+/// `split_grid`：扫角超过 180° 时按 libgm 拆两段的格铺（回转图元）；否则整段一次定段数（型材弧扫掠、NSRE 刀）。
 fn revolve_rings_grown(
     mut rings: Vec<Vec<[f64; 2]>>,
     angle_deg: f64,
     grow: f64,
     profile_faceted: bool,
+    split_grid: bool,
 ) -> Result<Manifold, SolidError> {
     const WHAT: &str = "revolution";
     if rings.is_empty() || rings[0].len() < 3 {
@@ -598,7 +638,20 @@ fn revolve_rings_grown(
         }
     }
 
-    let segments = profile_faceted.then(|| negative_part_rev_segments(max_radius, angle_deg));
+    // 回转图元扫角超过 180° 时 libgm 拆两段各建、各按自己的扫角定段数（见 [`revolution_is_split`]）：
+    // 这里一次扫完，但步数取两段之和，角度格与拆开建的逐点相同。
+    let segments = if split_grid && revolution_is_split(angle_deg) {
+        let half = angle_deg / 2.0;
+        Some(
+            2 * if profile_faceted {
+                negative_part_rev_segments(max_radius, half)
+            } else {
+                part_rev_segments(max_radius, half)
+            },
+        )
+    } else {
+        profile_faceted.then(|| negative_part_rev_segments(max_radius, angle_deg))
+    };
     let solid = swept_solid_grown(rings, max_radius, angle_deg, grow, segments, WHAT)?;
     // manifold 交回来的是「轴在 +Z、半径铺在 XY」。摆回局部系：
     // +X → 局部 +Y（半径方向），+Y → 出平面，+Z → 局部 +X（回转轴）。
@@ -2103,6 +2156,58 @@ mod tests {
         assert!((bb.min()[0] + h / 2.0).abs() < 1e-9, "{:?}", bb.min());
         assert!((bb.max()[0] - h / 2.0).abs() < 1e-9, "{:?}", bb.max());
         assert!((bb.max()[1] - rout).abs() < 1e-9, "{:?}", bb.max());
+    }
+
+    /// libgm 一次只扫 ≤ 180°：aps250209 `/AREA07-CV_0001/Belt` REVO 2 的 190° 环（内 399.75 / 外 409.75，宽 762）
+    /// E3D 拆成 95° + 95° 各 5 步（10 mm 口径整圈 16 段），并起来是 10 步 19°；整段一次算是 9 步 21.1°，
+    /// 包围盒差 1.18 mm。整体与两块同一张格；180° 整的不拆；整圈的格不变（段数本就是 4 的倍数）。
+    #[test]
+    fn a_revolution_over_180_degrees_is_built_on_the_two_half_grid() {
+        let ring = vec![[-381.0, 399.75], [381.0, 399.75], [381.0, 409.75], [-381.0, 409.75]];
+        let whole = revolve_rings_primitive(vec![ring.clone()], 190.0, 0.0).unwrap();
+        // 型材弧扫掠 / NSRE 刀那条路照旧整段一次定段数：9 步。
+        assert_eq!(
+            revolve_rings_profile_faceted(vec![ring.clone()], 190.0).unwrap().num_tri(),
+            8 * 9 + 4
+        );
+        let parts = revolve_rings_profile_faceted_parts(vec![ring.clone()], 190.0).unwrap();
+        assert_eq!(parts.len(), 2);
+        // 矩形剖面：4 条边 × n 步 × 2 三角 + 两端盖各 2 三角。
+        assert_eq!(parts[0].num_tri(), 8 * 5 + 4, "每半段 5 步");
+        assert_eq!(parts[1].num_tri(), 8 * 5 + 4);
+        assert_eq!(whole.num_tri(), 8 * 10 + 4, "整体是两段的格并起来：10 步，不是 9");
+        let split_volume: f64 = parts.iter().map(Manifold::volume).sum();
+        assert!((split_volume - whole.volume()).abs() < 1e-9 * whole.volume());
+        // 第二块从第一块的终面（95°）接着扫到 190°：绕 X 的角（从 +Y 向 +Z）落在 [95, 190]。
+        let angles = |solid: &Manifold| {
+            let mut out: Vec<f64> = crate::mesh::TriMesh::from_manifold(solid)
+                .vertices
+                .iter()
+                .map(|p| p[2].atan2(p[1]).to_degrees())
+                .map(|a| if a < -1e-9 { a + 360.0 } else { a })
+                .collect();
+            out.sort_by(f64::total_cmp);
+            out.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
+            out
+        };
+        let first = angles(&parts[0]);
+        let second = angles(&parts[1]);
+        assert!((first[0]).abs() < 1e-9 && (first[first.len() - 1] - 95.0).abs() < 1e-9, "{first:?}");
+        assert!((second[0] - 95.0).abs() < 1e-9 && (second[second.len() - 1] - 190.0).abs() < 1e-9, "{second:?}");
+        assert_eq!(first.len(), 6);
+        assert!(first.windows(2).all(|w| (w[1] - w[0] - 19.0).abs() < 1e-9), "{first:?}");
+
+        assert_eq!(revolve_rings_profile_faceted_parts(vec![ring.clone()], 180.0).unwrap().len(), 1);
+        let full = revolve_rings_primitive(vec![ring.clone()], 360.0, 0.0).unwrap();
+        assert_eq!(full.num_tri(), 8 * 16, "整圈 16 段，没有端盖");
+        // ams8000 接线盒的 `PANG = −360`：E3D 先写朝 +Z 的那半。
+        let halves = revolve_rings_profile_faceted_parts(vec![ring], -360.0).unwrap();
+        assert_eq!(halves.len(), 2);
+        assert_eq!(halves[0].num_tri() + halves[1].num_tri(), 2 * (8 * 8 + 4));
+        let bb = halves[0].bounding_box().unwrap();
+        assert!(bb.min()[2] > -1e-6 && bb.max()[2] > 400.0, "{:?} {:?}", bb.min(), bb.max());
+        let bb = halves[1].bounding_box().unwrap();
+        assert!(bb.max()[2] < 1e-6 && bb.min()[2] < -400.0, "{:?} {:?}", bb.min(), bb.max());
     }
 
     /// 轮廓整条落在轴的 −Y 侧时不许去裁轮廓，而是把标架绕轴翻 180°：
