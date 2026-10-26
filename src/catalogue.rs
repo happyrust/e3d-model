@@ -18,8 +18,8 @@ use e3d_io::record::catalogue_eval::AttributeNumber;
 use e3d_io::record::descriptor::DescriptorValue;
 
 use crate::catalogue_point::{
-    CatalogueAxis, catalogue_component, catalogue_entry_attribute, catalogue_point_local,
-    resolve_catalogue_axis,
+    CatalogueAxis, CataloguePointSet, catalogue_component, catalogue_entry_attribute,
+    catalogue_point_local, catalogue_point_set, point_set_of_component, resolve_catalogue_axis,
 };
 use crate::category::{RepreDiscipline, repre_discipline};
 use crate::discretise::{FilletVertex, flatten_ring};
@@ -619,6 +619,33 @@ pub struct CatalogueMemberBuild {
     /// GMRE、3 只 FTUB 没有 SPRE、1 只 FTUB 的 LCYL 零高——几何结论全对，报告里却一笔都
     /// 没有，从报告上看不出是有意不画还是漏了。有形状时恒为 `None`。
     pub no_shape: Option<String>,
+    /// 成员的目录 P 点集：与几何同一个目录件、同一套求值（[`catalogue_point_set`] 的口径），
+    /// **有没有几何都给**——没有目录链是 `Some(缺省值)`（`component` 为 `None`），目录件没有 GMRE、
+    /// 图元全被筛掉、零尺寸的件照样有点（ATTA 的 P1 / P2 定着两侧管身）。只有 P 点集本身读坏
+    /// 才是 `None`，原因进 `diagnostics`：P 点解不出不许拖垮几何（ptset 分表计划 W1）。
+    pub point_set: Option<CataloguePointSet>,
+}
+
+/// 成员的 P 点集；读坏了记一条 `diagnostics`、给 `None`，不让成员进 `failed`。
+/// 目录件已解到手就只走后半（[`point_set_of_component`]），没有就整条链重走一遍。
+fn member_point_set(
+    member: &DbElement,
+    component: Option<&DbElement>,
+    diagnostics: &mut Vec<String>,
+) -> Option<CataloguePointSet> {
+    let result = match component {
+        Some(component) => point_set_of_component(member, component),
+        None => catalogue_point_set(member),
+    };
+    match result {
+        Ok(set) => Some(set),
+        Err(error) => {
+            diagnostics.push(format!(
+                "P 点集没读出来（几何照出，pe_ptset 这一件没有行）：{error}"
+            ));
+            None
+        }
+    }
 }
 
 /// 表现级（`REPRESENTATION LEVEL …`）按学科分六档，见 [`RepreDiscipline`]。
@@ -908,8 +935,9 @@ pub fn model_catalogue_member_with_cache(
     // HVAC representation levels E3D also emits the catalogue's level-specific
     // primitives, so bypassing the catalogue would silently drop them.
     if repre_level_of(member)? == 0
-        && let Some(build) = model_hvac_rectangular_basic(member)?
+        && let Some(mut build) = model_hvac_rectangular_basic(member)?
     {
+        build.point_set = member_point_set(member, None, &mut build.diagnostics);
         return Ok(build);
     }
     let chain = crate::perf::cat_chain_scope();
@@ -930,14 +958,19 @@ pub fn model_catalogue_member_with_cache(
             generated: None,
             diagnostics: Vec::new(),
             no_shape: Some(no_shape),
+            point_set: Some(CataloguePointSet::default()),
         });
     };
+    // P 点与几何同一个目录件：先解点集，几何的各条退路都把它带上。
+    let mut diagnostics = Vec::new();
+    let point_set = member_point_set(member, Some(&component), &mut diagnostics);
     let Some(geometry) = component.get_element(GEOMETRY_REF)? else {
         // 目录件没有 GMRE 就是「按设计不画」——MDS 支撑参考（`/SPECIAL.500`，PTSE
         // `/PTSE-NODRAW`）整族如此，E3D 一件都不画。
         return Ok(CatalogueMemberBuild {
             generated: None,
-            diagnostics: Vec::new(),
+            diagnostics,
+            point_set,
             no_shape: Some(format!(
                 "目录件 {}{} 无 GMRE：按设计不画，无几何",
                 component.refno(),
@@ -969,7 +1002,6 @@ pub fn model_catalogue_member_with_cache(
     // 过滤记录与 diagnostics 分开收：`failed` 的账目 = diagnostics.len()，
     // 被表现级筛掉不是失败，不能混进去。
     let mut display_filter_notes = Vec::new();
-    let mut diagnostics = Vec::new();
     let mut saw_display_primitive = false;
     // 表现级按成员的学科取（MODCMP：管道构件 `LEVEL PIPE`、风管 `LEVEL HVAC`…），整只成员一个数。
     let member_discipline = repre_discipline_of(member)?;
@@ -1621,6 +1653,7 @@ pub fn model_catalogue_member_with_cache(
             generated: None,
             diagnostics,
             no_shape: Some(no_shape),
+            point_set,
         });
     }
 
@@ -1685,6 +1718,7 @@ pub fn model_catalogue_member_with_cache(
                         component.refno(),
                         geometry.refno(),
                     )),
+                    point_set,
                 });
             }
         }
@@ -1804,6 +1838,7 @@ pub fn model_catalogue_member_with_cache(
             notes,
         }),
         diagnostics,
+        point_set,
     })
 }
 
@@ -2020,6 +2055,8 @@ fn model_hvac_rectangular_basic(
         }),
         diagnostics: Vec::new(),
         no_shape: None,
+        // 调用方（`model_catalogue_member_with_cache`）补：这条捷径没解目录件，P 点要整条链走一遍。
+        point_set: None,
     }))
 }
 

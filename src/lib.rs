@@ -74,8 +74,8 @@ pub use catalogue::{
     model_catalogue_member_with_cache,
 };
 pub use catalogue_point::{
-    CataloguePoint, CataloguePointSet, CataloguePoints, UnresolvedCataloguePoint,
-    catalogue_point_set,
+    CataloguePoint, CataloguePointSet, CataloguePoints, MemberPointSet, PTSET_EVAL_VERSION,
+    UnresolvedCataloguePoint, catalogue_point_set,
 };
 pub use category::{
     BuildDisposition, Category, CompositeFamily, NounDecision, classify, decision,

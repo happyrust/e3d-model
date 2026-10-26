@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-10-27 目录 P 点随生成交出（`GenerationOutcome::point_sets`）+ E3D 真值门——1471 个点逐个对上 PPOS / PDIR / PPBORE
+
+- gen-model 的 `pe_ptset` 分表要每个 BRAN / HANG 成员的 P 点与模型同代落行（`gen-model/docs/plans/2026-10-26-ptset-split-table-plan.md` W1）。
+  现在目录成员建几何时解到 SCOM 就顺手把 PTSE 整套点求出来（`catalogue_point::point_set_of_component`，与 `catalogue_point_set` 同一句求值），
+  `CatalogueMemberBuild::point_set` 带着它走完几何的每条退路，`pipeline` 按路由成员 / 类 28 NOZZ **每件一条**收进 `GenerationOutcome::point_sets`
+  （`MemberPointSet { refno, noun, set }`）——有没有几何都在：没有 GMRE 的 ATTA、被筛空的件、没有目录链的件（`component` 为 `None`）。
+  不进 `GeneratedElement`：没出几何的件在那里没有位置，而恰恰是 ATTA 的 P1 / P2 定着两侧管身；P 点集读坏只记 notes，不拖垮几何。
+  `PTSET_EVAL_VERSION = 1` 是求值规则的版本（gen-model 写进行的 `generator`）。`gen_ams` 多写 `point_sets.json`（`eval_version` + 逐成员，成员局部系）。
+- E3D 真值（`tests/fixtures/ptset/ams-ptset-truth-20261027.psv`，只读 TTY，gen-model `verification/civil-tty-20261021/ptset_truth.mac`）：AMS 8 个根
+  （ams8000 两条管道 BRAN + 带 VALV 的一条、ams7997 风管 `/-VES-E-4-L-2501` 136 件 + HANG + 带 NOZZ 的 SUBE、ams7999 1WCC 阀门 BRAN + HANG）
+  215 个直属成员 1471 个 P 点的 `PPOS[n]` / `PDIR[n]` / `PPBORE[n]`，坐标在成员自己的系（`.wrt(成员)`）。第一跑 1434 点里 1166 不对，两件事：
+  ① 通径：E3D 对 PBOR 未设（全零元组、`[0,1,0,0]`）/ 求出是 0 的点一律答 `Unset`（1149 个，没有一个 `0mm`），我们交 `Some(0.0)`。交出的点集改照
+  `PPBORE` 口径（`ppbore`：0 不是通径）；路由建管的 `RoutePoint::bore` 不动（`LIMPOK` 比的是数）。② P0：ZDJ `/NPHS-PIPIE-PTSE` 给 ATTA / PCLA 定了一只
+  `PTCA 0`，PTCD 写 `Y`，E3D 的 `PDIR[0]` 照样答构件 +Z、`PPOS[0]` 答原点——P0 是构件自己的原点与 +Z，不看目录（`catalogue_point_local_checked_at`）。
+  改完 `tests/ptset_real.rs` 202 件 1471 点 0 处不对（位置 1e-3 mm / 方向 1e-6 / 通径 1e-6），覆盖面也钉住：真值里每个路由成员 / NOZZ 都有一条、编号集合相同、
+  没有一点落 `unresolved`。这是 `tests/` 里第一条 P 点真值（此前只有 LEAV / ARRI 定的管身间接证明）。
+- 库 7000 在 ams000 / acp000 各有一份主文件，目录扫描分不出正身：门与 `output/s1_regress.py` 同样显式 `--catalogue ams7000_0001`，否则 ams7999 1WCC 的 FLAN / TEE / OLET 整件 failed。
+- 回归门 `w7v11` 对 `w7v10`、`w7v12` 对 `w7v11`（去掉 `owner` 一格后重跑）：V1–V5 / V7–V9 逐对 0 变化、总数同前；
+  V6 530 通过 / 0 失败（`w7v11` 里 `ancestor_reads_guard` 拒了 `build_catalogue_geometry` 沿 owner 链取属主那一读，`MemberPointSet` 因此不带 `owner`）；
+  aps7200 2352 / 2348 / chord 3 / off 1、aps250209 4623 / 4623、aps250212 6 / 6 同 `w7v10`。几何一件未动：P0 的规则也进了 LEAV / ARRI 与 `Pn` 轴，语料里没有件投靠它。
+
 ## 2026-10-26 四棱台记录照属性 / 目录参数直出——#7 第 3 类 6 只 Pyramid 的等价写法对上 E3D
 
 - 棱台的网格识别器认得出形状，但哪根边是「高」只能猜：偏心的平行六面体（风管 OFST / TAPER 的目录 LPYR）和底边为 0 的楔块（MDS 设计 PYRA）

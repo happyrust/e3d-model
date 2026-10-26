@@ -24,6 +24,8 @@
 //! - `<out>/elements.json`：逐元素不变量（体积/AABB/三角数/亏格/负体数）——
 //!   RVM 对拍就吃这个。
 //! - `<out>/report.json`：管线总账（skipped/failed/catalog/unsupported/unknown）。
+//! - `<out>/point_sets.json`：路由成员 / NOZZ 的目录 P 点集（[`GenerationOutcome::point_sets`]，成员局部系）——
+//!   `tests/ptset_real.rs` 的 E3D 真值门吃这个。
 
 use std::collections::BTreeMap;
 use std::io::Write as _;
@@ -607,6 +609,74 @@ struct ElementInvariants {
     negatives_skipped: usize,
 }
 
+/// `<out>/point_sets.json`：`eval_version` + 逐成员的 P 点集。
+#[derive(serde::Serialize)]
+struct PointSetsFile {
+    /// [`e3d_model::PTSET_EVAL_VERSION`]：gen-model 写进 `pe_ptset.generator` 的那个数。
+    eval_version: u32,
+    members: Vec<PointSetRecord>,
+}
+
+/// [`e3d_model::MemberPointSet`] 的落盘形状（glam 没开 serde，坐标手动展开）。
+#[derive(serde::Serialize)]
+struct PointSetRecord {
+    refno: String,
+    noun: String,
+    /// 目录件 / P 点集的 refno；`None` = 没有目录链 / 目录件没有 PTRE。
+    component: Option<String>,
+    point_set: Option<String>,
+    /// 按 PTSE 成员序；位置 / 方向在成员局部系（mm；方向已归一）。
+    points: Vec<PointRecord>,
+    unresolved: Vec<UnresolvedPointRecord>,
+}
+
+#[derive(serde::Serialize)]
+struct PointRecord {
+    number: u32,
+    noun: String,
+    pos: [f64; 3],
+    dir: [f64; 3],
+    bore: Option<f64>,
+}
+
+#[derive(serde::Serialize)]
+struct UnresolvedPointRecord {
+    number: u32,
+    reason: String,
+}
+
+impl From<e3d_model::MemberPointSet> for PointSetRecord {
+    fn from(member: e3d_model::MemberPointSet) -> Self {
+        Self {
+            refno: member.refno.to_string(),
+            noun: member.noun,
+            component: member.set.component.map(|refno| refno.to_string()),
+            point_set: member.set.point_set.map(|refno| refno.to_string()),
+            points: member
+                .set
+                .points
+                .into_iter()
+                .map(|point| PointRecord {
+                    number: point.number,
+                    noun: point.noun,
+                    pos: point.pos.to_array(),
+                    dir: point.dir.to_array(),
+                    bore: point.bore,
+                })
+                .collect(),
+            unresolved: member
+                .set
+                .unresolved
+                .into_iter()
+                .map(|point| UnresolvedPointRecord {
+                    number: point.number,
+                    reason: point.reason,
+                })
+                .collect(),
+        }
+    }
+}
+
 #[derive(serde::Serialize)]
 struct ComponentInvariants {
     volume_mm3: f64,
@@ -899,6 +969,7 @@ fn main() -> anyhow::Result<()> {
 
     let mut merged = Report::default();
     let mut invariants = Vec::new();
+    let mut point_set_records: Vec<PointSetRecord> = Vec::new();
     // 生成侧 RVM 的成员表。0 号是根容器（平移全 0，只提供层级），元素全挂在它下面。
     // E3D 会把 SITE/ZONE/PIPE 祖先一并导出来，我们暂时只给一层——`rvm_compare` 的
     // 主键只用成员名，不看祖先层数（见 `Key` / `owner_key`）。
@@ -981,8 +1052,10 @@ fn main() -> anyhow::Result<()> {
             report,
             marks,
             bodyless,
+            point_sets,
             ..
         } = generated_root?;
+        point_set_records.extend(point_sets.into_iter().map(PointSetRecord::from));
         if let Some((
             noun,
             name,
@@ -1583,6 +1656,13 @@ fn main() -> anyhow::Result<()> {
 
     let elements_path = args.out.join("elements.json");
     std::fs::write(&elements_path, serde_json::to_vec_pretty(&invariants)?)?;
+    std::fs::write(
+        args.out.join("point_sets.json"),
+        serde_json::to_vec_pretty(&PointSetsFile {
+            eval_version: e3d_model::PTSET_EVAL_VERSION,
+            members: point_set_records,
+        })?,
+    )?;
     if args.rvm {
         let rvm_path = args.out.join("generated.rvm");
         let file = e3d_model::rvm_read::RvmFile {

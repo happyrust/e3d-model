@@ -192,6 +192,26 @@ pub struct CataloguePointSet {
     pub unresolved: Vec<UnresolvedCataloguePoint>,
 }
 
+/// P 点求值规则的版本。gen-model 把它写在 `pe_ptset` 行上（`generator`），补扫按它认出该重算的旧行
+/// （`gen-model/docs/plans/2026-10-26-ptset-split-table-plan.md` D4）。**只在求出来的数会变时加一**：
+/// PTCD / PAXI 解码、`cartesian` 的缺省方向、`SLODIR`、[`number_of`] 的零元组约定、`Pn` 轴的递归；
+/// 字段形状、报告措辞、`unresolved` 的原因文本变了不动它。
+pub const PTSET_EVAL_VERSION: u32 = 1;
+
+/// 一个设计成员随生成交出的 P 点集（[`crate::pipeline::GenerationOutcome::point_sets`]）。
+///
+/// 有没有几何都有一条：ATTA 的目录件多半没有 GMRE，但它的 P1 / P2 定着两侧管身的端点，
+/// 算长度的查询（`fn::bran_comp_len`）要每一件都有。`set.component` 为 `None` = 这件没有目录链。
+///
+/// 没有属主一格：那要沿 owner 链上溯（`ancestor_reads_guard` 要求登记增量怎么覆盖），而 gen-model 落行用的是生成根
+/// （`pe_ptset.root`），直属属主它自己的 `pe` 行上有。
+#[derive(Debug, Clone, PartialEq)]
+pub struct MemberPointSet {
+    pub refno: e3d_io::refno::RefNo,
+    pub noun: String,
+    pub set: CataloguePointSet,
+}
+
 /// Enumerate every catalogue P point of `member` (the E3D `PTSET` the
 /// measurement / snapping UIs list), each in the member's local frame.
 ///
@@ -214,6 +234,16 @@ pub fn catalogue_point_set(member: &DbElement) -> Result<CataloguePointSet, DbEl
     let Some(component) = component else {
         return Ok(CataloguePointSet::default());
     };
+    point_set_of_component(member, &component)
+}
+
+/// [`catalogue_point_set`] 的后半：目录件已经在手上（[`crate::catalogue`] 建几何时就解到了 SCOM，
+/// 顺手把 P 点一并交出，不再走一遍 `SPRE → … → SCOM`），只走 `PTRE → PTSE` 逐点求值。
+/// 返回值的口径与 [`catalogue_point_set`] 完全相同。
+pub(crate) fn point_set_of_component(
+    member: &DbElement,
+    component: &DbElement,
+) -> Result<CataloguePointSet, DbElementError> {
     let set = match component.get_element(POINT_SET_REF) {
         Ok(set) => set,
         Err(DbElementError::UnknownAttribute { .. }) => None,
@@ -234,13 +264,13 @@ pub fn catalogue_point_set(member: &DbElement) -> Result<CataloguePointSet, DbEl
         let Some(number) = point_number(&point) else {
             continue;
         };
-        match catalogue_point_local_checked(member, &component, number)? {
+        match catalogue_point_local_checked(member, component, number)? {
             Ok(local) => out.points.push(CataloguePoint {
                 number,
                 noun: point.element_type()?,
                 pos: local.pos,
                 dir: local.dir,
-                bore: local.bore,
+                bore: ppbore(local.bore),
             }),
             Err(failure) => out.unresolved.push(UnresolvedCataloguePoint {
                 number,
@@ -249,6 +279,14 @@ pub fn catalogue_point_set(member: &DbElement) -> Result<CataloguePointSet, DbEl
         }
     }
     Ok(out)
+}
+
+/// E3D 设计级 `PPBORE[n]` 的口径：PBOR 未设（全零元组、`[0, 1, 0, 0]`）与求出来是 0 的点一律答 `Unset`——
+/// AMS 8 个根 1471 个点里 1149 个 `Unset`、没有一个 `0mm`（`tests/fixtures/ptset/`，ATTA / FTUB / STRT 的
+/// 标记点全在此列）。交出去的点集照它：0 不是通径。路由建管的 [`RoutePoint::bore`] **不动**：Core 的
+/// `LIMPOK` 比的是数（`fabs(a − b) < 0.005`），0 要参加比较，见 [`crate::route::bore_mismatch`]。
+fn ppbore(bore: Option<f64>) -> Option<f64> {
+    bore.filter(|bore| *bore > 0.0)
 }
 
 impl PPointResolver for CataloguePoints {
@@ -416,6 +454,16 @@ fn catalogue_point_local_checked_at(
     number: u32,
     depth: usize,
 ) -> Result<Result<RoutePoint, CatalogueAxisFailure>, DbElementError> {
+    // P0 是构件自己的原点，方向是构件的 +Z，**不看目录**：ZDJ `/NPHS-PIPIE-PTSE`（`23984/100540`）给 ATTA / PCLA
+    // 定了一只 `PTCA 0`，PTCD 写的是 `Y`，E3D 的 `PDIR[0]` 照样答局部 +Z、`PPOS[0]` 答原点、`PPBORE[0]` 答 Unset
+    // （ams7999 `24383/66540` / `24383/68783`、ams8000 `24384/26234` / `26235`，`tests/fixtures/ptset/`）。
+    if number == 0 {
+        return Ok(Ok(RoutePoint {
+            pos: DVec3::ZERO,
+            dir: DVec3::Z,
+            bore: None,
+        }));
+    }
     let point = match point_numbered(component, number)? {
         Ok(point) => point,
         Err(failure) => return Ok(Err(failure)),

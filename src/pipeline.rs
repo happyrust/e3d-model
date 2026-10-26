@@ -35,7 +35,7 @@ use crate::cable_tray::{self, is_cable_tray_element};
 use crate::catalogue::{
     CatalogueMeshCache, CatalogueMeshCacheStats, model_catalogue_member_with_cache,
 };
-use crate::catalogue_point::{CataloguePoints, tube_outer_diameter_from_stub};
+use crate::catalogue_point::{CataloguePoints, MemberPointSet, tube_outer_diameter_from_stub};
 use crate::category::{
     BuildDisposition, Category, CompositeFamily, RouteDiscipline, decision, derives_implied_tubes,
     enters_catalogue_by_catref, graphics_ignored_below, is_handrail_member, is_model_unit,
@@ -429,6 +429,15 @@ pub struct GenerationOutcome {
     /// ——它们不是目录依赖；目录局部网格缓存命中的目录件**不会再被读**，因此也不在这里——
     /// 要一根完整的目录实读集，给它一个空的 [`CatalogueMeshCache`]。
     pub catalogue_visited: Vec<RefNo>,
+    /// 路由成员（BRAN / HANG 等容器的直属管件，[`Category::RouteMember`]）与类 28 的 `NOZZ` 的目录 P 点集，
+    /// 按遍历序、**每件一条**，与几何同一次求值（同一个目录件、同一个 `DbSet`）。有没有几何都在：
+    /// 没有 GMRE 的 ATTA、被表现级筛空的件、没有目录链的件（`set.component` 为 `None`）照样有一条；
+    /// 只有整件 `failed`、或 P 点集本身读坏（原因在 [`Report::notes`]）的没有。
+    ///
+    /// gen-model 的 `pe_ptset` 分表就由它在发布路径里同步落行（`docs/plans/2026-10-26-ptset-split-table-plan.md`）；
+    /// 求值规则的版本是 [`crate::catalogue_point::PTSET_EVAL_VERSION`]。不进 [`GeneratedElement`]：没出几何的
+    /// 件在那里没有位置，而恰恰是它们（ATTA）定着两侧管身的端点。
+    pub point_sets: Vec<MemberPointSet>,
 }
 
 /// 从 `root` 起 DFS 生成整棵子树。遍历中的 I/O 错误（读不到成员表）直接上抛——
@@ -448,6 +457,7 @@ pub fn generate_subtree_with_cache(
     let mut elements = Vec::new();
     let mut marks = Vec::new();
     let mut bodyless = Vec::new();
+    let mut point_sets = Vec::new();
     let mut report = Report::default();
     let mut visited = Vec::new();
     let cache_stats_before = catalogue_mesh_cache.stats();
@@ -658,6 +668,7 @@ pub fn generate_subtree_with_cache(
                     catalogue_mesh_cache,
                     &mut report,
                     &mut elements,
+                    &mut point_sets,
                 );
             }
             // 类 28 的 `NOZZ` 与路由成员**几何同源**：实体都是目录件 GMRE 的求值结果，
@@ -675,6 +686,7 @@ pub fn generate_subtree_with_cache(
                     catalogue_mesh_cache,
                     &mut report,
                     &mut elements,
+                    &mut point_sets,
                 );
             }
             Category::PrimitiveContainer => {
@@ -842,6 +854,7 @@ pub fn generate_subtree_with_cache(
     );
     let catalogue_visited = catalogue_reads(&set, root_dbno, read_trace.finish());
     Ok(GenerationOutcome {
+        point_sets,
         elements,
         report,
         marks,
@@ -1004,6 +1017,7 @@ fn build_catalogue_geometry(
     cache: &mut CatalogueMeshCache,
     report: &mut Report,
     elements: &mut Vec<GeneratedElement>,
+    point_sets: &mut Vec<MemberPointSet>,
 ) {
     match model_catalogue_member_with_cache(el, cache) {
         Ok(build) => {
@@ -1012,6 +1026,15 @@ fn build_catalogue_geometry(
                     refno: refno.to_string(),
                     noun: noun.to_string(),
                     detail: detail.clone(),
+                });
+            }
+            // P 点集不看几何结局：有形状、没形状、没目录链都交一条（[`GenerationOutcome::point_sets`]）。
+            // 读坏的那一条已经在上面的 diagnostics 里点了名。
+            if let Some(set) = build.point_set {
+                point_sets.push(MemberPointSet {
+                    refno: el.refno(),
+                    noun: noun.to_string(),
+                    set,
                 });
             }
             match build.generated {
