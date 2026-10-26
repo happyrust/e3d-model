@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-10-26 零长 SCTN 名下的 SNOD→SJOI 记 skipped 不记 failed——一只坑连带整根不发的口径改正
+
+- ams7330 `/MDS/SPECIALS/PIPE/3`、`/4` 两框各有一根 POSS 与 POSE 重合的 `SCTN`（`23714/1011`、`23714/1025`，轴长 0 mm），名下
+  `SNOD`→`SJOI`（`23714/1013`、`23714/1027`）。零长截面本身一直记 skipped（`SectionBody::NoShape`），但关节从宿主轴架现算标架
+  （`section_axis_frame`）时拿到 `Degenerate`，按伪属性现算失败记进 `failed`。gen_ams 自己无所谓（整库照出），gen-model 服务端却按
+  「根上有 failed 就整根不发」处置：2026-10-26 线上 7330 初始化回执里这两框的 STRU / FRMW 四根 failed、0 条记录，同框好杆件
+  `23714/1001` / `1024` / `1029` 一并没了，整库还因此判 lagging。
+- E3D 真值：TTY 整库 RVM 导出（`mds_xfr_lv6_23714_1.rvm`，`/MDS/SPECIALS` 整棵）里零长 SCTN 与其 SNOD→SJOI 都没有图元，同框杆件逐件
+  exact（`only_baseline` 0）——这是数据条件，不是求值失败，按本库「E3D 同样不出几何才记 skipped」的规则该记 skipped。
+- 改法：`section::section_axis_frame` 与 `placement_between` 同一套分法（有限不超 0.001 门报 `EmptyLength`，非有限才是 `Degenerate`）；
+  `transform::section_host_without_axis` 认 SCTN 名下 SNOD 与 SNOD 名下 SJOI 两种拓扑，宿主 `EmptyLength` 时交出理由；
+  `elmodl::model_element_with_cache` 在目录件那条臂之前把它们记 `Skipped(NoShape)`。只认有真值样本的这两种；FITT / CMFI 在零长 SCTN 上没有语料，不外推；
+  非有限长度照旧走 failed。几何不动。
+- 门：库内 `elmodl::tests::snod_joints_on_a_zero_length_section_are_no_shape_not_failed`（两只零长宿主上的 SJOI 要落 no-shape 并点名宿主；
+  反面 ams7324 `SJOI 23708/2412` 照旧出实体）；真库门 `tests/zero_length_section_joint_real.rs`（`gen_ams --root 23714/998`、`23714/1023`：
+  `failed` 为空、关节在 skipped、同框杆件照出），对着改前的三个文件跑它确实红。回归门 `w7v9` 对 `w7v8`：V1–V5、V7–V9 逐对 0 变化（ams7330 仍 959 / 959，这两只关节本来就不出件），
+  V6 526 → 528 通过 / 0 失败；aps7200 2352 / 2348 / chord 3 / off 1、aps250209 4623 / 4623、aps250212 6 / 6 同 `w7v8`。
+
 ## 2026-10-25 扣过负体的面片两遍生成逐字节相同——近共面吸附的面表改有序桶（#9）
 
 - 同一个二进制、同一份数据连跑两遍，ams7997 `EQUI /Copy-of-1RCS000BA-BODY-NEW` `SUBE 8` 下六只扣过负体的 CYLI 里有五只三角剖分不同

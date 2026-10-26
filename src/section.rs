@@ -1123,8 +1123,10 @@ fn fitting_mount_frame(
 /// 自旋——`SNOD` 的 `ZDIS` 这类沿轴度量在绕 Z 自旋下不变，用不到目录链，读不到目录
 /// 的截面也不该因此丢标架。
 ///
-/// 原点 `POSS`、Z = `unit(POSE − POSS)`、绕 Z 旋 `BANG`。退化轴（`≤0.001`、非有限）报
-/// [`SectionError::Degenerate`]，与 [`section_fitting_placement`] 同口径。
+/// 原点 `POSS`、Z = `unit(POSE − POSS)`、绕 Z 旋 `BANG`。退化轴与 [`placement_between`] 同一套分法：
+/// 有限但不超 GTDIRS 的 `0.001` 门报 [`SectionError::EmptyLength`]（POSS 与 POSE 重合——这根没有轴，也就没有
+/// 截面实体，是数据条件），非有限报 [`SectionError::Degenerate`]（坏数据）。名下 SNOD / SJOI 的现算标架靠这个区分
+/// 把「宿主没有轴」记成 no-shape 而不是 failed（[`crate::transform::section_host_without_axis`]）。
 pub fn section_axis_frame(section: &DbElement) -> Result<DMat4, SectionError> {
     let poss = section
         .get_position("POSS")?
@@ -1136,7 +1138,14 @@ pub fn section_axis_frame(section: &DbElement) -> Result<DMat4, SectionError> {
         .unwrap_or(poss);
     let axis = pose - poss;
     let length = axis.length();
-    if !length.is_finite() || length <= 0.001 {
+    if length.is_finite() && length <= 0.001 {
+        return Err(SectionError::EmptyLength {
+            refno: section.refno().to_string(),
+            noun: "SCTN".into(),
+            length,
+        });
+    }
+    if !length.is_finite() {
         return Err(SectionError::Degenerate {
             refno: section.refno().to_string(),
             noun: "SCTN".into(),

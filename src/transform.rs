@@ -245,6 +245,35 @@ fn implicit_world(el: &DbElement) -> Result<Option<DMat4>, DbElementError> {
     }
 }
 
+/// SCTN 名下的 `SNOD`、或 SNOD 名下的 `SJOI`，宿主没有轴（`POSS` 与 `POSE` 重合，GTDIRS 的 0.001 mm 门）时
+/// 的「不出几何」理由；其它元素、或宿主有轴时交 `None`。
+///
+/// 节点与关节的标架都从宿主轴架现算（[`ImplicitFrame::SectionNode`] / [`ImplicitFrame::SectionJoint`]），轴长为零
+/// 就没有标架可算；E3D 同样一件不画。真值：ams7330 `/MDS/SPECIALS/PIPE/3`、`/4` 两框里零长的
+/// `SCTN 23714/1011`、`23714/1025` 连同名下 `SNOD`→`SJOI 23714/1013`、`23714/1027`，TTY 整库 RVM 导出
+/// （`mds_xfr_lv6_23714_1.rvm`，`/MDS/SPECIALS` 整棵）里没有它们的任何图元，同框其它杆件 23714/1001 / 1024 / 1029
+/// 逐件 exact。所以这是数据条件不是求值失败，该记 skipped（no shape）而不是 failed——gen-model 服务端按 failed
+/// 整根丢弃，会把同框的好杆件一并丢掉（2026-10-26 线上 7330 初始化回执：这两框的 STRU / FRMW 四根 failed、0 条记录）。
+///
+/// 只认有真值样本的两种拓扑；FITT / CMFI 在零长 SCTN 上还没有语料，不外推。非有限长度仍是坏数据，
+/// 照旧走 failed。
+pub(crate) fn section_host_without_axis(el: &DbElement) -> Result<Option<String>, DbElementError> {
+    let host = match implicit_frame(el)? {
+        Some(ImplicitFrame::SectionNode(host)) => host,
+        Some(ImplicitFrame::SectionJoint { host, .. }) => host,
+        _ => return Ok(None),
+    };
+    match crate::section::section_axis_frame(&host) {
+        Err(crate::section::SectionError::EmptyLength { length, .. }) => Ok(Some(format!(
+            "宿主 {}（SCTN）轴 POSS→POSE 长 {length} mm 不超 GTDIRS 的 0.001 mm 门，没有轴架可算节点 / 关节标架；\
+             E3D 同样不出几何（ams7330 /MDS/SPECIALS/PIPE/3、/4 的 TTY 整库导出里零长 SCTN 与其 SNOD→SJOI 均无图元）",
+            host.refno()
+        ))),
+        Err(crate::section::SectionError::Db(error)) => Err(error),
+        Err(_) | Ok(_) => Ok(None),
+    }
+}
+
 /// 嵌套背板配件 SBFI 的世界标架：原点沿用母件原点，旋转见 [`sub_fitting_rotation`]。
 fn sub_fitting_world(parent: &DMat4, el: &DbElement) -> Result<DMat4, DbElementError> {
     let origin = parent.transform_point3(DVec3::ZERO);

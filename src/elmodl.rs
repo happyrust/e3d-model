@@ -526,6 +526,17 @@ pub fn model_element_with_cache(
     // （`transform::ImplicitFrame::SectionFitting`），`world_matrix` 已经给出；E3D 的 RVM
     // 给每只各开一组，梁 / 墙的组里只有本体。哪些 FITT 算单元由 `category::is_model_unit_of` 定。
     let noun = el.element_type()?;
+    // 零长 SCTN 名下的 SNOD / SJOI：没有轴架可算标架，E3D 也一件不画（真值见
+    // [`crate::transform::section_host_without_axis`]），是 no-shape 不是 failed。放在目录件那条臂
+    // 之前：SJOI 正是从那条臂进去的，在里面 `world_matrix` 一报就是整件 Err。
+    if matches!(noun.as_str(), "SNOD" | "SJOI")
+        && let Some(reason) = crate::transform::section_host_without_axis(el)?
+    {
+        return Ok(Modeled::Skipped {
+            kind: SkipKind::NoShape,
+            reason,
+        });
+    }
     if category == Category::RouteMember
         || (matches!(category, Category::Composite(CompositeFamily::CoreClass28))
             && crate::category::enters_catalogue_by_catref(&noun))
@@ -3976,6 +3987,81 @@ mod tests {
             "J-B 不许同时挂 skipped：{:?}",
             neighbor_generated.negatives_skipped
         );
+    }
+
+    /// 零长 SCTN 名下 SNOD 里的 `SJOI` 必须落 `Skipped(NoShape)`，不能落 `failed`。
+    ///
+    /// ams7330 `/MDS/SPECIALS/PIPE/3` 的 `SCTN 23714/1011` POSS 与 POSE 重合（轴长 0 mm），名下
+    /// `SNOD 23714/1012` → `SJOI 23714/1013`（`/PIPE/4` 同型：1025 → 1026 → 1027）；E3D 的 TTY 整库 RVM
+    /// 导出（`mds_xfr_lv6_23714_1.rvm`）里这些件都没有图元，同框 `23714/1001` / `1024` / `1029` exact。
+    /// 此前 SJOI 从宿主轴架现算标架时拿到 `Degenerate` 记成 failed，gen-model 服务端据此把整根丢弃
+    /// （2026-10-26 线上 7330 初始化：四根 failed、0 条记录，连 23714/1001 一起没了）。反面：ams7324 的
+    /// `SJOI 23708/2412`（MDS BS `/MDS/CT01/4-V1`，宿主有轴）照旧出实体，门只挡零长宿主。语料不在就跳过。
+    #[test]
+    fn snod_joints_on_a_zero_length_section_are_no_shape_not_failed() {
+        let ams = std::path::Path::new(r"D:\AVEVA\Projects\E3D3.1\AvevaMarineSample\ams000");
+        let acp = std::path::Path::new(r"D:\AVEVA\Projects\E3D3.1\AvevaCatalogue\acp000");
+        let template = std::path::Path::new(r"E:\reverse\e3d\shadow_e3d31_aps_all");
+        if !ams.join("ams7330_0001").exists()
+            || !ams.join("ams7324_0001").exists()
+            || !acp.exists()
+            || !template.join("attlib.dat").exists()
+        {
+            return;
+        }
+        let resolver = crate::db_discovery::DirectoryDbResolver::scan(
+            &[ams.to_path_buf(), acp.to_path_buf()],
+            template,
+        )
+        .unwrap();
+        let set = std::sync::Arc::new(
+            e3d_io::db_element::DbSet::with_attlib_file_and_resolver(
+                &template.join("attlib.dat"),
+                Box::new(resolver),
+            )
+            .unwrap(),
+        );
+        for db in ["ams7330_0001", "ams7324_0001"] {
+            set.add_db(e3d_io::db_element::DbFilePin {
+                file: ams.join(db),
+                template: e3d_io::db_element::template_file_for(template, "DESI").unwrap(),
+                db_type: Some("DESI".into()),
+                sesno: None,
+            })
+            .unwrap();
+        }
+        // 管线按元素定类别（`element_category`：带目录正体的关节按目录件建），这里照走同一条。
+        let category = |joint: &DbElement| {
+            crate::category::element_category(joint, crate::category::classify("SJOI"))
+                .expect("SJOI 定类别")
+        };
+        for (refno, host) in [
+            (RefNo::new(23714, 1013), "23714/1011"),
+            (RefNo::new(23714, 1027), "23714/1025"),
+        ] {
+            let joint = set.element(refno);
+            match model_element(&joint, category(&joint)).expect("零长宿主上的 SJOI 不该报错") {
+                Modeled::Skipped {
+                    kind: SkipKind::NoShape,
+                    reason,
+                } => assert!(
+                    reason.contains(host) && reason.contains("0.001 mm"),
+                    "{refno}: 理由要点名没有轴的宿主 {host}：{reason}"
+                ),
+                Modeled::Skipped { kind, reason } => {
+                    panic!("{refno}: 该记 no-shape，却记成 {kind:?}：{reason}")
+                }
+                Modeled::Solid(_) => panic!("{refno}: 零长宿主上的 SJOI 不该出实体"),
+            }
+        }
+        let joint = set.element(RefNo::new(23708, 2412));
+        match model_element(&joint, category(&joint)) {
+            Ok(Modeled::Solid(_)) => {}
+            Ok(Modeled::Skipped { kind, reason }) => {
+                panic!("有轴宿主上的 SJOI 23708/2412 照旧该出实体，却记成 {kind:?}：{reason}")
+            }
+            Err(error) => panic!("有轴宿主上的 SJOI 23708/2412 照旧该出实体，却报错：{error:#}"),
+        }
     }
 
     /// P7 守卫：SCTN 名下 `SNOD` 成员的 `SJOI` 目前全语料交不出一把刀
