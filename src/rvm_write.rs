@@ -562,6 +562,34 @@ pub fn analytic_from_primitive(
                 sagitta_mm,
             })
         }
+        AnalyticPrimitive::Pyramid { parameters } => {
+            let [xbot, ybot, xtop, ytop, _, _, height] = parameters;
+            if !(height > 0.0) || [xbot, ybot, xtop, ytop].iter().any(|side| *side < 0.0) {
+                return None;
+            }
+            // 参数照属性 / 目录原样写，矩阵是图元自己的标架；平面体没有弦高，网格就是精确形体。记录盒照真几何
+            // （与斜切圆柱同一条理由：E3D 给偏心棱台写的声明盒比实体小，见 [`Primitive::declared_box_mm`]）。
+            let primitive = Primitive::Pyramid(parameters);
+            let cols = world.to_cols_array();
+            let matrix3 = [
+                cols[0], cols[1], cols[2], cols[4], cols[5], cols[6], cols[8], cols[9], cols[10],
+            ]
+            .map(|value| value / M_TO_MM);
+            let record_bbox = primitive.local_aabb_mm()?;
+            Some(AnalyticCandidate {
+                geometry: RvmGeometry {
+                    tag: "PRIM".to_string(),
+                    flags: 1,
+                    primitive,
+                    matrix3,
+                    translation_mm: [cols[12], cols[13], cols[14]],
+                    record_bbox,
+                    bbox_frame: crate::rvm_read::BboxFrame::Local,
+                    level: None,
+                },
+                sagitta_mm: 0.0,
+            })
+        }
     }
 }
 

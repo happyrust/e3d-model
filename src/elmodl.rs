@@ -2460,18 +2460,18 @@ fn primitive_local_solid(
             let xbot = require_double(el, noun, "XBOT", "pyramid")?;
             let ybot = require_double(el, noun, "YBOT", "pyramid")?;
             let h = require_double(el, noun, "HEIG", "pyramid")?;
+            let xtop = default_zero(el, "XTOP")?;
+            let ytop = default_zero(el, "YTOP")?;
+            let xoff = default_zero(el, "XOFF")?;
+            let yoff = default_zero(el, "YOFF")?;
             Ok(PrimitiveBuild {
-                solid: pyramid_solid(
-                    xbot,
-                    ybot,
-                    default_zero(el, "XTOP")?,
-                    default_zero(el, "YTOP")?,
-                    h,
-                    default_zero(el, "XOFF")?,
-                    default_zero(el, "YOFF")?,
-                )?,
+                solid: pyramid_solid(xbot, ybot, xtop, ytop, h, xoff, yoff)?,
                 instance: None,
-                analytic: None,
+                // E3D 的 DRPYR 把设计属性直接写成 `Pyramid` 记录；网格识别器对楔块（底边为 0）会挑另一根边当高
+                // （happyrust/e3d-model#7 第 3 类）。独立正体才带：进了布尔的 E3D 只写面片。
+                analytic: allow_instance.then_some(AnalyticPrimitive::Pyramid {
+                    parameters: [xbot, ybot, xtop, ytop, xoff, yoff, h],
+                }),
             })
         }
         Prim::RectTorus => {

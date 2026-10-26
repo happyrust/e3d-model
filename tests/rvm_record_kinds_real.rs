@@ -224,6 +224,61 @@ fn single_srec_walls_and_flat_duct_plates_write_e3d_pyramids() {
     std::fs::remove_dir_all(&scratch).ok();
 }
 
+/// 四棱台记录的参数照属性 / 目录直出，不由网格识别器猜轴（happyrust/e3d-model#7 第 3 类）。预期值是 E3D TTY 导出里的
+/// 记录原样（`mds_bs_lv6_23708_46910.rvm`、`ams7997_ssc_lv6.rvm`）：
+/// - 设计 PYRA：ams7324 `/SUPPORT/FRAMES/BS/FT48B/6-SUBS1` 的 4 只楔块，XBOT 10 / YBOT 0 / XTOP 10 / YTOP 51 / XOFF 0 / YOFF −25.5 /
+///   HEIG 51 → `Pyramid[10, 0, 10, 51, 0, -25.5, 51]`；此前识别器把斜面当底写成 `[10, 72.12, 10, 0, 0, 0, 36.06]`。
+/// - 目录 LPYR：ams7997 风管 `/-VES-E-4-L-2501` OFST 1（偏心平行六面体）→ `[500, 500, 500, 500, 400, 0, 800]`，
+///   `/-VES-E-4-L-2506` TAPER 1 → `[500, 500, 500, 500, 0, 200, 900]`；此前是 `[500, 894.43, 500, 894.43, 0, 223.61, 447.21]` /
+///   `[500, 921.95, 500, 921.95, 0, -108.47, 488.09]`。
+/// 几何同一只，只是写法。
+#[test]
+fn design_pyramids_and_offset_catalogue_pyramids_write_their_parameters_like_e3d() {
+    if !fixtures_present(MDS_DB) || !fixtures_present(SSC_DB) {
+        return;
+    }
+    let scratch: PathBuf =
+        std::env::temp_dir().join(format!("e3d-model-rvm-kinds-pyra-{}", std::process::id()));
+    let close = |got: [f64; 7], want: [f64; 7]| got.iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-3);
+
+    // ZONE `/SUPPORT/FRAMES/BS/FT48B`：框 6 的四只楔块。
+    let (rvm, _) = generate(MDS_DB, "23708/46910", "on", &scratch.join("ft48b"));
+    for index in 1..=4 {
+        let name = format!("PYRA {index} of SUBS /SUPPORT/FRAMES/BS/FT48B/6-SUBS1");
+        assert_eq!(record_kinds(&rvm, &name), ["Pyramid"], "{name}");
+        let got = pyramids(&rvm, &name)[0];
+        assert!(
+            close(got, [10.0, 0.0, 10.0, 51.0, 0.0, -25.5, 51.0]),
+            "{name}: 设计 PYRA 要按属性直出，得到 {got:?}"
+        );
+    }
+
+    let ducts = [
+        (
+            "24381/30390",
+            "OFST 1 of BRAN /-VES-E-4-L-2501",
+            [500.0, 500.0, 500.0, 500.0, 400.0, 0.0, 800.0],
+        ),
+        (
+            "24381/30559",
+            "TAPE 1 of BRAN /-VES-E-4-L-2506",
+            [500.0, 500.0, 500.0, 500.0, 0.0, 200.0, 900.0],
+        ),
+    ];
+    for (root, name, want) in ducts {
+        let (rvm, _) = generate(SSC_DB, root, "on", &scratch.join(root.replace('/', "_")));
+        let got = pyramids(&rvm, name);
+        assert_eq!(got.len(), 1, "{name}: {got:?}");
+        assert!(
+            close(got[0], want),
+            "{name}: 目录 LPYR 要按目录参数直出，得到 {:?}",
+            got[0]
+        );
+    }
+
+    std::fs::remove_dir_all(&scratch).ok();
+}
+
 /// happyrust/e3d-model#6 的暖通区：5 节分段弯头 `BEND 1 of BRANCH /-CAM-E-2-H-5202`（`24381/47002`，
 /// 目录 `/C5SEGB`）的 SSLC 斜切节，E3D 写带斜切角的 `Snout`（11.25°）；软接头 `/1CAM501FL`
 /// （`24381/47029`，目录 `/CFLEX`）的 27 只零径延长段，E3D 写 `Snout[0, 0, 2, …]`。预期值是 TTY

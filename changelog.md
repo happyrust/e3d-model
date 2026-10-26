@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-10-26 四棱台记录照属性 / 目录参数直出——#7 第 3 类 6 只 Pyramid 的等价写法对上 E3D
+
+- 棱台的网格识别器认得出形状，但哪根边是「高」只能猜：偏心的平行六面体（风管 OFST / TAPER 的目录 LPYR）和底边为 0 的楔块（MDS 设计 PYRA）
+  有多种等价写法，识别器挑了斜边当轴。E3D 的 DRPYR 不认形状，写的就是属性 / 目录参数：ams7324 `/SUPPORT/FRAMES/BS/FT48B/6-SUBS1` 的 4 只 PYRA
+  （XBOT 10 / YBOT 0 / XTOP 10 / YTOP 51 / XOFF 0 / YOFF −25.5 / HEIG 51，element_probe 核过）E3D 写 `Pyramid[10, 0, 10, 51, 0, -25.5, 51]`，我们写
+  `[10, 72.12, 10, 0, 0, 0, 36.06]`；ams7997 `/-VES-E-4-L-2501` OFST 1 E3D `[500, 500, 500, 500, 400, 0, 800]`、`/-VES-E-4-L-2506` TAPER 1
+  `[500, 500, 500, 500, 0, 200, 900]`，我们 `[500, 894.43, 500, 894.43, 0, 223.61, 447.21]` / `[500, 921.95, 500, 921.95, 0, −108.47, 488.09]`。几何同一只。
+- 改法：`AnalyticPrimitive::Pyramid { parameters }`（RVM 参数序，图元自己的标架）。设计 PYRA 在 `primitive_local_solid` 里把七个属性带上（独立正体才带，
+  与 SLCY 同一条路）；目录 LPYR 由 `mesh_key_analytic` 从 `CatalogueMeshKey::Pyramid` 取回 `lpyr_geometry` 算出的七个参数，标架是那块的放置矩阵；
+  `rvm_write::analytic_from_primitive` 照参数直出 `Pyramid` 记录，记录盒照真几何（E3D 给偏心棱台写的声明盒比实体小，与斜切圆柱同一条理由），
+  自校闸照过。网格识别器那条路留给没有解析身份的（布尔过的、`Cut` 键的）。
+- 门：`rvm_record_kinds_real::design_pyramids_and_offset_catalogue_pyramids_write_their_parameters_like_e3d`（上面六只逐参数对 E3D）。
+  Pyramid 普查（`gen-model/output/rvm_pyramid_census.py`，SSC 整站 + MDS BS 80 区 + zone-66457 + S1 基线 + mds_bs_ft，93 对文件）：带 Pyramid 的成员 62 只
+  **62 / 62 逐参数相同**（此前 52 / 58）。回归门 `w7v10` 对 `w7v9`：V1–V5 / V7–V9 逐对 0 变化，V6 529 通过 / 0 失败，aps7200 / aps250209 / aps250212 同前。
+
 ## 2026-10-26 零长 SCTN 名下的 SNOD→SJOI 记 skipped 不记 failed——一只坑连带整根不发的口径改正
 
 - ams7330 `/MDS/SPECIALS/PIPE/3`、`/4` 两框各有一根 POSS 与 POSE 重合的 `SCTN`（`23714/1011`、`23714/1025`，轴长 0 mm），名下

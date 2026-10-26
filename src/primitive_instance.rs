@@ -161,6 +161,16 @@ pub enum AnalyticPrimitive {
         /// 建网格时的周向段数，写出端按它算网格与解析面之间的离散化缺口。
         segments: i32,
     },
+    /// 四棱台（设计 PYRA / 目录 LPYR）：`[xbot, ybot, xtop, ytop, xoff, yoff, height]`，RVM `Pyramid` 的参数序，
+    /// 在图元自己的标架里（轴局部 Z、原点在两个面心的中点，与 [`crate::solid::pyramid_solid`] 同一约定）。
+    ///
+    /// 棱台的网格识别器认得出形状，但哪根边是「高」只能猜：平行六面体（偏心 LPYR）和楔块（底边为 0 的 PYRA）有多种等价写法，
+    /// 识别器挑了斜边当轴。E3D 的 DRPYR 不认形状，写的就是属性 / 目录参数：ams7324 `/SUPPORT/FRAMES/BS/FT48B/6-SUBS1` 的
+    /// 设计 PYRA（XBOT 10 / YBOT 0 / XTOP 10 / YTOP 51 / XOFF 0 / YOFF −25.5 / HEIG 51）E3D 写 `Pyramid[10, 0, 10, 51, 0, -25.5, 51]`，
+    /// ams7997 风管 `/-VES-E-4-L-2501` OFST 1 的偏心 LPYR E3D 写 `Pyramid[500, 500, 500, 500, 400, 0, 800]`；我们按网格认成
+    /// `[10, 72.12, 10, 0, 0, 0, 36.06]` / `[500, 894.43, 500, 894.43, 0, 223.61, 447.21]`（happyrust/e3d-model#7 第 3 类）。
+    /// 几何同一只，只是写法；写出端照样过自校闸。
+    Pyramid { parameters: [f64; 7] },
 }
 
 pub(crate) struct PrimitiveBuild {

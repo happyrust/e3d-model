@@ -3498,21 +3498,34 @@ fn place_part_once(
 /// 网格识别器认不出的目录图元从网格键里取回参数：`SSLC` 的半径、高与四个斜切角。E3D 对它
 /// 走 DRSNO 写带斜切角的 `Snout`（暖通分段弯头的斜切节），局部帧与
 /// [`crate::solid::slope_ended_cylinder_solid`] 同一个。被负体包了一层的不再是那只斜切圆柱，不给。
+///
+/// `LPYR` 也从键里取：网格识别器认得出棱台，但偏心的平行六面体哪根边是高只能猜（ams7997 `/-VES-E-4-L-2501` OFST 1 挑了斜边）；
+/// E3D 的 DRPYR 写的是目录参数本身，就是 [`lpyr_geometry`] 算出来的那七个（happyrust/e3d-model#7 第 3 类）。
 fn mesh_key_analytic(key: &CatalogueMeshKey) -> Option<AnalyticPrimitive> {
-    let CatalogueMeshKey::SlopeCylinder { parameter_bits, .. } = key else {
-        return None;
-    };
-    let [radius, height, xtop_deg, ytop_deg, xbot_deg, ybot_deg] =
-        parameter_bits.map(f64::from_bits);
-    Some(AnalyticPrimitive::SlopedCylinder {
-        radius,
-        height,
-        xtop_deg,
-        ytop_deg,
-        xbot_deg,
-        ybot_deg,
-        segments: crate::solid::cylinder_segments(radius),
-    })
+    match key {
+        CatalogueMeshKey::SlopeCylinder { parameter_bits, .. } => {
+            let [radius, height, xtop_deg, ytop_deg, xbot_deg, ybot_deg] =
+                parameter_bits.map(f64::from_bits);
+            Some(AnalyticPrimitive::SlopedCylinder {
+                radius,
+                height,
+                xtop_deg,
+                ytop_deg,
+                xbot_deg,
+                ybot_deg,
+                segments: crate::solid::cylinder_segments(radius),
+            })
+        }
+        CatalogueMeshKey::Pyramid { parameter_bits, .. } => {
+            // 键里的序是 [`EvaluatedPyramid::parameters`] 的 `[xbot, ybot, xtop, ytop, height, xoff, yoff]`，
+            // RVM 记录是 `[xbot, ybot, xtop, ytop, xoff, yoff, height]`。
+            let [xbot, ybot, xtop, ytop, height, xoff, yoff] = parameter_bits.map(f64::from_bits);
+            Some(AnalyticPrimitive::Pyramid {
+                parameters: [xbot, ybot, xtop, ytop, xoff, yoff, height],
+            })
+        }
+        _ => None,
+    }
 }
 
 /// `SDSH` 的 `PRAD > 0` 留在网格键的 `knuckled` 上。负体把键包成 [`CatalogueMeshKey::Cut`]
